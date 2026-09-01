@@ -6,19 +6,19 @@
 - [x] Add run metadata, workflow states, command capture, timeouts, redaction, and local health checks.
 - [x] Add a provisional engineering skill and provenance format.
 - [x] Add tests and continuous integration.
-- [ ] Run the first Codex-to-Claude task against a disposable fixture repository.
+- [x] Run the first Codex-to-Claude task against a disposable fixture repository.
 
 ## v0.2, first complete local loop
 
 - [x] Add configurable Codex and Claude CLI adapters behind `EngineeringAgent`.
 - [x] Prove the Codex adapter against a disposable failing fixture.
 - [x] Clone a pinned target commit into an isolated private workspace.
-- Give the primary agent the issue and repository instructions.
-- Pass repository state and machine-captured evidence to the reviewer.
-- Allow one bounded revision cycle.
-- Re-run verification and stop at `READY_FOR_HUMAN_REVIEW`.
+- [x] Give the primary agent the issue and repository instructions.
+- [x] Pass repository state and machine-captured evidence to the reviewer.
+- [x] Allow one bounded revision cycle. Unit-covered; no live evidence yet.
+- [x] Re-run verification and stop at `READY_FOR_HUMAN_REVIEW`.
 
-The acceptance test is one recorded run in which two real agent processes complete the loop. Mocks alone do not count. Claude CLI availability currently blocks that test on the development machine.
+The acceptance test is one recorded run in which two real agent processes complete the loop. Mocks alone do not count. Met on 2026-09-02 by private run `20260901T201921Z-0b85ed`, recorded in `docs/runs/0003-two-model-fixture.md`.
 
 ## Later, only after real-run evidence
 
