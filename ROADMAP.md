@@ -18,7 +18,7 @@
 - Allow one bounded revision cycle.
 - Re-run verification and stop at `READY_FOR_HUMAN_REVIEW`.
 
-The acceptance test is one recorded run in which two real agent processes complete the loop. Mocks alone do not count. Claude CLI availability and sandboxed runtime discovery currently block that test on the development machine.
+The acceptance test is one recorded run in which two real agent processes complete the loop. Mocks alone do not count. Claude CLI availability currently blocks that test on the development machine.
 
 ## Later, only after real-run evidence
 

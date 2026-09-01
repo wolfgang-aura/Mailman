@@ -36,12 +36,20 @@ The corrected adapter finished after 77.040939 seconds. It changed one operator:
 
 Mailman reran `python -m unittest -v` outside the agent process. One test passed.
 
-Codex reported that neither `python` nor `py` was available inside its sandbox account, so it could not run the test itself. The host result verifies the patch, but the runtime mismatch remains unresolved in [issue #4](https://github.com/wolfgang-aura/Mailman/issues/4).
+Codex reported that neither `python` nor `py` was available inside its sandbox account, so it could not run the test itself. The host result verified the patch but exposed a runtime mismatch.
+
+## Toolchain-backed CLI attempt
+
+Mailman initialized private run `20260901T192007Z-60b445` at exact fixture commit `4458f3dd5e85f1dae44f3251f293d62300cffb5d`. It probed a bundled Python executable and saved the resolved path, version result, and digest in `toolchain.json`. `run-agent` added that path to the saved prompt before invoking Codex.
+
+The agent process finished after 44.715588 seconds. Codex made the same one-line fix and used the registered executable to run one unittest successfully. It also reported a clean `git diff --check`. Mailman then ran the same unittest independently with the same executable, and it passed.
+
+The run remained at `INITIALIZED`. Agent completion did not advance workflow status.
 
 ## Gaps
 
-- The adapter did not pin a model, so the exact model is unknown.
-- Usage and token data were not preserved because this development fixture bypassed Mailman's run artifact command.
+- The run did not pin a model, so the exact model is unknown. Run creation now accepts explicit primary and reviewer model IDs.
+- Raw JSONL process evidence is private and has not been exported into this public record.
 - Claude did not review the patch because Claude CLI is absent.
 - The simple fixture proves process integration, not performance on open-source work.
 

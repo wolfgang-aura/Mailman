@@ -18,6 +18,8 @@ class ArtifactTests(unittest.TestCase):
                 base_commit="a" * 40,
                 primary="codex",
                 reviewer="claude",
+                primary_model="codex-test-model",
+                reviewer_model="claude-test-model",
                 data_root=root,
             )
 
@@ -28,8 +30,14 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(
                 json.loads((run_directory / "verification.json").read_text()), []
             )
+            self.assertEqual(
+                json.loads((run_directory / "toolchain.json").read_text())["tools"],
+                {},
+            )
             loaded, _ = load_run(run.run_id, root)
             self.assertEqual(loaded.repository, run.repository)
+            self.assertEqual(loaded.primary.model, "codex-test-model")
+            self.assertEqual(loaded.reviewer.model, "claude-test-model")
 
     def test_create_run_rejects_symbolic_base_reference(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
