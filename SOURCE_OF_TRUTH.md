@@ -18,10 +18,9 @@ Last verified: 2026-09-02 in `Asia/Singapore`.
 
 - Host operating system: Windows.
 - Verified Python: CPython 3.14.3. The project supports Python 3.12 and newer.
-- Codex CLI: not installed on the host as of 2026-09-02. No launcher exists under `%APPDATA%\npm`.
-- Claude CLI: not installed on the host as of 2026-09-02. No launcher exists under `%APPDATA%\npm`.
-- `%APPDATA%\npm` holds `node_modules`, `openclaw`, `openclaw.cmd`, and `openclaw.ps1`, and nothing else. Verified from an independent PowerShell window where `CLAUDECODE` is unset, by `Test-Path` and by a Python `os.listdir` that agree.
-- Tool observations made inside a Claude Code agent session are not authoritative about installed CLIs. That session showed `claude.cmd` and `codex.cmd` in `%APPDATA%\npm`, and `claude --version` and `codex --version` answered there, but neither file exists on the host. An `npm install -g` run from that session did not reach the host either. Verify agent CLI presence only from an independent terminal.
+- Codex CLI: installed at `%APPDATA%\npm\codex.cmd` and authenticated. It executed a real fixture on 2026-09-02.
+- Claude CLI: installed at `%APPDATA%\npm\claude.cmd` and authenticated. It executed a real review on 2026-09-02. Its adapter flags are verified against the installed build: `--print`, `--input-format`, `--output-format`, `--permission-mode` (`acceptEdits`, `plan`), `--disallowedTools`, `--model`, and the undocumented but accepted `--max-turns`.
+- Both CLIs were absent from the host earlier on 2026-09-02 and were installed with `npm install -g @anthropic-ai/claude-code @openai/codex` from an independent terminal. Before that install, a Claude Code agent session reported both as present while the host did not have them. Confirm agent CLI presence from an independent terminal, never from inside an agent session.
 - GitHub CLI: installed and authenticated. The user authorized the first public push on 2026-09-02.
 
 ## Authority and artifact boundaries
@@ -41,6 +40,12 @@ Agent executables are resolved before launch and may be pinned per run through `
 
 The Codex adapter completed a disposable fixture on 2026-09-02. It produced the expected one-line patch under the elevated native Windows sandbox. A later private run registered a bundled Python executable in the run toolchain, and Codex used it to pass the unittest. Mailman then passed the same test independently with the same executable.
 
-The bounded loop is covered by 47 unit tests with scripted agents. It has not been driven end to end by two live models, because neither agent CLI is installed on the host. Three live orchestration attempts on 2026-09-02, runs `20260901T194823Z-56b438`, `20260901T200938Z-3994b1`, and `20260901T201050Z-cd908c`, each validated the workspace, entered `PRIMARY_RUNNING`, failed to resolve the agent executable, and blocked with that reason recorded. The last two ran from an independent terminal. They are evidence that the harness refuses to start an unverifiable agent, not evidence that the loop works.
+The bounded loop is covered by 47 unit tests with scripted agents, and it completed a live two-model run on 2026-09-02. Private run `20260901T201921Z-0b85ed` used Codex as primary and Claude as reviewer on a disposable `slugify` fixture that started with 2 of 3 tests failing. Codex changed one line in 43.4s, Mailman's own verification passed, Claude reviewed in 29.0s and returned a parsed `APPROVE`, the final verification passed, and the run stopped at `READY_FOR_HUMAN_REVIEW` with no revision. Independent confirmation afterwards reproduced three passing tests against the same diff. See `docs/runs/0003-two-model-fixture.md`.
 
-The two-model fixture run, sanitized public export, and upstream contribution preparation are not complete.
+Codex reported that it could not run the pinned Python executable inside its own sandbox and exited `0` anyway. Mailman's independent verification is what carried that run, which is the case the harness exists for.
+
+Three earlier attempts on the same day, runs `20260901T194823Z-56b438`, `20260901T200938Z-3994b1`, and `20260901T201050Z-cd908c`, blocked because the agent executable could not be resolved. They are evidence that the harness refuses to start an unverifiable agent.
+
+The revision path, the second review, and the blocking paths have unit coverage but no live evidence yet.
+
+The sanitized public export command and upstream contribution preparation are not implemented.
