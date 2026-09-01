@@ -43,6 +43,18 @@ class ArtifactTests(unittest.TestCase):
                     data_root=Path(temporary_directory),
                 )
 
+    def test_create_run_rejects_abbreviated_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(ValueError, "full 40 or 64 character"):
+                create_run(
+                    repository="https://github.com/example/project.git",
+                    issue="https://github.com/example/project/issues/7",
+                    base_commit="abcdef0",
+                    primary="codex",
+                    reviewer="claude",
+                    data_root=Path(temporary_directory),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

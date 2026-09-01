@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
+from mailman.executor import CommandResult
+
 
 @dataclass(frozen=True)
 class AgentRequest:
@@ -11,6 +13,8 @@ class AgentRequest:
     role: str
     prompt_path: Path
     workspace: Path
+    report_path: Path
+    timeout_seconds: float = 3600
 
 
 @dataclass(frozen=True)
@@ -18,6 +22,8 @@ class AgentResult:
     exit_code: int | None
     report_path: Path
     timed_out: bool
+    report_present: bool
+    command_result: CommandResult
 
 
 class EngineeringAgent(ABC):

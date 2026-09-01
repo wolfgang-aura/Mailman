@@ -27,4 +27,8 @@ Last verified: 2026-09-02 in `Asia/Singapore`.
 
 ## Current capability
 
-The code can initialize a run record, enforce allowed state transitions, execute a verification command without a shell, redact common token formats, and report missing local tools. It does not yet run an engineering agent or communicate with GitHub.
+The code can initialize a run record, enforce allowed state transitions, run one configured Codex or Claude CLI adapter, execute a verification command without a shell, redact common token formats, and report missing local tools. `run-agent` requires a clean primary workspace at the exact base commit. Reviewer workspaces may contain changes descended from that base. The command stores private execution evidence and never changes workflow status by itself.
+
+The Codex adapter completed a disposable fixture on 2026-09-02. It produced the expected one-line patch under the elevated native Windows sandbox, and host-side verification passed. Codex could not access the user-installed Python runtime inside the sandbox, so agent-side tests did not run. The Claude adapter follows Anthropic's documented print-mode flags but remains unexecuted because Claude CLI is absent.
+
+The complete primary-reviewer loop, isolated target cloning, sanitized public export, and upstream contribution preparation are not implemented.

@@ -44,6 +44,7 @@ def execute(
     working_directory: Path,
     timeout_seconds: float = 900,
     environment: Mapping[str, str] | None = None,
+    stdin_text: str | None = None,
 ) -> CommandResult:
     """Run a command without a shell and return a redacted evidence record."""
     if not command:
@@ -63,6 +64,7 @@ def execute(
             list(command),
             cwd=cwd,
             env=process_environment,
+            input=stdin_text,
             capture_output=True,
             text=True,
             encoding="utf-8",

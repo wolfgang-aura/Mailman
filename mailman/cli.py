@@ -5,10 +5,19 @@ import json
 import sys
 from pathlib import Path
 
-from mailman.artifacts import append_verification, create_run, load_run, write_run
+from mailman.agents import ClaudeCliAgent, CodexCliAgent, EngineeringAgent
+from mailman.agents.base import AgentRequest
+from mailman.artifacts import (
+    append_agent_execution,
+    append_verification,
+    create_run,
+    load_run,
+    write_run,
+)
 from mailman.doctor import run_checks
 from mailman.executor import execute
 from mailman.models import RunStatus
+from mailman.workspace import commit_is_ancestor, inspect_workspace
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -33,6 +42,18 @@ def _build_parser() -> argparse.ArgumentParser:
     transition.add_argument("target", choices=[str(status) for status in RunStatus])
     transition.add_argument("--reason", required=True)
     transition.add_argument("--data-root", type=Path)
+
+    run_agent = subparsers.add_parser(
+        "run-agent", help="run one configured agent without changing workflow status"
+    )
+    run_agent.add_argument("run_id")
+    run_agent.add_argument("--role", required=True, choices=("primary", "reviewer"))
+    run_agent.add_argument("--prompt", required=True, type=Path)
+    run_agent.add_argument("--workspace", required=True, type=Path)
+    run_agent.add_argument("--model")
+    run_agent.add_argument("--timeout", type=float, default=3600)
+    run_agent.add_argument("--max-turns", type=int, default=30)
+    run_agent.add_argument("--data-root", type=Path)
 
     verify = subparsers.add_parser("verify", help="run and record a verification command")
     verify.add_argument("run_id")
@@ -70,6 +91,89 @@ def _transition(arguments: argparse.Namespace) -> int:
     write_run(run, run_directory)
     print(json.dumps({"run_id": run.run_id, "status": str(run.status)}, indent=2))
     return 0
+
+
+def _make_agent(
+    name: str, *, model: str | None, max_turns: int
+) -> EngineeringAgent:
+    normalized = name.strip().lower()
+    if normalized == "codex":
+        return CodexCliAgent(model=model)
+    if normalized == "claude":
+        return ClaudeCliAgent(model=model, max_turns=max_turns)
+    raise ValueError(f"unsupported engineering agent: {name}")
+
+
+def _run_agent(arguments: argparse.Namespace) -> int:
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    workspace_state = inspect_workspace(arguments.workspace)
+    if arguments.role == "primary" and workspace_state.head != run.base_commit:
+        raise ValueError(
+            f"workspace HEAD {workspace_state.head} does not match base commit "
+            f"{run.base_commit}"
+        )
+    if arguments.role == "reviewer" and not commit_is_ancestor(
+        workspace_state.path, run.base_commit
+    ):
+        raise ValueError(
+            f"base commit {run.base_commit} is not an ancestor of reviewer "
+            f"workspace HEAD {workspace_state.head}"
+        )
+    if arguments.role == "primary" and not workspace_state.clean:
+        raise ValueError("primary workspace must be clean before agent execution")
+    prompt_path = arguments.prompt.resolve(strict=True)
+    if not prompt_path.is_file():
+        raise ValueError("prompt must be a file")
+
+    configured = run.primary if arguments.role == "primary" else run.reviewer
+    model = arguments.model or configured.model
+    agent = _make_agent(configured.agent, model=model, max_turns=arguments.max_turns)
+    report_path = run_directory / f"{arguments.role}-report.md"
+    request = AgentRequest(
+        run_id=run.run_id,
+        role=arguments.role,
+        prompt_path=prompt_path,
+        workspace=workspace_state.path,
+        report_path=report_path,
+        timeout_seconds=arguments.timeout,
+    )
+    print(
+        f"Starting {agent.name} as {arguments.role} with a "
+        f"{arguments.timeout:g} second timeout.",
+        flush=True,
+    )
+    result = agent.run(request)
+    report_text = (
+        result.report_path.read_text(encoding="utf-8", errors="replace")
+        if result.report_present
+        else None
+    )
+    execution_record = {
+        "agent": agent.name,
+        "role": arguments.role,
+        "report_path": str(result.report_path),
+        "report_present": result.report_present,
+        "report": report_text,
+        "process": result.command_result.to_dict(),
+        "workflow_status_after_run": str(run.status),
+    }
+    record_path = append_agent_execution(
+        run_directory, arguments.role, execution_record
+    )
+    summary = {
+        "agent": agent.name,
+        "role": arguments.role,
+        "process_exit_code": result.exit_code,
+        "timed_out": result.timed_out,
+        "report_present": result.report_present,
+        "execution_record": str(record_path),
+        "workflow_status": str(run.status),
+        "status_changed": False,
+    }
+    print(json.dumps(summary, indent=2))
+    if result.timed_out:
+        return 124
+    return result.exit_code or 0
 
 
 def _verify(arguments: argparse.Namespace) -> int:
@@ -114,6 +218,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _init_run(parsed)
         if parsed.subcommand == "transition":
             return _transition(parsed)
+        if parsed.subcommand == "run-agent":
+            return _run_agent(parsed)
         if parsed.subcommand == "verify":
             return _verify(parsed)
     except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as error:
