@@ -17,6 +17,7 @@ from mailman.artifacts import (
 from mailman.doctor import run_checks
 from mailman.executor import execute
 from mailman.models import RunStatus
+from mailman.toolchain import prepare_agent_prompt, probe_tool
 from mailman.workspace import commit_is_ancestor, inspect_workspace
 
 
@@ -35,6 +36,8 @@ def _build_parser() -> argparse.ArgumentParser:
     init_run.add_argument("--base-commit", required=True)
     init_run.add_argument("--primary", required=True)
     init_run.add_argument("--reviewer", required=True)
+    init_run.add_argument("--primary-model")
+    init_run.add_argument("--reviewer-model")
     init_run.add_argument("--data-root", type=Path)
 
     transition = subparsers.add_parser("transition", help="change a run workflow state")
@@ -54,6 +57,16 @@ def _build_parser() -> argparse.ArgumentParser:
     run_agent.add_argument("--timeout", type=float, default=3600)
     run_agent.add_argument("--max-turns", type=int, default=30)
     run_agent.add_argument("--data-root", type=Path)
+
+    probe = subparsers.add_parser(
+        "probe-tool", help="verify and register one executable for a run"
+    )
+    probe.add_argument("run_id")
+    probe.add_argument("--name", required=True)
+    probe.add_argument("--executable", required=True, type=Path)
+    probe.add_argument("--probe-arg", action="append")
+    probe.add_argument("--timeout", type=float, default=30)
+    probe.add_argument("--data-root", type=Path)
 
     verify = subparsers.add_parser("verify", help="run and record a verification command")
     verify.add_argument("run_id")
@@ -79,6 +92,8 @@ def _init_run(arguments: argparse.Namespace) -> int:
         base_commit=arguments.base_commit,
         primary=arguments.primary,
         reviewer=arguments.reviewer,
+        primary_model=arguments.primary_model,
+        reviewer_model=arguments.reviewer_model,
         data_root=arguments.data_root,
     )
     print(json.dumps({"run_id": run.run_id, "path": str(run_directory)}, indent=2))
@@ -121,9 +136,12 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         )
     if arguments.role == "primary" and not workspace_state.clean:
         raise ValueError("primary workspace must be clean before agent execution")
-    prompt_path = arguments.prompt.resolve(strict=True)
-    if not prompt_path.is_file():
+    source_prompt = arguments.prompt.resolve(strict=True)
+    if not source_prompt.is_file():
         raise ValueError("prompt must be a file")
+    prompt_path = prepare_agent_prompt(
+        run_directory, role=arguments.role, source_prompt=source_prompt
+    )
 
     configured = run.primary if arguments.role == "primary" else run.reviewer
     model = arguments.model or configured.model
@@ -150,10 +168,12 @@ def _run_agent(arguments: argparse.Namespace) -> int:
     )
     execution_record = {
         "agent": agent.name,
+        "model": model,
         "role": arguments.role,
         "report_path": str(result.report_path),
         "report_present": result.report_present,
         "report": report_text,
+        "prompt_path": str(prompt_path),
         "process": result.command_result.to_dict(),
         "workflow_status_after_run": str(run.status),
     }
@@ -162,6 +182,7 @@ def _run_agent(arguments: argparse.Namespace) -> int:
     )
     summary = {
         "agent": agent.name,
+        "model": model,
         "role": arguments.role,
         "process_exit_code": result.exit_code,
         "timed_out": result.timed_out,
@@ -169,6 +190,29 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         "execution_record": str(record_path),
         "workflow_status": str(run.status),
         "status_changed": False,
+    }
+    print(json.dumps(summary, indent=2))
+    if result.timed_out:
+        return 124
+    return result.exit_code or 0
+
+
+def _probe_tool(arguments: argparse.Namespace) -> int:
+    _, run_directory = load_run(arguments.run_id, arguments.data_root)
+    probe_arguments = arguments.probe_arg or ["--version"]
+    result = probe_tool(
+        run_directory,
+        name=arguments.name,
+        executable=arguments.executable,
+        probe_arguments=probe_arguments,
+        timeout_seconds=arguments.timeout,
+    )
+    summary = {
+        "name": arguments.name,
+        "executable": str(arguments.executable.resolve()),
+        "exit_code": result.exit_code,
+        "timed_out": result.timed_out,
+        "registered": result.exit_code == 0 and not result.timed_out,
     }
     print(json.dumps(summary, indent=2))
     if result.timed_out:
@@ -220,6 +264,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _transition(parsed)
         if parsed.subcommand == "run-agent":
             return _run_agent(parsed)
+        if parsed.subcommand == "probe-tool":
+            return _probe_tool(parsed)
         if parsed.subcommand == "verify":
             return _verify(parsed)
     except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as error:

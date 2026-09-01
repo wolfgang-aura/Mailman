@@ -28,6 +28,8 @@ def create_run(
     base_commit: str,
     primary: str,
     reviewer: str,
+    primary_model: str | None = None,
+    reviewer_model: str | None = None,
     data_root: Path | None = None,
 ) -> tuple[RunRecord, Path]:
     if not repository.startswith(("https://", "ssh://", "git@")):
@@ -46,8 +48,8 @@ def create_run(
         repository=repository,
         issue=issue,
         base_commit=base_commit.lower(),
-        primary=AgentConfig(agent=primary),
-        reviewer=AgentConfig(agent=reviewer),
+        primary=AgentConfig(agent=primary, model=primary_model),
+        reviewer=AgentConfig(agent=reviewer, model=reviewer_model),
     )
     root = (data_root or default_data_root()).resolve()
     run_directory = root / run.run_id
@@ -65,6 +67,10 @@ def create_run(
         "# Review report\n\nNot started.\n", encoding="utf-8"
     )
     (run_directory / "verification.json").write_text("[]\n", encoding="utf-8")
+    (run_directory / "toolchain.json").write_text(
+        json.dumps({"schema_version": 1, "tools": {}}, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return run, run_directory
 
 

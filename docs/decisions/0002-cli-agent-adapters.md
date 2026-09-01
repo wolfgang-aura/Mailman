@@ -16,6 +16,6 @@ Mailman does not advance workflow status when an agent process exits. Process su
 
 The first Codex attempt could not start any repository command because ignoring user configuration also removed the native Windows sandbox implementation choice. Adding only `windows.sandbox='elevated'` fixed command and edit access while retaining workspace boundaries. The verified adapter then produced the expected one-line fixture patch. Host-side unittest verification passed.
 
-The agent could not access the user-installed Python runtime inside its sandbox account. Mailman therefore still needs a controlled per-run toolchain manifest. See [fixture run 0001](../runs/0001-codex-fixture.md).
+The agent could not access the user-installed Python runtime inside its sandbox account. Mailman now records explicitly probed executables in a private per-run toolchain manifest. Each record includes the exact path, version probe, and SHA-256 digest. Prompt preparation rejects a changed binary. A later fixture run used a bundled Python executable successfully without inheriting the host's full environment. See [fixture run 0001](../runs/0001-codex-fixture.md).
 
 The Codex flags were checked against installed CLI 0.152.0 and the current [OpenAI developer command reference](https://learn.chatgpt.com/docs/developer-commands). Claude flags follow Anthropic's [CLI reference](https://docs.anthropic.com/en/docs/claude-code/cli-usage), but the adapter remains locally unverified until Claude CLI is installed and authenticated.

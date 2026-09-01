@@ -36,7 +36,9 @@ mailman init-run `
   --issue https://github.com/owner/project/issues/123 `
   --base-commit 0123456789abcdef0123456789abcdef01234567 `
   --primary codex `
-  --reviewer claude
+  --primary-model MODEL_ID `
+  --reviewer claude `
+  --reviewer-model MODEL_ID
 ```
 
 Mailman writes live run data under `.mailman/`, which Git ignores. Capture a verification command with:
@@ -46,6 +48,15 @@ mailman verify RUN_ID -- python -m unittest discover -s tests -v
 ```
 
 The command runs without a shell, has a timeout, and records its exit code, duration, and redacted output. A later export command will produce a reviewed public artifact. Do not commit `.mailman/` by force.
+
+Register a runtime before an agent run:
+
+```powershell
+$pythonPath = (Get-Command python).Source
+mailman probe-tool RUN_ID --name python --executable $pythonPath
+```
+
+The probe records the resolved path, version result, and SHA-256 digest in the private run directory. Mailman adds verified tool paths to the saved agent prompt and refuses to use a binary whose digest changed after probing. Host verification is still authoritative because a host-accessible executable may be unavailable inside an agent sandbox.
 
 Run one configured agent against an already prepared Git workspace:
 
@@ -57,7 +68,7 @@ mailman run-agent RUN_ID `
   --timeout 3600
 ```
 
-Mailman checks that a primary workspace is clean and exactly at the run's base commit. A reviewer workspace may contain uncommitted changes or candidate commits descended from that base. Mailman sends the prompt through stdin, records the process result, and leaves workflow status unchanged. A zero process exit does not prove that the patch is correct. Review and independent verification remain separate gates.
+Mailman checks that a primary workspace is clean and exactly at the run's base commit. A reviewer workspace may contain uncommitted changes or candidate commits descended from that base. Mailman saves the exact prompt, including registered tool paths, then sends it through stdin. It records the process result and leaves workflow status unchanged. A zero process exit does not prove that the patch is correct. Review and independent verification remain separate gates.
 
 ## Human boundary
 
