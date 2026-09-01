@@ -70,7 +70,7 @@ def create_run(
     (run_directory / "primary-report.md").write_text(
         "# Primary report\n\nNot started.\n", encoding="utf-8"
     )
-    (run_directory / "review-report.md").write_text(
+    (run_directory / "reviewer-report.md").write_text(
         "# Review report\n\nNot started.\n", encoding="utf-8"
     )
     (run_directory / "verification.json").write_text("[]\n", encoding="utf-8")
