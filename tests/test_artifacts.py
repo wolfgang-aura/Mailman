@@ -63,6 +63,18 @@ class ArtifactTests(unittest.TestCase):
                     data_root=Path(temporary_directory),
                 )
 
+    def test_create_run_rejects_embedded_https_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(ValueError, "embedded credentials"):
+                create_run(
+                    repository="https://secret@example.com/project.git",
+                    issue="https://github.com/example/project/issues/7",
+                    base_commit="a" * 40,
+                    primary="codex",
+                    reviewer="claude",
+                    data_root=Path(temporary_directory),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

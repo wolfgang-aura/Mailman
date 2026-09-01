@@ -5,6 +5,7 @@ import re
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from mailman.models import AgentConfig, RunRecord
 
@@ -34,6 +35,12 @@ def create_run(
 ) -> tuple[RunRecord, Path]:
     if not repository.startswith(("https://", "ssh://", "git@")):
         raise ValueError("repository must be an HTTPS or SSH Git URL")
+    if repository.startswith(("https://", "ssh://")):
+        parsed_repository = urlsplit(repository)
+        if parsed_repository.password or (
+            parsed_repository.scheme == "https" and parsed_repository.username
+        ):
+            raise ValueError("repository URL must not contain embedded credentials")
     if not issue.startswith("https://"):
         raise ValueError("issue must be an HTTPS URL")
     if not _COMMIT_PATTERN.fullmatch(base_commit):

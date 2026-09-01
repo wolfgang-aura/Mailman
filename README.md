@@ -41,6 +41,14 @@ mailman init-run `
   --reviewer-model MODEL_ID
 ```
 
+Clone the recorded repository into the ignored run directory and detach it at the exact base commit:
+
+```powershell
+mailman prepare-workspace RUN_ID --timeout 600
+```
+
+Mailman records the clone and checkout commands in `workspace.json`. A second call reuses the workspace only when its origin, commit, and clean state still match. It preserves the original command evidence and increments a reuse counter.
+
 Mailman writes live run data under `.mailman/`, which Git ignores. Capture a verification command with:
 
 ```powershell
