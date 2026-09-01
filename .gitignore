@@ -1,0 +1,53 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+*.secret
+*.secrets
+secrets/
+credentials/
+credentials.json
+service-account*.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+.npmrc
+.pypirc
+
+# Mailman runtime data. Export only reviewed, sanitized artifacts.
+.mailman/
+runs-private/
+workspaces/
+command-logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+.venv/
+venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+
+# Scratch files belong here, never in the repository root.
+.scratch/
+tmp/
+temp/
