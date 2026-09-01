@@ -26,7 +26,8 @@ class ArtifactTests(unittest.TestCase):
             self.assertTrue((run_directory / "run.json").is_file())
             self.assertTrue((run_directory / "issue.md").is_file())
             self.assertTrue((run_directory / "primary-report.md").is_file())
-            self.assertTrue((run_directory / "review-report.md").is_file())
+            self.assertTrue((run_directory / "reviewer-report.md").is_file())
+            self.assertFalse((run_directory / "review-report.md").exists())
             self.assertEqual(
                 json.loads((run_directory / "verification.json").read_text()), []
             )
