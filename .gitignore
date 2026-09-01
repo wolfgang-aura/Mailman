@@ -24,6 +24,7 @@ service-account*.json
 runs-private/
 workspaces/
 command-logs/
+SESSION_HANDOFF.md
 
 # Python
 __pycache__/
