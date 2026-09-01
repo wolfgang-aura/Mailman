@@ -10,14 +10,15 @@
 
 ## v0.2, first complete local loop
 
-- Add configurable Codex and Claude CLI adapters behind `EngineeringAgent`.
+- [x] Add configurable Codex and Claude CLI adapters behind `EngineeringAgent`.
+- [x] Prove the Codex adapter against a disposable failing fixture.
 - Clone a pinned target commit into an isolated worktree.
 - Give the primary agent the issue and repository instructions.
 - Pass repository state and machine-captured evidence to the reviewer.
 - Allow one bounded revision cycle.
 - Re-run verification and stop at `READY_FOR_HUMAN_REVIEW`.
 
-The acceptance test is one recorded run in which two real agent processes complete the loop. Mocks alone do not count. Claude CLI availability currently blocks that test on the development machine.
+The acceptance test is one recorded run in which two real agent processes complete the loop. Mocks alone do not count. Claude CLI availability and sandboxed runtime discovery currently block that test on the development machine.
 
 ## Later, only after real-run evidence
 

@@ -9,6 +9,23 @@ from mailman.executor import execute
 
 
 class ExecutorTests(unittest.TestCase):
+    def test_passes_input_without_putting_it_in_the_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            result = execute(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; print(sys.stdin.read().upper())",
+                ],
+                working_directory=Path(temporary_directory),
+                timeout_seconds=5,
+                stdin_text="private prompt",
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.stdout.strip(), "PRIVATE PROMPT")
+        self.assertNotIn("private prompt", " ".join(result.command))
+
     def test_captures_exit_code_and_redacts_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             fake_token = "ghp_" + "a" * 30
