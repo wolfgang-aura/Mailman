@@ -8,7 +8,53 @@ import unittest
 from pathlib import Path
 
 from mailman.artifacts import create_run
-from mailman.toolchain import prepare_agent_prompt, probe_tool
+from mailman.toolchain import prepare_agent_prompt, probe_tool, toolchain_executable
+
+
+class ToolchainExecutableTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        self.root = Path(self._temporary.name)
+        _, self.run_directory = create_run(
+            repository="https://github.com/example/project.git",
+            issue="https://github.com/example/project/issues/1",
+            base_commit="a" * 40,
+            primary="codex",
+            reviewer="claude",
+            data_root=self.root / "runs",
+        )
+
+    def test_an_unprobed_tool_has_no_pinned_executable(self) -> None:
+        self.assertIsNone(toolchain_executable(self.run_directory, "codex"))
+
+    def test_a_probed_tool_returns_its_exact_executable(self) -> None:
+        probe_tool(
+            self.run_directory,
+            name="python",
+            executable=Path(sys.executable),
+            probe_arguments=["--version"],
+            timeout_seconds=5,
+        )
+        self.assertEqual(
+            toolchain_executable(self.run_directory, "python"),
+            str(Path(sys.executable).resolve()),
+        )
+
+    def test_a_changed_executable_is_rejected(self) -> None:
+        probe_tool(
+            self.run_directory,
+            name="python",
+            executable=Path(sys.executable),
+            probe_arguments=["--version"],
+            timeout_seconds=5,
+        )
+        manifest_path = self.run_directory / "toolchain.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["tools"]["python"]["sha256"] = hashlib.sha256(b"other").hexdigest()
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "changed after probe"):
+            toolchain_executable(self.run_directory, "python")
 
 
 class ToolchainTests(unittest.TestCase):

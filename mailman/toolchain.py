@@ -69,6 +69,29 @@ def probe_tool(
     return result
 
 
+def _verified_executable(name: str, raw_record: object) -> str:
+    if not isinstance(raw_record, dict):
+        raise ValueError(f"invalid toolchain record: {name}")
+    executable = raw_record.get("executable")
+    expected_sha256 = raw_record.get("sha256")
+    if not isinstance(executable, str) or not isinstance(expected_sha256, str):
+        raise ValueError(f"invalid toolchain executable: {name}")
+    executable_path = Path(executable).resolve(strict=True)
+    if _file_sha256(executable_path) != expected_sha256:
+        raise ValueError(f"toolchain executable changed after probe: {name}")
+    return executable
+
+
+def toolchain_executable(run_directory: Path, name: str) -> str | None:
+    """Return a probed executable path for one tool once its digest still matches."""
+    manifest = load_toolchain(run_directory)
+    tools = manifest["tools"]
+    assert isinstance(tools, dict)
+    if name not in tools:
+        return None
+    return _verified_executable(name, tools[name])
+
+
 def prepare_agent_prompt(
     run_directory: Path, *, role: str, source_prompt: Path
 ) -> Path:
@@ -85,19 +108,9 @@ def prepare_agent_prompt(
             "",
         ]
         for name, raw_record in sorted(tools.items()):
-            if not isinstance(raw_record, dict):
-                raise ValueError(f"invalid toolchain record: {name}")
-            executable = raw_record.get("executable")
-            expected_sha256 = raw_record.get("sha256")
-            if not isinstance(executable, str) or not isinstance(expected_sha256, str):
-                raise ValueError(f"invalid toolchain executable: {name}")
-            executable_path = Path(executable).resolve(strict=True)
-            actual_sha256 = _file_sha256(executable_path)
-            if actual_sha256 != expected_sha256:
-                raise ValueError(f"toolchain executable changed after probe: {name}")
-            lines.append(
-                f"- {name}: `{executable}` (sha256: `{expected_sha256}`)"
-            )
+            executable = _verified_executable(name, raw_record)
+            expected_sha256 = raw_record["sha256"]
+            lines.append(f"- {name}: `{executable}` (sha256: `{expected_sha256}`)")
         prompt = prompt.rstrip() + "\n" + "\n".join(lines) + "\n"
 
     prompt_directory = run_directory / "prompts"

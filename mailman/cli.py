@@ -17,7 +17,8 @@ from mailman.artifacts import (
 from mailman.doctor import run_checks
 from mailman.executor import execute
 from mailman.models import RunStatus
-from mailman.toolchain import prepare_agent_prompt, probe_tool
+from mailman.orchestrator import orchestrate
+from mailman.toolchain import prepare_agent_prompt, probe_tool, toolchain_executable
 from mailman.workspace import commit_is_ancestor, inspect_workspace, prepare_workspace
 
 
@@ -75,6 +76,20 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--timeout", type=float, default=600)
     prepare.add_argument("--data-root", type=Path)
 
+    orchestrate_parser = subparsers.add_parser(
+        "orchestrate",
+        help="run the bounded primary, reviewer, and verification loop for a run",
+    )
+    orchestrate_parser.add_argument("run_id")
+    orchestrate_parser.add_argument("--primary-prompt", required=True, type=Path)
+    orchestrate_parser.add_argument("--reviewer-prompt", required=True, type=Path)
+    orchestrate_parser.add_argument("--workspace", required=True, type=Path)
+    orchestrate_parser.add_argument("--agent-timeout", type=float, default=3600)
+    orchestrate_parser.add_argument("--verification-timeout", type=float, default=900)
+    orchestrate_parser.add_argument("--max-turns", type=int, default=30)
+    orchestrate_parser.add_argument("--max-revisions", type=int, default=1)
+    orchestrate_parser.add_argument("--data-root", type=Path)
+
     verify = subparsers.add_parser("verify", help="run and record a verification command")
     verify.add_argument("run_id")
     verify.add_argument("--data-root", type=Path)
@@ -116,14 +131,34 @@ def _transition(arguments: argparse.Namespace) -> int:
 
 
 def _make_agent(
-    name: str, *, model: str | None, max_turns: int
+    name: str,
+    *,
+    model: str | None,
+    max_turns: int,
+    executable: str | None = None,
 ) -> EngineeringAgent:
     normalized = name.strip().lower()
     if normalized == "codex":
-        return CodexCliAgent(model=model)
+        return CodexCliAgent(model=model, executable=executable or "codex")
     if normalized == "claude":
-        return ClaudeCliAgent(model=model, max_turns=max_turns)
+        return ClaudeCliAgent(
+            model=model, max_turns=max_turns, executable=executable or "claude"
+        )
     raise ValueError(f"unsupported engineering agent: {name}")
+
+
+def _pinned_agent_factory(run_directory: Path, max_turns: int):
+    """Prefer a probed executable for an agent so a run cannot drift mid-flight."""
+
+    def factory(name: str, model: str | None) -> EngineeringAgent:
+        return _make_agent(
+            name,
+            model=model,
+            max_turns=max_turns,
+            executable=toolchain_executable(run_directory, name.strip().lower()),
+        )
+
+    return factory
 
 
 def _run_agent(arguments: argparse.Namespace) -> int:
@@ -152,7 +187,12 @@ def _run_agent(arguments: argparse.Namespace) -> int:
 
     configured = run.primary if arguments.role == "primary" else run.reviewer
     model = arguments.model or configured.model
-    agent = _make_agent(configured.agent, model=model, max_turns=arguments.max_turns)
+    agent = _make_agent(
+        configured.agent,
+        model=model,
+        max_turns=arguments.max_turns,
+        executable=toolchain_executable(run_directory, configured.agent.strip().lower()),
+    )
     report_path = run_directory / f"{arguments.role}-report.md"
     request = AgentRequest(
         run_id=run.run_id,
@@ -202,6 +242,36 @@ def _run_agent(arguments: argparse.Namespace) -> int:
     if result.timed_out:
         return 124
     return result.exit_code or 0
+
+
+def _orchestrate(arguments: argparse.Namespace) -> int:
+    command = list(arguments.command)
+    if not command:
+        raise ValueError("a verification command is required after --")
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    outcome = orchestrate(
+        run=run,
+        run_directory=run_directory,
+        workspace=arguments.workspace,
+        primary_prompt=arguments.primary_prompt.resolve(strict=True),
+        reviewer_prompt=arguments.reviewer_prompt.resolve(strict=True),
+        verification_command=command,
+        agent_factory=_pinned_agent_factory(run_directory, arguments.max_turns),
+        agent_timeout_seconds=arguments.agent_timeout,
+        verification_timeout_seconds=arguments.verification_timeout,
+        max_revisions=arguments.max_revisions,
+        announce=lambda message: print(message, flush=True),
+    )
+    summary = {
+        "run_id": outcome.run_id,
+        "final_status": str(outcome.status),
+        "ready_for_human_review": outcome.ready,
+        "revisions_used": outcome.revisions_used,
+        "review_cycles": outcome.review_cycles,
+        "record": str(outcome.record_path),
+    }
+    print(json.dumps(summary, indent=2))
+    return 0 if outcome.ready else 1
 
 
 def _probe_tool(arguments: argparse.Namespace) -> int:
@@ -286,14 +356,14 @@ def _verify(arguments: argparse.Namespace) -> int:
 def main(arguments: list[str] | None = None) -> int:
     raw_arguments = list(arguments if arguments is not None else sys.argv[1:])
     verification_command: list[str] | None = None
-    if raw_arguments[:1] == ["verify"] and "--" in raw_arguments:
+    if raw_arguments[:1] in (["verify"], ["orchestrate"]) and "--" in raw_arguments:
         delimiter = raw_arguments.index("--")
         verification_command = raw_arguments[delimiter + 1 :]
         raw_arguments = raw_arguments[:delimiter]
 
     parser = _build_parser()
     parsed = parser.parse_args(raw_arguments)
-    if parsed.subcommand == "verify":
+    if parsed.subcommand in ("verify", "orchestrate"):
         parsed.command = verification_command or []
     try:
         if parsed.subcommand == "doctor":
@@ -304,6 +374,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _transition(parsed)
         if parsed.subcommand == "run-agent":
             return _run_agent(parsed)
+        if parsed.subcommand == "orchestrate":
+            return _orchestrate(parsed)
         if parsed.subcommand == "probe-tool":
             return _probe_tool(parsed)
         if parsed.subcommand == "prepare-workspace":

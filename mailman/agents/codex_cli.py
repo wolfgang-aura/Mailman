@@ -3,7 +3,12 @@ from __future__ import annotations
 import platform
 from dataclasses import dataclass
 
-from mailman.agents.base import AgentRequest, AgentResult, EngineeringAgent
+from mailman.agents.base import (
+    AgentRequest,
+    AgentResult,
+    EngineeringAgent,
+    resolve_executable,
+)
 from mailman.executor import execute
 from mailman.redaction import redact
 
@@ -64,8 +69,10 @@ class CodexCliAgent(EngineeringAgent):
             if request.report_path.is_file()
             else None
         )
+        command = self.build_command(request)
+        command[0] = resolve_executable(command[0])
         result = execute(
-            self.build_command(request),
+            command,
             working_directory=request.workspace,
             timeout_seconds=request.timeout_seconds,
             stdin_text=prompt,
