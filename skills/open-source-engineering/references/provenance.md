@@ -13,4 +13,11 @@ introduced: skill version or commit
 follow_up: How later runs supported, narrowed, or contradicted the rule.
 ```
 
-No run-derived rules have been added yet. The initial skill contains project safety and evidence requirements from the project direction, not empirical performance claims.
+```yaml
+rule: Treat agent exit code and report presence as transport facts, then judge the candidate state and independent verification.
+reason: The first Codex fixture process exited zero and wrote a report after every repository command was blocked. It made no patch and the regression test still failed.
+evidence:
+  - docs/runs/0001-codex-fixture.md
+introduced: skill v0.1 on 2026-09-02
+follow_up: A corrected adapter produced the patch, and a later toolchain-backed run passed both agent-side and host-side verification.
+```

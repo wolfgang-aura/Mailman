@@ -12,7 +12,7 @@
 
 - [x] Add configurable Codex and Claude CLI adapters behind `EngineeringAgent`.
 - [x] Prove the Codex adapter against a disposable failing fixture.
-- Clone a pinned target commit into an isolated worktree.
+- [x] Clone a pinned target commit into an isolated private workspace.
 - Give the primary agent the issue and repository instructions.
 - Pass repository state and machine-captured evidence to the reviewer.
 - Allow one bounded revision cycle.

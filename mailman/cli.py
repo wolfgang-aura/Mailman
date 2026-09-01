@@ -18,7 +18,7 @@ from mailman.doctor import run_checks
 from mailman.executor import execute
 from mailman.models import RunStatus
 from mailman.toolchain import prepare_agent_prompt, probe_tool
-from mailman.workspace import commit_is_ancestor, inspect_workspace
+from mailman.workspace import commit_is_ancestor, inspect_workspace, prepare_workspace
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -67,6 +67,13 @@ def _build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--probe-arg", action="append")
     probe.add_argument("--timeout", type=float, default=30)
     probe.add_argument("--data-root", type=Path)
+
+    prepare = subparsers.add_parser(
+        "prepare-workspace", help="clone a run repository at its exact base commit"
+    )
+    prepare.add_argument("run_id")
+    prepare.add_argument("--timeout", type=float, default=600)
+    prepare.add_argument("--data-root", type=Path)
 
     verify = subparsers.add_parser("verify", help="run and record a verification command")
     verify.add_argument("run_id")
@@ -220,6 +227,39 @@ def _probe_tool(arguments: argparse.Namespace) -> int:
     return result.exit_code or 0
 
 
+def _prepare_workspace(arguments: argparse.Namespace) -> int:
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    print(
+        f"Preparing {run.repository} at {run.base_commit} with a "
+        f"{arguments.timeout:g} second timeout per Git command.",
+        flush=True,
+    )
+    record = prepare_workspace(
+        repository=run.repository,
+        base_commit=run.base_commit,
+        run_directory=run_directory,
+        timeout_seconds=arguments.timeout,
+    )
+    summary = {
+        "path": record["path"],
+        "head": record.get("head"),
+        "clean": record.get("clean"),
+        "reused": record["reused"],
+        "success": record["success"],
+        "record": str(run_directory / "workspace.json"),
+    }
+    print(json.dumps(summary, indent=2))
+    if record["success"]:
+        return 0
+    checkout = record.get("checkout")
+    if isinstance(checkout, dict) and checkout.get("timed_out"):
+        return 124
+    clone = record.get("clone")
+    if isinstance(clone, dict) and clone.get("timed_out"):
+        return 124
+    return 1
+
+
 def _verify(arguments: argparse.Namespace) -> int:
     command = list(arguments.command)
     if not command:
@@ -266,6 +306,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _run_agent(parsed)
         if parsed.subcommand == "probe-tool":
             return _probe_tool(parsed)
+        if parsed.subcommand == "prepare-workspace":
+            return _prepare_workspace(parsed)
         if parsed.subcommand == "verify":
             return _verify(parsed)
     except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as error:

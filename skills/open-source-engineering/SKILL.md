@@ -13,6 +13,8 @@ Keep the patch focused on the issue. Reproduce a reported defect before fixing i
 
 Review the final diff as a maintainer would. Check issue fit, cause, edge cases, regression coverage, repository conventions, security, reliability, and unrelated changes. Do not claim a check passed without a captured successful result from the candidate repository state.
 
+Treat an agent process exit code and report presence as transport facts only. Determine engineering success from the candidate repository state, relevant checks, and independent review. A process may exit successfully after reporting that it was blocked.
+
 Stop at a human review package. Do not push, open or update a pull request, comment on an issue, or change an upstream repository without explicit human approval for that specific action.
 
 ## Evidence report
