@@ -6,8 +6,9 @@ Last verified: 2026-09-02 in `Asia/Singapore`.
 
 - Canonical remote: `https://github.com/wolfgang-aura/Mailman.git`
 - Default branch: `main`
-- The remote was empty when this foundation milestone began.
+- The public remote contains the foundation on `main`.
 - License: Apache-2.0.
+- Foundation deployment: commit `c1cc179` passed GitHub Actions on Python 3.12 and 3.14 in run `33546831897`.
 
 ## Development environment
 
@@ -15,7 +16,7 @@ Last verified: 2026-09-02 in `Asia/Singapore`.
 - Verified Python: CPython 3.14.3. The project supports Python 3.12 and newer.
 - Verified Codex CLI: `codex-cli 0.152.0`.
 - Claude CLI: not installed or not on `PATH`.
-- GitHub CLI: installed and authenticated. No upstream mutation has been made by this project.
+- GitHub CLI: installed and authenticated. The user authorized the first public push on 2026-09-02.
 
 ## Authority and artifact boundaries
 
