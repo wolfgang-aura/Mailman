@@ -52,3 +52,18 @@ Three earlier attempts on the same day, runs `20260901T194823Z-56b438`, `2026090
 The revision path, the second review, and the blocking paths have unit coverage but no live evidence yet. Issue ingestion, target dependency installation, and patch export also remain unimplemented. The issue #9 rehearsal did not exercise dependency installation because Mailman has no runtime dependencies.
 
 The sanitized public export command and upstream contribution preparation are not implemented.
+
+## Knowledge flywheel
+
+`mailman retrospective RUN_ID` drafts `retrospective.json` and
+`retrospective.md` in the private run directory from evidence Mailman already
+holds. It seeds observations only for machine-observed facts and refuses to
+overwrite an existing retrospective without `--force`. The taxonomy, the
+weighted learning channels, the retrospective schema, and the lesson registry
+with its promotion gates are implemented and unit-covered. See
+`docs/decisions/0005-knowledge-flywheel.md`.
+
+`knowledge/lessons.json` is empty. No lesson has been recorded, validated, or
+promoted through the registry, and the command has not yet been run against a
+live run. Skill versioning and the regression suite are not implemented, so
+every retrospective records `skill_version` as `unversioned`.
