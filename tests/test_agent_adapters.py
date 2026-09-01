@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mailman.agents.base import AgentRequest
+from mailman.agents.base import AgentRequest, resolve_executable
 from mailman.agents.claude_cli import ClaudeCliAgent
 from mailman.agents.codex_cli import CodexCliAgent
 from mailman.executor import CommandResult
@@ -40,9 +41,24 @@ class AgentAdapterTests(unittest.TestCase):
                 environment={},
             )
             with patch("mailman.agents.codex_cli.execute", return_value=process):
-                result = CodexCliAgent(windows_sandbox=None).run(request)
+                result = CodexCliAgent(
+                    executable=sys.executable, windows_sandbox=None
+                ).run(request)
 
         self.assertFalse(result.report_present)
+
+    def test_missing_executable_names_the_tool_and_the_fix(self) -> None:
+        with self.assertRaisesRegex(FileNotFoundError, "probe-tool --name codex"):
+            resolve_executable("codex-that-is-not-installed")
+
+    def test_an_explicit_executable_path_is_resolved(self) -> None:
+        self.assertTrue(Path(resolve_executable(sys.executable)).is_file())
+
+    def test_an_explicit_missing_path_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            missing = Path(temporary_directory) / "nested" / "codex"
+            with self.assertRaisesRegex(FileNotFoundError, "does not exist"):
+                resolve_executable(str(missing))
 
     def test_codex_command_is_ephemeral_and_sandboxed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

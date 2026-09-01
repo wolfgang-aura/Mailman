@@ -2,7 +2,7 @@
 
 Mailman is an open-source harness for testing coding agents on real software engineering issues. One agent owns the task. A second agent reviews the resulting repository state and evidence. Mailman runs important checks itself and stops before anything reaches an upstream project.
 
-The repository starts with an intentionally narrow v0.1. It can create a private local run record, invoke one configured Codex or Claude CLI adapter, capture process evidence with a timeout and redaction, enforce the workflow state machine, and report whether the local machine has the required tools. It does not yet clone a target repository, orchestrate the complete primary-reviewer loop, or publish changes to a target repository.
+The repository starts with an intentionally narrow v0.1. It can create a private local run record, clone a target repository at an exact base commit, pin the executables a run may use, invoke one configured Codex or Claude CLI adapter, run the bounded primary and reviewer loop, capture process evidence with a timeout and redaction, enforce the workflow state machine, and report whether the local machine has the required tools. It does not yet publish changes to a target repository, and the bounded loop has not yet been driven end to end by two live models.
 
 ## Why this exists
 
@@ -77,6 +77,30 @@ mailman run-agent RUN_ID `
 ```
 
 Mailman checks that a primary workspace is clean and exactly at the run's base commit. A reviewer workspace may contain uncommitted changes or candidate commits descended from that base. Mailman saves the exact prompt, including registered tool paths, then sends it through stdin. It records the process result and leaves workflow status unchanged. A zero process exit does not prove that the patch is correct. Review and independent verification remain separate gates.
+
+Run the bounded primary and reviewer loop:
+
+```powershell
+mailman orchestrate RUN_ID `
+  --primary-prompt .\prompts\primary.md `
+  --reviewer-prompt .\prompts\reviewer.md `
+  --workspace C:\path\to\target-workspace `
+  --agent-timeout 3600 `
+  -- python -m unittest discover -s tests
+```
+
+The loop runs the primary agent, verifies the result itself, runs the reviewer,
+and reads one `MAILMAN-VERDICT: APPROVE` or `MAILMAN-VERDICT: REVISE` line from
+the review report. It allows at most one revision, verifies again after
+approval, and only then reaches `READY_FOR_HUMAN_REVIEW`. Every other ending,
+including a missing or contradictory verdict, is `BLOCKED`. The command exits
+`0` only for a run that is ready for a human, and writes each step to
+`orchestration.json`. See [the orchestration decision](docs/decisions/0004-bounded-orchestration.md)
+for the reasoning.
+
+Agent executables are resolved at launch. Register one for a run with
+`mailman probe-tool RUN_ID --name claude --executable PATH` when it is not on
+`PATH`, or when a run must be pinned to an exact binary.
 
 ## Human boundary
 

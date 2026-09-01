@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from mailman.agents.base import AgentRequest, AgentResult, EngineeringAgent
+from mailman.agents.base import (
+    AgentRequest,
+    AgentResult,
+    EngineeringAgent,
+    resolve_executable,
+)
 from mailman.executor import execute
 from mailman.redaction import redact
 
@@ -53,8 +58,10 @@ class ClaudeCliAgent(EngineeringAgent):
 
     def run(self, request: AgentRequest) -> AgentResult:
         prompt = request.prompt_path.read_text(encoding="utf-8")
+        command = self.build_command(request)
+        command[0] = resolve_executable(command[0])
         result = execute(
-            self.build_command(request),
+            command,
             working_directory=request.workspace,
             timeout_seconds=request.timeout_seconds,
             stdin_text=prompt,
