@@ -102,6 +102,21 @@ Agent executables are resolved at launch. Register one for a run with
 `mailman probe-tool RUN_ID --name claude --executable PATH` when it is not on
 `PATH`, or when a run must be pinned to an exact binary.
 
+Draft a retrospective for a finished run:
+
+```powershell
+mailman retrospective RUN_ID
+```
+
+The command reads the run directory and writes `retrospective.json` and
+`retrospective.md` beside the rest of the run evidence. It seeds only what
+Mailman observed, a failed verification, an agent that exited zero without a
+report, a reviewer verdict of `REVISE`, and leaves twelve questions empty for a
+person to answer. It refuses to overwrite an existing retrospective without
+`--force`. Lessons reach the reusable skill only through the registry in
+[`knowledge/`](knowledge/README.md). See
+[the knowledge flywheel decision](docs/decisions/0005-knowledge-flywheel.md).
+
 ## Human boundary
 
 Mailman may eventually prepare branches, patches, and pull request text. It must not push, open a pull request, comment on an issue, or otherwise change an upstream project without a separate human approval step.

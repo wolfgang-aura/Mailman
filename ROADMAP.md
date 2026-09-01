@@ -20,6 +20,21 @@
 
 The acceptance test is one recorded run in which two real agent processes complete the loop. Mocks alone do not count. Met on 2026-09-02 by private run `20260901T201921Z-0b85ed`, recorded in `docs/runs/0003-two-model-fixture.md`.
 
+## v0.3, the knowledge flywheel
+
+- [x] Decide the flywheel architecture, artifacts, and promotion gates.
+- [x] Add the failure and success taxonomy and the weighted learning channels.
+- [x] Add the retrospective schema, template, and `mailman retrospective`.
+- [x] Add the lesson registry with gated states and rule provenance.
+- [ ] Ingest a completed retrospective back into its JSON record.
+- [ ] Version the engineering skill and record that version at `init-run`.
+- [ ] Build the skill regression suite over historical issues.
+- [ ] Aggregate categories across runs.
+
+The acceptance test is one rule promoted into `SKILL.md` through the registry,
+with the evidence, the validation, and the provenance that the gates require.
+Not met. No lesson has entered the registry yet.
+
 ## Later, only after real-run evidence
 
 - Sanitized public run export.

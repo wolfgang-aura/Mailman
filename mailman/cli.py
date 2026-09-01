@@ -16,6 +16,8 @@ from mailman.artifacts import (
 )
 from mailman.doctor import run_checks
 from mailman.executor import execute
+from mailman.knowledge.collect import collect_retrospective, write_retrospective
+from mailman.knowledge.retrospective import RETROSPECTIVE_SECTIONS
 from mailman.models import RunStatus
 from mailman.orchestrator import orchestrate
 from mailman.toolchain import prepare_agent_prompt, probe_tool, toolchain_executable
@@ -89,6 +91,21 @@ def _build_parser() -> argparse.ArgumentParser:
     orchestrate_parser.add_argument("--max-turns", type=int, default=30)
     orchestrate_parser.add_argument("--max-revisions", type=int, default=1)
     orchestrate_parser.add_argument("--data-root", type=Path)
+
+    retrospective = subparsers.add_parser(
+        "retrospective",
+        help="draft a structured retrospective from a run's recorded evidence",
+    )
+    retrospective.add_argument("run_id")
+    retrospective.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an existing retrospective, discarding hand-written answers",
+    )
+    retrospective.add_argument(
+        "--skill", type=Path, help="skill file to read a version from"
+    )
+    retrospective.add_argument("--data-root", type=Path)
 
     verify = subparsers.add_parser("verify", help="run and record a verification command")
     verify.add_argument("run_id")
@@ -330,6 +347,34 @@ def _prepare_workspace(arguments: argparse.Namespace) -> int:
     return 1
 
 
+def _retrospective(arguments: argparse.Namespace) -> int:
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    retrospective = collect_retrospective(
+        run, run_directory, skill_path=arguments.skill
+    )
+    json_path, markdown_path = write_retrospective(
+        retrospective, run_directory, force=arguments.force
+    )
+    summary = {
+        "run_id": run.run_id,
+        "run_status": str(run.status),
+        "record": str(json_path),
+        "template": str(markdown_path),
+        "seeded_observations": len(retrospective.observations),
+        "channels": retrospective.channel_counts(),
+        "categories": retrospective.category_counts(),
+        "open_questions": len(RETROSPECTIVE_SECTIONS),
+        "completed": False,
+    }
+    print(json.dumps(summary, indent=2))
+    print(
+        f"Answer the questions in {markdown_path}. Mailman seeded only what it "
+        "observed.",
+        flush=True,
+    )
+    return 0
+
+
 def _verify(arguments: argparse.Namespace) -> int:
     command = list(arguments.command)
     if not command:
@@ -380,6 +425,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _probe_tool(parsed)
         if parsed.subcommand == "prepare-workspace":
             return _prepare_workspace(parsed)
+        if parsed.subcommand == "retrospective":
+            return _retrospective(parsed)
         if parsed.subcommand == "verify":
             return _verify(parsed)
     except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as error:
