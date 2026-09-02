@@ -166,6 +166,38 @@ class VerdictParsingTests(unittest.TestCase):
         self.assertIsNone(parse_verdict("MAILMAN-VERDICT: APPROVE now"))
 
 
+class WorkspaceChangeRecordingTests(OrchestratorHarness):
+    def test_an_unchanged_workspace_is_recorded_as_no_work(self) -> None:
+        # A stage where the agent changed nothing passes verification exactly as
+        # the base commit does. The evidence has to say which one happened.
+        outcome, _, _, _ = self.orchestrate(
+            primary_script=[{"report": "contradictory issue, I changed nothing\n"}],
+            reviewer_script=[{"report": "no candidate\nMAILMAN-VERDICT: APPROVE\n"}],
+        )
+
+        steps = {step.name: step for step in outcome.steps}
+        self.assertIn("workspace-change:primary", steps)
+        recorded = steps["workspace-change:primary"]
+        self.assertFalse(recorded.ok)
+        self.assertFalse(recorded.data["changed"])
+        self.assertIn("identical to the base commit", recorded.detail)
+
+    def test_a_changed_workspace_names_the_paths(self) -> None:
+        outcome, _, _, _ = self.orchestrate(
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
+            reviewer_script=[{"report": "no findings\nMAILMAN-VERDICT: APPROVE\n"}],
+        )
+
+        recorded = {step.name: step for step in outcome.steps}[
+            "workspace-change:primary"
+        ]
+        self.assertTrue(recorded.ok)
+        self.assertTrue(recorded.data["changed"])
+        self.assertIn("fix.txt", recorded.detail)
+
+
 class OrchestrationTests(OrchestratorHarness):
     def test_approved_candidate_reaches_human_review(self) -> None:
         outcome, run_directory, primary, reviewer = self.orchestrate(
