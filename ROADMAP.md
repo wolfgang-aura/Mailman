@@ -40,11 +40,14 @@ Not met. No lesson has entered the registry yet.
 - [x] Build primary and reviewer prompts from the captured issue.
 - [x] Install a target repository's dependencies outside its working tree.
 - [x] Export a reviewable patch, summary, and draft pull request text.
-- [ ] Carry one live two-model run on an external repository with real dependencies.
+- [x] Carry one live two-model run on an external repository with real dependencies.
 - [ ] Record live evidence for the revision cycle and at least one blocking path.
 
 The acceptance test is one recorded run against a repository Mailman does not
-own, from issue URL to exported patch, with no hand-written prompt.
+own, from issue URL to exported patch, with no hand-written prompt. Met on
+2026-09-02 by private run `20260902T051904Z-f0cd07` against
+`ayukhno/autosound-tcc` issue #4, recorded in
+`docs/runs/0004-first-external-issue.md`.
 
 ## Later, only after real-run evidence
 
