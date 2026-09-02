@@ -241,6 +241,28 @@ class _Orchestration:
         )
         return ok
 
+    def _record_workspace_change(self, stage: str) -> bool:
+        """Record whether the primary stage actually changed anything.
+
+        A verification pass proves the tests pass, not that work happened: a
+        stage where the agent changed nothing passes verification exactly as a
+        base commit does. Recording it keeps that distinction in the evidence
+        instead of leaving a reader to infer progress from a green check.
+        """
+        state = inspect_workspace(self.workspace)
+        changed = not state.clean
+        self._step(
+            f"workspace-change:{stage}",
+            ok=changed,
+            detail=(
+                f"{len(state.changes)} changed path(s): {state.describe_changes()}"
+                if changed
+                else "the agent left the workspace identical to the base commit"
+            ),
+            data={"changed": changed, "changes": list(state.changes)},
+        )
+        return changed
+
     def _write_derived_prompt(self, name: str, text: str) -> Path:
         destination = self.run_directory / name
         destination.write_text(text, encoding="utf-8")
@@ -353,6 +375,7 @@ class _Orchestration:
         if not primary_ok:
             self._block(f"primary agent did not complete the {stage} stage")
             return False
+        self._record_workspace_change(stage)
         if not self._verify(stage):
             self._block(f"independent verification failed after the {stage} stage")
             return False
