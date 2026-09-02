@@ -19,7 +19,9 @@ Last verified: 2026-09-02 in `Asia/Singapore`.
 - Run record deployment: commit `46d0862` passed GitHub Actions on Python 3.12 and 3.14 in run `33596947293`.
 - Observability deployment: commit `d72d645` passed GitHub Actions in run `33627419317`. It carries the
   agent transcript normalizer, live streaming from the executor, Claude on `stream-json`, and `mailman show`.
-  This is the current head of `main`.
+- Bounded-loop deployment: commit `9fc4805` passed GitHub Actions in run `33641545669`. It carries the
+  claimed-issue refusal (#15), the named turn budget and its new default of 120 (#14), and one revision
+  granted when the post-primary verification fails (#13). This is the current head of `main`.
 
 ## Development environment
 
