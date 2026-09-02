@@ -164,6 +164,70 @@ class CliTests(unittest.TestCase):
         self.assertIn("invalid run ID", stderr.getvalue())
 
 
+class InitRunModelTests(unittest.TestCase):
+    def test_init_run_refuses_to_pick_a_model_for_the_operator(self) -> None:
+        """A silent vendor default is a run that cannot say what ran it."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            stderr = StringIO()
+            with self.assertRaises(SystemExit), redirect_stderr(stderr):
+                main(
+                    [
+                        "init-run",
+                        "--repository",
+                        "https://github.com/example/project.git",
+                        "--issue",
+                        "https://github.com/example/project/issues/7",
+                        "--base-commit",
+                        "a" * 40,
+                        "--primary",
+                        "codex",
+                        "--reviewer",
+                        "claude",
+                        "--data-root",
+                        str(data_root),
+                    ]
+                )
+
+            self.assertIn("--primary-model", stderr.getvalue())
+            self.assertIn("--reviewer-model", stderr.getvalue())
+
+    def test_init_run_records_both_models(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                exit_code = main(
+                    [
+                        "init-run",
+                        "--repository",
+                        "https://github.com/example/project.git",
+                        "--issue",
+                        "https://github.com/example/project/issues/7",
+                        "--base-commit",
+                        "a" * 40,
+                        "--primary",
+                        "codex",
+                        "--reviewer",
+                        "claude",
+                        "--primary-model",
+                        "codex-model-id",
+                        "--reviewer-model",
+                        "claude-model-id",
+                        "--data-root",
+                        str(data_root),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            run_id = json.loads(stdout.getvalue())["run_id"]
+            record = json.loads(
+                (data_root / run_id / "run.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(record["primary"]["model"], "codex-model-id")
+            self.assertEqual(record["reviewer"]["model"], "claude-model-id")
+
+
 class StreamFlushTests(unittest.TestCase):
     def test_a_streamed_line_arrives_before_the_process_exits(self) -> None:
         """A redirected run must not sit silent until its buffer fills.

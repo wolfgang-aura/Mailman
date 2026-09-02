@@ -66,8 +66,18 @@ def _build_parser() -> argparse.ArgumentParser:
     init_run.add_argument("--base-commit", required=True)
     init_run.add_argument("--primary", required=True)
     init_run.add_argument("--reviewer", required=True)
-    init_run.add_argument("--primary-model")
-    init_run.add_argument("--reviewer-model")
+    # Required on purpose. A run that took a vendor default recorded `null` and
+    # could not say afterwards what had actually done the work.
+    init_run.add_argument(
+        "--primary-model",
+        required=True,
+        help="model id for the primary engineer, recorded with the run",
+    )
+    init_run.add_argument(
+        "--reviewer-model",
+        required=True,
+        help="model id for the reviewer, recorded with the run",
+    )
     init_run.add_argument("--data-root", type=Path)
 
     fetch_issue = subparsers.add_parser(

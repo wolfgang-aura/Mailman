@@ -43,6 +43,10 @@ mailman init-run `
   --reviewer-model MODEL_ID
 ```
 
+Both model ids are required. A run that accepted a vendor default recorded
+`null` and could not say afterwards which model wrote the patch, which makes two
+runs incomparable and the record wrong about its own inputs.
+
 Clone the recorded repository into the ignored run directory and detach it at the exact base commit:
 
 ```powershell
