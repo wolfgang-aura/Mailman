@@ -304,6 +304,10 @@ a permissive one. See
 [the submission preparation decision](docs/decisions/0007-submission-preparation.md)
 and [the shipped policies](examples/target-policies/README.md).
 
+The draft it writes follows [the pull request standard](docs/pull-request-standard.md),
+which covers the step Mailman does not automate: how a person turns the patch
+package into a pull request a maintainer wants to read.
+
 ## Human boundary
 
 Mailman may eventually prepare branches, patches, and pull request text. It must not push, open a pull request, comment on an issue, or otherwise change an upstream project without a separate human approval step.

@@ -155,19 +155,30 @@ Nothing here has been sent. A human decides whether any of it is used.
 
 `{branch}`
 
-## Suggested title
+## Title
 
-{heading}
+There is no suggested title. The issue is titled:
+
+> {heading}
+
+That names the defect, not the change, so it is the wrong title for a pull
+request. Write one that states what the change does and why it matters, in the
+house style of the target's recently merged pull requests.
 
 ## Suggested body
 
 {closes}
 
 Replace the line above with the change summary from `summary.md`, written in the
-repository's own voice. State how the change was tested, using the verification
-results Mailman captured rather than an agent's claim. Disclose that an AI agent
-drafted the change if the repository's contribution guidelines ask for it. Read
-that policy before opening anything.
+repository's own voice. Open with the problem, then the cause, then the fix.
+State how the change was tested, using the verification results Mailman captured
+rather than an agent's claim, and say on which operating systems and Python
+versions those results were produced. Name the design alternative you rejected.
+Disclose that an AI agent drafted the change if the repository's contribution
+guidelines ask for it, and read that policy before opening anything.
+
+Run `mailman prepare-submission` for the policy-checked draft and the full
+standard in docs/pull-request-standard.md.
 """
 
 

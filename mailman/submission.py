@@ -375,6 +375,13 @@ def _trailer_guidance(policy: TargetPolicy, run: RunRecord) -> str:
     )
 
 
+def _agent_credit(role: object) -> str:
+    """Name an agent and the model it reported, when one was recorded."""
+    agent = getattr(role, "agent", "an agent")
+    model = getattr(role, "model", None)
+    return f"{agent} (`{model}`)" if model else str(agent)
+
+
 def _pull_request_markdown(
     run: RunRecord,
     *,
@@ -386,12 +393,23 @@ def _pull_request_markdown(
 ) -> str:
     reference = f"Closes #{issue_number}." if issue_number else f"Refs {run.issue}."
     disclosure = (
-        f"This change was drafted with AI assistance ({run.primary.agent} wrote the "
-        f"patch, {run.reviewer.agent} reviewed it). I have read, tested, and take "
-        "responsibility for every line of it."
+        f"This change was drafted with AI assistance ({_agent_credit(run.primary)} "
+        f"wrote the patch, {_agent_credit(run.reviewer)} reviewed it), running "
+        "under Mailman. The test results above come from the harness executing "
+        "the commands itself, not from either agent's account of its own work. "
+        "I have read, tested, and take responsibility for every line of it."
     )
     passing = [record for record in verifications if record.get("exit_code") == 0]
     command = " ".join(passing[-1].get("command", [])) if passing else "not recorded"
+    hosts = sorted(
+        {
+            f"{environment['operating_system']} / Python "
+            f"{environment['python_version']}"
+            for record in verifications
+            for environment in [record.get("environment") or {}]
+            if environment.get("operating_system") and environment.get("python_version")
+        }
+    )
     lines = [
         "# Draft pull request",
         "",
@@ -401,21 +419,68 @@ def _pull_request_markdown(
         f"- Target: {policy.name}",
         f"- Policy: {policy.policy_url}",
         f"- Suggested branch: `{branch}`",
-        f"- Suggested title: {title}",
+        f"- Working title: {title}",
+        "",
+        f"The standard this draft follows is in docs/pull-request-standard.md.",
+        "",
+        "## Title",
+        "",
+        "The working title above is a placeholder. Replace it with one that",
+        "states the change and why it matters, never the bug, and that matches",
+        "the house style of recently merged pull requests:",
+        "",
+        "```bash",
+        f"gh pr list --repo {policy.name} --state merged --limit 15 --json number,title",
+        "```",
         "",
         "## Body draft",
         "",
         reference,
         "",
-        "_Describe the cause and the fix here, in your own words._",
+        "_The problem, in the reporter's terms, with the observable symptom._",
+        "",
+        "_The cause._",
+        "",
+        "_The fix, in a sentence or two, with its size. Do not open with an",
+        "inventory of what was touched._",
         "",
         "### How this was tested",
         "",
         f"`{command}` passes in a clean checkout at `{run.base_commit[:12]}`.",
         "",
-        "### AI disclosure",
+        "_Give the before and after counts, and say that the new test fails",
+        "without the source change._",
         "",
     ]
+    if hosts:
+        lines.extend(
+            [
+                "State the limits of that verification. Every result recorded here "
+                "came from:",
+                "",
+            ]
+        )
+        lines.extend(f"- {host}" for host in hosts)
+        lines.extend(
+            [
+                "",
+                "Say so in the body. Concealing it costs credibility when CI "
+                "disagrees; stating it turns CI into the check you asked for.",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "### An alternative I did not take",
+            "",
+            "_Name the design you rejected and the trade-off. This is the section "
+            "that earns a reply: a maintainer who sees a stated trade-off has "
+            "something to answer. Omit it only if there was genuinely no choice._",
+            "",
+            "### AI disclosure",
+            "",
+        ]
+    )
     if policy.disclosure_required:
         lines.extend([disclosure, ""])
     else:
@@ -433,6 +498,17 @@ def _pull_request_markdown(
         lines.extend(["### Project checklist", ""])
         lines.extend(f"- [ ] {item}" for item in policy.checklist)
         lines.append("")
+    lines.extend(
+        [
+            "## Before filing",
+            "",
+            "- [ ] No pull request already proposes this change",
+            "- [ ] The base commit is level with the target's default branch",
+            "- [ ] You have read the diff yourself against that branch",
+            "- [ ] Opened as a real pull request, not a draft, so CI runs",
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 

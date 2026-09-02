@@ -294,6 +294,80 @@ class PrepareSubmissionTests(unittest.TestCase):
         record = self._prepare()
         self.assertIn("no-passing-verification", record["blocking_codes"])
 
+    def test_the_draft_refuses_to_suggest_the_issue_title(self) -> None:
+        self._prepare()
+        body = (self.run_directory / "submission" / "pull-request.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("The working title above is a placeholder", body)
+        self.assertIn("gh pr list --repo example/project", body)
+
+    def test_the_draft_orders_the_body_and_asks_for_the_alternative(self) -> None:
+        self._prepare()
+        body = (self.run_directory / "submission" / "pull-request.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertLess(
+            body.index("the observable symptom"), body.index("How this was tested")
+        )
+        self.assertIn("An alternative I did not take", body)
+        self.assertIn("Opened as a real pull request, not a draft", body)
+
+    def test_the_draft_names_the_hosts_the_results_came_from(self) -> None:
+        (self.run_directory / "verification.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "command": ["python", "-m", "pytest", "-q"],
+                        "exit_code": 0,
+                        "environment": {
+                            "operating_system": "Windows",
+                            "python_version": "3.14.3",
+                        },
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        self._prepare()
+        body = (self.run_directory / "submission" / "pull-request.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("- Windows / Python 3.14.3", body)
+
+    def test_an_unrecorded_environment_is_not_reported_as_unknown(self) -> None:
+        self._prepare()
+        body = (self.run_directory / "submission" / "pull-request.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("unknown / Python", body)
+
+    def test_the_disclosure_names_the_model_when_one_was_recorded(self) -> None:
+        run = _run()
+        run = RunRecord(
+            run_id=run.run_id,
+            repository=run.repository,
+            issue=run.issue,
+            base_commit=run.base_commit,
+            primary=AgentConfig(agent="codex", model="gpt-5.6-luna"),
+            reviewer=AgentConfig(agent="claude", model="claude-sonnet-5"),
+            status=run.status,
+        )
+        prepare_submission(
+            run,
+            self.run_directory,
+            diff=SOURCE_DIFF,
+            policy=_policy(disclosure_required=True),
+            destination=self.run_directory / "submission",
+            branch="mailman/issue-7",
+            title="thing does not strip",
+        )
+        body = (self.run_directory / "submission" / "pull-request.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("codex (`gpt-5.6-luna`)", body)
+        self.assertIn("claude (`claude-sonnet-5`)", body)
+
     def test_the_accountability_brief_is_written(self) -> None:
         self._prepare()
         brief = (self.run_directory / "submission" / "accountability.md").read_text(
