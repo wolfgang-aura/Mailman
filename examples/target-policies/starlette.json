@@ -1,0 +1,21 @@
+{
+  "name": "encode/starlette",
+  "policy_url": "https://github.com/encode/starlette/blob/main/AI_POLICY.md",
+  "stance": "permitted",
+  "policy_read_on": "2026-09-02",
+  "disclosure_required": false,
+  "ai_trailer": "optional",
+  "requires_linked_issue": false,
+  "requires_maintainer_assignment": false,
+  "requires_duplicate_search": true,
+  "changelog_directory": null,
+  "changelog_filename_template": null,
+  "checklist": [
+    "Open and closed pull requests, issues, and discussions were searched for the same change",
+    "The new test fails without the source change"
+  ],
+  "notes": [
+    "AI tools are permitted and the contributor remains responsible for the result.",
+    "Duplicate pull requests are a ban-level offence, so the duplicate search is mandatory."
+  ]
+}

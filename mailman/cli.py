@@ -23,7 +23,12 @@ from mailman.environment import (
 )
 from mailman.executor import execute
 from mailman.export import export_patch
-from mailman.issue import capture_issue_from_file, capture_issue_from_github
+from mailman.issue import (
+    capture_issue_from_file,
+    capture_issue_from_github,
+    load_issue_record,
+)
+from mailman.submission import TargetPolicy, prepare_submission
 from mailman.knowledge.collect import collect_retrospective, write_retrospective
 from mailman.knowledge.retrospective import RETROSPECTIVE_SECTIONS
 from mailman.models import RunStatus
@@ -95,6 +100,24 @@ def _build_parser() -> argparse.ArgumentParser:
     export.add_argument("--allow-unfinished", action="store_true")
     export.add_argument("--timeout", type=float, default=120)
     export.add_argument("--data-root", type=Path)
+
+    submission = subparsers.add_parser(
+        "prepare-submission",
+        help="check a finished run against a target's contribution policy",
+    )
+    submission.add_argument("run_id")
+    submission.add_argument(
+        "--policy", type=Path, required=True, help="target policy JSON file"
+    )
+    submission.add_argument(
+        "--diff",
+        type=Path,
+        help="unified diff to check, defaults to the run's exported changes.diff",
+    )
+    submission.add_argument("--output", type=Path)
+    submission.add_argument("--branch")
+    submission.add_argument("--title")
+    submission.add_argument("--data-root", type=Path)
 
     transition = subparsers.add_parser("transition", help="change a run workflow state")
     transition.add_argument("run_id")
@@ -270,6 +293,46 @@ def _prepare_environment(arguments: argparse.Namespace) -> int:
         summary["detail"] = record.get("detail")
     print(json.dumps(summary, indent=2))
     return 0 if record["success"] else 1
+
+
+def _prepare_submission(arguments: argparse.Namespace) -> int:
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    policy = TargetPolicy.load(arguments.policy)
+    diff_path = arguments.diff or (run_directory / "export" / "changes.diff")
+    if not diff_path.is_file():
+        raise ValueError(
+            f"no diff at {diff_path}. Run export-patch first, or pass --diff."
+        )
+    issue_record = load_issue_record(run_directory)
+    reference = (issue_record or {}).get("reference")
+    number = reference.get("number") if isinstance(reference, dict) else None
+    branch = arguments.branch or (
+        f"mailman/issue-{number}" if isinstance(number, int) else f"mailman/run-{run.run_id}"
+    )
+    title = arguments.title or (issue_record or {}).get("title") or f"Address {run.issue}"
+    record = prepare_submission(
+        run,
+        run_directory,
+        diff=diff_path.read_text(encoding="utf-8", errors="replace"),
+        policy=policy,
+        destination=arguments.output or (run_directory / "submission"),
+        branch=branch,
+        title=title,
+    )
+    print(
+        json.dumps(
+            {
+                "run_id": record["run_id"],
+                "target": record["target"],
+                "policy_stance": record["policy_stance"],
+                "ready": record["ready"],
+                "blocking_codes": record["blocking_codes"],
+                "branch": record["branch"],
+            },
+            indent=2,
+        )
+    )
+    return 0 if record["ready"] else 1
 
 
 def _export_patch(arguments: argparse.Namespace) -> int:
@@ -611,6 +674,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _prepare_environment(parsed)
         if parsed.subcommand == "export-patch":
             return _export_patch(parsed)
+        if parsed.subcommand == "prepare-submission":
+            return _prepare_submission(parsed)
         if parsed.subcommand == "transition":
             return _transition(parsed)
         if parsed.subcommand == "run-agent":

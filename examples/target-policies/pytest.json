@@ -1,0 +1,24 @@
+{
+  "name": "pytest-dev/pytest",
+  "policy_url": "https://github.com/pytest-dev/pytest/blob/main/CONTRIBUTING.rst#ai-contributions",
+  "stance": "permitted_with_disclosure",
+  "policy_read_on": "2026-09-02",
+  "disclosure_required": true,
+  "ai_trailer": "encouraged",
+  "requires_linked_issue": false,
+  "requires_maintainer_assignment": false,
+  "requires_duplicate_search": false,
+  "changelog_directory": "changelog",
+  "changelog_filename_template": "{issue}.bugfix.rst",
+  "checklist": [
+    "A changelog fragment exists under changelog/ named <issue>.<type>.rst",
+    "The new test fails without the source change",
+    "The pull request body is written by the submitting human, not pasted",
+    "The submitting human can answer why this fix and not another"
+  ],
+  "notes": [
+    "AI tools are welcome and maintainers say they use them daily.",
+    "Purely agentic pull requests with no human understanding are closed, and repeat cases banned.",
+    "Co-authored-by trailers crediting the AI are appreciated but not required."
+  ]
+}
