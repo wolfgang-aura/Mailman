@@ -193,6 +193,23 @@ export instead of being silently redacted. The command refuses a run that is not
 `BLOCKED` run's partial work gets read. Nothing is pushed, and the pull request
 text is a draft for a human to accept, edit, or discard.
 
+Check a finished run against the target project's own contribution policy:
+
+```powershell
+mailman prepare-submission RUN_ID --policy examples/target-policies/pytest.json
+```
+
+This writes `pull-request.md`, `accountability.md`, and `submission.json` in the
+run's `submission` directory, and exits non-zero when anything blocks. It reads
+the diff for noise a maintainer would see first, whitespace-only hunks and
+trailing-newline changes among them, and it checks the target's own rules:
+disclosure, the trailer form that project wants or forbids, a required linked
+issue, a mandatory duplicate search, and its changelog convention. A policy
+whose stance is `unknown` blocks, because an unread policy must not behave like
+a permissive one. See
+[the submission preparation decision](docs/decisions/0007-submission-preparation.md)
+and [the shipped policies](examples/target-policies/README.md).
+
 ## Human boundary
 
 Mailman may eventually prepare branches, patches, and pull request text. It must not push, open a pull request, comment on an issue, or otherwise change an upstream project without a separate human approval step.

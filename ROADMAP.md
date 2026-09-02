@@ -51,6 +51,20 @@ own, from issue URL to exported patch, with no hand-written prompt. Met on
 review, and a `BLOCKED` ending were recorded live the same day in
 `docs/runs/0005-revision-and-blocking-paths.md`.
 
+## v0.5, a pull request that could be merged
+
+- [x] Record each target project's contribution and AI policy as data.
+- [x] Gate a submission on diff hygiene, so noise never reaches a maintainer.
+- [x] Draft policy-shaped pull request text and a human accountability brief.
+- [ ] Record a duplicate search of a target's open and closed pull requests.
+- [ ] Prove the fix fails without its source change, as a recorded command.
+- [ ] Carry one live run on a permissive, recognizable target to a ready
+      submission.
+
+The acceptance test is a submission package a maintainer of that project would
+recognize as following their own written rules, prepared without contacting
+them. Opening the pull request stays manual and needs explicit human approval.
+
 ## Later, only after real-run evidence
 
 - Sanitized public run export.
