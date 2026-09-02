@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from mailman.markdown_lite import render_markdown
 from mailman.transcript import parse_stream
 from mailman.view import AgentExecution, agent_executions
 
@@ -101,10 +102,31 @@ summary::-webkit-details-marker { color: var(--muted); }
 .events .text { word-break: break-word; }
 .events li.denied .text { color: var(--stop); }
 .note { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+.prose-card { padding: 20px 24px 24px; }
+.prose { max-width: 72ch; }
+.prose > :first-child { margin-top: 0; }
+.prose h3 { font-size: 16px; font-weight: 600; margin: 24px 0 8px; text-wrap: balance; }
+.prose h4, .prose h5, .prose h6 { font-size: 14px; font-weight: 600; margin: 20px 0 8px; }
+.prose p { margin: 0 0 12px; }
+.prose ul, .prose ol { margin: 0 0 12px; padding-left: 22px; }
+.prose li { margin: 4px 0; }
+.prose { line-height: 1.62; }
+.prose code { background: var(--gutter); border-radius: 4px; padding: 1px 4px; font-size: 12.5px; color: var(--ink); }
+.prose pre.block { background: var(--gutter); border: 1px solid var(--border); border-radius: 6px; margin: 0 0 12px; max-width: 100%; }
+.prose pre.block code { background: none; border: 0; padding: 0; }
+.prose blockquote { margin: 0 0 12px; padding: 4px 0 4px 16px; border-left: 3px solid var(--border); color: var(--muted); }
+.prose hr { border: 0; border-top: 1px solid var(--border); margin: 20px 0; }
+table.prose { border-collapse: collapse; font-size: 13px; margin: 0 0 12px; width: 100%; max-width: 100%; }
+table.prose th, table.prose td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+table.prose th { background: var(--gutter); font-weight: 600; }
+.scroller { overflow-x: auto; }
+.byline { color: var(--muted); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; font-weight: 600; margin: 0 0 12px; }
 @media (max-width: 700px) { .page { padding: 16px 12px 32px; } h1 { font-size: 18px; } }
 """
 
 _KIND_STYLES = {"error": "denied"}
+
+_VERDICT_LINE = re.compile(r"^[ \t>*-]*MAILMAN-VERDICT:[ \t]*[A-Za-z]+[ \t]*$", re.MULTILINE)
 
 
 def _escape(value: Any) -> str:
@@ -441,9 +463,20 @@ def _transcripts(executions: list[AgentExecution], run_directory: Path) -> str:
             else '<p class="note" style="padding:12px 16px">No machine-readable '
             "output was captured for this agent.</p>"
         )
+        commands = sum(1 for event in events if event.kind == "command")
+        denied = sum(1 for event in events if event.kind == "error")
+        counts = f"{len(events)} event(s) &middot; {commands} command(s)"
+        if denied:
+            counts += f' &middot; <span class="stat"><span class="del">{denied} '
+            counts += "refused or failed</span></span>"
+        elif commands == 0:
+            # An agent that ran nothing is a fact the reader has to see, since a
+            # review or a fix asserted without execution is worth much less.
+            counts += ' &middot; <span class="stat"><span class="del">ran nothing'
+            counts += "</span></span>"
         blocks.append(
             f'<details class="panel"><summary><strong>{_escape(execution.role)}</strong> '
-            f"&middot; {_escape(execution.agent)} &middot; {len(events)} event(s)</summary>"
+            f"&middot; {_escape(execution.agent)} &middot; {counts}</summary>"
             f"{body}</details>"
         )
     if not blocks:
@@ -451,19 +484,21 @@ def _transcripts(executions: list[AgentExecution], run_directory: Path) -> str:
     return "".join(blocks)
 
 
-def _reports(run_directory: Path) -> str:
-    blocks = []
-    for role in ("primary", "reviewer"):
-        text = _read_text(run_directory / f"{role}-report.md")
-        if not text:
-            continue
-        blocks.append(
-            f'<details class="panel" open><summary><strong>{_escape(role)}</strong> '
-            f"report</summary><pre class=\"block\">{_escape(text)}</pre></details>"
+def _report(run_directory: Path, role: str, byline: str) -> str:
+    """One agent's own account, rendered as the prose it was written as."""
+    text = _read_text(run_directory / f"{role}-report.md")
+    if not text:
+        return (
+            f'<div class="card prose-card"><p class="byline">{_escape(byline)}</p>'
+            f'<p class="note">The {_escape(role)} agent wrote no report.</p></div>'
         )
-    if not blocks:
-        return '<p class="note">Neither agent wrote a report.</p>'
-    return "".join(blocks)
+    # The verdict already leads the page as a pill. Repeating the contract line
+    # at the end of the prose adds nothing and reads like machine exhaust.
+    body = render_markdown(_VERDICT_LINE.sub("", _shorten_paths(text, run_directory)))
+    return (
+        f'<div class="card prose-card"><p class="byline">{_escape(byline)}</p>'
+        f'<div class="prose scroller">{body}</div></div>'
+    )
 
 
 def render_run_fragment(run_directory: Path) -> str:
@@ -499,19 +534,24 @@ def render_run_page(run_directory: Path) -> str:
   yours: this patch goes upstream, or it does not.</p></div>
 </div>
 {_verdict_strip(run, orchestration, steps)}
+<section><h2>The review</h2>
+<p class="note">Why the reviewer reached that verdict, in its own words.</p>
+{_report(run_directory, "reviewer", "reviewer report")}</section>
+<section><h2>The diagnosis</h2>
+<p class="note">What the engineer says it found, changed, and checked.</p>
+{_report(run_directory, "primary", "primary report")}</section>
 <section><h2>The patch</h2>
 {_diff_summary(diff_text)}
 {_diff_section(diff_text)}</section>
-<section><h2>Run</h2>{_facts(run, issue, executions)}</section>
 <section><h2>Verification Mailman ran itself</h2>
 <p class="note">Mailman's own gate, not an agent's account of it.</p>
 {_verifications(run_directory)}</section>
-<section><h2>What the agents reported</h2>{_reports(run_directory)}</section>
 <section><h2>What the agents actually did</h2>
 <p class="note">Every command and edit, as the agent's own stream reported it.
 Paths are shown relative to the run.</p>
 {_transcripts(executions, run_directory)}</section>
 <section><h2>Timeline</h2>{_timeline(steps)}</section>
+<section><h2>Provenance</h2>{_facts(run, issue, executions)}</section>
 <section><h2>Human decision</h2>
 <p class="note">Recorded in <code>run.json</code>: {_escape(decision)}</p></section>
 </div></body></html>

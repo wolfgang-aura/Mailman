@@ -164,6 +164,36 @@ class ReviewPageTests(unittest.TestCase):
         self.assertNotIn(str(run_directory.resolve()), page)
         self.assertIn("&lt;run&gt;/environment/python.exe", page)
 
+    def test_the_readable_account_comes_before_the_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_directory = write_run(Path(temporary_directory))
+            (run_directory / "reviewer-report.md").write_text(
+                "No required changes.\n\nMAILMAN-VERDICT: APPROVE\n", encoding="utf-8"
+            )
+            page = render_run_page(run_directory)
+
+        self.assertLess(page.index("The review"), page.index("The diagnosis"))
+        self.assertLess(page.index("The diagnosis"), page.index("The patch"))
+        self.assertLess(page.index("The patch"), page.index("Timeline"))
+        # the verdict is a pill at the top, so the contract line is not repeated
+        self.assertNotIn("MAILMAN-VERDICT: APPROVE</p>", page)
+
+    def test_a_report_is_rendered_as_prose_not_as_raw_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_directory = write_run(Path(temporary_directory))
+            (run_directory / "primary-report.md").write_text(
+                "## Summary\n\n**Root cause**: `send()` returns early.\n\n"
+                "- reproduced it\n- fixed it\n",
+                encoding="utf-8",
+            )
+            page = render_run_page(run_directory)
+
+        self.assertIn("<h4>Summary</h4>", page)
+        self.assertIn("<strong>Root cause</strong>", page)
+        self.assertIn("<code>send()</code>", page)
+        self.assertIn("<li>reproduced it</li>", page)
+        self.assertNotIn("## Summary", page)
+
     def test_a_run_with_no_patch_says_so_instead_of_failing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             run_directory = write_run(Path(temporary_directory))

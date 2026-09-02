@@ -10,9 +10,18 @@ on it exists to make that decision or to justify it later. Nothing is there to
 look impressive.
 
 The first thing a viewer should notice is the verdict strip: the run status, the
-reviewer's verdict, and whether Mailman's own gate passed. The second is the
-diff. Everything else is evidence they scroll to when the first two are not
-enough.
+reviewer's verdict, and whether Mailman's own gate passed.
+
+Then the page reads in the order a person actually decides in: what the reviewer
+concluded, what the engineer says it found and checked, then the diff, then the
+evidence underneath both. Prose before code. An agent's report is the most
+readable thing a run produces, so it is rendered as the markdown it was written
+as, never as a wall of preformatted text with the asterisks still in it. Its
+`MAILMAN-VERDICT` line is dropped, because the verdict is already a pill at the
+top and repeating it reads like machine exhaust.
+
+Prose sits in a 72-character measure. Code does not: a diff and a transcript get
+the full width and scroll inside their own card.
 
 ## Reference
 
