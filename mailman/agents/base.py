@@ -4,8 +4,10 @@ import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from mailman.executor import CommandResult
+from mailman.transcript import TranscriptEvent, parse_line
 
 
 def resolve_executable(name: str) -> str:
@@ -37,6 +39,19 @@ class AgentRequest:
     workspace: Path
     report_path: Path
     timeout_seconds: float = 3600
+    on_event: Callable[[TranscriptEvent], None] | None = None
+
+    def observe(self, agent: str) -> Callable[[str], None] | None:
+        """Turn one line of agent output into events for whoever is watching."""
+        if self.on_event is None:
+            return None
+        sink = self.on_event
+
+        def handle(line: str) -> None:
+            for event in parse_line(line, agent):
+                sink(event)
+
+        return handle
 
 
 @dataclass(frozen=True)
@@ -46,6 +61,9 @@ class AgentResult:
     timed_out: bool
     report_present: bool
     command_result: CommandResult
+    stop_reason: str | None = None
+    """Why the agent stopped, when its CLI says so. ``error_max_turns`` and a
+    bare exit code are very different failures and used to look identical."""
 
 
 class EngineeringAgent(ABC):
