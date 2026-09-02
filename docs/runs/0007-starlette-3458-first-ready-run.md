@@ -98,3 +98,36 @@ about whether 120 is right. And an approved patch is not a merged pull request:
 the change alters timing for every response through `BaseHTTPMiddleware`, not
 only responses carrying a background task, and a maintainer may want that cost
 argued before the fix.
+
+## Addendum: the review, run again on 2026-09-03
+
+The reviewer in the table above executed nothing. Its interpreter was inside the
+user profile and Codex's Windows sandbox refuses to create a process from one
+([#20](https://github.com/wolfgang-aura/Mailman/issues/20)). After staging an
+interpreter at `C:\ProgramData\mailman-python` and rebuilding the run's
+environment on it, the review stage was run again against the same tree, this
+time on `gpt-5.6-luna` at `max` reasoning effort.
+
+| | first review | second review |
+| --- | --- | --- |
+| model | Codex default | `gpt-5.6-luna`, `max` effort |
+| duration | 64 s | 682 s |
+| commands run | 3, one denied | 46 |
+| tests executed | none | the gate, plus targeted runs and its own harnesses |
+| verdict | APPROVE | APPROVE |
+
+The second reviewer reproduced the ordering itself with hand-written ASGI
+harnesses, checked the `http.response.pathsend` path the patch also touches,
+read the upstream history around the file, and only then approved. Both reviews
+reached the same verdict; only one of them earned it.
+
+Two limits showed up in the second review. The read-only sandbox has no writable
+temp directory, so the gate errored twice on `tempfile` and once on
+`.pytest_cache` before the agent worked around it with `-p no:cacheprovider`;
+Mailman's own verification of the same tree, outside any sandbox, is 69 passed
+and 2 xfailed. Filed as
+[#29](https://github.com/wolfgang-aura/Mailman/issues/29). And re-preparing the
+environment of a finished run reports failure because the workspace holds the
+candidate, which is
+[#28](https://github.com/wolfgang-aura/Mailman/issues/28).
+
