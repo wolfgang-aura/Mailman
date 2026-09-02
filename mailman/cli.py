@@ -224,7 +224,11 @@ def _fetch_issue(arguments: argparse.Namespace) -> int:
 
 def _build_prompts(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
-    verification = arguments.verification.split() if arguments.verification else None
+    verification = (
+        environment_command(run_directory, arguments.verification.split())
+        if arguments.verification
+        else None
+    )
     primary_path, reviewer_path = write_task_prompts(
         run, run_directory, verification_command=verification
     )
