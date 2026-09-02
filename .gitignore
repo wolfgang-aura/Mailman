@@ -25,6 +25,7 @@ runs-private/
 workspaces/
 command-logs/
 SESSION_HANDOFF.md
+BURNDOWN.md
 
 # Python
 __pycache__/
