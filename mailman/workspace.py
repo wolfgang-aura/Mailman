@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -53,6 +54,19 @@ def inspect_workspace(path: Path) -> WorkspaceState:
     return WorkspaceState(
         path=workspace, head=head, clean=not changes, changes=changes
     )
+
+
+def workspace_fingerprint(path: Path) -> str:
+    """Digest a workspace's uncommitted state.
+
+    Status alone cannot tell that an already modified file was modified again,
+    so the tracked diff goes into the digest too. Untracked files contribute
+    their paths, which is what status reports for them.
+    """
+    workspace = path.resolve(strict=True)
+    status = _git(workspace, ["status", "--porcelain=v1", "--untracked-files=all"])
+    diff = _git(workspace, ["diff", "HEAD"])
+    return hashlib.sha256((status + "\n" + diff).encode("utf-8")).hexdigest()
 
 
 def commit_is_ancestor(workspace: Path, ancestor: str) -> bool:

@@ -188,6 +188,61 @@ class EnvironmentPreparationTests(unittest.TestCase):
             self.assertIn("left changes in the workspace", record["detail"])
 
 
+    def test_re_prepares_a_workspace_that_already_holds_a_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workspace = make_workspace(root)
+            _, run_directory = make_run(root)
+            (workspace / "code.txt").write_text("candidate\n", encoding="utf-8")
+            (workspace / "new-module.py").write_text("x = 1\n", encoding="utf-8")
+            plan = {
+                "schema_version": 1,
+                "steps": [
+                    {
+                        "name": "touch-nothing",
+                        "command": [sys.executable, "-c", "pass"],
+                    }
+                ],
+            }
+
+            record = prepare_environment(
+                run_directory, workspace=workspace, plan=plan, timeout_seconds=120
+            )
+
+            self.assertTrue(record["success"], record.get("detail"))
+            self.assertFalse(record["workspace_clean"])
+            self.assertTrue(record["workspace_unchanged"])
+
+    def test_fails_when_preparation_edits_an_already_changed_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workspace = make_workspace(root)
+            _, run_directory = make_run(root)
+            (workspace / "code.txt").write_text("candidate\n", encoding="utf-8")
+            plan = {
+                "schema_version": 1,
+                "steps": [
+                    {
+                        "name": "edit-in-place",
+                        "command": [
+                            sys.executable,
+                            "-c",
+                            "import pathlib;pathlib.Path('code.txt')"
+                            ".write_text('preparation wrote this')",
+                        ],
+                    }
+                ],
+            }
+
+            record = prepare_environment(
+                run_directory, workspace=workspace, plan=plan, timeout_seconds=120
+            )
+
+            self.assertFalse(record["success"])
+            self.assertFalse(record["workspace_unchanged"])
+            self.assertIn("left changes in the workspace", record["detail"])
+
+
 class EnvironmentCommandTests(unittest.TestCase):
     def test_expands_the_environment_token_in_a_verification_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

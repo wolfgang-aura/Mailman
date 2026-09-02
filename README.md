@@ -88,8 +88,11 @@ A plan is a JSON file with `schema_version` 1 and a list of named steps. Each
 step is a command list that runs without a shell, with `{environment}`,
 `{workspace}`, and `{run}` expanded. The environment lives in the run directory
 rather than the checkout, because the primary agent has to start from a clean
-workspace at the base commit. Preparation that dirties the workspace fails with
-that reason instead of surfacing later as a refused orchestration.
+workspace at the base commit. Preparation that changes the workspace fails with
+that reason instead of surfacing later as a refused orchestration. What it
+compares is the workspace before and after, not whether the workspace is clean,
+so a finished run whose workspace holds its own candidate can still rebuild its
+environment. The primary role keeps its own cleanliness requirement.
 
 ```json
 {

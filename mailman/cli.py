@@ -410,6 +410,7 @@ def _prepare_environment(arguments: argparse.Namespace) -> int:
             (step["name"] for step in record["steps"] if not step["ok"]), None
         ),
         "workspace_clean": record["workspace_clean"],
+        "workspace_unchanged": record.get("workspace_unchanged"),
         "registered": [entry["name"] for entry in record["registered"]],
         "success": record["success"],
         "record": str(run_directory / "environment.json"),

@@ -7,7 +7,7 @@ from typing import Any, Callable, Sequence
 
 from mailman.executor import execute
 from mailman.toolchain import probe_tool
-from mailman.workspace import inspect_workspace
+from mailman.workspace import inspect_workspace, workspace_fingerprint
 
 
 ENVIRONMENT_DIRECTORY = "environment"
@@ -79,8 +79,15 @@ def prepare_environment(
     run directory so that the workspace stays clean for the primary agent, and a
     step that dirties the workspace fails preparation instead of surfacing later
     as a refused orchestration.
+
+    What preparation may not do is change the workspace. Whether the workspace
+    was already dirty is a separate question, and one the primary role asks for
+    itself, so a run whose workspace holds its own candidate can still rebuild
+    its environment.
     """
     workspace_path = workspace.resolve(strict=True)
+    before = inspect_workspace(workspace_path)
+    fingerprint_before = workspace_fingerprint(workspace_path)
     environment_path = (run_directory / ENVIRONMENT_DIRECTORY).resolve()
     environment_path.mkdir(parents=True, exist_ok=True)
     replacements = {
@@ -103,6 +110,8 @@ def prepare_environment(
         "steps": [],
         "registered": [],
         "workspace_clean": None,
+        "workspace_changes_before": list(before.changes),
+        "workspace_unchanged": None,
         "success": False,
     }
 
@@ -129,7 +138,12 @@ def prepare_environment(
 
     state = inspect_workspace(workspace_path)
     record["workspace_clean"] = state.clean
-    if not state.clean:
+    added = [change for change in state.changes if change not in before.changes]
+    unchanged = workspace_fingerprint(workspace_path) == fingerprint_before
+    record["workspace_changes_after"] = list(state.changes)
+    record["workspace_unchanged"] = unchanged
+    if not unchanged:
+        record["added_paths"] = added or list(state.changes)
         record["detail"] = (
             "preparation left changes in the workspace. Install into "
             "{environment} instead, so the primary agent starts from a clean "
