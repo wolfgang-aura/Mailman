@@ -480,10 +480,13 @@ def _prior_art(arguments: argparse.Namespace) -> int:
 
 def _duplicate_search(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    reference = (load_issue_record(run_directory) or {}).get("reference")
+    issue_number = reference.get("number") if isinstance(reference, dict) else None
     record = record_duplicate_search(
         run_directory,
         repository=run.repository,
         query=arguments.query,
+        issue_number=issue_number if isinstance(issue_number, int) else None,
         executable=arguments.executable,
         timeout_seconds=arguments.timeout,
         limit=arguments.limit,
@@ -495,17 +498,34 @@ def _duplicate_search(arguments: argparse.Namespace) -> int:
                 "repository": record["repository"],
                 "query": record["query"],
                 "success": record["success"],
+                "complete": record["complete"],
                 "matches": record.get("match_count", 0),
                 "detail": record.get("detail"),
             },
             indent=2,
         )
     )
-    if record["success"] and record["matches"]:
-        for match in record["matches"]:
-            kind = "PR" if match["pull_request"] else "issue"
-            print(f"  {kind} #{match['number']} {match['state']}: {match['title']}")
-    return 0 if record["success"] else 1
+    for match in record["matches"]:
+        kind = "PR" if match["pull_request"] else "issue"
+        why = ", ".join(match.get("matched_by") or [])
+        print(
+            f"  {kind} #{match['number']} {match['state']}: {match['title']}"
+            f"  [{why}]",
+            file=sys.stderr,
+        )
+    if not record["complete"]:
+        for failure in record["failed_methods"]:
+            print(
+                f"  {failure['kind']} {failure['method']} failed: "
+                f"{failure['detail']}",
+                file=sys.stderr,
+            )
+        print(
+            "This search did not complete. An empty result from it is not "
+            "evidence that no duplicate exists.",
+            file=sys.stderr,
+        )
+    return 0 if record["success"] and record["complete"] else 1
 
 
 def _prepare_submission(arguments: argparse.Namespace) -> int:

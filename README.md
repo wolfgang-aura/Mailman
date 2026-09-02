@@ -278,8 +278,23 @@ mailman duplicate-search RUN_ID --query "RaisesGroup check"
 mailman prior-art RUN_ID
 ```
 
-`duplicate-search` records a GitHub CLI search of the target's pull requests and
-issues. `prior-art` then reads each earlier pull request and writes
+`duplicate-search` tries three methods against the target's pull requests and
+issues, runs all of them, and unions what they return. Two use GitHub's search
+index; the third lists every open item and matches locally on the query terms
+and the issue number, in the title, body, and branch name. That third method is
+the one that counts. GitHub's index refuses some repositories outright,
+`encode/starlette` among them, and `gh pr list --search` there returns nothing
+even for a single token four open titles contain. The record carries `complete`,
+which is false when the listing failed, and `prepare-submission` refuses to
+clear a run on a search that did not complete or that found a match.
+
+This gate was added after it failed. On 2026-09-03 a finished run against
+`encode/starlette` #3458 was cleared for filing while four open pull requests
+already fixed that issue, three touching the same two files. Every search method
+had either errored or matched nothing, and the record still said `success`. See
+[issue #30](https://github.com/wolfgang-aura/Mailman/issues/30).
+
+`prior-art` then reads each earlier pull request and writes
 `prior-art.md`, which `build-prompts` folds into both agent prompts: what each
 attempt claimed, which files it touched, and what a maintainer said when closing
 it. A merged pull request's body and files are withheld, because handing an

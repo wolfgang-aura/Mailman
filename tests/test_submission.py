@@ -8,10 +8,37 @@ from tempfile import TemporaryDirectory
 from mailman.models import AgentConfig, RunRecord, RunStatus
 from mailman.submission import (
     TargetPolicy,
+    _local_matches,
     _match_rows,
+    _query_terms,
     analyze_diff,
     prepare_submission,
 )
+
+
+LISTING = [
+    {
+        "number": 3485,
+        "title": "Delay background task execution until BaseHTTPMiddleware sends it",
+        "body": "Fixes #3458.",
+        "headRefName": "fix/background-task-timing",
+        "state": "OPEN",
+    },
+    {
+        "number": 3476,
+        "title": "fix: defer inner response background task until response is sent",
+        "body": "The middleware buffers the response.",
+        "headRefName": "patch-1",
+        "state": "OPEN",
+    },
+    {
+        "number": 3151,
+        "title": "Add max_body_size parameter",
+        "body": "Unrelated work.",
+        "headRefName": "max-size2",
+        "state": "OPEN",
+    },
+]
 
 
 SOURCE_DIFF = """diff --git a/src/thing.py b/src/thing.py
@@ -154,6 +181,47 @@ class DuplicateSearchRowTests(unittest.TestCase):
         self.assertEqual(_match_rows(["not a dict"], pull_request=True), [])
 
 
+class LocalMatchTests(unittest.TestCase):
+    def test_short_words_are_not_search_terms(self) -> None:
+        self.assertEqual(_query_terms("a of BaseHTTPMiddleware"), ["basehttpmiddleware"])
+
+    def test_a_title_term_matches(self) -> None:
+        rows = _local_matches(
+            LISTING, pull_request=True, query="BaseHTTPMiddleware", issue_number=None
+        )
+        self.assertEqual([row["number"] for row in rows], [3485])
+
+    def test_the_issue_number_matches_a_body_or_branch(self) -> None:
+        # The one the query terms miss: its title and body name neither token.
+        rows = _local_matches(
+            LISTING, pull_request=True, query="nothingmatches", issue_number=3458
+        )
+        self.assertEqual([row["number"] for row in rows], [3485])
+        self.assertEqual(rows[0]["matched_by"], ["#3458"])
+
+    def test_an_unrelated_entry_does_not_match(self) -> None:
+        rows = _local_matches(
+            LISTING, pull_request=True, query="BackgroundTask", issue_number=3458
+        )
+        self.assertNotIn(3151, [row["number"] for row in rows])
+
+    def test_a_partial_number_does_not_match(self) -> None:
+        self.assertEqual(
+            _local_matches(
+                LISTING, pull_request=True, query="nothingmatches", issue_number=345
+            ),
+            [],
+        )
+
+    def test_a_non_list_payload_is_no_match(self) -> None:
+        self.assertEqual(
+            _local_matches(
+                {"not": "a list"}, pull_request=True, query="x", issue_number=1
+            ),
+            [],
+        )
+
+
 class PrepareSubmissionTests(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = TemporaryDirectory()
@@ -220,12 +288,59 @@ class PrepareSubmissionTests(unittest.TestCase):
                 {
                     "searched_at": "2026-09-02T00:00:00+00:00",
                     "success": True,
+                    "complete": True,
                     "matches": [],
                 }
             ),
             encoding="utf-8",
         )
         self.assertTrue(self._prepare(policy=policy)["ready"])
+
+    def test_a_search_that_partly_failed_does_not_clear_the_gate(self) -> None:
+        # Issue #30: both `gh search` calls exited 1 on encode/starlette and the
+        # `--search` fallbacks returned [], and the record still said success.
+        policy = _policy(requires_duplicate_search=True)
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-02T00:00:00+00:00",
+                    "success": True,
+                    "complete": False,
+                    "failed_methods": [
+                        {"kind": "pr", "method": "listing", "detail": "boom"}
+                    ],
+                    "matches": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        record = self._prepare(policy=policy)
+        self.assertFalse(record["ready"])
+        self.assertIn("degraded-duplicate-search", record["blocking_codes"])
+
+    def test_a_recorded_match_blocks_whatever_the_policy_asks(self) -> None:
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-02T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [
+                        {
+                            "number": 3485,
+                            "title": "Delay background task execution",
+                            "state": "OPEN",
+                            "pull_request": True,
+                            "matched_by": ["#3458"],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        record = self._prepare()
+        self.assertFalse(record["ready"])
+        self.assertIn("possible-duplicate", record["blocking_codes"])
 
     def test_a_failed_duplicate_search_does_not_count_as_one(self) -> None:
         policy = _policy(requires_duplicate_search=True)

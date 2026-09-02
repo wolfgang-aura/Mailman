@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -309,6 +310,35 @@ def _policy_findings(
                     f"{policy.name} bans duplicate pull requests. Record a search "
                     "of open and closed pull requests and issues in "
                     "duplicate-search.json before preparing a submission."
+                ),
+            )
+        )
+    elif policy.requires_duplicate_search and duplicate_search.get("complete") is not True:
+        failed = duplicate_search.get("failed_methods") or []
+        named = ", ".join(
+            f"{entry.get('kind')} {entry.get('method')}" for entry in failed
+        )
+        findings.append(
+            Finding(
+                code="degraded-duplicate-search",
+                blocking=True,
+                detail=(
+                    f"{policy.name} bans duplicate pull requests and this search "
+                    f"did not complete: {named or 'a method failed'}. An empty "
+                    "result from a search that partly failed is not evidence that "
+                    "no duplicate exists. Re-run mailman duplicate-search."
+                ),
+            )
+        )
+    if duplicate_search and duplicate_search.get("matches"):
+        findings.append(
+            Finding(
+                code="possible-duplicate",
+                blocking=True,
+                detail=(
+                    f"{len(duplicate_search['matches'])} open pull requests or "
+                    "issues match this work. Read every one before filing. See "
+                    "duplicate-search.json."
                 ),
             )
         )
@@ -626,9 +656,21 @@ DUPLICATE_SEARCH_FILENAME = "duplicate-search.json"
 # `gh pr list --search` is repo-scoped and works where the global `gh search`
 # index refuses a repository, which it does for encode/starlette.
 _SEARCH_FIELDS = "number,title,state,url,createdAt"
+# The unfiltered listing needs the text a local match reads. An issue has no
+# head ref, and asking for one makes `gh issue list` refuse the whole call.
+_LISTING_FIELDS = {
+    "pr": "number,title,state,url,createdAt,body,headRefName",
+    "issue": "number,title,state,url,createdAt,body",
+}
+_MINIMUM_TERM_LENGTH = 4
 
 
-def _match_rows(payload: object, *, pull_request: bool) -> list[dict[str, Any]]:
+def _match_rows(
+    payload: object,
+    *,
+    pull_request: bool,
+    reasons: list[str] | None = None,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if not isinstance(payload, list):
         return rows
@@ -643,8 +685,54 @@ def _match_rows(payload: object, *, pull_request: bool) -> list[dict[str, Any]]:
                 "url": entry.get("url"),
                 "created_at": entry.get("createdAt"),
                 "pull_request": pull_request,
+                "matched_by": list(reasons or ["search"]),
             }
         )
+    return rows
+
+
+def _query_terms(query: str) -> list[str]:
+    """The words worth matching on their own, lowercased."""
+    return [
+        word.lower()
+        for word in re.findall(r"[A-Za-z0-9_]+", query)
+        if len(word) >= _MINIMUM_TERM_LENGTH
+    ]
+
+
+def _local_matches(
+    payload: object,
+    *,
+    pull_request: bool,
+    query: str,
+    issue_number: int | None,
+) -> list[dict[str, Any]]:
+    """Match an unfiltered listing locally, because GitHub's search may not.
+
+    `gh pr list --search` returns nothing on encode/starlette even for a single
+    token that four open pull request titles contain. Reading the listing and
+    matching here is the only method that found them.
+    """
+    if not isinstance(payload, list):
+        return []
+    terms = _query_terms(query)
+    rows: list[dict[str, Any]] = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        haystack = " ".join(
+            str(entry.get(field) or "")
+            for field in ("title", "body", "headRefName")
+        ).lower()
+        reasons = [term for term in terms if term in haystack]
+        if issue_number is not None and re.search(
+            rf"\b{issue_number}\b", haystack
+        ):
+            reasons.append(f"#{issue_number}")
+        if reasons:
+            rows.extend(
+                _match_rows([entry], pull_request=pull_request, reasons=reasons)
+            )
     return rows
 
 
@@ -653,9 +741,11 @@ def record_duplicate_search(
     *,
     repository: str,
     query: str,
+    issue_number: int | None = None,
     executable: str | None = None,
     timeout_seconds: float = 60,
     limit: int = 30,
+    listing_limit: int = 100,
 ) -> dict[str, Any]:
     """Search a target's pull requests and issues, and record what came back.
 
@@ -676,9 +766,12 @@ def record_duplicate_search(
         "searched_at": searched_at,
         "repository": slug,
         "query": query,
+        "issue_number": issue_number,
         "success": False,
+        "complete": False,
         "matches": [],
         "methods": {},
+        "failed_methods": [],
         "commands": [],
     }
     for kind in ("pr", "issue"):
@@ -692,7 +785,9 @@ def record_duplicate_search(
                     command_executable,
                     "search",
                     "prs" if kind == "pr" else "issues",
-                    query,
+                    # Separate terms. One argument is quoted into an exact
+                    # phrase that GitHub's search API rejects outright.
+                    *(_query_terms(query) or [query]),
                     "--repo",
                     slug,
                     "--limit",
@@ -719,8 +814,27 @@ def record_duplicate_search(
                     _SEARCH_FIELDS,
                 ],
             ),
+            (
+                "listing",
+                [
+                    command_executable,
+                    kind,
+                    "list",
+                    "--repo",
+                    slug,
+                    "--state",
+                    "open",
+                    "--limit",
+                    str(listing_limit),
+                    "--json",
+                    _LISTING_FIELDS[kind],
+                ],
+            ),
         ]
-        succeeded = False
+        # Every method runs. Stopping at the first that exits zero is what let a
+        # `--search` fallback return `[]` and stand in for a search that never
+        # happened. See issue #30.
+        succeeded: list[str] = []
         for method, command in attempts:
             result: CommandResult = execute(
                 command,
@@ -729,23 +843,60 @@ def record_duplicate_search(
             )
             record["commands"].append({"method": method, **result.to_dict()})
             if result.timed_out or result.exit_code != 0:
+                record["failed_methods"].append(
+                    {
+                        "kind": kind,
+                        "method": method,
+                        "detail": "timed out"
+                        if result.timed_out
+                        else (result.stderr or "").strip().splitlines()[:1],
+                    }
+                )
                 continue
             try:
                 payload = json.loads(result.stdout or "[]")
             except json.JSONDecodeError:
+                record["failed_methods"].append(
+                    {"kind": kind, "method": method, "detail": "unreadable output"}
+                )
                 continue
-            record["methods"][kind] = method
-            for row in _match_rows(payload, pull_request=kind == "pr"):
-                if row not in record["matches"]:
+            if method == "listing":
+                rows = _local_matches(
+                    payload,
+                    pull_request=kind == "pr",
+                    query=query,
+                    issue_number=issue_number,
+                )
+            else:
+                rows = _match_rows(payload, pull_request=kind == "pr")
+            for row in rows:
+                if not any(
+                    existing["number"] == row["number"]
+                    and existing["pull_request"] == row["pull_request"]
+                    for existing in record["matches"]
+                ):
                     record["matches"].append(row)
-            succeeded = True
-            break
+            succeeded.append(method)
+        record["methods"][kind] = succeeded
         if not succeeded:
             record["detail"] = f"every {kind} search failed"
+            record["match_count"] = len(record["matches"])
             _write_json(run_directory / DUPLICATE_SEARCH_FILENAME, record)
             return record
 
     record["success"] = True
+    # The unfiltered listing reads every open pull request and issue and matches
+    # locally, so it is the method that decides whether the search is worth
+    # trusting. The two index-backed methods add closed items and body hits, and
+    # GitHub refuses them outright on some repositories, encode/starlette among
+    # them. Their failure is recorded and reported but does not block; a listing
+    # that failed does, because then an empty result means nothing.
+    #
+    # The residual blind spot is closed duplicates, which the listing does not
+    # cover. `mailman prior-art` is where those are read.
+    record["complete"] = all(
+        "listing" in methods for methods in record["methods"].values()
+    )
     record["match_count"] = len(record["matches"])
     _write_json(run_directory / DUPLICATE_SEARCH_FILENAME, record)
     return record
