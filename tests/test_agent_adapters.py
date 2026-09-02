@@ -171,6 +171,49 @@ class AgentAdapterTests(unittest.TestCase):
         # stream-json is rejected under --print without it.
         self.assertIn("--verbose", command)
 
+    def test_claude_primary_may_run_the_run_s_own_verification_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            request = AgentRequest(
+                run_id="run-1",
+                role="primary",
+                prompt_path=root / "prompt.md",
+                workspace=root,
+                report_path=root / "primary-report.md",
+                verification_command=(
+                    r"C:\runs\abc\environment\Scripts\python.exe",
+                    "-m",
+                    "pytest",
+                ),
+            )
+            command = ClaudeCliAgent().build_command(request)
+
+        allowed = command[command.index("--allowedTools") + 1]
+        self.assertIn(r"Bash(C:\runs\abc\environment\Scripts\python.exe:*)", allowed)
+        self.assertIn("Bash(pytest:*)", allowed)
+        self.assertIn("Bash(git diff:*)", allowed)
+        # The denylist still decides what the agent may not do.
+        self.assertIn("Bash(git push:*)", command[command.index("--disallowedTools") + 1])
+        self.assertNotIn("Bash(git push:*)", allowed)
+
+    def test_claude_reviewer_may_read_the_change_but_not_run_the_suite(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            request = AgentRequest(
+                run_id="run-1",
+                role="reviewer",
+                prompt_path=root / "prompt.md",
+                workspace=root,
+                report_path=root / "review-report.md",
+                verification_command=("python", "-m", "pytest"),
+            )
+            command = ClaudeCliAgent().build_command(request)
+
+        allowed = command[command.index("--allowedTools") + 1]
+        self.assertIn("Bash(git diff:*)", allowed)
+        self.assertNotIn("Bash(pytest:*)", allowed)
+        self.assertNotIn("Bash(python:*)", allowed)
+
 
 class ClaudeResultTests(unittest.TestCase):
     def test_takes_the_report_from_the_final_result_event(self) -> None:

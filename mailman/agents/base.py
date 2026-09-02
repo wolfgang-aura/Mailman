@@ -40,6 +40,9 @@ class AgentRequest:
     report_path: Path
     timeout_seconds: float = 3600
     on_event: Callable[[TranscriptEvent], None] | None = None
+    verification_command: tuple[str, ...] = ()
+    """The command the run verifies with. An agent that cannot run it cannot
+    check its own work, so the adapter has to permit it explicitly."""
 
     def observe(self, agent: str) -> Callable[[str], None] | None:
         """Turn one line of agent output into events for whoever is watching."""
