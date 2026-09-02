@@ -15,7 +15,7 @@ Last verified: 2026-09-02 in `Asia/Singapore`.
 - Orchestration deployment: commit `929caf5` passed GitHub Actions on Python 3.12 and 3.14 in run `33552625334`.
 - Issue #9 deployment: commit `a371be1` passed GitHub Actions on Python 3.12 and 3.14 in run `33558633354`.
 - Knowledge flywheel deployment: commit `d2be47a` passed GitHub Actions on Python 3.12 and 3.14 in run `33592165392`.
-- Issue ingestion, environment preparation, and patch export shipped locally on 2026-09-02 and have not been pushed.
+- External issue deployment: commit `78d048e` passed GitHub Actions on Python 3.12 and 3.14 in run `33596869316`. It carries issue ingestion, environment preparation, patch export, and the first external run records.
 
 ## Development environment
 
