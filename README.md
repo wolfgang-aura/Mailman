@@ -2,7 +2,9 @@
 
 Mailman is an open-source harness for testing coding agents on real software engineering issues. One agent owns the task. A second agent reviews the resulting repository state and evidence. Mailman runs important checks itself and stops before anything reaches an upstream project.
 
-The repository starts with an intentionally narrow v0.1. It can create a private local run record, clone a target repository at an exact base commit, pin the executables a run may use, invoke one configured Codex or Claude CLI adapter, run the bounded primary and reviewer loop, capture process evidence with a timeout and redaction, enforce the workflow state machine, and report whether the local machine has the required tools. It does not yet publish changes to a target repository, and the bounded loop has not yet been driven end to end by two live models.
+Mailman can create a private local run record, capture a GitHub issue into that record, clone a target repository at an exact base commit, install the target's dependencies outside its working tree, pin the executables a run may use, invoke one configured Codex or Claude CLI adapter, run the bounded primary and reviewer loop, capture process evidence with a timeout and redaction, enforce the workflow state machine, and write a reviewable patch package for a human. It does not publish anything to a target repository.
+
+Two live models have completed the loop end to end. See [the two-model run record](docs/runs/0003-two-model-fixture.md).
 
 ## Why this exists
 
@@ -49,13 +51,74 @@ mailman prepare-workspace RUN_ID --timeout 600
 
 Mailman records the clone and checkout commands in `workspace.json`. A second call reuses the workspace only when its origin, commit, and clean state still match. It preserves the original command evidence and increments a reuse counter.
 
+Capture the issue text into the run record:
+
+```powershell
+mailman fetch-issue RUN_ID
+```
+
+This reads the run's own issue URL with the GitHub CLI and writes `issue.md`.
+Comments, linked pull requests, and any accepted upstream fix are left out, so a
+replayed historical issue cannot leak its own answer. On a host without `gh`,
+pass `--from-file issue.txt --title "..."` to record text a human transcribed;
+the record keeps the source path and its SHA-256 digest.
+
+Turn the captured issue into prompts:
+
+```powershell
+mailman build-prompts RUN_ID --verification "python -m unittest discover -s tests"
+```
+
+This writes `primary-task.md` and `reviewer-task.md` into the run directory, and
+`mailman orchestrate` uses them when no prompt is passed. Both prompts state the
+base commit, the verification command Mailman runs itself, and the rule that an
+agent's own exit code proves nothing.
+
+Install the target repository's dependencies:
+
+```powershell
+mailman prepare-environment RUN_ID --plan .\plans\python.json
+```
+
+A plan is a JSON file with `schema_version` 1 and a list of named steps. Each
+step is a command list that runs without a shell, with `{environment}`,
+`{workspace}`, and `{run}` expanded. The environment lives in the run directory
+rather than the checkout, because the primary agent has to start from a clean
+workspace at the base commit. Preparation that dirties the workspace fails with
+that reason instead of surfacing later as a refused orchestration.
+
+```json
+{
+  "schema_version": 1,
+  "steps": [
+    {
+      "name": "create-virtualenv",
+      "command": ["python", "-m", "venv", "{environment}"],
+      "working_directory": "run"
+    },
+    {
+      "name": "install-target",
+      "command": ["{environment}/Scripts/pip.exe", "install", "-e", "."]
+    }
+  ],
+  "register": [
+    {"name": "python", "executable": "{environment}/Scripts/python.exe"}
+  ]
+}
+```
+
+Each `register` entry is probed and digest-pinned like `probe-tool`, so the
+prepared interpreter is the one the agents are told to use. `{environment}` also
+expands inside a `verify` or `orchestrate` command, which lets verification run
+against the prepared interpreter instead of the host's.
+
 Mailman writes live run data under `.mailman/`, which Git ignores. Capture a verification command with:
 
 ```powershell
 mailman verify RUN_ID -- python -m unittest discover -s tests -v
 ```
 
-The command runs without a shell, has a timeout, and records its exit code, duration, and redacted output. A later export command will produce a reviewed public artifact. Do not commit `.mailman/` by force.
+The command runs without a shell, has a timeout, and records its exit code, duration, and redacted output. `mailman export-patch` is what turns a finished run into a shareable artifact. Do not commit `.mailman/` by force.
 
 Register a runtime before an agent run:
 
@@ -116,6 +179,19 @@ person to answer. It refuses to overwrite an existing retrospective without
 `--force`. Lessons reach the reusable skill only through the registry in
 [`knowledge/`](knowledge/README.md). See
 [the knowledge flywheel decision](docs/decisions/0005-knowledge-flywheel.md).
+Write the human review package for a finished run:
+
+```powershell
+mailman export-patch RUN_ID
+```
+
+This produces `changes.diff`, `summary.md`, `pull-request.md`, and `export.json`
+in the run's `export` directory. The diff covers new files as well as edited
+ones, and it is never rewritten: a diff matching a credential pattern stops the
+export instead of being silently redacted. The command refuses a run that is not
+`READY_FOR_HUMAN_REVIEW` unless `--allow-unfinished` is passed, which is how a
+`BLOCKED` run's partial work gets read. Nothing is pushed, and the pull request
+text is a draft for a human to accept, edit, or discard.
 
 ## Human boundary
 

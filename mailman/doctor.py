@@ -35,6 +35,7 @@ def _command_version(command: str, arguments: list[str]) -> str | None:
 def run_checks() -> list[Check]:
     python_ok = sys.version_info >= (3, 12)
     git_version = _command_version("git", ["--version"])
+    gh_version = _command_version("gh", ["--version"])
     codex_version = _command_version("codex", ["--version"])
     claude_version = _command_version("claude", ["--version"])
     return [
@@ -45,6 +46,7 @@ def run_checks() -> list[Check]:
             True,
         ),
         Check("git", git_version is not None, git_version or "not found", True),
+        Check("gh", gh_version is not None, gh_version or "not found", False),
         Check("codex", codex_version is not None, codex_version or "not found", False),
         Check("claude", claude_version is not None, claude_version or "not found", False),
     ]
