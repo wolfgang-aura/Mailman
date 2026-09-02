@@ -42,6 +42,21 @@ Set by the repository owner on 2026-09-02, after the first external run used
 - Vet a candidate against those checks before any agent runs. Two of the first
   three candidates failed them.
 
+Upstream contribution policies observed on 2026-09-02, which constrain any future
+submission:
+
+- Pallets, covering Click, Flask, and Jinja, states that a contribution appearing
+  to be LLM-generated will be closed and the author likely blocked.
+  See `https://palletsprojects.com/contributing/llm-ai`.
+- `python-attrs/attrs` forbids unsupervised agentic tools and refuses any pull
+  request carrying an LLM co-author trailer. See its `.github/AI_POLICY.md`.
+- `Textualize/rich` has effectively closed external pull requests, citing poor
+  quality AI submissions.
+- `pypa/packaging` carries no such policy in its repository.
+
+Vetting a target now includes reading its contribution and AI policy before an
+agent runs, not before a pull request is opened.
+
 ## Authority and artifact boundaries
 
 - The target repository checkout and machine-observed command results outrank agent self-reports.
