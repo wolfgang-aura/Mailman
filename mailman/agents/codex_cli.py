@@ -13,10 +13,18 @@ from mailman.executor import execute
 from mailman.redaction import redact
 
 
+# The CLI's own catalog for the 5.6 family. `ultra` is not offered on every
+# model, so an unsupported pairing has to fail here rather than mid-run.
+REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
+
+
 @dataclass(frozen=True)
 class CodexCliAgent(EngineeringAgent):
     executable: str = "codex"
     model: str | None = None
+    reasoning_effort: str | None = None
+    """How hard the model is asked to think. Recorded with the run, because a
+    review at `max` and one at `low` are not the same evidence."""
     windows_sandbox: str | None = (
         "elevated" if platform.system() == "Windows" else None
     )
@@ -30,6 +38,11 @@ class CodexCliAgent(EngineeringAgent):
             raise ValueError("Windows sandbox mode must be elevated or unelevated")
         if request.role not in {"primary", "reviewer"}:
             raise ValueError("agent role must be primary or reviewer")
+        if self.reasoning_effort and self.reasoning_effort not in REASONING_EFFORTS:
+            raise ValueError(
+                f"unsupported reasoning effort: {self.reasoning_effort!r}. "
+                f"Supported: {', '.join(REASONING_EFFORTS)}."
+            )
         sandbox_mode = "workspace-write" if request.role == "primary" else "read-only"
         command = [
             self.executable,
@@ -56,6 +69,10 @@ class CodexCliAgent(EngineeringAgent):
         )
         if self.model:
             command.extend(["--model", self.model])
+        if self.reasoning_effort:
+            command.extend(
+                ["--config", f"model_reasoning_effort={self.reasoning_effort!r}"]
+            )
         command.append("-")
         return command
 

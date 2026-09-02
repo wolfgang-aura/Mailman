@@ -6,6 +6,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from mailman.agents.codex_cli import REASONING_EFFORTS
 from mailman.agents import (
     DEFAULT_MAX_TURNS,
     ClaudeCliAgent,
@@ -186,6 +187,11 @@ def _build_parser() -> argparse.ArgumentParser:
     run_agent.add_argument("--prompt", required=True, type=Path)
     run_agent.add_argument("--workspace", required=True, type=Path)
     run_agent.add_argument("--model")
+    run_agent.add_argument(
+        "--reasoning-effort",
+        choices=REASONING_EFFORTS,
+        help="how hard a Codex model is asked to think, recorded with the run",
+    )
     run_agent.add_argument("--timeout", type=float, default=3600)
     run_agent.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
     run_agent.add_argument(
@@ -563,10 +569,15 @@ def _make_agent(
     model: str | None,
     max_turns: int,
     executable: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> EngineeringAgent:
     normalized = name.strip().lower()
     if normalized == "codex":
-        return CodexCliAgent(model=model, executable=executable or "codex")
+        return CodexCliAgent(
+            model=model,
+            executable=executable or "codex",
+            reasoning_effort=reasoning_effort,
+        )
     if normalized == "claude":
         return ClaudeCliAgent(
             model=model, max_turns=max_turns, executable=executable or "claude"
@@ -622,6 +633,7 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         model=model,
         max_turns=arguments.max_turns,
         executable=toolchain_executable(run_directory, configured.agent.strip().lower()),
+        reasoning_effort=arguments.reasoning_effort,
     )
     report_path = run_directory / f"{arguments.role}-report.md"
     verification = (
@@ -659,6 +671,7 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         "report": report_text,
         "prompt_path": str(prompt_path),
         "turn_budget": agent.turn_budget,
+        "reasoning_effort": arguments.reasoning_effort,
         "process": result.command_result.to_dict(),
         "workflow_status_after_run": str(run.status),
     }
