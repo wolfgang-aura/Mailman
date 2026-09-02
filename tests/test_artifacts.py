@@ -40,6 +40,39 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(loaded.primary.model, "codex-test-model")
             self.assertEqual(loaded.reviewer.model, "claude-test-model")
 
+    def test_create_run_rejects_an_agent_no_adapter_can_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(ValueError, "unsupported engineering agent"):
+                create_run(
+                    repository="https://github.com/example/project.git",
+                    issue="https://github.com/example/project/issues/7",
+                    base_commit="a" * 40,
+                    primary="codx",
+                    reviewer="claude",
+                    data_root=Path(temporary_directory),
+                )
+
+    def test_create_run_normalizes_agent_case_and_whitespace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, _ = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40,
+                primary="  Codex ",
+                reviewer="CLAUDE",
+                data_root=Path(temporary_directory),
+            )
+
+            self.assertEqual(run.primary.agent, "codex")
+            self.assertEqual(run.reviewer.agent, "claude")
+
+    def test_load_run_names_the_missing_run_instead_of_a_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            root.mkdir(exist_ok=True)
+            with self.assertRaisesRegex(ValueError, "no run 'does-not-exist'"):
+                load_run("does-not-exist", root)
+
     def test_create_run_rejects_symbolic_base_reference(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             with self.assertRaisesRegex(ValueError, "hexadecimal Git object ID"):

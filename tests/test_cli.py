@@ -16,6 +16,55 @@ from mailman.cli import _emit, main
 
 
 class CliTests(unittest.TestCase):
+    def test_show_names_a_missing_run_instead_of_printing_an_errno(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            data_root.mkdir()
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(
+                    ["show", "does-not-exist", "--data-root", str(data_root)]
+                )
+
+            self.assertEqual(exit_code, 2)
+            message = stderr.getvalue()
+            self.assertIn("no run 'does-not-exist'", message)
+            self.assertIn("mailman show", message)
+            self.assertNotIn("run.json", message)
+
+    def test_init_run_refuses_an_agent_name_no_adapter_can_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "init-run",
+                        "--repository",
+                        "https://github.com/example/project.git",
+                        "--issue",
+                        "https://github.com/example/project/issues/7",
+                        "--base-commit",
+                        "a" * 40,
+                        "--primary",
+                        "codx",
+                        "--reviewer",
+                        "claude",
+                        "--primary-model",
+                        "codex-test-model",
+                        "--reviewer-model",
+                        "claude-test-model",
+                        "--data-root",
+                        str(data_root),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("unsupported engineering agent", stderr.getvalue())
+            self.assertFalse(list(data_root.glob("*")) if data_root.is_dir() else [])
+
     def test_verify_accepts_mailman_options_after_run_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_root = Path(temporary_directory) / "runs"

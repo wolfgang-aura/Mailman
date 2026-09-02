@@ -12,6 +12,7 @@ from mailman.agents import (
     ClaudeCliAgent,
     CodexCliAgent,
     EngineeringAgent,
+    normalize_agent_name,
 )
 from mailman.agents.base import AgentRequest
 from mailman.artifacts import (
@@ -571,7 +572,7 @@ def _make_agent(
     executable: str | None = None,
     reasoning_effort: str | None = None,
 ) -> EngineeringAgent:
-    normalized = name.strip().lower()
+    normalized = normalize_agent_name(name)
     if normalized == "codex":
         return CodexCliAgent(
             model=model,

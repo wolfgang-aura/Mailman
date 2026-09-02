@@ -10,6 +10,24 @@ from mailman.executor import CommandResult
 from mailman.transcript import TranscriptEvent, parse_line
 
 
+SUPPORTED_AGENTS = ("codex", "claude")
+
+
+def normalize_agent_name(name: str) -> str:
+    """Return the canonical spelling of an agent name, or say what is supported.
+
+    A run records the agent name long before an adapter is built for it, so both
+    ends validate through here and cannot drift apart.
+    """
+    normalized = name.strip().lower()
+    if normalized not in SUPPORTED_AGENTS:
+        raise ValueError(
+            f"unsupported engineering agent: {name!r}. Supported agents are "
+            + ", ".join(SUPPORTED_AGENTS)
+        )
+    return normalized
+
+
 def resolve_executable(name: str) -> str:
     """Return an absolute path for an agent executable, or explain what is missing.
 

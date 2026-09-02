@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from mailman.agents.base import normalize_agent_name
 from mailman.models import AgentConfig, RunRecord
 
 
@@ -49,6 +50,10 @@ def create_run(
         )
     if not primary.strip() or not reviewer.strip():
         raise ValueError("primary and reviewer names are required")
+    # Reject a name no adapter can run here, not minutes later after a clone and
+    # a dependency install.
+    primary = normalize_agent_name(primary)
+    reviewer = normalize_agent_name(reviewer)
 
     run = RunRecord(
         run_id=new_run_id(),
@@ -95,7 +100,13 @@ def load_run(run_id: str, data_root: Path | None = None) -> tuple[RunRecord, Pat
     run_directory = (root / run_id).resolve()
     if run_directory.parent != root:
         raise ValueError("invalid run ID")
-    data = json.loads((run_directory / "run.json").read_text(encoding="utf-8"))
+    record_path = run_directory / "run.json"
+    if not record_path.is_file():
+        raise ValueError(
+            f"no run {run_id!r} under {root}. Run `mailman show` with no run ID "
+            "to list the runs that exist."
+        )
+    data = json.loads(record_path.read_text(encoding="utf-8"))
     return RunRecord.from_dict(data), run_directory
 
 
