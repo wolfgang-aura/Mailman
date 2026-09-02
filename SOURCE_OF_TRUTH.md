@@ -57,6 +57,19 @@ submission:
 Vetting a target now includes reading its contribution and AI policy before an
 agent runs, not before a pull request is opened.
 
+Vetting also includes searching the target's existing pull requests for the same
+change before a run starts. On 2026-09-02, three runs were spent on
+`pytest-dev/pytest` issue #14324 before anyone searched; the issue already had
+four pull requests against it, three closed unmerged and one open. An open issue
+is not an unclaimed issue. See `docs/runs/0006-pytest-14324-three-blocked-runs.md`.
+
+Projects whose policies permit AI-assisted contributions, read on 2026-09-02:
+`pytest-dev/pytest` welcomes them with human accountability and appreciates a
+`Co-authored-by` trailer; `encode/starlette` permits them and makes a duplicate
+search mandatory; `pydantic/pydantic` welcomes them. `modelcontextprotocol/python-sdk`
+permits disclosed assistance but closes any outside pull request whose issue a
+maintainer has not assigned.
+
 ## Authority and artifact boundaries
 
 - The target repository checkout and machine-observed command results outrank agent self-reports.
@@ -90,7 +103,23 @@ A verification pass after the primary stage does not prove work happened: in the
 
 An external target can be dirty on clone. `wandb/rai-toolkit` commits `rai_toolkit/redteam/attacks.py` with CRLF while its own `.gitattributes` declares `*.py text eol=lf`, so every fresh clone is modified before any agent runs and Mailman refuses to start. That is a property of the target, not of the run.
 
-Sanitized public run export and upstream contribution preparation are not implemented. Nothing in this project has ever contacted an upstream repository it does not own.
+`mailman prepare-submission` checks a finished run against a target's recorded
+contribution policy and writes a draft pull request, a human accountability
+brief, and a machine-readable verdict. It blocks on diff noise, a missing
+changelog entry, a missing or failed duplicate search, an unread or prohibitive
+policy, a run that is not `READY_FOR_HUMAN_REVIEW`, and a run with no passing
+verification. `mailman duplicate-search` records a GitHub CLI search of the
+target's pull requests and issues. Both were exercised against live run data on
+2026-09-02. Neither contacts an upstream repository for anything but a read.
+
+Sanitized public run export is not implemented. Nothing in this project has ever
+pushed, commented, or opened anything on a repository it does not own.
+
+Three runs against `pytest-dev/pytest` issue #14324 all ended `BLOCKED` on
+2026-09-02: two on a failed verification after the primary stage, one when the
+agent hit its turn limit and wrote no report. That last one is the first live
+evidence for the missing-report blocking cause. See
+`docs/runs/0006-pytest-14324-three-blocked-runs.md`.
 
 ## Knowledge flywheel
 
