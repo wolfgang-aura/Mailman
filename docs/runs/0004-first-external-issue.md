@@ -94,3 +94,13 @@ One issue, one language, one small function, an approval on the first cycle,
 and a scoped verification command. The revision path, the second review, and
 every blocking path still have unit coverage and no live evidence. Nothing here
 tests the harness against a change that should have been rejected.
+
+## Fate of the patch
+
+Abandoned on 2026-09-02 by the owner's decision. The target does not meet the
+recognizability bar this project now holds targets to, so the patch was never
+going upstream and keeping it warm served nothing. Run directory
+`20260902T051904Z-f0cd07`, including the exported diff, was deleted from the
+local data root. This record is what remains, and it is the part that mattered:
+the harness took an issue URL to a confirmed patch with no hand-written prompt.
+
