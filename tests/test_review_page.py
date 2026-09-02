@@ -194,6 +194,104 @@ class ReviewPageTests(unittest.TestCase):
         self.assertIn("<li>reproduced it</li>", page)
         self.assertNotIn("## Summary", page)
 
+    def test_a_transcript_header_counts_what_the_agent_ran(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_directory = write_run(Path(temporary_directory))
+            stream = [
+                {"type": "item.started", "item": {"type": "command_execution", "command": "pytest -q"}},
+                {"type": "item.completed", "item": {"type": "command_execution", "command": "pytest -q", "exit_code": 0, "aggregated_output": "2 passed"}},
+                {"type": "item.started", "item": {"type": "command_execution", "command": "python -c pass"}},
+                {"type": "item.completed", "item": {"type": "command_execution", "command": "python -c pass", "exit_code": 1, "aggregated_output": "Access is denied"}},
+            ]
+            (run_directory / "agent-executions" / "0001-reviewer.json").write_text(
+                json.dumps(
+                    {
+                        "agent": "codex",
+                        "role": "reviewer",
+                        "process": {
+                            "stdout": "\n".join(json.dumps(item) for item in stream),
+                            "duration_seconds": 12,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            page = render_run_page(run_directory)
+
+        self.assertIn("2 command(s)", page)
+        self.assertIn("1 refused or failed", page)
+
+    def test_a_claude_tool_error_counts_as_a_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_directory = write_run(Path(temporary_directory))
+            stream = [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Bash",
+                                "input": {"command": "pytest -q"},
+                            }
+                        ]
+                    },
+                },
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "is_error": True,
+                                "content": "This command requires approval",
+                            }
+                        ]
+                    },
+                },
+            ]
+            (run_directory / "agent-executions" / "0001-primary.json").write_text(
+                json.dumps(
+                    {
+                        "agent": "claude",
+                        "role": "primary",
+                        "process": {
+                            "stdout": "\n".join(json.dumps(i) for i in stream),
+                            "duration_seconds": 4,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            page = render_run_page(run_directory)
+
+        self.assertIn("1 refused or failed", page)
+
+    def test_an_agent_that_ran_nothing_is_named_as_such(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_directory = write_run(Path(temporary_directory))
+            (run_directory / "agent-executions" / "0001-reviewer.json").write_text(
+                json.dumps(
+                    {
+                        "agent": "codex",
+                        "role": "reviewer",
+                        "process": {
+                            "stdout": json.dumps(
+                                {
+                                    "type": "item.completed",
+                                    "item": {"type": "agent_message", "text": "looks fine"},
+                                }
+                            ),
+                            "duration_seconds": 3,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            page = render_run_page(run_directory)
+
+        self.assertIn("ran nothing", page)
+
     def test_a_run_with_no_patch_says_so_instead_of_failing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             run_directory = write_run(Path(temporary_directory))

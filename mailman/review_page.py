@@ -464,7 +464,18 @@ def _transcripts(executions: list[AgentExecution], run_directory: Path) -> str:
             "output was captured for this agent.</p>"
         )
         commands = sum(1 for event in events if event.kind == "command")
-        denied = sum(1 for event in events if event.kind == "error")
+        # Each vendor reports a refused or failing command differently. Codex
+        # opens the result with its exit code, Claude marks the tool result as
+        # an error, and both also emit bare error events.
+        denied = sum(
+            1
+            for event in events
+            if event.kind == "error"
+            or (
+                event.kind == "result"
+                and event.summary.startswith(("exit ", "error"))
+            )
+        )
         counts = f"{len(events)} event(s) &middot; {commands} command(s)"
         if denied:
             counts += f' &middot; <span class="stat"><span class="del">{denied} '
