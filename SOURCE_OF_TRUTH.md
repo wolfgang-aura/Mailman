@@ -16,6 +16,7 @@ Last verified: 2026-09-02 in `Asia/Singapore`.
 - Issue #9 deployment: commit `a371be1` passed GitHub Actions on Python 3.12 and 3.14 in run `33558633354`.
 - Knowledge flywheel deployment: commit `d2be47a` passed GitHub Actions on Python 3.12 and 3.14 in run `33592165392`.
 - External issue deployment: commit `78d048e` passed GitHub Actions on Python 3.12 and 3.14 in run `33596869316`. It carries issue ingestion, environment preparation, patch export, and the first external run records.
+- Run record deployment: commit `46d0862` passed GitHub Actions on Python 3.12 and 3.14 in run `33596947293`. This is the current head of `main`.
 
 ## Development environment
 
@@ -25,6 +26,21 @@ Last verified: 2026-09-02 in `Asia/Singapore`.
 - Claude CLI: installed at `%APPDATA%\npm\claude.cmd` and authenticated. It executed a real review on 2026-09-02. Its adapter flags are verified against the installed build: `--print`, `--input-format`, `--output-format`, `--permission-mode` (`acceptEdits`, `plan`), `--disallowedTools`, `--model`, and the undocumented but accepted `--max-turns`.
 - Both CLIs were absent from the host earlier on 2026-09-02 and were installed with `npm install -g @anthropic-ai/claude-code @openai/codex` from an independent terminal. Before that install, a Claude Code agent session reported both as present while the host did not have them. Confirm agent CLI presence from an independent terminal, never from inside an agent session.
 - GitHub CLI: installed and authenticated. The user authorized the first public push on 2026-09-02.
+
+## Target selection
+
+Set by the repository owner on 2026-09-02, after the first external run used
+`ayukhno/autosound-tcc`, a repository with almost no stars or usage.
+
+- External targets must be projects a reader would recognize as real and
+  maintained, not whatever repository happened to have an open issue.
+- Small issues are fine. Obscure projects are not. The size of the issue and the
+  standing of the project are separate choices.
+- A candidate is only viable here if a fresh clone is clean, its test suite runs
+  on Windows without native, GPU, or Qt dependencies, and a specific test can
+  serve as a verification gate.
+- Vet a candidate against those checks before any agent runs. Two of the first
+  three candidates failed them.
 
 ## Authority and artifact boundaries
 
