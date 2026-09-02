@@ -24,10 +24,15 @@ Last verified: 2026-09-03 in `Asia/Singapore`.
   granted when the post-primary verification fails (#13).
 - Issue-sweep deployment: commit `299b1c8` passed GitHub Actions on Python 3.12 and 3.14 in run
   `33670366489`. It carries the fixes for #18, #21, #22, #23, #24, #25, #27 and #28, plus the
-  recording halves of #20 and #26. This is the current head of `main`.
+  recording halves of #20 and #26.
 - Duplicate-search deployment: commit `d1d4a98` passed GitHub Actions on Python 3.12 and
   3.14 in run `33677777743`. It carries the pull request standard and the fix for #30, a
   duplicate search whose failed methods were recorded as a successful empty search.
+- Duplicate-precision deployment: commit `330d6b7` passed GitHub Actions in run `33680128212`.
+  It carries the fix for #31: the run's own issue is no longer a duplicate of itself, matches
+  are split into index-backed hits that block and listing hits a human must read, and
+  `mailman acknowledge-duplicates` records that reading against the exact rows it covers.
+  This is the current head of `main`.
 
 ## Development environment
 
