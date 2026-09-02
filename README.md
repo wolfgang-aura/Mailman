@@ -165,6 +165,20 @@ Agent executables are resolved at launch. Register one for a run with
 `mailman probe-tool RUN_ID --name claude --executable PATH` when it is not on
 `PATH`, or when a run must be pinned to an exact binary.
 
+While the loop runs it prints every command, edit, and message the agent
+produces, and appends the same lines to `agent-executions/ROLE-live.log` in the
+run directory. Read what a run did, during or after it:
+
+```powershell
+mailman show                 # every recorded run, with its status and agents
+mailman show RUN_ID          # timeline, agent transcript, and reports
+mailman show RUN_ID --full   # with the message bodies and command output
+```
+
+The transcript is rebuilt from evidence already on disk, so runs recorded
+before this existed are readable too. See
+[the observability decision](docs/decisions/0008-observable-runs.md).
+
 Draft a retrospective for a finished run:
 
 ```powershell
