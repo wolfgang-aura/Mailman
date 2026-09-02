@@ -189,6 +189,7 @@ class _Orchestration:
                     report_path=report_path,
                     timeout_seconds=self.agent_timeout_seconds,
                     on_event=watch,
+                    verification_command=tuple(self.verification_command),
                 )
             )
         report_text = (

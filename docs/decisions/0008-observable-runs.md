@@ -67,6 +67,18 @@ Turning the stream on immediately exposed a defect that had been invisible for
 the project's whole life: under `--permission-mode acceptEdits` the primary
 agent can edit files but has every Bash call denied, with no one to approve it,
 so it spends its turns on refusals. Filed as
-[#16](https://github.com/wolfgang-aura/Mailman/issues/16). Three blocked runs
-were attributed to the agents being wrong about the code. At least one of them
-was the harness never letting the agent run a test.
+[#16](https://github.com/wolfgang-aura/Mailman/issues/16) and fixed in the same
+session with an explicit `--allowedTools` allowlist. Three blocked runs were
+attributed to the agents being wrong about the code. At least one of them was
+the harness never letting the agent run a test.
+
+The allowlist is per role. The reviewer gets read-only git, because a reviewer
+that cannot run `git diff` is as blind as an engineer that cannot run a test.
+The primary agent also gets the usual test runners and the run's own
+verification command, which is normally an absolute path into the run's
+interpreter that no prefix rule would otherwise cover. The upstream denylist is
+unchanged and still wins, so nothing here can push or open a pull request.
+
+Verified live against the installed CLI on 2026-09-02: `git status --short`,
+`git diff --stat`, and `python -c` all executed in a workspace where, before
+the change, every one of them came back `This command requires approval`.

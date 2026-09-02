@@ -170,6 +170,11 @@ def _build_parser() -> argparse.ArgumentParser:
     run_agent.add_argument("--model")
     run_agent.add_argument("--timeout", type=float, default=3600)
     run_agent.add_argument("--max-turns", type=int, default=30)
+    run_agent.add_argument(
+        "--verification",
+        help="the verification command, as one string, so the agent is "
+        "permitted to run it",
+    )
     run_agent.add_argument("--data-root", type=Path)
 
     probe = subparsers.add_parser(
@@ -569,6 +574,11 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         executable=toolchain_executable(run_directory, configured.agent.strip().lower()),
     )
     report_path = run_directory / f"{arguments.role}-report.md"
+    verification = (
+        tuple(environment_command(run_directory, arguments.verification.split()))
+        if arguments.verification
+        else ()
+    )
     request = AgentRequest(
         run_id=run.run_id,
         role=arguments.role,
@@ -576,6 +586,8 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         workspace=workspace_state.path,
         report_path=report_path,
         timeout_seconds=arguments.timeout,
+        on_event=lambda event: _emit(f"     {event.line()}"),
+        verification_command=verification,
     )
     print(
         f"Starting {agent.name} as {arguments.role} with a "

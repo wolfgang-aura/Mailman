@@ -23,6 +23,39 @@ _UPSTREAM_WRITE_DENYLIST = ",".join(
     )
 )
 
+# Under acceptEdits every Bash call is referred to a human, and in --print
+# there is no human, so the agent spends its turns collecting refusals. These
+# are the commands it needs to reproduce a bug and check a fix. The denylist
+# above still wins, so nothing here reaches the upstream repository.
+_READ_COMMANDS = (
+    "git status",
+    "git diff",
+    "git log",
+    "git show",
+    "git branch",
+    "git rev-parse",
+    "git ls-files",
+)
+
+_TEST_COMMANDS = ("python", "python3", "py", "pytest", "tox", "make")
+
+
+def _allowed_tools(role: str, verification_command: tuple[str, ...]) -> str:
+    """Permit the commands the role needs and nothing else.
+
+    The reviewer only has to read the candidate change. The primary agent also
+    has to run the suite, which is the whole point of giving it a workspace.
+    """
+    commands = list(_READ_COMMANDS)
+    if role == "primary":
+        commands.extend(_TEST_COMMANDS)
+    rules = [f"Bash({command}:*)" for command in commands]
+    if role == "primary" and verification_command:
+        # The verification command is usually an absolute path into the run's
+        # own interpreter, which no prefix above covers.
+        rules.append(f"Bash({verification_command[0]}:*)")
+    return ",".join(rules)
+
 
 @dataclass(frozen=True)
 class ClaudeCliAgent(EngineeringAgent):
@@ -57,6 +90,12 @@ class ClaudeCliAgent(EngineeringAgent):
             "--disallowedTools",
             _UPSTREAM_WRITE_DENYLIST,
         ]
+        command.extend(
+            [
+                "--allowedTools",
+                _allowed_tools(request.role, request.verification_command),
+            ]
+        )
         if self.model:
             command.extend(["--model", self.model])
         return command
