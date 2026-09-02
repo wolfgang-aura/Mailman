@@ -708,6 +708,7 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         "prompt_path": str(prompt_path),
         "turn_budget": agent.turn_budget,
         "reasoning_effort": arguments.reasoning_effort,
+        "model_reported_by_cli": result.observed_model or "not reported",
         "instruction_sources": describe_instruction_sources(agent.name),
         "process": result.command_result.to_dict(),
         "workflow_status_after_run": str(run.status),
@@ -718,6 +719,7 @@ def _run_agent(arguments: argparse.Namespace) -> int:
     summary = {
         "agent": agent.name,
         "model": model,
+        "model_reported_by_cli": result.observed_model or "not reported",
         "role": arguments.role,
         "process_exit_code": result.exit_code,
         "timed_out": result.timed_out,

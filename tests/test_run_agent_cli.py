@@ -110,6 +110,8 @@ class RunAgentCliTests(unittest.TestCase):
             self.assertEqual(record["workflow_status_after_run"], "INITIALIZED")
             # A run that cannot say what else the CLI read is not reproducible.
             self.assertIsInstance(record["instruction_sources"], list)
+            # A stream that names no model says so, rather than recording null.
+            self.assertEqual(record["model_reported_by_cli"], "not reported")
 
     def test_reviewer_accepts_candidate_commit_descended_from_base(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

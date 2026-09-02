@@ -6,6 +6,7 @@ import unittest
 from mailman.transcript import (
     TranscriptEvent,
     final_message,
+    observed_model,
     parse_line,
     parse_stream,
     render,
@@ -237,6 +238,33 @@ class MalformedStreamTests(unittest.TestCase):
         rendered = render([TranscriptEvent("command", f"git push {token}")])
 
         self.assertNotIn(token, rendered)
+
+
+class ObservedModelTests(unittest.TestCase):
+    def test_reads_the_model_claude_announces_in_its_init_event(self) -> None:
+        stream = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "system",
+                        "subtype": "init",
+                        "session_id": "s1",
+                        "model": "claude-sonnet-5",
+                    }
+                ),
+                json.dumps({"type": "assistant", "message": {"content": "hi"}}),
+            ]
+        )
+
+        self.assertEqual(observed_model(stream, "claude"), "claude-sonnet-5")
+
+    def test_returns_none_when_the_stream_never_names_a_model(self) -> None:
+        stream = json.dumps({"type": "thread.started", "thread_id": "t1"})
+
+        self.assertIsNone(observed_model(stream, "codex"))
+
+    def test_survives_output_that_is_not_json(self) -> None:
+        self.assertIsNone(observed_model("warning: something\nnot json", "codex"))
 
 
 if __name__ == "__main__":

@@ -85,6 +85,9 @@ class AgentResult:
     stop_reason: str | None = None
     """Why the agent stopped, when its CLI says so. ``error_max_turns`` and a
     bare exit code are very different failures and used to look identical."""
+    observed_model: str | None = None
+    """The model the CLI reported using, which is not always the one requested.
+    ``None`` when the vendor's stream never names one."""
 
 
 class EngineeringAgent(ABC):

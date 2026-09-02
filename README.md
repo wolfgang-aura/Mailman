@@ -187,6 +187,11 @@ The effort is validated against the CLI's own catalog before launch and stored
 on the execution record, because a review at `max` and one at the default are
 not the same evidence.
 
+Each execution record stores the model the CLI itself reported using, next to
+the one the run requested. Claude names it in its init event; Codex names none,
+which the record says as `not reported` rather than as a null that could mean
+either unset or unknown.
+
 Every execution record also lists the instruction sources that were in effect:
 the operator's own `CLAUDE.md`, `AGENTS.md`, settings, and skill files, each with
 a SHA-256 digest and whether Mailman suppressed it. Neither CLI can be told to

@@ -12,7 +12,7 @@ from mailman.agents.base import (
 )
 from mailman.executor import execute
 from mailman.redaction import redact
-from mailman.transcript import CLAUDE, final_message, parse_stream
+from mailman.transcript import CLAUDE, final_message, observed_model, parse_stream
 
 
 _UPSTREAM_WRITE_DENYLIST = ",".join(
@@ -164,6 +164,7 @@ class ClaudeCliAgent(EngineeringAgent):
             report_present=report_present,
             command_result=result,
             stop_reason=stop_reason,
+            observed_model=observed_model(result.stdout, CLAUDE),
         )
 
 

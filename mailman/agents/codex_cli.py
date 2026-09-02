@@ -11,6 +11,7 @@ from mailman.agents.base import (
 )
 from mailman.executor import execute
 from mailman.redaction import redact
+from mailman.transcript import CODEX, observed_model
 
 
 # The CLI's own catalog for the 5.6 family. `ultra` is not offered on every
@@ -117,4 +118,5 @@ class CodexCliAgent(EngineeringAgent):
             timed_out=result.timed_out,
             report_present=report_present,
             command_result=result,
+            observed_model=observed_model(result.stdout, CODEX),
         )

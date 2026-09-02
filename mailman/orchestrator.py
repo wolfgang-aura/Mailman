@@ -263,6 +263,7 @@ class _Orchestration:
                 "report": report_text,
                 "prompt_path": str(prompt_path),
                 "turn_budget": agent.turn_budget,
+                "model_reported_by_cli": result.observed_model or "not reported",
                 "instruction_sources": describe_instruction_sources(agent.name),
                 "process": result.command_result.to_dict(),
                 "workflow_status_after_run": str(self.run.status),

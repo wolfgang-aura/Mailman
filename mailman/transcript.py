@@ -252,6 +252,31 @@ def parse_stream(lines: Iterable[str], agent: str) -> list[TranscriptEvent]:
     return events
 
 
+def observed_model(stdout: str, agent: str) -> str | None:
+    """Return the model the CLI itself says it used, when it says so.
+
+    A requested model and a used model are not the same fact. Claude announces
+    one in its init event; Codex announces none, and a run whose reviewer model
+    was never recorded could not be reconstructed from the evidence at all.
+    """
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if agent == CLAUDE and payload.get("type") != "system":
+            continue
+        for holder in (payload, payload.get("thread"), payload.get("session")):
+            if isinstance(holder, dict) and isinstance(holder.get("model"), str):
+                return holder["model"]
+    return None
+
+
 def render(events: Iterable[TranscriptEvent], *, width: int = _SUMMARY_LIMIT) -> str:
     return "\n".join(redact(event.line(width=width)) for event in events)
 
