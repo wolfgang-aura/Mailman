@@ -28,7 +28,11 @@ from mailman.issue import (
     capture_issue_from_github,
     load_issue_record,
 )
-from mailman.submission import TargetPolicy, prepare_submission
+from mailman.submission import (
+    TargetPolicy,
+    prepare_submission,
+    record_duplicate_search,
+)
 from mailman.knowledge.collect import collect_retrospective, write_retrospective
 from mailman.knowledge.retrospective import RETROSPECTIVE_SECTIONS
 from mailman.models import RunStatus
@@ -118,6 +122,17 @@ def _build_parser() -> argparse.ArgumentParser:
     submission.add_argument("--branch")
     submission.add_argument("--title")
     submission.add_argument("--data-root", type=Path)
+
+    duplicate = subparsers.add_parser(
+        "duplicate-search",
+        help="search a target's pull requests and issues for the same change",
+    )
+    duplicate.add_argument("run_id")
+    duplicate.add_argument("--query", required=True)
+    duplicate.add_argument("--limit", type=int, default=30)
+    duplicate.add_argument("--executable")
+    duplicate.add_argument("--timeout", type=float, default=60)
+    duplicate.add_argument("--data-root", type=Path)
 
     transition = subparsers.add_parser("transition", help="change a run workflow state")
     transition.add_argument("run_id")
@@ -292,6 +307,36 @@ def _prepare_environment(arguments: argparse.Namespace) -> int:
     if not record["success"]:
         summary["detail"] = record.get("detail")
     print(json.dumps(summary, indent=2))
+    return 0 if record["success"] else 1
+
+
+def _duplicate_search(arguments: argparse.Namespace) -> int:
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    record = record_duplicate_search(
+        run_directory,
+        repository=run.repository,
+        query=arguments.query,
+        executable=arguments.executable,
+        timeout_seconds=arguments.timeout,
+        limit=arguments.limit,
+    )
+    print(
+        json.dumps(
+            {
+                "run_id": run.run_id,
+                "repository": record["repository"],
+                "query": record["query"],
+                "success": record["success"],
+                "matches": record.get("match_count", 0),
+                "detail": record.get("detail"),
+            },
+            indent=2,
+        )
+    )
+    if record["success"] and record["matches"]:
+        for match in record["matches"]:
+            kind = "PR" if match["pull_request"] else "issue"
+            print(f"  {kind} #{match['number']} {match['state']}: {match['title']}")
     return 0 if record["success"] else 1
 
 
@@ -676,6 +721,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _export_patch(parsed)
         if parsed.subcommand == "prepare-submission":
             return _prepare_submission(parsed)
+        if parsed.subcommand == "duplicate-search":
+            return _duplicate_search(parsed)
         if parsed.subcommand == "transition":
             return _transition(parsed)
         if parsed.subcommand == "run-agent":

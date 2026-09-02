@@ -6,8 +6,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from mailman.executor import CommandResult, execute
 from mailman.issue import load_issue_record
 from mailman.models import RunRecord, RunStatus
+from mailman.toolchain import resolve_tool
 
 
 SUBMISSION_SCHEMA_VERSION = 1
@@ -297,7 +299,8 @@ def _policy_findings(
                 ),
             )
         )
-    if policy.requires_duplicate_search and not duplicate_search:
+    searched = bool(duplicate_search) and duplicate_search.get("success") is True
+    if policy.requires_duplicate_search and not searched:
         findings.append(
             Finding(
                 code="missing-duplicate-search",
@@ -477,7 +480,7 @@ def prepare_submission(
     hygiene = analyze_diff(diff)
     changed_paths = [entry["path"] for entry in hygiene["files"]]
     verifications = _verification_rows(run_directory)
-    duplicate_search_path = run_directory / "duplicate-search.json"
+    duplicate_search_path = run_directory / DUPLICATE_SEARCH_FILENAME
     duplicate_search = (
         json.loads(duplicate_search_path.read_text(encoding="utf-8"))
         if duplicate_search_path.is_file()
@@ -532,10 +535,112 @@ def prepare_submission(
         "findings": [finding.to_dict() for finding in findings],
         "ready": not blocking,
         "blocking_codes": sorted({finding.code for finding in blocking}),
-        "duplicate_search_recorded": duplicate_search is not None,
+        "duplicate_search_recorded": bool(duplicate_search)
+        and duplicate_search.get("success") is True,
         "files": ["pull-request.md", "accountability.md", "submission.json"],
     }
     (destination_path / "submission.json").write_text(
         json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     return record
+
+
+DUPLICATE_SEARCH_FILENAME = "duplicate-search.json"
+
+_SEARCH_FIELDS = "number,title,state,url,createdAt,isPullRequest"
+
+
+def _match_rows(payload: object) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not isinstance(payload, list):
+        return rows
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        rows.append(
+            {
+                "number": entry.get("number"),
+                "title": entry.get("title"),
+                "state": entry.get("state"),
+                "url": entry.get("url"),
+                "created_at": entry.get("createdAt"),
+                "pull_request": bool(entry.get("isPullRequest")),
+            }
+        )
+    return rows
+
+
+def record_duplicate_search(
+    run_directory: Path,
+    *,
+    repository: str,
+    query: str,
+    executable: str | None = None,
+    timeout_seconds: float = 60,
+    limit: int = 30,
+) -> dict[str, Any]:
+    """Search a target's pull requests and issues, and record what came back.
+
+    Starlette treats a duplicate pull request as a ban-level offence, and no
+    project welcomes one. The search is cheap; forgetting it is not. The record
+    is evidence that it happened, with the query that was used, so a human can
+    judge whether it was a real search or a token one.
+    """
+    if not query.strip():
+        raise ValueError("a duplicate search needs a query")
+    slug = repository.removesuffix(".git").rstrip("/")
+    for prefix in ("https://github.com/", "git@github.com:", "ssh://git@github.com/"):
+        slug = slug.removeprefix(prefix)
+    command_executable = executable or resolve_tool(run_directory, "gh")
+    searched_at = datetime.now(UTC).isoformat()
+    record: dict[str, Any] = {
+        "schema_version": 1,
+        "searched_at": searched_at,
+        "repository": slug,
+        "query": query,
+        "success": False,
+        "matches": [],
+        "commands": [],
+    }
+    for kind in ("prs", "issues"):
+        result: CommandResult = execute(
+            [
+                command_executable,
+                "search",
+                kind,
+                query,
+                "--repo",
+                slug,
+                # `gh search` accepts only open or closed, and searches both
+                # when the flag is absent. A duplicate can be in either.
+                "--limit",
+                str(limit),
+                "--json",
+                _SEARCH_FIELDS,
+            ],
+            working_directory=run_directory,
+            timeout_seconds=timeout_seconds,
+        )
+        record["commands"].append(result.to_dict())
+        if result.timed_out or result.exit_code != 0:
+            record["detail"] = f"the {kind} search failed"
+            _write_json(run_directory / DUPLICATE_SEARCH_FILENAME, record)
+            return record
+        try:
+            payload = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError as error:
+            record["detail"] = f"the GitHub CLI returned unreadable JSON: {error}"
+            _write_json(run_directory / DUPLICATE_SEARCH_FILENAME, record)
+            return record
+        record["matches"].extend(_match_rows(payload))
+    record["success"] = True
+    record["match_count"] = len(record["matches"])
+    _write_json(run_directory / DUPLICATE_SEARCH_FILENAME, record)
+    return record
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> Path:
+    path.write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
+    return path
