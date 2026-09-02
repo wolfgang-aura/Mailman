@@ -56,7 +56,8 @@ review, and a `BLOCKED` ending were recorded live the same day in
 - [x] Record each target project's contribution and AI policy as data.
 - [x] Gate a submission on diff hygiene, so noise never reaches a maintainer.
 - [x] Draft policy-shaped pull request text and a human accountability brief.
-- [ ] Record a duplicate search of a target's open and closed pull requests.
+- [x] Record a duplicate search of a target's open and closed pull requests.
+- [x] Put earlier attempts, and why they were rejected, into both agent prompts.
 - [ ] Prove the fix fails without its source change, as a recorded command.
 - [ ] Carry one live run on a permissive, recognizable target to a ready
       submission.

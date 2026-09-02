@@ -193,6 +193,22 @@ export instead of being silently redacted. The command refuses a run that is not
 `BLOCKED` run's partial work gets read. Nothing is pushed, and the pull request
 text is a draft for a human to accept, edit, or discard.
 
+Before running anything, find out what has already been tried:
+
+```powershell
+mailman duplicate-search RUN_ID --query "RaisesGroup check"
+mailman prior-art RUN_ID
+```
+
+`duplicate-search` records a GitHub CLI search of the target's pull requests and
+issues. `prior-art` then reads each earlier pull request and writes
+`prior-art.md`, which `build-prompts` folds into both agent prompts: what each
+attempt claimed, which files it touched, and what a maintainer said when closing
+it. A merged pull request's body and files are withheld, because handing an
+agent the accepted fix measures nothing. A closed one is the opposite case: on
+`pytest-dev/pytest` #14324, three attempts were closed before Mailman ever ran,
+one of them with the comment "Closing as unattended undisclosed ai".
+
 Check a finished run against the target project's own contribution policy:
 
 ```powershell
