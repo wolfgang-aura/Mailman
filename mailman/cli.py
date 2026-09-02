@@ -350,7 +350,10 @@ def _run_agent(arguments: argparse.Namespace) -> int:
             f"workspace HEAD {workspace_state.head}"
         )
     if arguments.role == "primary" and not workspace_state.clean:
-        raise ValueError("primary workspace must be clean before agent execution")
+        raise ValueError(
+            "primary workspace must be clean before agent execution: "
+            f"{workspace_state.describe_changes()}"
+        )
     source_prompt = arguments.prompt.resolve(strict=True)
     if not source_prompt.is_file():
         raise ValueError("prompt must be a file")
@@ -514,6 +517,8 @@ def _prepare_workspace(arguments: argparse.Namespace) -> int:
         "success": record["success"],
         "record": str(run_directory / "workspace.json"),
     }
+    if record.get("detail"):
+        summary["detail"] = record["detail"]
     print(json.dumps(summary, indent=2))
     if record["success"]:
         return 0

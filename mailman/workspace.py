@@ -14,6 +14,16 @@ class WorkspaceState:
     path: Path
     head: str
     clean: bool
+    changes: tuple[str, ...] = ()
+
+    def describe_changes(self, limit: int = 10) -> str:
+        """Name the paths that make a workspace dirty, so a human can act."""
+        if not self.changes:
+            return "no recorded changes"
+        shown = ", ".join(self.changes[:limit])
+        if len(self.changes) > limit:
+            return f"{shown}, and {len(self.changes) - limit} more"
+        return shown
 
 
 def _git(workspace: Path, arguments: list[str]) -> str:
@@ -39,7 +49,10 @@ def inspect_workspace(path: Path) -> WorkspaceState:
         raise ValueError("workspace must be a directory")
     head = _git(workspace, ["rev-parse", "HEAD"])
     status = _git(workspace, ["status", "--porcelain=v1", "--untracked-files=all"])
-    return WorkspaceState(path=workspace, head=head, clean=not bool(status))
+    changes = tuple(line.strip() for line in status.splitlines() if line.strip())
+    return WorkspaceState(
+        path=workspace, head=head, clean=not changes, changes=changes
+    )
 
 
 def commit_is_ancestor(workspace: Path, ancestor: str) -> bool:
@@ -168,8 +181,17 @@ def prepare_workspace(
         {
             "head": state.head,
             "clean": state.clean,
+            "changes": list(state.changes),
             "success": state.head == base_commit and state.clean,
         }
     )
+    if state.head == base_commit and not state.clean:
+        # A fresh clone that is already dirty is a property of the target
+        # repository, not of the run. Name the paths instead of making the
+        # human re-run Git to find them.
+        record["detail"] = (
+            "the checkout is dirty immediately after cloning: "
+            f"{state.describe_changes()}"
+        )
     _write_workspace_record(record_path, record)
     return record
