@@ -278,7 +278,10 @@ class _Orchestration:
                 f"{self.run.base_commit}"
             )
         if not state.clean:
-            raise ValueError("primary workspace must be clean before orchestration")
+            raise ValueError(
+                "primary workspace must be clean before orchestration: "
+                f"{state.describe_changes()}"
+            )
         self.workspace = state.path
         self._step(
             "workspace",

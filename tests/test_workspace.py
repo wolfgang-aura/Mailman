@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mailman.workspace import inspect_workspace, prepare_workspace
+from mailman.workspace import WorkspaceState, inspect_workspace, prepare_workspace
 
 
 def git(workspace: Path, *arguments: str) -> str:
@@ -19,6 +19,39 @@ def git(workspace: Path, *arguments: str) -> str:
         shell=False,
     )
     return completed.stdout.strip()
+
+
+class WorkspaceInspectionTests(unittest.TestCase):
+    def test_names_the_paths_that_make_a_workspace_dirty(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            workspace.mkdir()
+            (workspace / "code.txt").write_text("base\n", encoding="utf-8")
+            git(workspace, "init", "--initial-branch=main")
+            git(workspace, "config", "user.name", "Fixture")
+            git(workspace, "config", "user.email", "fixture@example.invalid")
+            git(workspace, "add", "--", "code.txt")
+            git(workspace, "commit", "-m", "base")
+            (workspace / "code.txt").write_text("changed\n", encoding="utf-8")
+            (workspace / "new.txt").write_text("added\n", encoding="utf-8")
+
+            state = inspect_workspace(workspace)
+
+            self.assertFalse(state.clean)
+            self.assertEqual(len(state.changes), 2)
+            description = state.describe_changes()
+            self.assertIn("code.txt", description)
+            self.assertIn("new.txt", description)
+
+    def test_describe_changes_truncates_a_long_list(self) -> None:
+        state = WorkspaceState(
+            path=Path("."),
+            head="a" * 40,
+            clean=False,
+            changes=tuple(f"M file{index}.py" for index in range(12)),
+        )
+
+        self.assertIn("and 2 more", state.describe_changes())
 
 
 class WorkspacePreparationTests(unittest.TestCase):
