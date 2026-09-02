@@ -27,12 +27,20 @@ _STYLE = """
   --muted: #5b6773; --accent: #0969da; --ok: #1a7f37; --stop: #cf222e;
   --warn: #9a6700; --add-bg: #e6ffec; --del-bg: #ffebe9; --gutter: #f2f4f7;
 }
+/* Three states, not two: an explicit choice stamps data-theme on the root, and
+   the default setting stamps nothing, where only the media query separates the
+   two. Tokens are redefined in both places so either wins in either direction. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0d1117; --surface: #151b23; --border: #2a323c; --ink: #e6edf3;
     --muted: #9198a1; --accent: #4493f8; --ok: #3fb950; --stop: #f85149;
     --warn: #d29922; --add-bg: #12261e; --del-bg: #25171c; --gutter: #11171f;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #0d1117; --surface: #151b23; --border: #2a323c; --ink: #e6edf3;
+  --muted: #9198a1; --accent: #4493f8; --ok: #3fb950; --stop: #f85149;
+  --warn: #d29922; --add-bg: #12261e; --del-bg: #25171c; --gutter: #11171f;
 }
 * { box-sizing: border-box; }
 body {
@@ -456,6 +464,16 @@ def _reports(run_directory: Path) -> str:
     if not blocks:
         return '<p class="note">Neither agent wrote a report.</p>'
     return "".join(blocks)
+
+
+def render_run_fragment(run_directory: Path) -> str:
+    """The same page without the document wrapper, for hosts that add their own."""
+    page = render_run_page(run_directory)
+    start = page.index("<title>")
+    end = page.index("</head>")
+    head = page[start:end].replace("</head>", "")
+    body = page[page.index("<body>") + len("<body>") : page.rindex("</body>")]
+    return head + "\n" + body + "\n"
 
 
 def render_run_page(run_directory: Path) -> str:
