@@ -200,6 +200,32 @@ class AgentAdapterTests(unittest.TestCase):
         self.assertIn("Bash(git push:*)", command[command.index("--disallowedTools") + 1])
         self.assertNotIn("Bash(git push:*)", allowed)
 
+    def test_claude_primary_may_spell_the_interpreter_any_way(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            request = AgentRequest(
+                run_id="run-1",
+                role="primary",
+                prompt_path=root / "prompt.md",
+                workspace=root,
+                report_path=root / "primary-report.md",
+                verification_command=(
+                    r"C:\runs\abc\environment/Scripts/python.exe",
+                    "-m",
+                    "pytest",
+                ),
+            )
+            command = ClaudeCliAgent().build_command(request)
+
+        allowed = command[command.index("--allowedTools") + 1]
+        for spelling in (
+            r"C:\runs\abc\environment/Scripts/python.exe",
+            r"C:\runs\abc\environment\Scripts\python.exe",
+            "C:/runs/abc/environment/Scripts/python.exe",
+            "/c/runs/abc/environment/Scripts/python.exe",
+        ):
+            self.assertIn(f"Bash({spelling}:*)", allowed)
+
     def test_claude_reviewer_may_read_the_change_but_not_run_the_suite(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

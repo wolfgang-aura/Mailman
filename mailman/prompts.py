@@ -24,6 +24,25 @@ def _verification_line(verification_command: Sequence[str] | None) -> str:
     )
 
 
+def _permitted_command_note(verification_command: Sequence[str] | None) -> str:
+    """Say which command is pre-approved, so no turn is spent discovering it.
+
+    An agent that has to guess the permitted spelling learns it only from
+    refusals, and a refusal costs a turn out of the same budget the work needs.
+    """
+    if not verification_command:
+        return ""
+    printable = " ".join(verification_command)
+    return (
+        f"""
+Run it yourself as `{printable}`. That command is pre-approved, as are the
+equivalent spellings of the same interpreter path. A compound command, anything
+joined with `&&` or `;`, is refused whatever it contains, so run one command at
+a time.
+"""
+    )
+
+
 def _prior_art_section(prior_art: str | None, *, audience: str) -> str:
     """Put earlier attempts in front of the agent, with what they are for.
 
@@ -70,7 +89,7 @@ evidence report. Read the repository's own contribution and testing
 instructions before editing, and follow its existing conventions.
 
 {_verification_line(verification_command)}
-
+{_permitted_command_note(verification_command)}
 ## Required behavior
 
 - Keep the change focused on this issue. No drive-by refactors.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 from mailman.agents.base import (
@@ -46,6 +47,33 @@ _TEST_COMMANDS = ("python", "python3", "py", "pytest", "tox", "make")
 DEFAULT_MAX_TURNS = 120
 
 
+_DRIVE_PATH = re.compile(r"([A-Za-z]):[\\\\/](.*)")
+
+
+def command_spellings(command: str) -> list[str]:
+    """Every spelling of one executable a shell command might use.
+
+    Claude Code matches an allow rule as text. A rule built from a single
+    spelling of the interpreter denies the same interpreter written with the
+    other separator, and the agent can only find the permitted form by
+    collecting refusals: run 20260902T144544Z-5dbf69 spent five of its first
+    fourteen events doing exactly that.
+    """
+    spellings = [command]
+    candidates = [
+        command.replace('/', '\\'),
+        command.replace('\\', '/'),
+    ]
+    match = _DRIVE_PATH.fullmatch(command)
+    if match:
+        drive, rest = match.groups()
+        candidates.append(f"/{drive.lower()}/" + rest.replace('\\', '/'))
+    for candidate in candidates:
+        if candidate and candidate not in spellings:
+            spellings.append(candidate)
+    return spellings
+
+
 def _allowed_tools(role: str, verification_command: tuple[str, ...]) -> str:
     """Permit the commands the role needs and nothing else.
 
@@ -58,8 +86,12 @@ def _allowed_tools(role: str, verification_command: tuple[str, ...]) -> str:
     rules = [f"Bash({command}:*)" for command in commands]
     if role == "primary" and verification_command:
         # The verification command is usually an absolute path into the run's
-        # own interpreter, which no prefix above covers.
-        rules.append(f"Bash({verification_command[0]}:*)")
+        # own interpreter, which no prefix above covers. Permit every spelling
+        # of that path, not only the one Mailman happened to write.
+        rules.extend(
+            f"Bash({spelling}:*)"
+            for spelling in command_spellings(verification_command[0])
+        )
     return ",".join(rules)
 
 

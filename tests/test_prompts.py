@@ -20,6 +20,27 @@ def make_run(root: Path):
 
 
 class TaskPromptTests(unittest.TestCase):
+    def test_primary_prompt_names_the_pre_approved_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, run_directory = make_run(Path(temporary_directory) / "runs")
+            (run_directory / "issue.md").write_text(
+                "# example/project#7: Crash on empty input",
+                encoding="utf-8",
+            )
+
+            primary_path, reviewer_path = write_task_prompts(
+                run, run_directory, verification_command=["python", "-m", "pytest"]
+            )
+
+            primary = primary_path.read_text(encoding="utf-8")
+            self.assertIn("Run it yourself as `python -m pytest`", primary)
+            self.assertIn("pre-approved", primary)
+            self.assertIn("compound command", primary)
+            # The reviewer has no such allowance, so it is not told it has one.
+            self.assertNotIn(
+                "pre-approved", reviewer_path.read_text(encoding="utf-8")
+            )
+
     def test_refuses_to_build_prompts_from_the_issue_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             run, run_directory = make_run(Path(temporary_directory) / "runs")
