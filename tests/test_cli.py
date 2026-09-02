@@ -10,12 +10,88 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from mailman.artifacts import create_run
 from mailman.cli import _emit, main
 
 
 class CliTests(unittest.TestCase):
+    def test_orchestrate_defaults_to_the_prepared_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            workspace = run_directory / "workspace"
+            workspace.mkdir()
+            for name in ("primary-task.md", "reviewer-task.md"):
+                (run_directory / name).write_text("prompt", encoding="utf-8")
+            outcome = SimpleNamespace(
+                run_id=run.run_id,
+                status="READY_FOR_HUMAN_REVIEW",
+                ready=True,
+                revisions_used=0,
+                review_cycles=1,
+                record_path=run_directory / "run.json",
+            )
+            stderr = StringIO()
+            with patch("mailman.cli.orchestrate", return_value=outcome) as orchestrated:
+                with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                    exit_code = main(
+                        [
+                            "orchestrate",
+                            run.run_id,
+                            "--data-root",
+                            str(data_root),
+                            "--",
+                            "true",
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 0, stderr.getvalue())
+            self.assertEqual(
+                orchestrated.call_args.kwargs["workspace"].resolve(),
+                workspace.resolve(),
+            )
+
+    def test_orchestrate_says_no_workspace_was_prepared(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            for name in ("primary-task.md", "reviewer-task.md"):
+                (run_directory / name).write_text("prompt", encoding="utf-8")
+            stderr = StringIO()
+            with patch("mailman.cli.orchestrate") as orchestrated:
+                with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                    exit_code = main(
+                        [
+                            "orchestrate",
+                            run.run_id,
+                            "--data-root",
+                            str(data_root),
+                            "--",
+                            "true",
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("no prepared workspace", stderr.getvalue())
+            orchestrated.assert_not_called()
+
     def _verify(self, data_root: Path, run_id: str, code: str, working: str):
         stdout = StringIO()
         stderr = StringIO()

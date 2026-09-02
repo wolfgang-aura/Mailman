@@ -139,9 +139,11 @@ Run one configured agent against an already prepared Git workspace:
 mailman run-agent RUN_ID `
   --role primary `
   --prompt .mailman\runs\RUN_ID\primary-prompt.md `
-  --workspace C:\path\to\target-workspace `
   --timeout 3600
 ```
+
+`--workspace` defaults to the workspace `prepare-workspace` wrote for the run,
+`.mailman\runs\RUN_ID\workspace`. Pass it only for a workspace somewhere else.
 
 Mailman checks that a primary workspace is clean and exactly at the run's base commit. A reviewer workspace may contain uncommitted changes or candidate commits descended from that base. Mailman saves the exact prompt, including registered tool paths, then sends it through stdin. It records the process result and leaves workflow status unchanged. A zero process exit does not prove that the patch is correct. Review and independent verification remain separate gates.
 
@@ -151,7 +153,6 @@ Run the bounded primary and reviewer loop:
 mailman orchestrate RUN_ID `
   --primary-prompt .\prompts\primary.md `
   --reviewer-prompt .\prompts\reviewer.md `
-  --workspace C:\path\to\target-workspace `
   --agent-timeout 3600 `
   -- python -m unittest discover -s tests
 ```

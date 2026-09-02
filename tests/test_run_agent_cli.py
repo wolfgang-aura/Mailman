@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mailman.agents.base import AgentRequest, AgentResult, EngineeringAgent
-from mailman.artifacts import create_run, load_run
+from mailman.artifacts import create_run, load_run, write_run
 from mailman.cli import main
 from mailman.executor import CommandResult
 from mailman.models import RunStatus
@@ -199,6 +199,125 @@ class RunAgentCliTests(unittest.TestCase):
             self.assertIn("does not match base commit", stderr.getvalue())
             make_agent.assert_not_called()
 
+    def test_run_agent_defaults_to_the_prepared_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            data_root = root / "runs"
+            run, run_directory = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/1",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            workspace = run_directory / "workspace"
+            workspace.mkdir()
+            git(workspace, "init", "--initial-branch=main")
+            git(workspace, "config", "user.name", "Fixture")
+            git(workspace, "config", "user.email", "fixture@example.invalid")
+            (workspace / "code.txt").write_text("baseline\n", encoding="utf-8")
+            git(workspace, "add", "--", "code.txt")
+            git(workspace, "commit", "-m", "baseline")
+            run.base_commit = git(workspace, "rev-parse", "HEAD")
+            write_run(run, run_directory)
+            prompt = root / "prompt.md"
+            prompt.write_text("work on the fixture", encoding="utf-8")
+            stderr = StringIO()
+            with patch("mailman.cli._make_agent", return_value=FakeAgent()):
+                with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                    exit_code = main(
+                        [
+                            "run-agent",
+                            run.run_id,
+                            "--role",
+                            "primary",
+                            "--prompt",
+                            str(prompt),
+                            "--data-root",
+                            str(data_root),
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 0, stderr.getvalue())
+            records = list((run_directory / "agent-executions").glob("*.json"))
+            self.assertEqual(len(records), 1)
+            record = json.loads(records[0].read_text(encoding="utf-8"))
+            self.assertEqual(
+                Path(record["process"]["working_directory"]).resolve(),
+                workspace.resolve(),
+            )
+
+    def test_run_agent_says_no_workspace_was_prepared(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            data_root = root / "runs"
+            run, _ = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/1",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            prompt = root / "prompt.md"
+            prompt.write_text("work on the fixture", encoding="utf-8")
+            stderr = StringIO()
+            with patch("mailman.cli._make_agent") as make_agent:
+                with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                    exit_code = main(
+                        [
+                            "run-agent",
+                            run.run_id,
+                            "--role",
+                            "primary",
+                            "--prompt",
+                            str(prompt),
+                            "--data-root",
+                            str(data_root),
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("no prepared workspace", stderr.getvalue())
+            self.assertIn("mailman prepare-workspace", stderr.getvalue())
+            make_agent.assert_not_called()
+
+    def test_run_agent_says_an_explicit_workspace_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            data_root = root / "runs"
+            run, _ = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/1",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            prompt = root / "prompt.md"
+            prompt.write_text("work on the fixture", encoding="utf-8")
+            stderr = StringIO()
+            with patch("mailman.cli._make_agent") as make_agent:
+                with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                    exit_code = main(
+                        [
+                            "run-agent",
+                            run.run_id,
+                            "--role",
+                            "primary",
+                            "--prompt",
+                            str(prompt),
+                            "--workspace",
+                            str(root / "nowhere"),
+                            "--data-root",
+                            str(data_root),
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("workspace does not exist", stderr.getvalue())
+            make_agent.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

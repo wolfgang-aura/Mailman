@@ -186,7 +186,11 @@ def _build_parser() -> argparse.ArgumentParser:
     run_agent.add_argument("run_id")
     run_agent.add_argument("--role", required=True, choices=("primary", "reviewer"))
     run_agent.add_argument("--prompt", required=True, type=Path)
-    run_agent.add_argument("--workspace", required=True, type=Path)
+    run_agent.add_argument(
+        "--workspace",
+        type=Path,
+        help="defaults to the workspace `prepare-workspace` wrote for this run",
+    )
     run_agent.add_argument("--model")
     run_agent.add_argument(
         "--reasoning-effort",
@@ -226,7 +230,11 @@ def _build_parser() -> argparse.ArgumentParser:
     orchestrate_parser.add_argument("run_id")
     orchestrate_parser.add_argument("--primary-prompt", type=Path)
     orchestrate_parser.add_argument("--reviewer-prompt", type=Path)
-    orchestrate_parser.add_argument("--workspace", required=True, type=Path)
+    orchestrate_parser.add_argument(
+        "--workspace",
+        type=Path,
+        help="defaults to the workspace `prepare-workspace` wrote for this run",
+    )
     orchestrate_parser.add_argument("--agent-timeout", type=float, default=3600)
     orchestrate_parser.add_argument("--verification-timeout", type=float, default=900)
     orchestrate_parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
@@ -608,9 +616,26 @@ def _pinned_agent_factory(run_directory: Path, max_turns: int):
     return factory
 
 
+def _resolve_workspace(run_directory: Path, given: Path | None) -> Path:
+    """Fall back to the workspace `prepare-workspace` wrote for this run."""
+    if given is not None:
+        if not given.is_dir():
+            raise ValueError(f"workspace does not exist: {given}")
+        return given
+    prepared = run_directory / "workspace"
+    if not prepared.is_dir():
+        raise ValueError(
+            f"this run has no prepared workspace at {prepared}. Run "
+            "`mailman prepare-workspace` first, or pass --workspace."
+        )
+    return prepared
+
+
 def _run_agent(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
-    workspace_state = inspect_workspace(arguments.workspace)
+    workspace_state = inspect_workspace(
+        _resolve_workspace(run_directory, arguments.workspace)
+    )
     if arguments.role == "primary" and workspace_state.head != run.base_commit:
         raise ValueError(
             f"workspace HEAD {workspace_state.head} does not match base commit "
@@ -733,7 +758,7 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
     outcome = orchestrate(
         run=run,
         run_directory=run_directory,
-        workspace=arguments.workspace,
+        workspace=_resolve_workspace(run_directory, arguments.workspace),
         primary_prompt=_default_prompt(
             run_directory, arguments.primary_prompt, "primary-task.md"
         ),
