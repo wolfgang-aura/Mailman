@@ -32,6 +32,15 @@ Last verified: 2026-09-02 in `Asia/Singapore`.
 - Both CLIs were absent from the host earlier on 2026-09-02 and were installed with `npm install -g @anthropic-ai/claude-code @openai/codex` from an independent terminal. Before that install, a Claude Code agent session reported both as present while the host did not have them. Confirm agent CLI presence from an independent terminal, never from inside an agent session.
 - GitHub CLI: installed and authenticated. The user authorized the first public push on 2026-09-02.
 
+- Codex's Windows sandbox will not execute any binary under the user profile. Verified 2026-09-02:
+  the same `python --version` fails from `AppData\Local\Python` and succeeds from
+  `C:\ProgramData\mailman-python`, while `git` in Program Files runs either way. A virtual
+  environment inside a run directory works as long as its **base** interpreter sits outside the
+  profile, because only the base process creation is refused.
+- `C:\ProgramData\mailman-python` holds a copy of CPython 3.14.3 staged for exactly that reason.
+  It needs no administrator rights to create. `mailman doctor` reports "agent-runnable python" and
+  names the problem when the current base interpreter is inside the profile.
+
 ## Target selection
 
 Set by the repository owner on 2026-09-02, after the first external run used

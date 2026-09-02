@@ -102,7 +102,7 @@ summary::-webkit-details-marker { color: var(--muted); }
 .events .text { word-break: break-word; }
 .events li.denied .text { color: var(--stop); }
 .note { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
-.prose-card { padding: 20px 24px 24px; }
+.prose-card { padding: 20px 24px 24px; max-width: 80ch; }
 .prose { max-width: 72ch; }
 .prose > :first-child { margin-top: 0; }
 .prose h3 { font-size: 16px; font-weight: 600; margin: 24px 0 8px; text-wrap: balance; }
