@@ -15,7 +15,7 @@
 - [x] Clone a pinned target commit into an isolated private workspace.
 - [x] Give the primary agent the issue and repository instructions.
 - [x] Pass repository state and machine-captured evidence to the reviewer.
-- [x] Allow one bounded revision cycle. Unit-covered; no live evidence yet.
+- [x] Allow one bounded revision cycle. Live evidence recorded 2026-09-02.
 - [x] Re-run verification and stop at `READY_FOR_HUMAN_REVIEW`.
 
 The acceptance test is one recorded run in which two real agent processes complete the loop. Mocks alone do not count. Met on 2026-09-02 by private run `20260901T201921Z-0b85ed`, recorded in `docs/runs/0003-two-model-fixture.md`.
@@ -41,13 +41,15 @@ Not met. No lesson has entered the registry yet.
 - [x] Install a target repository's dependencies outside its working tree.
 - [x] Export a reviewable patch, summary, and draft pull request text.
 - [x] Carry one live two-model run on an external repository with real dependencies.
-- [ ] Record live evidence for the revision cycle and at least one blocking path.
+- [x] Record live evidence for the revision cycle and at least one blocking path.
 
 The acceptance test is one recorded run against a repository Mailman does not
 own, from issue URL to exported patch, with no hand-written prompt. Met on
 2026-09-02 by private run `20260902T051904Z-f0cd07` against
 `ayukhno/autosound-tcc` issue #4, recorded in
-`docs/runs/0004-first-external-issue.md`.
+`docs/runs/0004-first-external-issue.md`. The revision cycle, the second
+review, and a `BLOCKED` ending were recorded live the same day in
+`docs/runs/0005-revision-and-blocking-paths.md`.
 
 ## Later, only after real-run evidence
 
