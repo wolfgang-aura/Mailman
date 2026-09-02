@@ -95,7 +95,12 @@ def load_run(run_id: str, data_root: Path | None = None) -> tuple[RunRecord, Pat
     run_directory = (root / run_id).resolve()
     if run_directory.parent != root:
         raise ValueError("invalid run ID")
-    data = json.loads((run_directory / "run.json").read_text(encoding="utf-8"))
+    run_path = run_directory / "run.json"
+    if not run_path.is_file():
+        raise ValueError(
+            f"no run {run_id!r} under {root}. List your runs with `mailman show`."
+        )
+    data = json.loads(run_path.read_text(encoding="utf-8"))
     return RunRecord.from_dict(data), run_directory
 
 

@@ -462,6 +462,30 @@ class OrchestrateCliTests(OrchestratorHarness):
         self.assertEqual(exit_code, 2)
         self.assertIn("verification command is required", stderr.getvalue())
 
+    def test_cli_without_workspace_asks_for_prepare_workspace(self) -> None:
+        run, _ = self.make_run()
+        stderr = StringIO()
+        with redirect_stdout(StringIO()), redirect_stderr(stderr):
+            exit_code = main(
+                [
+                    "orchestrate",
+                    run.run_id,
+                    "--primary-prompt",
+                    str(self.primary_prompt),
+                    "--reviewer-prompt",
+                    str(self.reviewer_prompt),
+                    "--data-root",
+                    str(self.data_root),
+                    "--",
+                    sys.executable,
+                    "-c",
+                    PASSING_CHECK,
+                ]
+            )
+        self.assertEqual(exit_code, 2)
+        self.assertIn("no prepared workspace", stderr.getvalue())
+        self.assertIn("prepare-workspace", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

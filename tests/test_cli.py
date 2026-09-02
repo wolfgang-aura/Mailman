@@ -52,6 +52,98 @@ class CliTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["stdout"].strip(), "ok")
 
+    def test_verify_surfaces_the_output_of_a_failed_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "verify",
+                        run.run_id,
+                        "--data-root",
+                        str(data_root),
+                        "--",
+                        sys.executable,
+                        "-c",
+                        "import sys; print('why it failed'); sys.exit(3)",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 3)
+            self.assertIn("verification exited with code 3", stderr.getvalue())
+            self.assertIn("why it failed", stderr.getvalue())
+            self.assertIn("0001.json", stderr.getvalue())
+            self.assertIn('"exit_code": 3', stdout.getvalue())
+            self.assertTrue((run_directory / "commands" / "0001.json").is_file())
+
+    def test_run_agent_without_workspace_names_the_prepared_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, _ = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            stderr = StringIO()
+            with redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "run-agent",
+                        run.run_id,
+                        "--role",
+                        "primary",
+                        "--prompt",
+                        str(Path(temporary_directory) / "prompt.md"),
+                        "--data-root",
+                        str(data_root),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("no prepared workspace", stderr.getvalue())
+            self.assertIn("prepare-workspace", stderr.getvalue())
+
+    def test_init_run_rejects_an_unsupported_agent_immediately(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            stderr = StringIO()
+            with redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "init-run",
+                        "--repository",
+                        "https://github.com/example/project.git",
+                        "--issue",
+                        "https://github.com/example/project/issues/7",
+                        "--base-commit",
+                        "a" * 40,
+                        "--primary",
+                        "codx",
+                        "--reviewer",
+                        "claude",
+                        "--data-root",
+                        str(data_root),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("unsupported primary agent", stderr.getvalue())
+            self.assertIn("claude", stderr.getvalue())
+            self.assertIn("codex", stderr.getvalue())
+
     def test_build_prompts_expands_the_environment_token(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_root = Path(temporary_directory) / "runs"

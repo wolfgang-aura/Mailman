@@ -22,7 +22,7 @@ from mailman.environment import (
     load_plan,
     prepare_environment,
 )
-from mailman.executor import execute
+from mailman.executor import CommandResult, execute
 from mailman.export import export_patch
 from mailman.issue import (
     capture_issue_from_file,
@@ -166,7 +166,11 @@ def _build_parser() -> argparse.ArgumentParser:
     run_agent.add_argument("run_id")
     run_agent.add_argument("--role", required=True, choices=("primary", "reviewer"))
     run_agent.add_argument("--prompt", required=True, type=Path)
-    run_agent.add_argument("--workspace", required=True, type=Path)
+    run_agent.add_argument(
+        "--workspace",
+        type=Path,
+        help="target workspace, defaults to the run's prepared workspace",
+    )
     run_agent.add_argument("--model")
     run_agent.add_argument("--timeout", type=float, default=3600)
     run_agent.add_argument("--max-turns", type=int, default=30)
@@ -201,7 +205,11 @@ def _build_parser() -> argparse.ArgumentParser:
     orchestrate_parser.add_argument("run_id")
     orchestrate_parser.add_argument("--primary-prompt", type=Path)
     orchestrate_parser.add_argument("--reviewer-prompt", type=Path)
-    orchestrate_parser.add_argument("--workspace", required=True, type=Path)
+    orchestrate_parser.add_argument(
+        "--workspace",
+        type=Path,
+        help="target workspace, defaults to the run's prepared workspace",
+    )
     orchestrate_parser.add_argument("--agent-timeout", type=float, default=3600)
     orchestrate_parser.add_argument("--verification-timeout", type=float, default=900)
     orchestrate_parser.add_argument("--max-turns", type=int, default=30)
@@ -260,13 +268,27 @@ def _doctor() -> int:
     return 1 if any(check.required and not check.ok for check in checks) else 0
 
 
+_SUPPORTED_AGENT_NAMES = frozenset({"codex", "claude"})
+
+
+def _validated_agent_name(name: str, role: str) -> str:
+    """Normalize an agent name and reject one this CLI cannot run."""
+    normalized = name.strip().lower()
+    if normalized not in _SUPPORTED_AGENT_NAMES:
+        raise ValueError(
+            f"unsupported {role} agent: {name!r}. Supported agents: "
+            f"{', '.join(sorted(_SUPPORTED_AGENT_NAMES))}."
+        )
+    return normalized
+
+
 def _init_run(arguments: argparse.Namespace) -> int:
     run, run_directory = create_run(
         repository=arguments.repository,
         issue=arguments.issue,
         base_commit=arguments.base_commit,
-        primary=arguments.primary,
-        reviewer=arguments.reviewer,
+        primary=_validated_agent_name(arguments.primary, "primary"),
+        reviewer=_validated_agent_name(arguments.reviewer, "reviewer"),
         primary_model=arguments.primary_model,
         reviewer_model=arguments.reviewer_model,
         data_root=arguments.data_root,
@@ -514,14 +536,12 @@ def _make_agent(
     max_turns: int,
     executable: str | None = None,
 ) -> EngineeringAgent:
-    normalized = name.strip().lower()
+    normalized = _validated_agent_name(name, "engineering")
     if normalized == "codex":
         return CodexCliAgent(model=model, executable=executable or "codex")
-    if normalized == "claude":
-        return ClaudeCliAgent(
-            model=model, max_turns=max_turns, executable=executable or "claude"
-        )
-    raise ValueError(f"unsupported engineering agent: {name}")
+    return ClaudeCliAgent(
+        model=model, max_turns=max_turns, executable=executable or "claude"
+    )
 
 
 def _pinned_agent_factory(run_directory: Path, max_turns: int):
@@ -540,7 +560,10 @@ def _pinned_agent_factory(run_directory: Path, max_turns: int):
 
 def _run_agent(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
-    workspace_state = inspect_workspace(arguments.workspace)
+    workspace = arguments.workspace or (run_directory / "workspace")
+    if not workspace.is_dir():
+        raise ValueError(_missing_workspace_message(arguments.workspace, workspace))
+    workspace_state = inspect_workspace(workspace)
     if arguments.role == "primary" and workspace_state.head != run.base_commit:
         raise ValueError(
             f"workspace HEAD {workspace_state.head} does not match base commit "
@@ -649,6 +672,9 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
     command = environment_command(run_directory, arguments.command)
     if not command:
         raise ValueError("a verification command is required after --")
+    workspace = arguments.workspace or (run_directory / "workspace")
+    if not workspace.is_dir():
+        raise ValueError(_missing_workspace_message(arguments.workspace, workspace))
     environment = load_environment_record(run_directory)
     if environment is not None and not environment.get("success"):
         raise ValueError(
@@ -658,7 +684,7 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
     outcome = orchestrate(
         run=run,
         run_directory=run_directory,
-        workspace=arguments.workspace,
+        workspace=workspace,
         primary_prompt=_default_prompt(
             run_directory, arguments.primary_prompt, "primary-task.md"
         ),
@@ -824,6 +850,7 @@ def _verify(arguments: argparse.Namespace) -> int:
     command = environment_command(run_directory, arguments.command)
     if not command:
         raise ValueError("a command is required after --")
+    print(f"Running: {' '.join(command)}", flush=True)
     result = execute(
         command,
         working_directory=arguments.working_directory,
@@ -837,9 +864,37 @@ def _verify(arguments: argparse.Namespace) -> int:
         "duration_seconds": result.duration_seconds,
     }
     print(json.dumps(summary, indent=2))
+    if result.timed_out or result.exit_code not in (0, None):
+        _report_failed_verification(
+            result, run_directory / "commands" / f"{command_number:04d}.json"
+        )
     if result.timed_out:
         return 124
     return result.exit_code or 0
+
+
+def _report_failed_verification(result: CommandResult, record_path: Path) -> None:
+    if result.timed_out:
+        reason = f"verification timed out after {result.timeout_seconds:g} seconds"
+    else:
+        reason = f"verification exited with code {result.exit_code}"
+    print(f"{reason}; full transcript at {record_path}", file=sys.stderr)
+    output = (result.stdout or "") + (result.stderr or "")
+    tail = output.rstrip().splitlines()[-15:]
+    if not tail:
+        return
+    print("last output:", file=sys.stderr)
+    for line in tail:
+        print(f"  {line}", file=sys.stderr)
+
+
+def _missing_workspace_message(explicit: Path | None, workspace: Path) -> str:
+    if explicit is not None:
+        return f"workspace directory does not exist: {workspace}"
+    return (
+        f"no prepared workspace at {workspace}. Run `mailman prepare-workspace` "
+        "first, or pass an explicit --workspace."
+    )
 
 
 def main(arguments: list[str] | None = None) -> int:

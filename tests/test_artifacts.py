@@ -40,6 +40,14 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(loaded.primary.model, "codex-test-model")
             self.assertEqual(loaded.reviewer.model, "claude-test-model")
 
+    def test_load_run_names_a_missing_run_instead_of_a_raw_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with self.assertRaisesRegex(
+                ValueError, r"no run 'does-not-exist' under .*`mailman show`"
+            ):
+                load_run("does-not-exist", root)
+
     def test_create_run_rejects_symbolic_base_reference(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             with self.assertRaisesRegex(ValueError, "hexadecimal Git object ID"):
