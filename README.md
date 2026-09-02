@@ -286,7 +286,28 @@ the one that counts. GitHub's index refuses some repositories outright,
 `encode/starlette` among them, and `gh pr list --search` there returns nothing
 even for a single token four open titles contain. The record carries `complete`,
 which is false when the listing failed, and `prepare-submission` refuses to
-clear a run on a search that did not complete or that found a match.
+clear a run on a search that did not complete.
+
+Not every match is a duplicate. A row blocks outright when it names the run's
+issue or when GitHub's index returned it, because the index ANDs every query
+term. A row the local matcher found on one shared word is recorded as a
+candidate instead, and `prepare-submission` holds the run until a human has read
+those and said so:
+
+```powershell
+mailman acknowledge-duplicates RUN_ID --note "read all four, none touch the broker"
+```
+
+The acknowledgement pins the exact rows it covers. A later search that turns up
+anything new blocks again, so it cannot become a standing waiver. Nothing here
+can tell a topic overlap from a duplicate, and the split says which judgement
+the harness is making and which one it is handing to you.
+
+This second gate was added after the first one over-corrected. Against
+`kernc/backtesting.py` #939 the repaired search recorded twenty-two matches,
+including the run's own issue and eighteen open issues that shared the word
+"price". None was a duplicate. See
+[issue #31](https://github.com/wolfgang-aura/Mailman/issues/31).
 
 This gate was added after it failed. On 2026-09-03 a finished run against
 `encode/starlette` #3458 was cleared for filing while four open pull requests

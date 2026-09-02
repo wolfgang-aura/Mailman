@@ -12,8 +12,25 @@ from mailman.submission import (
     _match_rows,
     _query_terms,
     analyze_diff,
+    partition_duplicates,
     prepare_submission,
+    record_duplicate_acknowledgement,
 )
+
+
+def _weak_match(number: int) -> dict[str, object]:
+    """A listing hit on one common word out of four. Not a duplicate."""
+    return {
+        "number": number,
+        "title": "ENH: Add exit tags via Trade.close(tag=)",
+        "state": "OPEN",
+        "pull_request": True,
+        "matched_by": ["price"],
+        "methods": ["listing"],
+        "matched_terms": ["price"],
+        "term_count": 4,
+        "references_issue": False,
+    }
 
 
 LISTING = [
@@ -213,6 +230,52 @@ class LocalMatchTests(unittest.TestCase):
             [],
         )
 
+    def test_an_issue_needs_more_than_one_common_word(self) -> None:
+        # Issue #31: "price" alone dragged eighteen unrelated issues into the
+        # gate on kernc/backtesting.py.
+        listing = [
+            {"number": 1405, "title": "Where do I forward-test this?", "body": "price"}
+        ]
+        self.assertEqual(
+            _local_matches(
+                listing,
+                pull_request=False,
+                query="forced liquidation margin price",
+                issue_number=939,
+                minimum_terms=2,
+            ),
+            [],
+        )
+        rows = _local_matches(
+            listing,
+            pull_request=True,
+            query="forced liquidation margin price",
+            issue_number=939,
+            minimum_terms=1,
+        )
+        self.assertEqual([row["number"] for row in rows], [1405])
+        self.assertEqual(rows[0]["matched_terms"], ["price"])
+        self.assertEqual(rows[0]["term_count"], 4)
+
+    def test_the_listing_never_returns_the_run_own_issue(self) -> None:
+        listing = [{"number": 939, "title": "forced liquidation", "body": ""}]
+        self.assertEqual(
+            _local_matches(
+                listing,
+                pull_request=False,
+                query="forced liquidation",
+                issue_number=939,
+            ),
+            [],
+        )
+
+    def test_partition_splits_index_hits_from_listing_noise(self) -> None:
+        index_hit = dict(_weak_match(1), methods=["search"])
+        strong, weak = partition_duplicates([index_hit, _weak_match(2)])
+        self.assertEqual([row["number"] for row in strong], [1])
+        self.assertEqual([row["number"] for row in weak], [2])
+
+
     def test_a_non_list_payload_is_no_match(self) -> None:
         self.assertEqual(
             _local_matches(
@@ -358,6 +421,126 @@ class PrepareSubmissionTests(unittest.TestCase):
         record = self._prepare(policy=policy)
         self.assertIn("missing-duplicate-search", record["blocking_codes"])
         self.assertFalse(record["duplicate_search_recorded"])
+
+    def test_the_runs_own_issue_is_never_its_own_duplicate(self) -> None:
+        # Issue #31: the run's issue matched itself and blocked every run.
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-03T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [
+                        {
+                            "number": 7,
+                            "title": "thing does not strip",
+                            "state": "open",
+                            "pull_request": False,
+                            "matched_by": ["search"],
+                            "methods": ["search"],
+                            "matched_terms": [],
+                            "term_count": 4,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        record = self._prepare()
+        self.assertTrue(record["ready"], record["blocking_codes"])
+
+    def test_a_weak_listing_match_blocks_as_unreviewed_not_as_a_duplicate(self) -> None:
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-03T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [_weak_match(1386)],
+                }
+            ),
+            encoding="utf-8",
+        )
+        record = self._prepare()
+        self.assertFalse(record["ready"])
+        self.assertIn("unreviewed-duplicate-candidates", record["blocking_codes"])
+        self.assertNotIn("possible-duplicate", record["blocking_codes"])
+
+    def test_an_acknowledgement_clears_the_weak_matches_it_names(self) -> None:
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-03T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [_weak_match(1386)],
+                }
+            ),
+            encoding="utf-8",
+        )
+        record_duplicate_acknowledgement(
+            self.run_directory, note="read all four, none touch the broker"
+        )
+        record = self._prepare()
+        self.assertTrue(record["ready"], record["blocking_codes"])
+
+    def test_an_acknowledgement_does_not_cover_a_match_it_never_saw(self) -> None:
+        path = self.run_directory / "duplicate-search.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-03T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [_weak_match(1386)],
+                }
+            ),
+            encoding="utf-8",
+        )
+        record_duplicate_acknowledgement(self.run_directory, note="read it")
+        path.write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-03T01:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [_weak_match(1386), _weak_match(1400)],
+                }
+            ),
+            encoding="utf-8",
+        )
+        record = self._prepare()
+        self.assertFalse(record["ready"])
+        self.assertIn("unreviewed-duplicate-candidates", record["blocking_codes"])
+
+    def test_an_acknowledgement_cannot_clear_a_strong_match(self) -> None:
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-03T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [
+                        {
+                            "number": 3485,
+                            "title": "Delay background task execution",
+                            "state": "OPEN",
+                            "pull_request": True,
+                            "matched_by": ["#7"],
+                            "methods": ["listing"],
+                            "matched_terms": [],
+                            "term_count": 4,
+                            "references_issue": True,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        record_duplicate_acknowledgement(self.run_directory, note="looked")
+        record = self._prepare()
+        self.assertFalse(record["ready"])
+        self.assertIn("possible-duplicate", record["blocking_codes"])
 
     def test_a_maintainer_assignment_requirement_blocks(self) -> None:
         record = self._prepare(policy=_policy(requires_maintainer_assignment=True))

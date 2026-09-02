@@ -195,6 +195,74 @@ class CliTests(unittest.TestCase):
                 (run_directory / "prior-art.md").read_text(encoding="utf-8"),
             )
 
+    def test_acknowledge_duplicates_pins_the_rows_it_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = self._run_for_prior_art(data_root)
+            (run_directory / "duplicate-search.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "success": True,
+                        "complete": True,
+                        "matches": [
+                            {
+                                "number": 1386,
+                                "title": "ENH: Add exit tags",
+                                "state": "OPEN",
+                                "pull_request": True,
+                                "matched_by": ["price"],
+                                "methods": ["listing"],
+                                "matched_terms": ["price"],
+                                "term_count": 4,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(StringIO()):
+                exit_code = main(
+                    [
+                        "acknowledge-duplicates",
+                        run.run_id,
+                        "--note",
+                        "read it, it adds exit tags",
+                        "--data-root",
+                        str(data_root),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(json.loads(stdout.getvalue())["reviewed"], ["pr#1386"])
+            record = json.loads(
+                (run_directory / "duplicate-acknowledgement.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(record["note"], "read it, it adds exit tags")
+
+    def test_acknowledge_duplicates_refuses_without_a_search(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, _ = self._run_for_prior_art(data_root)
+            stderr = StringIO()
+            with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "acknowledge-duplicates",
+                        run.run_id,
+                        "--note",
+                        "nothing to read",
+                        "--data-root",
+                        str(data_root),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("no duplicate search to acknowledge", stderr.getvalue())
+
     def test_prior_art_still_refuses_when_no_search_was_recorded(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_root = Path(temporary_directory) / "runs"

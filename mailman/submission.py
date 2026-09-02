@@ -236,6 +236,25 @@ def _issue_number(issue_record: dict[str, Any] | None) -> int | None:
     return None
 
 
+def _duplicate_candidate_counts(
+    duplicate_search: dict[str, Any] | None,
+    acknowledgement: dict[str, Any] | None,
+    issue_number: int | None,
+) -> dict[str, Any]:
+    strong, weak = partition_duplicates(
+        (duplicate_search or {}).get("matches"), issue_number=issue_number
+    )
+    reviewed = set((acknowledgement or {}).get("reviewed") or [])
+    return {
+        "strong": [_duplicate_key(row) for row in strong],
+        "weak": [_duplicate_key(row) for row in weak],
+        "unreviewed": [
+            _duplicate_key(row) for row in weak if _duplicate_key(row) not in reviewed
+        ],
+        "acknowledged_at": (acknowledgement or {}).get("acknowledged_at"),
+    }
+
+
 def _policy_findings(
     run: RunRecord,
     *,
@@ -243,6 +262,7 @@ def _policy_findings(
     issue_number: int | None,
     changed_paths: list[str],
     duplicate_search: dict[str, Any] | None,
+    acknowledgement: dict[str, Any] | None = None,
 ) -> list[Finding]:
     findings: list[Finding] = []
     if policy.stance == "unknown":
@@ -330,18 +350,49 @@ def _policy_findings(
                 ),
             )
         )
-    if duplicate_search and duplicate_search.get("matches"):
+    strong, weak = partition_duplicates(
+        (duplicate_search or {}).get("matches"), issue_number=issue_number
+    )
+    if strong:
         findings.append(
             Finding(
                 code="possible-duplicate",
                 blocking=True,
                 detail=(
-                    f"{len(duplicate_search['matches'])} open pull requests or "
-                    "issues match this work. Read every one before filing. See "
-                    "duplicate-search.json."
+                    f"{len(strong)} pull requests or issues name this issue or "
+                    "matched the whole query. Read every one before filing: "
+                    + ", ".join(_duplicate_key(row) for row in strong)
                 ),
             )
         )
+    if weak:
+        reviewed = set((acknowledgement or {}).get("reviewed") or [])
+        unreviewed = [row for row in weak if _duplicate_key(row) not in reviewed]
+        if unreviewed:
+            findings.append(
+                Finding(
+                    code="unreviewed-duplicate-candidates",
+                    blocking=True,
+                    detail=(
+                        f"{len(unreviewed)} pull requests or issues share wording "
+                        "with this work and nothing here can tell overlap from a "
+                        "duplicate. Read them and record it with "
+                        "`mailman acknowledge-duplicates`: "
+                        + ", ".join(_duplicate_key(row) for row in unreviewed)
+                    ),
+                )
+            )
+        else:
+            findings.append(
+                Finding(
+                    code="duplicate-candidates-reviewed",
+                    blocking=False,
+                    detail=(
+                        f"{len(weak)} weak duplicate candidates were read and "
+                        "cleared by hand. See duplicate-acknowledgement.json."
+                    ),
+                )
+            )
     if policy.changelog_directory:
         prefix = policy.changelog_directory.rstrip("/") + "/"
         if not any(path.startswith(prefix) for path in changed_paths):
@@ -593,6 +644,13 @@ def prepare_submission(
         else None
     )
 
+    acknowledgement_path = run_directory / DUPLICATE_ACKNOWLEDGEMENT_FILENAME
+    acknowledgement = (
+        json.loads(acknowledgement_path.read_text(encoding="utf-8"))
+        if acknowledgement_path.is_file()
+        else None
+    )
+
     findings = [Finding(**entry) for entry in hygiene["findings"]]
     findings.extend(
         _policy_findings(
@@ -601,6 +659,7 @@ def prepare_submission(
             issue_number=issue_number,
             changed_paths=changed_paths,
             duplicate_search=duplicate_search,
+            acknowledgement=acknowledgement,
         )
     )
     findings.extend(_evidence_findings(run, verifications))
@@ -643,6 +702,9 @@ def prepare_submission(
         "blocking_codes": sorted({finding.code for finding in blocking}),
         "duplicate_search_recorded": bool(duplicate_search)
         and duplicate_search.get("success") is True,
+        "duplicate_candidates": _duplicate_candidate_counts(
+            duplicate_search, acknowledgement, issue_number
+        ),
         "files": ["pull-request.md", "accountability.md", "submission.json"],
     }
     (destination_path / "submission.json").write_text(
@@ -652,6 +714,98 @@ def prepare_submission(
 
 
 DUPLICATE_SEARCH_FILENAME = "duplicate-search.json"
+DUPLICATE_ACKNOWLEDGEMENT_FILENAME = "duplicate-acknowledgement.json"
+
+# A row GitHub's own index returned is worth more than a locally matched one.
+# Both `gh search` and `gh <kind> list --search` AND every term server-side, so
+# a hit from either means the whole query matched, not one common word.
+_INDEX_METHODS = frozenset({"search", "list"})
+
+
+def duplicate_strength(row: dict[str, Any]) -> str:
+    """Say whether a matched row looks like the same change or like noise.
+
+    Two signals stand on their own: the row names this run's issue, or an
+    index-backed search returned it. Everything else is a local listing hit,
+    and on kernc/backtesting.py twenty-one of twenty-two of those were topic
+    overlap on the word "price". Calling those duplicates makes the gate
+    useless; ignoring them is how encode/starlette #30 nearly shipped a fifth
+    copy of an open pull request. So they are neither: they are weak, and a
+    human has to read them.
+    """
+    reasons = [str(reason) for reason in row.get("matched_by") or []]
+    if row.get("references_issue") or any(
+        reason.startswith("#") for reason in reasons
+    ):
+        return "strong"
+    # An older record has no `methods`, and its `matched_by` held the method
+    # name for index hits. Read both so a run recorded before #31 still judges.
+    methods = [str(method) for method in row.get("methods") or []] or reasons
+    if any(method in _INDEX_METHODS for method in methods):
+        return "strong"
+    matched = row.get("matched_terms") or []
+    term_count = row.get("term_count") or 0
+    if term_count and len(matched) >= term_count:
+        return "strong"
+    return "weak"
+
+
+def _duplicate_key(row: dict[str, Any]) -> str:
+    kind = "pr" if row.get("pull_request") else "issue"
+    return f"{kind}#{row.get('number')}"
+
+
+def partition_duplicates(
+    matches: list[dict[str, Any]] | None,
+    *,
+    issue_number: int | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split recorded matches into what blocks and what a human must read."""
+    strong: list[dict[str, Any]] = []
+    weak: list[dict[str, Any]] = []
+    for row in matches or []:
+        if not isinstance(row, dict):
+            continue
+        if (
+            issue_number is not None
+            and not row.get("pull_request")
+            and row.get("number") == issue_number
+        ):
+            continue
+        (strong if duplicate_strength(row) == "strong" else weak).append(row)
+    return strong, weak
+
+
+def record_duplicate_acknowledgement(
+    run_directory: Path, *, note: str
+) -> dict[str, Any]:
+    """Record that a human read this run's weak duplicate candidates.
+
+    The record pins the exact rows that were read. A later search that turns up
+    anything new is not covered by it, so this cannot become a standing waiver.
+    """
+    if not note.strip():
+        raise ValueError("an acknowledgement needs a note saying what was read")
+    search_path = run_directory / DUPLICATE_SEARCH_FILENAME
+    if not search_path.is_file():
+        raise ValueError(
+            "no duplicate search to acknowledge. Run `mailman duplicate-search` first."
+        )
+    search = json.loads(search_path.read_text(encoding="utf-8"))
+    issue_number = _issue_number(load_issue_record(run_directory))
+    strong, weak = partition_duplicates(
+        search.get("matches"), issue_number=issue_number
+    )
+    record = {
+        "schema_version": 1,
+        "acknowledged_at": datetime.now(UTC).isoformat(),
+        "note": note.strip(),
+        "searched_at": search.get("searched_at"),
+        "reviewed": sorted(_duplicate_key(row) for row in weak),
+        "strong_at_acknowledgement": sorted(_duplicate_key(row) for row in strong),
+    }
+    _write_json(run_directory / DUPLICATE_ACKNOWLEDGEMENT_FILENAME, record)
+    return record
 
 # `gh pr list --search` is repo-scoped and works where the global `gh search`
 # index refuses a repository, which it does for encode/starlette.
@@ -670,6 +824,10 @@ def _match_rows(
     *,
     pull_request: bool,
     reasons: list[str] | None = None,
+    method: str = "search",
+    matched_terms: list[str] | None = None,
+    term_count: int = 0,
+    references_issue: bool = False,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if not isinstance(payload, list):
@@ -686,6 +844,12 @@ def _match_rows(
                 "created_at": entry.get("createdAt"),
                 "pull_request": pull_request,
                 "matched_by": list(reasons or ["search"]),
+                # How a row was found decides what it is worth. GitHub's index
+                # ANDs every query term. The local listing matcher does not.
+                "methods": [method],
+                "matched_terms": list(matched_terms or []),
+                "term_count": term_count,
+                "references_issue": references_issue,
             }
         )
     return rows
@@ -706,6 +870,7 @@ def _local_matches(
     pull_request: bool,
     query: str,
     issue_number: int | None,
+    minimum_terms: int = 1,
 ) -> list[dict[str, Any]]:
     """Match an unfiltered listing locally, because GitHub's search may not.
 
@@ -720,19 +885,39 @@ def _local_matches(
     for entry in payload:
         if not isinstance(entry, dict):
             continue
+        if (
+            issue_number is not None
+            and not pull_request
+            and entry.get("number") == issue_number
+        ):
+            # The run's own issue is not a duplicate of itself. Issue #31.
+            continue
         haystack = " ".join(
             str(entry.get(field) or "")
             for field in ("title", "body", "headRefName")
         ).lower()
-        reasons = [term for term in terms if term in haystack]
-        if issue_number is not None and re.search(
-            rf"\b{issue_number}\b", haystack
-        ):
-            reasons.append(f"#{issue_number}")
-        if reasons:
-            rows.extend(
-                _match_rows([entry], pull_request=pull_request, reasons=reasons)
+        matched = [term for term in terms if term in haystack]
+        references_issue = issue_number is not None and bool(
+            re.search(
+                rf"\b{issue_number}\b", haystack
             )
+        )
+        if not references_issue and len(matched) < max(minimum_terms, 1):
+            continue
+        reasons = list(matched)
+        if references_issue:
+            reasons.append(f"#{issue_number}")
+        rows.extend(
+            _match_rows(
+                [entry],
+                pull_request=pull_request,
+                reasons=reasons,
+                method="listing",
+                matched_terms=matched,
+                term_count=len(terms),
+                references_issue=references_issue,
+            )
+        )
     return rows
 
 
@@ -866,16 +1051,49 @@ def record_duplicate_search(
                     pull_request=kind == "pr",
                     query=query,
                     issue_number=issue_number,
+                    # An open issue sharing one common word with the query is
+                    # not a duplicate of a fix; an open pull request sharing one
+                    # might be, which is how encode/starlette's four were found.
+                    minimum_terms=1 if kind == "pr" else 2,
                 )
             else:
-                rows = _match_rows(payload, pull_request=kind == "pr")
+                rows = _match_rows(
+                    payload, pull_request=kind == "pr", method=method
+                )
             for row in rows:
-                if not any(
-                    existing["number"] == row["number"]
-                    and existing["pull_request"] == row["pull_request"]
-                    for existing in record["matches"]
+                if (
+                    issue_number is not None
+                    and not row["pull_request"]
+                    and row["number"] == issue_number
                 ):
+                    # An index search returns the run's own issue. Issue #31.
+                    continue
+                existing = next(
+                    (
+                        candidate
+                        for candidate in record["matches"]
+                        if candidate["number"] == row["number"]
+                        and candidate["pull_request"] == row["pull_request"]
+                    ),
+                    None,
+                )
+                if existing is None:
                     record["matches"].append(row)
+                    continue
+                # The same row found twice is stronger, not redundant. Keep
+                # every method and reason so the strength reads correctly.
+                for field in ("methods", "matched_by", "matched_terms"):
+                    merged = list(existing.get(field) or [])
+                    merged.extend(
+                        item for item in row.get(field) or [] if item not in merged
+                    )
+                    existing[field] = merged
+                existing["term_count"] = max(
+                    existing.get("term_count") or 0, row.get("term_count") or 0
+                )
+                existing["references_issue"] = bool(
+                    existing.get("references_issue") or row.get("references_issue")
+                )
             succeeded.append(method)
         record["methods"][kind] = succeeded
         if not succeeded:

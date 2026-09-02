@@ -41,7 +41,9 @@ from mailman.issue import (
 from mailman.targeting import assess_target
 from mailman.submission import (
     TargetPolicy,
+    partition_duplicates,
     prepare_submission,
+    record_duplicate_acknowledgement,
     record_duplicate_search,
 )
 from mailman.knowledge.collect import collect_retrospective, write_retrospective
@@ -175,6 +177,18 @@ def _build_parser() -> argparse.ArgumentParser:
     duplicate.add_argument("--executable")
     duplicate.add_argument("--timeout", type=float, default=60)
     duplicate.add_argument("--data-root", type=Path)
+
+    acknowledge = subparsers.add_parser(
+        "acknowledge-duplicates",
+        help="record that a human read this run's weak duplicate candidates",
+    )
+    acknowledge.add_argument("run_id")
+    acknowledge.add_argument(
+        "--note",
+        required=True,
+        help="what you read and why none of them is this change",
+    )
+    acknowledge.add_argument("--data-root", type=Path)
 
     transition = subparsers.add_parser("transition", help="change a run workflow state")
     transition.add_argument("run_id")
@@ -505,12 +519,23 @@ def _duplicate_search(arguments: argparse.Namespace) -> int:
             indent=2,
         )
     )
-    for match in record["matches"]:
-        kind = "PR" if match["pull_request"] else "issue"
-        why = ", ".join(match.get("matched_by") or [])
+    strong, weak = partition_duplicates(
+        record["matches"], issue_number=record.get("issue_number")
+    )
+    for label, rows in (("blocks", strong), ("read", weak)):
+        for match in rows:
+            kind = "PR" if match["pull_request"] else "issue"
+            why = ", ".join(match.get("matched_by") or [])
+            print(
+                f"  {label:6} {kind} #{match['number']} {match['state']}: "
+                f"{match['title']}  [{why}]",
+                file=sys.stderr,
+            )
+    if weak and not strong:
         print(
-            f"  {kind} #{match['number']} {match['state']}: {match['title']}"
-            f"  [{why}]",
+            f"{len(weak)} rows share wording with the query and nothing here can "
+            "tell overlap from a duplicate. Read them, then record it with "
+            "`mailman acknowledge-duplicates`.",
             file=sys.stderr,
         )
     if not record["complete"]:
@@ -526,6 +551,21 @@ def _duplicate_search(arguments: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     return 0 if record["success"] and record["complete"] else 1
+
+
+def _acknowledge_duplicates(arguments: argparse.Namespace) -> int:
+    _, run_directory = load_run(arguments.run_id, arguments.data_root)
+    record = record_duplicate_acknowledgement(run_directory, note=arguments.note)
+    print(json.dumps(record, indent=2))
+    if record["strong_at_acknowledgement"]:
+        print(
+            "This does not clear "
+            + ", ".join(record["strong_at_acknowledgement"])
+            + ". Those name the issue or matched the whole query, and no "
+            "acknowledgement clears them.",
+            file=sys.stderr,
+        )
+    return 0
 
 
 def _prepare_submission(arguments: argparse.Namespace) -> int:
@@ -1059,6 +1099,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _prepare_submission(parsed)
         if parsed.subcommand == "duplicate-search":
             return _duplicate_search(parsed)
+        if parsed.subcommand == "acknowledge-duplicates":
+            return _acknowledge_duplicates(parsed)
         if parsed.subcommand == "prior-art":
             return _prior_art(parsed)
         if parsed.subcommand == "transition":
