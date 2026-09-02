@@ -29,6 +29,7 @@ from mailman.issue import (
     capture_issue_from_github,
     load_issue_record,
 )
+from mailman.targeting import assess_target
 from mailman.submission import (
     TargetPolicy,
     prepare_submission,
@@ -206,6 +207,12 @@ def _build_parser() -> argparse.ArgumentParser:
     orchestrate_parser.add_argument("--verification-timeout", type=float, default=900)
     orchestrate_parser.add_argument("--max-turns", type=int, default=30)
     orchestrate_parser.add_argument("--max-revisions", type=int, default=1)
+    orchestrate_parser.add_argument(
+        "--acknowledge-prior-attempts",
+        action="store_true",
+        help="start even though closed pull requests already attempted this "
+        "issue; an open one still refuses",
+    )
     orchestrate_parser.add_argument("--data-root", type=Path)
 
     retrospective = subparsers.add_parser(
@@ -222,6 +229,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--skill", type=Path, help="skill file to read a version from"
     )
     retrospective.add_argument("--data-root", type=Path)
+
+    check_target = subparsers.add_parser(
+        "check-target",
+        help="say whether an issue is already claimed, before a run starts",
+    )
+    check_target.add_argument("run_id")
+    check_target.add_argument(
+        "--acknowledge-prior-attempts",
+        action="store_true",
+        help="treat closed attempts as read rather than as a blocker",
+    )
+    check_target.add_argument("--data-root", type=Path)
 
     show = subparsers.add_parser(
         "show", help="render what a run's agents actually did, step by step"
@@ -670,7 +689,8 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
         agent_timeout_seconds=arguments.agent_timeout,
         verification_timeout_seconds=arguments.verification_timeout,
         max_revisions=arguments.max_revisions,
-        announce=lambda message: print(message, flush=True),
+        announce=_emit,
+        acknowledge_prior_attempts=arguments.acknowledge_prior_attempts,
     )
     summary = {
         "run_id": outcome.run_id,
@@ -790,6 +810,18 @@ def _emit(text: str) -> None:
         pass
 
 
+def _check_target(arguments: argparse.Namespace) -> int:
+    _, run_directory = load_run(arguments.run_id, arguments.data_root)
+    assessment = assess_target(
+        run_directory, acknowledged=arguments.acknowledge_prior_attempts
+    )
+    _emit(assessment.summary())
+    if assessment.blocking:
+        _emit("")
+        _emit("refusing to start: " + "; ".join(assessment.blocking))
+    return 0 if assessment.may_start else 1
+
+
 def _show(arguments: argparse.Namespace) -> int:
     data_root = (arguments.data_root or default_data_root()).resolve()
     if not arguments.run_id:
@@ -885,6 +917,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _prepare_workspace(parsed)
         if parsed.subcommand == "retrospective":
             return _retrospective(parsed)
+        if parsed.subcommand == "check-target":
+            return _check_target(parsed)
         if parsed.subcommand == "show":
             return _show(parsed)
         if parsed.subcommand == "verify":

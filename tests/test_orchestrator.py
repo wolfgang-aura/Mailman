@@ -88,6 +88,16 @@ PASSING_CHECK = "import sys; sys.exit(0)"
 FAILING_CHECK = "import sys; sys.exit(1)"
 
 
+def record_clear_target(run_directory: Path, *, attempts: list | None = None) -> None:
+    """Record the searches a run needs before it is allowed to start."""
+    (run_directory / "duplicate-search.json").write_text(
+        json.dumps({"success": True, "matches": []}), encoding="utf-8"
+    )
+    (run_directory / "prior-art.json").write_text(
+        json.dumps({"success": True, "attempts": attempts or []}), encoding="utf-8"
+    )
+
+
 class OrchestratorHarness(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
@@ -109,7 +119,7 @@ class OrchestratorHarness(unittest.TestCase):
         self.reviewer_prompt.write_text("review the fixture", encoding="utf-8")
 
     def make_run(self):
-        return create_run(
+        run, run_directory = create_run(
             repository="https://github.com/example/project.git",
             issue="https://github.com/example/project/issues/1",
             base_commit=self.base_commit,
@@ -117,6 +127,8 @@ class OrchestratorHarness(unittest.TestCase):
             reviewer="claude",
             data_root=self.data_root,
         )
+        record_clear_target(run_directory)
+        return run, run_directory
 
     def orchestrate(
         self,
@@ -357,6 +369,7 @@ class OrchestrationTests(OrchestratorHarness):
             reviewer="claude",
             data_root=self.data_root,
         )
+        record_clear_target(run_directory)
         primary = ScriptedAgent("codex", [])
         with self.assertRaises(ValueError) as caught:
             orchestrate(

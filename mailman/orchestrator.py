@@ -11,6 +11,7 @@ from mailman.artifacts import append_agent_execution, append_verification, write
 from mailman.executor import execute
 from mailman.models import RunRecord, RunStatus, utc_now
 from mailman.redaction import redact
+from mailman.targeting import assess_target
 from mailman.toolchain import prepare_agent_prompt
 from mailman.transcript import TranscriptEvent
 from mailman.workspace import inspect_workspace
@@ -120,6 +121,8 @@ class _Orchestration:
         verification_timeout_seconds: float,
         max_revisions: int,
         announce: Callable[[str], None],
+        check_target: bool = True,
+        acknowledge_prior_attempts: bool = False,
     ) -> None:
         self.run = run
         self.run_directory = run_directory
@@ -132,6 +135,8 @@ class _Orchestration:
         self.verification_timeout_seconds = verification_timeout_seconds
         self.max_revisions = max_revisions
         self.announce = announce
+        self.check_target = check_target
+        self.acknowledge_prior_attempts = acknowledge_prior_attempts
         self.steps: list[OrchestrationStep] = []
         self.revisions_used = 0
 
@@ -320,6 +325,32 @@ class _Orchestration:
         if not self.verification_command:
             raise ValueError("a verification command is required")
 
+        if self.check_target:
+            assessment = assess_target(
+                self.run_directory, acknowledged=self.acknowledge_prior_attempts
+            )
+            self.announce(assessment.summary())
+            if not assessment.may_start:
+                self._step(
+                    "target",
+                    ok=False,
+                    detail="; ".join(assessment.blocking),
+                    data=assessment.to_dict(),
+                )
+                self._block(
+                    "refused to start: " + "; ".join(assessment.blocking)
+                )
+                return self._outcome()
+            self._step(
+                "target",
+                ok=True,
+                detail=(
+                    f"{len(assessment.closed_attempts)} closed attempt(s), "
+                    "no open pull request"
+                ),
+                data=assessment.to_dict(),
+            )
+
         state = inspect_workspace(self.workspace)
         if state.head != self.run.base_commit:
             raise ValueError(
@@ -439,6 +470,8 @@ def orchestrate(
     verification_timeout_seconds: float = 900,
     max_revisions: int = 1,
     announce: Callable[[str], None] = lambda message: None,
+    check_target: bool = True,
+    acknowledge_prior_attempts: bool = False,
 ) -> OrchestrationOutcome:
     """Run one bounded primary, reviewer, and verification loop for a run."""
     return _Orchestration(
@@ -453,4 +486,6 @@ def orchestrate(
         verification_timeout_seconds=verification_timeout_seconds,
         max_revisions=max_revisions,
         announce=announce,
+        check_target=check_target,
+        acknowledge_prior_attempts=acknowledge_prior_attempts,
     ).execute()

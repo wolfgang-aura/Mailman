@@ -207,6 +207,20 @@ export instead of being silently redacted. The command refuses a run that is not
 `BLOCKED` run's partial work gets read. Nothing is pushed, and the pull request
 text is a draft for a human to accept, edit, or discard.
 
+A run refuses to start against an issue somebody else has already claimed:
+
+```powershell
+mailman check-target RUN_ID
+```
+
+It exits non-zero when no duplicate search is recorded, when a pull request is
+open against the issue, or when closed attempts have not been acknowledged.
+`mailman orchestrate` runs the same check first and blocks the run rather than
+spending two agents on a target that was never worth having. An open pull
+request refuses outright and no flag overrides it. Closed attempts usually mean
+maintainers rejected the approach rather than the code, so read them, then pass
+`--acknowledge-prior-attempts`.
+
 Before running anything, find out what has already been tried:
 
 ```powershell
