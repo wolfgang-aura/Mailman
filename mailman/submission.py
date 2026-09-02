@@ -120,7 +120,20 @@ def _changed_payload(lines: list[str]) -> tuple[list[str], list[str]]:
     return added, removed
 
 
-def analyze_diff(diff: str, *, test_path_markers: tuple[str, ...] = ("test",)) -> dict[str, Any]:
+def _is_test_path(path: str) -> bool:
+    """Decide whether a path is a test file, by segment rather than substring.
+
+    `src/_pytest/raises.py` contains "test" and is production code. A substring
+    match called it a test and let a source-only change look covered.
+    """
+    segments = path.replace("\\", "/").lower().split("/")
+    name = segments[-1]
+    if any(segment in {"test", "tests", "testing"} for segment in segments[:-1]):
+        return True
+    return name.startswith("test_") or name.endswith(("_test.py", "_tests.py"))
+
+
+def analyze_diff(diff: str) -> dict[str, Any]:
     """Report what a diff actually contains, before a maintainer has to.
 
     The autosound export carried a trailing-newline change nobody asked for and
@@ -141,7 +154,7 @@ def analyze_diff(diff: str, *, test_path_markers: tuple[str, ...] = ("test",)) -
         newline_only = newline_marker and (
             whitespace_only or (not substantive_added and not substantive_removed)
         )
-        is_test = any(marker in path.lower() for marker in test_path_markers)
+        is_test = _is_test_path(path)
         files.append(
             {
                 "path": path,

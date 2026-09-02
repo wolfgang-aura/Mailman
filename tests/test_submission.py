@@ -83,6 +83,23 @@ class AnalyzeDiffTests(unittest.TestCase):
         codes = {finding["code"] for finding in report["findings"]}
         self.assertIn("no-test-change", codes)
 
+    def test_a_source_path_containing_test_is_not_a_test_file(self) -> None:
+        # src/_pytest/raises.py is production code in pytest's own tree. A
+        # substring match called it a test and hid a change with no coverage.
+        diff = SOURCE_DIFF.replace("src/thing.py", "src/_pytest/raises.py").split(
+            "diff --git a/tests"
+        )[0]
+        report = analyze_diff(diff)
+        self.assertFalse(report["files"][0]["test"])
+        codes = {finding["code"] for finding in report["findings"]}
+        self.assertIn("no-test-change", codes)
+
+    def test_a_testing_directory_counts_as_coverage(self) -> None:
+        diff = SOURCE_DIFF.replace("tests/test_thing.py", "testing/python/raises_group.py")
+        report = analyze_diff(diff)
+        self.assertTrue(report["files"][1]["test"])
+        self.assertFalse(report["blocking"])
+
     def test_an_empty_diff_blocks(self) -> None:
         report = analyze_diff("")
         codes = {finding["code"] for finding in report["findings"]}
