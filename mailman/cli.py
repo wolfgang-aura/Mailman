@@ -454,9 +454,18 @@ def _prior_art(arguments: argparse.Namespace) -> int:
                 "whether earlier pull requests exist. Re-run "
                 "`mailman duplicate-search`, or pass --pull-request."
             )
+        # Only the rows that are about this issue. A weak row shares wording
+        # with the query and nothing else, and feeding those to `check-target`
+        # blocked a clean target on eight unrelated pull requests. See #33.
+        reference = (load_issue_record(run_directory) or {}).get("reference")
+        issue_number = reference.get("number") if isinstance(reference, dict) else None
+        strong, _ = partition_duplicates(
+            search.get("matches"),
+            issue_number=issue_number if isinstance(issue_number, int) else None,
+        )
         numbers = [
             match["number"]
-            for match in search.get("matches", [])
+            for match in strong
             if match.get("pull_request") and isinstance(match.get("number"), int)
         ]
     # No matches is the best case, not a failure: record an empty prior art file

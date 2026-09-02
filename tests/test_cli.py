@@ -195,6 +195,50 @@ class CliTests(unittest.TestCase):
                 (run_directory / "prior-art.md").read_text(encoding="utf-8"),
             )
 
+    def test_prior_art_ignores_a_weak_duplicate_candidate(self) -> None:
+        # Issue #33: eight pull requests that shared the word "json" were read
+        # as attempts, and check-target refuses on an open attempt with no flag.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = self._run_for_prior_art(data_root)
+            (run_directory / "duplicate-search.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "success": True,
+                        "complete": True,
+                        "matches": [
+                            {
+                                "number": 34888,
+                                "title": "fix(core): avoid __dict__ iteration race",
+                                "state": "OPEN",
+                                "pull_request": True,
+                                "matched_by": ["json"],
+                                "methods": ["listing"],
+                                "matched_terms": ["json"],
+                                "term_count": 5,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(StringIO()):
+                exit_code = main(
+                    [
+                        "prior-art",
+                        run.run_id,
+                        "--executable",
+                        "gh-not-called",
+                        "--data-root",
+                        str(data_root),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(json.loads(stdout.getvalue())["attempts"], 0)
+
     def test_acknowledge_duplicates_pins_the_rows_it_read(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_root = Path(temporary_directory) / "runs"
