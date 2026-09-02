@@ -155,8 +155,10 @@ mailman orchestrate RUN_ID `
 The loop runs the primary agent, verifies the result itself, runs the reviewer,
 and reads one `MAILMAN-VERDICT: APPROVE` or `MAILMAN-VERDICT: REVISE` line from
 the review report. It allows at most one revision, verifies again after
-approval, and only then reaches `READY_FOR_HUMAN_REVIEW`. Every other ending,
-including a missing or contradictory verdict, is `BLOCKED`. The command exits
+approval, and only then reaches `READY_FOR_HUMAN_REVIEW`. A verification that
+fails after a primary stage spends that same single revision: the agent is
+handed the failing command and its output and gets one attempt to fix it.
+Every other ending, including a missing or contradictory verdict, is `BLOCKED`. The command exits
 `0` only for a run that is ready for a human, and writes each step to
 `orchestration.json`. See [the orchestration decision](docs/decisions/0004-bounded-orchestration.md)
 for the reasoning.

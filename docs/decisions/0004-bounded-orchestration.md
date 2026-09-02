@@ -23,10 +23,21 @@ the reviewer prompt and reads exactly one line, `MAILMAN-VERDICT: APPROVE` or
 `MAILMAN-VERDICT: REVISE`, from the review report. A missing, unparseable, or
 contradictory verdict blocks the run. Silence never counts as approval.
 
-The revision budget is one. A second request for changes blocks the run for a
-human instead of starting an unbounded negotiation between two models. The
-revision prompt is the original primary prompt with the reviewer's findings
-appended, so the revising agent sees the task and the objection together.
+The revision budget is one, and it belongs to the run rather than to any one
+stage. A second request for changes blocks the run for a human instead of
+starting an unbounded negotiation between two models. The revision prompt is the
+original primary prompt with the reviewer's findings appended, so the revising
+agent sees the task and the objection together.
+
+Amended on 2026-09-02 for
+[#13](https://github.com/wolfgang-aura/Mailman/issues/13): a verification that
+fails after a primary stage may also spend that one revision. It was the only
+stop in the loop that granted none, which is backwards, because a failing gate
+is a more objective finding than a reviewer's opinion. The repair prompt is the
+primary prompt with the command, its exit status, and the tail of its output
+appended, since the agent never saw that output run. A revision spent on a
+failed gate is one the reviewer cannot also ask for, so the total is unchanged:
+at most two primary stages, and at most two reviews.
 
 A run that has started must never claim to be in flight after it stops. An
 unexpected `OSError` or `ValueError` inside the loop is recorded as `BLOCKED`

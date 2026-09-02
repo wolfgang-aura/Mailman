@@ -8,7 +8,7 @@ from typing import Any, Callable, Sequence
 
 from mailman.agents.base import AgentRequest, EngineeringAgent
 from mailman.artifacts import append_agent_execution, append_verification, write_run
-from mailman.executor import execute
+from mailman.executor import CommandResult, execute
 from mailman.models import RunRecord, RunStatus, utc_now
 from mailman.redaction import redact
 from mailman.targeting import assess_target
@@ -62,6 +62,40 @@ The reviewer read the candidate change and asked for revisions. Address every
 finding below in the same workspace. This is the only revision in this run.
 
 """
+
+_REPAIR_CONTRACT = """
+## The verification you have to pass
+
+Your change was checked with the run's own verification command and it failed.
+The command and its output are below. Fix the failure in the same workspace.
+This is the only revision in this run, and the same command decides the run.
+
+"""
+
+# Enough of a failure to act on, without pasting a whole suite into a prompt.
+_REPAIR_OUTPUT_LINES = 120
+
+
+def _describe_failure(result: CommandResult) -> str:
+    """Render a failed verification for an agent that never saw it run."""
+    tail = []
+    for name in ("stdout", "stderr"):
+        text = (getattr(result, name) or "").strip()
+        if not text:
+            continue
+        lines = text.splitlines()
+        clipped = lines[-_REPAIR_OUTPUT_LINES:]
+        if len(clipped) < len(lines):
+            clipped.insert(0, f"[earlier {len(lines) - len(clipped)} line(s) omitted]")
+        tail.append(f"### {name}" + chr(10) + chr(10) + chr(10).join(clipped))
+    outcome = (
+        "timed out"
+        if result.timed_out
+        else f"exited with code {result.exit_code}"
+    )
+    header = "```" + chr(10) + " ".join(result.command) + chr(10) + "```"
+    body = chr(10) + chr(10) + (chr(10) + chr(10)).join(tail) if tail else ""
+    return f"The command {outcome}." + chr(10) + chr(10) + header + body
 
 
 def parse_verdict(report_text: str | None) -> str | None:
@@ -259,7 +293,7 @@ class _Orchestration:
         )
         return ok, report_text
 
-    def _verify(self, stage: str) -> bool:
+    def _verify(self, stage: str) -> tuple[bool, CommandResult]:
         self.announce(
             f"run  verification ({stage}): {' '.join(self.verification_command)}"
         )
@@ -285,7 +319,7 @@ class _Orchestration:
                 "timed_out": result.timed_out,
             },
         )
-        return ok
+        return ok, result
 
     def _record_workspace_change(self, stage: str) -> bool:
         """Record whether the primary stage actually changed anything.
@@ -325,6 +359,19 @@ class _Orchestration:
         return self._write_derived_prompt(
             "revision-input.md",
             f"{source}\n{_REVISION_CONTRACT}{findings.strip()}\n",
+        )
+
+    def _repair_prompt(self, result: CommandResult) -> Path:
+        """Hand the primary agent the verification output it has to satisfy.
+
+        A failing gate is a more objective finding than a reviewer opinion, so
+        it earns the same one revision. The agent never saw this output before.
+        """
+        source = self.primary_prompt.read_text(encoding="utf-8").rstrip()
+        body = _describe_failure(result)
+        return self._write_derived_prompt(
+            "repair-input.md",
+            f"{source}\n{_REPAIR_CONTRACT}{body}\n",
         )
 
     # Entry point -------------------------------------------------------
@@ -433,7 +480,8 @@ class _Orchestration:
         self._transition(
             RunStatus.VERIFICATION_PENDING, "final independent verification"
         )
-        if not self._verify("final"):
+        final_ok, _ = self._verify("final")
+        if not final_ok:
             self._block("final independent verification failed")
             return self._outcome()
         self._transition(
@@ -448,8 +496,34 @@ class _Orchestration:
             self._block(f"primary agent did not complete the {stage} stage")
             return False
         self._record_workspace_change(stage)
-        if not self._verify(stage):
+        verified, result = self._verify(stage)
+        if verified:
+            return True
+        if self.revisions_used >= self.max_revisions:
             self._block(f"independent verification failed after the {stage} stage")
+            return False
+        return self._repair(result)
+
+    def _repair(self, failure: CommandResult) -> bool:
+        """Spend one revision on a verification the primary stage failed.
+
+        The budget is the run's, not the stage's: a revision spent here is one
+        the reviewer cannot also ask for, so the loop stays as bounded as it
+        was when only a REVISE verdict could trigger one.
+        """
+        self._transition(
+            RunStatus.REVISION_REQUIRED,
+            "verification failed after the primary stage; one revision granted",
+        )
+        self.revisions_used += 1
+        primary_ok, _ = self._run_agent("primary", self._repair_prompt(failure))
+        if not primary_ok:
+            self._block("primary agent did not complete the repair stage")
+            return False
+        self._record_workspace_change("repair")
+        repaired, _ = self._verify("repair")
+        if not repaired:
+            self._block("independent verification failed again after one revision")
             return False
         return True
 

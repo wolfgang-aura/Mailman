@@ -29,7 +29,14 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
         {RunStatus.PRIMARY_RUNNING, RunStatus.BLOCKED, RunStatus.ABANDONED}
     ),
     RunStatus.PRIMARY_RUNNING: frozenset(
-        {RunStatus.REVIEW_PENDING, RunStatus.BLOCKED, RunStatus.ABANDONED}
+        {
+            RunStatus.REVIEW_PENDING,
+            # The primary stage verifies its own work before the reviewer sees
+            # it. A failure there asks for the same revision a reviewer would.
+            RunStatus.REVISION_REQUIRED,
+            RunStatus.BLOCKED,
+            RunStatus.ABANDONED,
+        }
     ),
     RunStatus.REVIEW_PENDING: frozenset(
         {

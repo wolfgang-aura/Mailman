@@ -97,6 +97,11 @@ class ScriptedAgent(EngineeringAgent):
 
 PASSING_CHECK = "import sys; sys.exit(0)"
 FAILING_CHECK = "import sys; sys.exit(1)"
+# Fails until the agent leaves a marker in the workspace, which is the closest
+# a scripted agent gets to actually fixing what the gate complained about.
+REPAIRABLE_CHECK = (
+    "import pathlib, sys; sys.exit(0 if pathlib.Path('repaired.txt').exists() else 1)"
+)
 
 
 def record_clear_target(run_directory: Path, *, attempts: list | None = None) -> None:
@@ -302,18 +307,77 @@ class OrchestrationTests(OrchestratorHarness):
             outcome.steps[-1].detail, "reviewer verdict was missing or contradictory"
         )
 
-    def test_failed_verification_stops_before_the_reviewer(self) -> None:
-        outcome, _, _, reviewer = self.orchestrate(
-            primary_script=[{"report": "candidate ready\n"}],
+    def test_failed_verification_spends_one_revision_before_blocking(self) -> None:
+        outcome, run_directory, primary, reviewer = self.orchestrate(
+            primary_script=[
+                {"report": "candidate ready\n"},
+                {"report": "second attempt\n"},
+            ],
             reviewer_script=[],
             check=FAILING_CHECK,
         )
 
         self.assertEqual(outcome.status, RunStatus.BLOCKED)
         self.assertEqual(reviewer.calls, [])
+        self.assertEqual([role for role, _ in primary.calls], ["primary", "primary"])
+        self.assertEqual(outcome.revisions_used, 1)
+        self.assertEqual(
+            outcome.steps[-1].detail,
+            "independent verification failed again after one revision",
+        )
+        repair_prompt = (run_directory / "repair-input.md").read_text(encoding="utf-8")
+        self.assertIn("The verification you have to pass", repair_prompt)
+        self.assertIn("exited with code 1", repair_prompt)
+
+    def test_a_repaired_candidate_reaches_the_reviewer(self) -> None:
+        outcome, _, primary, reviewer = self.orchestrate(
+            primary_script=[
+                {"report": "candidate ready\n"},
+                {"report": "fixed it\n", "touch": ("repaired.txt", "done")},
+            ],
+            reviewer_script=[{"report": "MAILMAN-VERDICT: APPROVE\n"}],
+            check=REPAIRABLE_CHECK,
+        )
+
+        self.assertEqual(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        self.assertEqual(len(primary.calls), 2)
+        self.assertEqual(len(reviewer.calls), 1)
+        self.assertEqual(outcome.revisions_used, 1)
+
+    def test_no_revision_budget_blocks_the_stage_as_before(self) -> None:
+        outcome, _, primary, reviewer = self.orchestrate(
+            primary_script=[{"report": "candidate ready\n"}],
+            reviewer_script=[],
+            check=FAILING_CHECK,
+            max_revisions=0,
+        )
+
+        self.assertEqual(outcome.status, RunStatus.BLOCKED)
+        self.assertEqual(len(primary.calls), 1)
+        self.assertEqual(reviewer.calls, [])
         self.assertEqual(
             outcome.steps[-1].detail,
             "independent verification failed after the primary stage",
+        )
+
+    def test_a_revision_spent_on_verification_is_not_available_to_the_reviewer(
+        self,
+    ) -> None:
+        outcome, _, primary, reviewer = self.orchestrate(
+            primary_script=[
+                {"report": "candidate ready\n"},
+                {"report": "fixed it\n", "touch": ("repaired.txt", "done")},
+            ],
+            reviewer_script=[{"report": "MAILMAN-VERDICT: REVISE\n"}],
+            check=REPAIRABLE_CHECK,
+        )
+
+        self.assertEqual(outcome.status, RunStatus.BLOCKED)
+        self.assertEqual(len(primary.calls), 2)
+        self.assertEqual(outcome.revisions_used, 1)
+        self.assertEqual(
+            outcome.steps[-1].detail,
+            "reviewer requested changes beyond the revision budget",
         )
 
     def test_successful_agent_exit_without_a_report_blocks(self) -> None:
@@ -491,7 +555,10 @@ class OrchestrateCliTests(OrchestratorHarness):
 
     def test_cli_reports_a_blocked_run_with_exit_code_one(self) -> None:
         agents = {
-            "codex": ScriptedAgent("codex", [{"report": "candidate ready\n"}]),
+            "codex": ScriptedAgent(
+                "codex",
+                [{"report": "candidate ready\n"}, {"report": "second attempt\n"}],
+            ),
             "claude": ScriptedAgent("claude", []),
         }
         exit_code, output = self._invoke(agents, FAILING_CHECK)
