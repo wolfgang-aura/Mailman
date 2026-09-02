@@ -171,7 +171,9 @@ class TargetPolicyTests(unittest.TestCase):
     def test_the_shipped_policies_load(self) -> None:
         directory = Path(__file__).resolve().parent.parent / "examples" / "target-policies"
         names = sorted(path.name for path in directory.glob("*.json"))
-        self.assertEqual(names, ["attrs.json", "pytest.json", "starlette.json"])
+        self.assertEqual(
+            names, ["attrs.json", "langchain.json", "pytest.json", "starlette.json"]
+        )
         for path in directory.glob("*.json"):
             policy = TargetPolicy.load(path)
             self.assertTrue(policy.policy_read_on, path.name)
@@ -268,6 +270,19 @@ class LocalMatchTests(unittest.TestCase):
             ),
             [],
         )
+
+    def test_a_closed_attempt_is_prior_art_not_a_duplicate(self) -> None:
+        # Issue #32: langchain's bot closed PR #39682 on the day it opened, for
+        # an unrelated reason. It never blocks a run outright.
+        closed = dict(_weak_match(39682), state="closed", methods=["search"])
+        strong, weak = partition_duplicates([closed])
+        self.assertEqual(strong, [])
+        self.assertEqual([row["number"] for row in weak], [39682])
+
+    def test_a_merged_pull_request_says_the_fix_already_landed(self) -> None:
+        merged = dict(_weak_match(1), state="merged", methods=["listing"])
+        strong, _ = partition_duplicates([merged])
+        self.assertEqual([row["number"] for row in strong], [1])
 
     def test_partition_splits_index_hits_from_listing_noise(self) -> None:
         index_hit = dict(_weak_match(1), methods=["search"])
@@ -512,6 +527,45 @@ class PrepareSubmissionTests(unittest.TestCase):
         record = self._prepare()
         self.assertFalse(record["ready"])
         self.assertIn("unreviewed-duplicate-candidates", record["blocking_codes"])
+
+    def test_a_merged_match_blocks_as_already_fixed_upstream(self) -> None:
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-03T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [dict(_weak_match(1), state="merged")],
+                }
+            ),
+            encoding="utf-8",
+        )
+        record = self._prepare()
+        self.assertFalse(record["ready"])
+        self.assertIn("already-fixed-upstream", record["blocking_codes"])
+        self.assertNotIn("possible-duplicate", record["blocking_codes"])
+
+    def test_a_closed_attempt_can_be_acknowledged(self) -> None:
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-03T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [
+                        dict(_weak_match(39682), state="closed", methods=["search"])
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertIn(
+            "unreviewed-duplicate-candidates", self._prepare()["blocking_codes"]
+        )
+        record_duplicate_acknowledgement(
+            self.run_directory, note="a bot closed it unread, not a rejection"
+        )
+        self.assertTrue(self._prepare()["ready"], self._prepare()["blocking_codes"])
 
     def test_an_acknowledgement_cannot_clear_a_strong_match(self) -> None:
         (self.run_directory / "duplicate-search.json").write_text(

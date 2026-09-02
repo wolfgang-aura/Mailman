@@ -353,15 +353,30 @@ def _policy_findings(
     strong, weak = partition_duplicates(
         (duplicate_search or {}).get("matches"), issue_number=issue_number
     )
-    if strong:
+    merged = [row for row in strong if duplicate_strength(row) == "merged"]
+    if merged:
+        findings.append(
+            Finding(
+                code="already-fixed-upstream",
+                blocking=True,
+                detail=(
+                    "a merged pull request matches this work, so the change is "
+                    "already upstream: "
+                    + ", ".join(_duplicate_key(row) for row in merged)
+                ),
+            )
+        )
+    open_rivals = [row for row in strong if row not in merged]
+    if open_rivals:
         findings.append(
             Finding(
                 code="possible-duplicate",
                 blocking=True,
                 detail=(
-                    f"{len(strong)} pull requests or issues name this issue or "
-                    "matched the whole query. Read every one before filing: "
-                    + ", ".join(_duplicate_key(row) for row in strong)
+                    f"{len(open_rivals)} open pull requests or issues name this "
+                    "issue or matched the whole query. Read every one before "
+                    "filing: "
+                    + ", ".join(_duplicate_key(row) for row in open_rivals)
                 ),
             )
         )
@@ -733,7 +748,16 @@ def duplicate_strength(row: dict[str, Any]) -> str:
     copy of an open pull request. So they are neither: they are weak, and a
     human has to read them.
     """
+    state = str(row.get("state") or "").lower()
+    if state == "merged":
+        # The change is already upstream. Nothing about this run is worth
+        # filing, whatever else the row matched on.
+        return "merged"
     reasons = [str(reason) for reason in row.get("matched_by") or []]
+    if state == "closed":
+        # A closed attempt is prior art, not a rival in flight. `prior-art`
+        # reads it into both prompts; the gate only has to make a human look.
+        return "weak"
     if row.get("references_issue") or any(
         reason.startswith("#") for reason in reasons
     ):
@@ -772,7 +796,11 @@ def partition_duplicates(
             and row.get("number") == issue_number
         ):
             continue
-        (strong if duplicate_strength(row) == "strong" else weak).append(row)
+        strength = duplicate_strength(row)
+        if strength in ("strong", "merged"):
+            strong.append(row)
+        else:
+            weak.append(row)
     return strong, weak
 
 

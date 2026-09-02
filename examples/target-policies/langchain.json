@@ -1,0 +1,27 @@
+{
+  "name": "langchain-ai/langchain",
+  "policy_url": "https://github.com/langchain-ai/langchain/blob/master/.github/PULL_REQUEST_TEMPLATE.md",
+  "stance": "permitted_with_disclosure",
+  "policy_read_on": "2026-09-03",
+  "disclosure_required": true,
+  "ai_trailer": "optional",
+  "requires_linked_issue": true,
+  "requires_maintainer_assignment": true,
+  "requires_duplicate_search": true,
+  "changelog_directory": null,
+  "changelog_filename_template": null,
+  "checklist": [
+    "A maintainer has assigned the linked issue to the submitting human",
+    "The description keeps `Fixes #NNNNN` as its first line",
+    "The title follows TYPE(SCOPE): DESCRIPTION, for example fix(core): ...",
+    "The pull request body is one or two sentences written by the submitting human",
+    "make format, make lint and make test pass in the modified package",
+    "The new test fails without the source change"
+  ],
+  "notes": [
+    "A bot closes any pull request whose linked issue is not assigned to its author, within hours and without review. Three separate outside fixes for issue #39797 were closed this way on the day they were opened.",
+    "The template says a large, clearly AI-generated description may see the pull request ignored or closed. It says nothing against AI-assisted code.",
+    "Roughly six outside code fixes merged in the two weeks to 2026-09-02, so the assignment gate is passable but it is a human step Mailman cannot take.",
+    "The repository is a monorepo. Tests run per package under libs/, not from the root."
+  ]
+}
