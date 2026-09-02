@@ -1,6 +1,6 @@
 # Source of truth
 
-Last verified: 2026-09-02 in `Asia/Singapore`.
+Last verified: 2026-09-03 in `Asia/Singapore`.
 
 ## Repository
 
@@ -21,7 +21,10 @@ Last verified: 2026-09-02 in `Asia/Singapore`.
   agent transcript normalizer, live streaming from the executor, Claude on `stream-json`, and `mailman show`.
 - Bounded-loop deployment: commit `9fc4805` passed GitHub Actions in run `33641545669`. It carries the
   claimed-issue refusal (#15), the named turn budget and its new default of 120 (#14), and one revision
-  granted when the post-primary verification fails (#13). This is the current head of `main`.
+  granted when the post-primary verification fails (#13).
+- Issue-sweep deployment: commit `299b1c8` passed GitHub Actions on Python 3.12 and 3.14 in run
+  `33670366489`. It carries the fixes for #18, #21, #22, #23, #24, #25, #27 and #28, plus the
+  recording halves of #20 and #26. This is the current head of `main`.
 
 ## Development environment
 
