@@ -83,6 +83,64 @@ class CliTests(unittest.TestCase):
             self.assertNotIn("{environment}", prompt)
             self.assertIn("environment/bin/python -m pytest", prompt.replace("\\", "/"))
 
+    def test_show_renders_a_run_and_lists_them_without_a_run_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            (run_directory / "agent-executions").mkdir(parents=True, exist_ok=True)
+            (run_directory / "agent-executions" / "0001-primary.json").write_text(
+                json.dumps(
+                    {
+                        "agent": "codex",
+                        "role": "primary",
+                        "process": {
+                            "stdout": json.dumps(
+                                {
+                                    "type": "item.completed",
+                                    "item": {
+                                        "type": "agent_message",
+                                        "text": "Reproduced the failure.",
+                                    },
+                                }
+                            )
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            listing = StringIO()
+            with redirect_stdout(listing):
+                listed = main(["show", "--data-root", str(data_root)])
+            detail = StringIO()
+            with redirect_stdout(detail):
+                shown = main(["show", run.run_id, "--data-root", str(data_root)])
+
+        self.assertEqual(listed, 0)
+        self.assertIn(run.run_id, listing.getvalue())
+        self.assertEqual(shown, 0)
+        self.assertIn("Reproduced the failure.", detail.getvalue())
+
+    def test_show_rejects_a_run_id_that_escapes_the_data_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            data_root.mkdir(parents=True)
+            stderr = StringIO()
+            with redirect_stderr(stderr):
+                exit_code = main(
+                    ["show", "../secrets", "--data-root", str(data_root)]
+                )
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("invalid run ID", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

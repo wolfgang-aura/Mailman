@@ -11,6 +11,7 @@ from mailman.artifacts import (
     append_agent_execution,
     append_verification,
     create_run,
+    default_data_root,
     load_run,
     write_run,
 )
@@ -40,6 +41,7 @@ from mailman.orchestrator import orchestrate
 from mailman.prior_art import collect_prior_art
 from mailman.prompts import write_task_prompts
 from mailman.toolchain import prepare_agent_prompt, probe_tool, toolchain_executable
+from mailman.view import render_run, summarize_runs, write_transcript_logs
 from mailman.workspace import commit_is_ancestor, inspect_workspace, prepare_workspace
 
 
@@ -215,6 +217,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "--skill", type=Path, help="skill file to read a version from"
     )
     retrospective.add_argument("--data-root", type=Path)
+
+    show = subparsers.add_parser(
+        "show", help="render what a run's agents actually did, step by step"
+    )
+    show.add_argument("run_id", nargs="?", help="omit to list every recorded run")
+    show.add_argument(
+        "--full",
+        action="store_true",
+        help="include agent messages and command output in full, not one line each",
+    )
+    show.add_argument("--width", type=int, default=120)
+    show.add_argument(
+        "--no-reports", action="store_true", help="omit the agent report bodies"
+    )
+    show.add_argument(
+        "--write-logs",
+        action="store_true",
+        help="write a .log transcript beside each stored agent execution",
+    )
+    show.add_argument("--data-root", type=Path)
 
     verify = subparsers.add_parser("verify", help="run and record a verification command")
     verify.add_argument("run_id")
@@ -736,6 +758,35 @@ def _retrospective(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _show(arguments: argparse.Namespace) -> int:
+    data_root = (arguments.data_root or default_data_root()).resolve()
+    if not arguments.run_id:
+        directories = sorted(path for path in data_root.glob("*") if path.is_dir())
+        if not directories:
+            print(f"no runs recorded under {data_root}")
+            return 1
+        print(summarize_runs(directories))
+        return 0
+    _, run_directory = load_run(arguments.run_id, arguments.data_root)
+    if arguments.write_logs:
+        written = write_transcript_logs(run_directory)
+        if not written:
+            print("no agent output was captured for this run", file=sys.stderr)
+            return 1
+        for path in written:
+            print(f"wrote {path}")
+        return 0
+    print(
+        render_run(
+            run_directory,
+            width=arguments.width,
+            full=arguments.full,
+            reports=not arguments.no_reports,
+        )
+    )
+    return 0
+
+
 def _verify(arguments: argparse.Namespace) -> int:
     _, run_directory = load_run(arguments.run_id, arguments.data_root)
     command = environment_command(run_directory, arguments.command)
@@ -802,6 +853,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _prepare_workspace(parsed)
         if parsed.subcommand == "retrospective":
             return _retrospective(parsed)
+        if parsed.subcommand == "show":
+            return _show(parsed)
         if parsed.subcommand == "verify":
             return _verify(parsed)
     except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as error:
