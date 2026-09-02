@@ -16,7 +16,10 @@ Last verified: 2026-09-02 in `Asia/Singapore`.
 - Issue #9 deployment: commit `a371be1` passed GitHub Actions on Python 3.12 and 3.14 in run `33558633354`.
 - Knowledge flywheel deployment: commit `d2be47a` passed GitHub Actions on Python 3.12 and 3.14 in run `33592165392`.
 - External issue deployment: commit `78d048e` passed GitHub Actions on Python 3.12 and 3.14 in run `33596869316`. It carries issue ingestion, environment preparation, patch export, and the first external run records.
-- Run record deployment: commit `46d0862` passed GitHub Actions on Python 3.12 and 3.14 in run `33596947293`. This is the current head of `main`.
+- Run record deployment: commit `46d0862` passed GitHub Actions on Python 3.12 and 3.14 in run `33596947293`.
+- Observability deployment: commit `d72d645` passed GitHub Actions in run `33627419317`. It carries the
+  agent transcript normalizer, live streaming from the executor, Claude on `stream-json`, and `mailman show`.
+  This is the current head of `main`.
 
 ## Development environment
 
