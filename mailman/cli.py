@@ -804,9 +804,12 @@ def _emit(text: str) -> None:
     Agents write curly quotes and dashes that a legacy code page cannot
     encode, and `show | head` closes the pipe early. Neither is a reason to
     end with a traceback.
+
+    The flush is the whole point of a live stream. Python only line-buffers a
+    terminal, so without it a redirected or piped run says nothing for 8 KB.
     """
     try:
-        print(text)
+        print(text, flush=True)
     except UnicodeEncodeError:
         stream = getattr(sys.stdout, "buffer", None)
         if stream is None:

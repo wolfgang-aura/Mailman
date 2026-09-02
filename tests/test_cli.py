@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -160,6 +162,37 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 2)
         self.assertIn("invalid run ID", stderr.getvalue())
+
+
+class StreamFlushTests(unittest.TestCase):
+    def test_a_streamed_line_arrives_before_the_process_exits(self) -> None:
+        """A redirected run must not sit silent until its buffer fills.
+
+        Python line-buffers a terminal and block-buffers everything else, so
+        without an explicit flush a piped `orchestrate` says nothing for the
+        first 8 KB, which is the black box decision 0008 removed.
+        """
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "from mailman.cli import _emit; _emit('streamed line'); "
+                "import sys; sys.stdin.readline()",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        self.addCleanup(child.kill)
+        # Without the flush the read below never returns, so the child is put
+        # out of its misery rather than hanging the suite.
+        watchdog = threading.Timer(20, child.kill)
+        watchdog.start()
+        self.addCleanup(watchdog.cancel)
+        assert child.stdout is not None
+        line = child.stdout.readline()
+        self.assertEqual(line.strip(), "streamed line")
 
 
 if __name__ == "__main__":
