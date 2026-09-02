@@ -190,10 +190,33 @@ class PrepareSubmissionTests(unittest.TestCase):
         policy = _policy(requires_duplicate_search=True)
         self.assertIn("missing-duplicate-search", self._prepare(policy=policy)["blocking_codes"])
         (self.run_directory / "duplicate-search.json").write_text(
-            json.dumps({"searched_at": "2026-09-02T00:00:00+00:00", "matches": []}),
+            json.dumps(
+                {
+                    "searched_at": "2026-09-02T00:00:00+00:00",
+                    "success": True,
+                    "matches": [],
+                }
+            ),
             encoding="utf-8",
         )
         self.assertTrue(self._prepare(policy=policy)["ready"])
+
+    def test_a_failed_duplicate_search_does_not_count_as_one(self) -> None:
+        policy = _policy(requires_duplicate_search=True)
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-02T00:00:00+00:00",
+                    "success": False,
+                    "detail": "the prs search failed",
+                    "matches": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        record = self._prepare(policy=policy)
+        self.assertIn("missing-duplicate-search", record["blocking_codes"])
+        self.assertFalse(record["duplicate_search_recorded"])
 
     def test_a_maintainer_assignment_requirement_blocks(self) -> None:
         record = self._prepare(policy=_policy(requires_maintainer_assignment=True))
