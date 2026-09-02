@@ -219,6 +219,42 @@ class AgentAdapterTests(unittest.TestCase):
         self.assertNotIn("Bash(python:*)", allowed)
 
 
+class ReasoningEffortTests(unittest.TestCase):
+    def _request(self, root: Path) -> AgentRequest:
+        return AgentRequest(
+            run_id="run-1",
+            role="reviewer",
+            prompt_path=root / "prompt.md",
+            workspace=root,
+            report_path=root / "review-report.md",
+        )
+
+    def test_the_effort_is_passed_as_the_cli_expects_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            command = CodexCliAgent(
+                model="gpt-5.6-luna", reasoning_effort="max"
+            ).build_command(self._request(root))
+
+        self.assertIn("--model", command)
+        self.assertIn("gpt-5.6-luna", command)
+        self.assertIn("model_reasoning_effort='max'", command)
+
+    def test_no_effort_leaves_the_cli_default_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            command = CodexCliAgent(model="gpt-5.6-luna").build_command(
+                self._request(Path(temporary_directory))
+            )
+
+        self.assertNotIn("model_reasoning_effort", " ".join(command))
+
+    def test_an_effort_the_cli_does_not_offer_is_refused_before_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            agent = CodexCliAgent(reasoning_effort="maximum")
+            with self.assertRaisesRegex(ValueError, "unsupported reasoning effort"):
+                agent.build_command(self._request(Path(temporary_directory)))
+
+
 class TurnBudgetTests(unittest.TestCase):
     def test_the_default_budget_is_large_enough_for_an_unfamiliar_codebase(
         self,
