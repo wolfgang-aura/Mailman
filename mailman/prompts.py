@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Sequence
 
 from mailman.models import RunRecord
+from mailman.prior_art import load_prior_art_markdown
 
 
 PRIMARY_TASK_FILENAME = "primary-task.md"
@@ -23,8 +24,41 @@ def _verification_line(verification_command: Sequence[str] | None) -> str:
     )
 
 
+def _prior_art_section(prior_art: str | None, *, audience: str) -> str:
+    """Put earlier attempts in front of the agent, with what they are for.
+
+    Three pull requests were closed on pytest #14324 before Mailman ever ran on
+    it, and both agents re-derived a rejected approach because nothing told them
+    those attempts existed.
+    """
+    if not prior_art:
+        return ""
+    if audience == "primary":
+        instruction = (
+            "Read this before you design a fix. An approach that was already "
+            "rejected will be rejected again. If your fix resembles one below, "
+            "say in your report why yours is different."
+        )
+    else:
+        instruction = (
+            "Judge the candidate against these. A candidate that repeats a "
+            "rejected approach is not ready, however well it is written."
+        )
+    return f"""
+## Earlier attempts at this issue
+
+{instruction}
+
+{prior_art.strip()}
+"""
+
+
 def build_primary_prompt(
-    run: RunRecord, issue_markdown: str, *, verification_command: Sequence[str] | None
+    run: RunRecord,
+    issue_markdown: str,
+    *,
+    verification_command: Sequence[str] | None,
+    prior_art: str | None = None,
 ) -> str:
     return f"""# Primary engineering task
 
@@ -50,11 +84,15 @@ instructions before editing, and follow its existing conventions.
 ## Issue
 
 {issue_markdown.strip()}
-"""
+{_prior_art_section(prior_art, audience="primary")}"""
 
 
 def build_reviewer_prompt(
-    run: RunRecord, issue_markdown: str, *, verification_command: Sequence[str] | None
+    run: RunRecord,
+    issue_markdown: str,
+    *,
+    verification_command: Sequence[str] | None,
+    prior_art: str | None = None,
 ) -> str:
     return f"""# Reviewer task
 
@@ -81,7 +119,7 @@ workspace. List every required change as a short bullet above your verdict.
 ## Issue
 
 {issue_markdown.strip()}
-"""
+{_prior_art_section(prior_art, audience="reviewer")}"""
 
 
 def write_task_prompts(
@@ -102,17 +140,24 @@ def write_task_prompts(
             "the issue placeholder is still in place. Run `mailman fetch-issue` "
             "before building prompts."
         )
+    prior_art = load_prior_art_markdown(run_directory)
     primary_path = run_directory / PRIMARY_TASK_FILENAME
     reviewer_path = run_directory / REVIEWER_TASK_FILENAME
     primary_path.write_text(
         build_primary_prompt(
-            run, issue_markdown, verification_command=verification_command
+            run,
+            issue_markdown,
+            verification_command=verification_command,
+            prior_art=prior_art,
         ),
         encoding="utf-8",
     )
     reviewer_path.write_text(
         build_reviewer_prompt(
-            run, issue_markdown, verification_command=verification_command
+            run,
+            issue_markdown,
+            verification_command=verification_command,
+            prior_art=prior_art,
         ),
         encoding="utf-8",
     )

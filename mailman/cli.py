@@ -37,6 +37,7 @@ from mailman.knowledge.collect import collect_retrospective, write_retrospective
 from mailman.knowledge.retrospective import RETROSPECTIVE_SECTIONS
 from mailman.models import RunStatus
 from mailman.orchestrator import orchestrate
+from mailman.prior_art import collect_prior_art
 from mailman.prompts import write_task_prompts
 from mailman.toolchain import prepare_agent_prompt, probe_tool, toolchain_executable
 from mailman.workspace import commit_is_ancestor, inspect_workspace, prepare_workspace
@@ -122,6 +123,23 @@ def _build_parser() -> argparse.ArgumentParser:
     submission.add_argument("--branch")
     submission.add_argument("--title")
     submission.add_argument("--data-root", type=Path)
+
+    prior_art = subparsers.add_parser(
+        "prior-art",
+        help="read earlier pull requests on this issue and put them in the prompts",
+    )
+    prior_art.add_argument("run_id")
+    prior_art.add_argument(
+        "--pull-request",
+        type=int,
+        action="append",
+        dest="pull_requests",
+        help="pull request number to read, repeatable; defaults to the "
+        "duplicate search results",
+    )
+    prior_art.add_argument("--executable")
+    prior_art.add_argument("--timeout", type=float, default=60)
+    prior_art.add_argument("--data-root", type=Path)
 
     duplicate = subparsers.add_parser(
         "duplicate-search",
@@ -307,6 +325,53 @@ def _prepare_environment(arguments: argparse.Namespace) -> int:
     if not record["success"]:
         summary["detail"] = record.get("detail")
     print(json.dumps(summary, indent=2))
+    return 0 if record["success"] else 1
+
+
+def _prior_art(arguments: argparse.Namespace) -> int:
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    numbers = list(arguments.pull_requests or [])
+    if not numbers:
+        search_path = run_directory / "duplicate-search.json"
+        if not search_path.is_file():
+            raise ValueError(
+                "no pull requests given and no duplicate search recorded. Run "
+                "`mailman duplicate-search` first, or pass --pull-request."
+            )
+        search = json.loads(search_path.read_text(encoding="utf-8"))
+        numbers = [
+            match["number"]
+            for match in search.get("matches", [])
+            if match.get("pull_request") and isinstance(match.get("number"), int)
+        ]
+    if not numbers:
+        raise ValueError("no earlier pull requests to read")
+    record = collect_prior_art(
+        run_directory,
+        repository=run.repository,
+        numbers=numbers,
+        executable=arguments.executable,
+        timeout_seconds=arguments.timeout,
+    )
+    print(
+        json.dumps(
+            {
+                "run_id": run.run_id,
+                "repository": record["repository"],
+                "success": record["success"],
+                "attempts": record.get("attempt_count", 0),
+                "closed_unmerged": record.get("closed_unmerged", 0),
+                "open": record.get("open", 0),
+                "detail": record.get("detail"),
+            },
+            indent=2,
+        )
+    )
+    if record["success"]:
+        print(
+            "Prior art is now part of both prompts. Rebuild them with "
+            "`mailman build-prompts` if they already exist."
+        )
     return 0 if record["success"] else 1
 
 
@@ -723,6 +788,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _prepare_submission(parsed)
         if parsed.subcommand == "duplicate-search":
             return _duplicate_search(parsed)
+        if parsed.subcommand == "prior-art":
+            return _prior_art(parsed)
         if parsed.subcommand == "transition":
             return _transition(parsed)
         if parsed.subcommand == "run-agent":
