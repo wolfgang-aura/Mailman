@@ -6,7 +6,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from mailman.models import AgentConfig, RunRecord, RunStatus
-from mailman.submission import TargetPolicy, analyze_diff, prepare_submission
+from mailman.submission import (
+    TargetPolicy,
+    _match_rows,
+    analyze_diff,
+    prepare_submission,
+)
 
 
 SOURCE_DIFF = """diff --git a/src/thing.py b/src/thing.py
@@ -126,6 +131,27 @@ class TargetPolicyTests(unittest.TestCase):
         for path in directory.glob("*.json"):
             policy = TargetPolicy.load(path)
             self.assertTrue(policy.policy_read_on, path.name)
+
+
+class DuplicateSearchRowTests(unittest.TestCase):
+    def test_rows_carry_the_kind_the_caller_searched(self) -> None:
+        payload = [
+            {
+                "number": 14358,
+                "title": "Fix RaisesGroup calling check() on contained exceptions",
+                "state": "CLOSED",
+                "url": "https://github.com/pytest-dev/pytest/pull/14358",
+                "createdAt": "2026-04-06T00:00:00Z",
+            }
+        ]
+        rows = _match_rows(payload, pull_request=True)
+        self.assertEqual(rows[0]["number"], 14358)
+        self.assertTrue(rows[0]["pull_request"])
+        self.assertFalse(_match_rows(payload, pull_request=False)[0]["pull_request"])
+
+    def test_an_unexpected_payload_yields_no_rows(self) -> None:
+        self.assertEqual(_match_rows({"unexpected": True}, pull_request=True), [])
+        self.assertEqual(_match_rows(["not a dict"], pull_request=True), [])
 
 
 class PrepareSubmissionTests(unittest.TestCase):

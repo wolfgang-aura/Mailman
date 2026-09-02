@@ -547,10 +547,12 @@ def prepare_submission(
 
 DUPLICATE_SEARCH_FILENAME = "duplicate-search.json"
 
-_SEARCH_FIELDS = "number,title,state,url,createdAt,isPullRequest"
+# `gh pr list --search` is repo-scoped and works where the global `gh search`
+# index refuses a repository, which it does for encode/starlette.
+_SEARCH_FIELDS = "number,title,state,url,createdAt"
 
 
-def _match_rows(payload: object) -> list[dict[str, Any]]:
+def _match_rows(payload: object, *, pull_request: bool) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if not isinstance(payload, list):
         return rows
@@ -564,7 +566,7 @@ def _match_rows(payload: object) -> list[dict[str, Any]]:
                 "state": entry.get("state"),
                 "url": entry.get("url"),
                 "created_at": entry.get("createdAt"),
-                "pull_request": bool(entry.get("isPullRequest")),
+                "pull_request": pull_request,
             }
         )
     return rows
@@ -600,39 +602,73 @@ def record_duplicate_search(
         "query": query,
         "success": False,
         "matches": [],
+        "methods": {},
         "commands": [],
     }
-    for kind in ("prs", "issues"):
-        result: CommandResult = execute(
-            [
-                command_executable,
+    for kind in ("pr", "issue"):
+        # Two searches disagree in useful ways. The global index finds a pull
+        # request whose body says "Fixes #14324"; the repo-scoped list works on
+        # repositories the global index refuses, as it does for encode/starlette.
+        attempts = [
+            (
                 "search",
-                kind,
-                query,
-                "--repo",
-                slug,
-                # `gh search` accepts only open or closed, and searches both
-                # when the flag is absent. A duplicate can be in either.
-                "--limit",
-                str(limit),
-                "--json",
-                _SEARCH_FIELDS,
-            ],
-            working_directory=run_directory,
-            timeout_seconds=timeout_seconds,
-        )
-        record["commands"].append(result.to_dict())
-        if result.timed_out or result.exit_code != 0:
-            record["detail"] = f"the {kind} search failed"
+                [
+                    command_executable,
+                    "search",
+                    "prs" if kind == "pr" else "issues",
+                    query,
+                    "--repo",
+                    slug,
+                    "--limit",
+                    str(limit),
+                    "--json",
+                    _SEARCH_FIELDS,
+                ],
+            ),
+            (
+                "list",
+                [
+                    command_executable,
+                    kind,
+                    "list",
+                    "--repo",
+                    slug,
+                    "--search",
+                    query,
+                    "--state",
+                    "all",
+                    "--limit",
+                    str(limit),
+                    "--json",
+                    _SEARCH_FIELDS,
+                ],
+            ),
+        ]
+        succeeded = False
+        for method, command in attempts:
+            result: CommandResult = execute(
+                command,
+                working_directory=run_directory,
+                timeout_seconds=timeout_seconds,
+            )
+            record["commands"].append({"method": method, **result.to_dict()})
+            if result.timed_out or result.exit_code != 0:
+                continue
+            try:
+                payload = json.loads(result.stdout or "[]")
+            except json.JSONDecodeError:
+                continue
+            record["methods"][kind] = method
+            for row in _match_rows(payload, pull_request=kind == "pr"):
+                if row not in record["matches"]:
+                    record["matches"].append(row)
+            succeeded = True
+            break
+        if not succeeded:
+            record["detail"] = f"every {kind} search failed"
             _write_json(run_directory / DUPLICATE_SEARCH_FILENAME, record)
             return record
-        try:
-            payload = json.loads(result.stdout or "[]")
-        except json.JSONDecodeError as error:
-            record["detail"] = f"the GitHub CLI returned unreadable JSON: {error}"
-            _write_json(run_directory / DUPLICATE_SEARCH_FILENAME, record)
-            return record
-        record["matches"].extend(_match_rows(payload))
+
     record["success"] = True
     record["match_count"] = len(record["matches"])
     _write_json(run_directory / DUPLICATE_SEARCH_FILENAME, record)
