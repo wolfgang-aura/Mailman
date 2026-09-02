@@ -28,11 +28,31 @@ Last verified: 2026-09-03 in `Asia/Singapore`.
 - Duplicate-search deployment: commit `d1d4a98` passed GitHub Actions on Python 3.12 and
   3.14 in run `33677777743`. It carries the pull request standard and the fix for #30, a
   duplicate search whose failed methods were recorded as a successful empty search.
-- Duplicate-precision deployment: commit `330d6b7` passed GitHub Actions in run `33680128212`.
+- Duplicate-precision deployment: commit `ed933ea` passed GitHub Actions in run `33680128212`.
   It carries the fix for #31: the run's own issue is no longer a duplicate of itself, matches
   are split into index-backed hits that block and listing hits a human must read, and
   `mailman acknowledge-duplicates` records that reading against the exact rows it covers.
-  This is the current head of `main`.
+- Duplicate-state deployment: commit `eb85694` passed GitHub Actions in run `33681805068`.
+  It carries the fix for #32, so a closed prior attempt is prior art rather than an
+  unclearable duplicate, and a merged one blocks as `already-fixed-upstream`. It also
+  records the `langchain-ai/langchain` target policy.
+- Prior-art scoping deployment: commit `54206df` passed GitHub Actions in run `33682244519`.
+  It carries the fix for #33 and its follow-up: `prior-art` reads the rows that are about
+  the issue whatever their state, and only open or merged rows stop a run.
+- Environment plan deployment: commit `d777218` passed GitHub Actions in run `33682705844`.
+  It adds the `langchain-core` environment plan. This is the current head of `main`.
+
+### Warning: the history was rewritten on 2026-09-02
+
+Between 20:38 and 20:45 UTC every commit on `main` changed its SHA, on both the local clone
+and `origin`, without this session asking for it. Nothing was lost: each new commit's tree
+matches the old one byte for byte (`330d6b7` and `ed933ea` both point at tree `7d79d6ea`),
+and author, committer, and dates are identical. Only the commit objects differ, which means
+the rewrite began at an ancestor and propagated. `origin/hoplite/mytilene-39fb53cc` moved
+from `21f47d8` to `d6f0da4` in the same period. The old commits are still reachable through
+the GitHub API but not from any local ref. The cause is unidentified. Treat any SHA recorded
+before 2026-09-02 20:45 UTC as unresolvable locally, and check `git log` against this file
+before trusting either.
 
 ## Development environment
 
