@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import sys
 import tempfile
@@ -9,7 +10,7 @@ from io import StringIO
 from pathlib import Path
 
 from mailman.artifacts import create_run
-from mailman.cli import main
+from mailman.cli import _emit, main
 
 
 class CliTests(unittest.TestCase):
@@ -127,6 +128,25 @@ class CliTests(unittest.TestCase):
         self.assertIn(run.run_id, listing.getvalue())
         self.assertEqual(shown, 0)
         self.assertIn("Reproduced the failure.", detail.getvalue())
+
+    def test_emit_survives_a_console_that_cannot_encode_the_transcript(self) -> None:
+        class LegacyConsole:
+            encoding = "cp437"
+
+            def __init__(self) -> None:
+                self.buffer = io.BytesIO()
+
+            def write(self, text: str) -> int:
+                raise UnicodeEncodeError("cp437", text, 0, 1, "not encodable")
+
+            def flush(self) -> None:
+                pass
+
+        console = LegacyConsole()
+        with redirect_stdout(console):
+            _emit("the agent said — done")
+
+        self.assertIn(b"done", console.buffer.getvalue())
 
     def test_show_rejects_a_run_id_that_escapes_the_data_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

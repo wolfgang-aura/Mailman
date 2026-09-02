@@ -758,6 +758,26 @@ def _retrospective(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _emit(text: str) -> None:
+    """Print a transcript without letting the console break the command.
+
+    Agents write curly quotes and dashes that a legacy code page cannot
+    encode, and `show | head` closes the pipe early. Neither is a reason to
+    end with a traceback.
+    """
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        stream = getattr(sys.stdout, "buffer", None)
+        if stream is None:
+            return
+        encoding = sys.stdout.encoding or "utf-8"
+        stream.write(text.encode(encoding, errors="replace") + b"\n")
+        stream.flush()
+    except (BrokenPipeError, OSError):
+        pass
+
+
 def _show(arguments: argparse.Namespace) -> int:
     data_root = (arguments.data_root or default_data_root()).resolve()
     if not arguments.run_id:
@@ -765,7 +785,7 @@ def _show(arguments: argparse.Namespace) -> int:
         if not directories:
             print(f"no runs recorded under {data_root}")
             return 1
-        print(summarize_runs(directories))
+        _emit(summarize_runs(directories))
         return 0
     _, run_directory = load_run(arguments.run_id, arguments.data_root)
     if arguments.write_logs:
@@ -776,7 +796,7 @@ def _show(arguments: argparse.Namespace) -> int:
         for path in written:
             print(f"wrote {path}")
         return 0
-    print(
+    _emit(
         render_run(
             run_directory,
             width=arguments.width,
