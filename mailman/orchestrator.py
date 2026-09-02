@@ -10,12 +10,20 @@ from mailman.agents.base import AgentRequest, EngineeringAgent
 from mailman.artifacts import append_agent_execution, append_verification, write_run
 from mailman.executor import execute
 from mailman.models import RunRecord, RunStatus, utc_now
+from mailman.redaction import redact
 from mailman.toolchain import prepare_agent_prompt
+from mailman.transcript import TranscriptEvent
 from mailman.workspace import inspect_workspace
 
 
 VERDICT_APPROVE = "APPROVE"
 VERDICT_REVISE = "REVISE"
+
+_STOP_REASONS = {
+    "error_max_turns": "it ran out of turns, so the work was cut off mid-task",
+    "error_during_execution": "the CLI failed part-way through",
+    "success": "the CLI reported success but wrote nothing",
+}
 
 _VERDICT_PATTERN = re.compile(
     r"^[ \t>*-]*MAILMAN-VERDICT:[ \t]*(APPROVE|REVISE)[ \t]*$", re.MULTILINE
@@ -162,16 +170,27 @@ class _Orchestration:
             f"run  {role}: {agent.name} with a "
             f"{self.agent_timeout_seconds:g} second timeout."
         )
-        result = agent.run(
-            AgentRequest(
-                run_id=self.run.run_id,
-                role=role,
-                prompt_path=prompt_path,
-                workspace=self.workspace,
-                report_path=report_path,
-                timeout_seconds=self.agent_timeout_seconds,
+        log_path = self.run_directory / "agent-executions" / f"{role}-live.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as log:
+
+            def watch(event: TranscriptEvent) -> None:
+                line = redact(event.line())
+                log.write(line + "\n")
+                log.flush()
+                self.announce(f"     {line}")
+
+            result = agent.run(
+                AgentRequest(
+                    run_id=self.run.run_id,
+                    role=role,
+                    prompt_path=prompt_path,
+                    workspace=self.workspace,
+                    report_path=report_path,
+                    timeout_seconds=self.agent_timeout_seconds,
+                    on_event=watch,
+                )
             )
-        )
         report_text = (
             result.report_path.read_text(encoding="utf-8", errors="replace")
             if result.report_present
@@ -193,10 +212,15 @@ class _Orchestration:
             },
         )
         ok = not result.timed_out and result.exit_code == 0 and result.report_present
+        stop_reason = _STOP_REASONS.get(
+            result.stop_reason or "", result.stop_reason or ""
+        )
         if result.timed_out:
             detail = f"{agent.name} timed out"
         elif not result.report_present:
             detail = f"{agent.name} produced no report"
+            if stop_reason:
+                detail = f"{detail}: {stop_reason}"
         else:
             detail = f"{agent.name} finished with exit code {result.exit_code}"
         self._step(
@@ -208,7 +232,9 @@ class _Orchestration:
                 "exit_code": result.exit_code,
                 "timed_out": result.timed_out,
                 "report_present": result.report_present,
+                "stop_reason": result.stop_reason,
                 "execution_record": str(record_path),
+                "live_log": str(log_path),
             },
         )
         return ok, report_text

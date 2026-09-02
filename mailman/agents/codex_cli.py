@@ -76,6 +76,7 @@ class CodexCliAgent(EngineeringAgent):
             working_directory=request.workspace,
             timeout_seconds=request.timeout_seconds,
             stdin_text=prompt,
+            on_stdout_line=request.observe(self.name),
         )
         report_after = (
             (

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -7,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mailman.agents.base import AgentRequest, resolve_executable
-from mailman.agents.claude_cli import ClaudeCliAgent
+from mailman.agents.claude_cli import ClaudeCliAgent, _final_result
 from mailman.agents.codex_cli import CodexCliAgent
 from mailman.executor import CommandResult
 
@@ -152,6 +153,72 @@ class AgentAdapterTests(unittest.TestCase):
         permission_index = command.index("--permission-mode")
         self.assertEqual(command[permission_index + 1], "acceptEdits")
         self.assertNotIn("--dangerously-skip-permissions", command)
+
+    def test_claude_asks_for_the_whole_thread_not_just_the_last_message(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            request = AgentRequest(
+                run_id="run-1",
+                role="primary",
+                prompt_path=root / "prompt.md",
+                workspace=root,
+                report_path=root / "primary-report.md",
+            )
+            command = ClaudeCliAgent().build_command(request)
+
+        format_index = command.index("--output-format")
+        self.assertEqual(command[format_index + 1], "stream-json")
+        # stream-json is rejected under --print without it.
+        self.assertIn("--verbose", command)
+
+
+class ClaudeResultTests(unittest.TestCase):
+    def test_takes_the_report_from_the_final_result_event(self) -> None:
+        stdout = "\n".join(
+            [
+                json.dumps({"type": "system", "subtype": "init", "session_id": "s1"}),
+                json.dumps(
+                    {
+                        "type": "result",
+                        "subtype": "success",
+                        "result": "Fixed the callback.",
+                    }
+                ),
+            ]
+        )
+
+        report, stop_reason = _final_result(stdout)
+
+        self.assertEqual(report, "Fixed the callback.")
+        self.assertEqual(stop_reason, "success")
+
+    def test_names_running_out_of_turns_as_the_stop_reason(self) -> None:
+        stdout = json.dumps(
+            {"type": "result", "subtype": "error_max_turns", "num_turns": 30}
+        )
+
+        report, stop_reason = _final_result(stdout)
+
+        self.assertIsNone(report)
+        self.assertEqual(stop_reason, "error_max_turns")
+
+    def test_falls_back_to_the_last_assistant_message(self) -> None:
+        stdout = json.dumps(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Done."}]},
+            }
+        )
+
+        report, _ = _final_result(stdout)
+
+        self.assertEqual(report, "Done.")
+
+    def test_keeps_a_plain_error_line_as_the_stop_reason(self) -> None:
+        report, stop_reason = _final_result("Error: Reached max turns (30)")
+
+        self.assertIsNone(report)
+        self.assertEqual(stop_reason, "Error: Reached max turns (30)")
 
 
 if __name__ == "__main__":
