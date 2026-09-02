@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "steps": [
+    {
+      "name": "create-virtualenv",
+      "command": ["python", "-m", "venv", "{environment}"],
+      "working_directory": "run"
+    },
+    {
+      "name": "upgrade-pip",
+      "command": [
+        "{environment}/Scripts/python.exe",
+        "-m", "pip", "install", "--disable-pip-version-check",
+        "--upgrade", "pip"
+      ],
+      "working_directory": "run"
+    },
+    {
+      "name": "install-langchain-core-with-test-group",
+      "command": [
+        "{environment}/Scripts/python.exe",
+        "-m", "pip", "install", "--disable-pip-version-check",
+        "-e", "./libs/core",
+        "--group", "libs/core/pyproject.toml:test"
+      ],
+      "working_directory": "workspace"
+    }
+  ],
+  "register": [
+    {
+      "name": "python",
+      "executable": "{environment}/Scripts/python.exe",
+      "probe_arguments": ["--version"]
+    }
+  ]
+}
