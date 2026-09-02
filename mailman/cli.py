@@ -423,13 +423,19 @@ def _prior_art(arguments: argparse.Namespace) -> int:
                 "`mailman duplicate-search` first, or pass --pull-request."
             )
         search = json.loads(search_path.read_text(encoding="utf-8"))
+        if not search.get("success"):
+            raise ValueError(
+                "the recorded duplicate search did not succeed, so it cannot say "
+                "whether earlier pull requests exist. Re-run "
+                "`mailman duplicate-search`, or pass --pull-request."
+            )
         numbers = [
             match["number"]
             for match in search.get("matches", [])
             if match.get("pull_request") and isinstance(match.get("number"), int)
         ]
-    if not numbers:
-        raise ValueError("no earlier pull requests to read")
+    # No matches is the best case, not a failure: record an empty prior art file
+    # so a scripted duplicate-search then prior-art needs no special casing.
     record = collect_prior_art(
         run_directory,
         repository=run.repository,
@@ -452,9 +458,11 @@ def _prior_art(arguments: argparse.Namespace) -> int:
         )
     )
     if record["success"]:
+        # Human-facing advice belongs on stderr so stdout stays one JSON document.
         print(
             "Prior art is now part of both prompts. Rebuild them with "
-            "`mailman build-prompts` if they already exist."
+            "`mailman build-prompts` if they already exist.",
+            file=sys.stderr,
         )
     return 0 if record["success"] else 1
 

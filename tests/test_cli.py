@@ -16,6 +16,80 @@ from mailman.cli import _emit, main
 
 
 class CliTests(unittest.TestCase):
+    def _run_for_prior_art(self, data_root: Path):
+        return create_run(
+            repository="https://github.com/example/project.git",
+            issue="https://github.com/example/project/issues/7",
+            base_commit="a" * 40,
+            primary="codex",
+            reviewer="claude",
+            data_root=data_root,
+        )
+
+    def test_prior_art_records_an_empty_result_when_nothing_was_tried(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = self._run_for_prior_art(data_root)
+            (run_directory / "duplicate-search.json").write_text(
+                json.dumps({"schema_version": 1, "success": True, "matches": []}),
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "prior-art",
+                        run.run_id,
+                        "--executable",
+                        "gh-not-called",
+                        "--data-root",
+                        str(data_root),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0, stderr.getvalue())
+            self.assertEqual(json.loads(stdout.getvalue())["attempts"], 0)
+            record = json.loads(
+                (run_directory / "prior-art.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(record["success"])
+            self.assertEqual(record["attempts"], [])
+            self.assertIn(
+                "No earlier pull request was found",
+                (run_directory / "prior-art.md").read_text(encoding="utf-8"),
+            )
+
+    def test_prior_art_still_refuses_when_no_search_was_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, _ = self._run_for_prior_art(data_root)
+            stderr = StringIO()
+            with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                exit_code = main(
+                    ["prior-art", run.run_id, "--data-root", str(data_root)]
+                )
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("no duplicate search recorded", stderr.getvalue())
+
+    def test_prior_art_refuses_a_duplicate_search_that_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = self._run_for_prior_art(data_root)
+            (run_directory / "duplicate-search.json").write_text(
+                json.dumps({"schema_version": 1, "success": False, "matches": []}),
+                encoding="utf-8",
+            )
+            stderr = StringIO()
+            with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                exit_code = main(
+                    ["prior-art", run.run_id, "--data-root", str(data_root)]
+                )
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("did not succeed", stderr.getvalue())
+
     def test_show_names_a_missing_run_instead_of_printing_an_errno(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_root = Path(temporary_directory) / "runs"
