@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from mailman.markdown_lite import render_markdown
-from mailman.transcript import parse_stream
+from mailman.transcript import count_commands, parse_stream
 from mailman.view import AgentExecution, agent_executions
 
 _STYLE = """
@@ -474,19 +474,9 @@ def _transcripts(executions: list[AgentExecution], run_directory: Path) -> str:
             else '<p class="note" style="padding:12px 16px">No machine-readable '
             "output was captured for this agent.</p>"
         )
-        commands = sum(1 for event in events if event.kind == "command")
-        # Each vendor reports a refused or failing command differently. Codex
-        # opens the result with its exit code, Claude marks the tool result as
-        # an error, and both also emit bare error events.
-        denied = sum(
-            1
-            for event in events
-            if event.kind == "error"
-            or (
-                event.kind == "result"
-                and event.summary.startswith(("exit ", "error"))
-            )
-        )
+        tally = count_commands(events)
+        commands = tally["commands"]
+        denied = tally["refused_or_failed"]
         counts = f"{len(events)} event(s) &middot; {commands} command(s)"
         if denied:
             counts += f' &middot; <span class="stat"><span class="del">{denied} '

@@ -5,6 +5,7 @@ import unittest
 
 from mailman.transcript import (
     TranscriptEvent,
+    count_commands,
     final_message,
     observed_model,
     parse_line,
@@ -265,6 +266,28 @@ class ObservedModelTests(unittest.TestCase):
 
     def test_survives_output_that_is_not_json(self) -> None:
         self.assertIsNone(observed_model("warning: something\nnot json", "codex"))
+
+
+class CommandTallyTests(unittest.TestCase):
+    def test_counts_a_reviewer_that_executed_nothing(self) -> None:
+        events = [TranscriptEvent("says", "I could not run the tests")]
+
+        self.assertEqual(
+            count_commands(events), {"commands": 0, "refused_or_failed": 0}
+        )
+
+    def test_counts_a_refusal_whichever_vendor_reported_it(self) -> None:
+        events = [
+            TranscriptEvent("command", "pytest"),
+            TranscriptEvent("result", "exit 1 <- pytest"),
+            TranscriptEvent("command", "pytest"),
+            TranscriptEvent("result", "ok <- pytest"),
+            TranscriptEvent("error", "requires approval"),
+        ]
+
+        self.assertEqual(
+            count_commands(events), {"commands": 2, "refused_or_failed": 2}
+        )
 
 
 if __name__ == "__main__":

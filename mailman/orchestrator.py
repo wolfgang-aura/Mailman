@@ -14,7 +14,7 @@ from mailman.models import RunRecord, RunStatus, utc_now
 from mailman.redaction import redact
 from mailman.targeting import assess_target
 from mailman.toolchain import prepare_agent_prompt
-from mailman.transcript import TranscriptEvent
+from mailman.transcript import TranscriptEvent, count_commands, parse_stream
 from mailman.workspace import inspect_workspace
 
 
@@ -251,6 +251,12 @@ class _Orchestration:
             if result.report_present
             else None
         )
+        # A reviewer that executed nothing has read the code, not checked it.
+        # Codex under a read-only sandbox has done exactly that on a live run,
+        # so the count belongs in the record, not only on the review page.
+        tally = count_commands(
+            parse_stream(result.command_result.stdout.splitlines(), agent.name)
+        )
         record_path = append_agent_execution(
             self.run_directory,
             role,
@@ -263,6 +269,8 @@ class _Orchestration:
                 "report": report_text,
                 "prompt_path": str(prompt_path),
                 "turn_budget": agent.turn_budget,
+                "commands_run": tally["commands"],
+                "commands_refused_or_failed": tally["refused_or_failed"],
                 "model_reported_by_cli": result.observed_model or "not reported",
                 "instruction_sources": describe_instruction_sources(agent.name),
                 "process": result.command_result.to_dict(),
@@ -290,6 +298,8 @@ class _Orchestration:
                 "report_present": result.report_present,
                 "stop_reason": result.stop_reason,
                 "turn_budget": agent.turn_budget,
+                "commands_run": tally["commands"],
+                "commands_refused_or_failed": tally["refused_or_failed"],
                 "execution_record": str(record_path),
                 "live_log": str(log_path),
             },

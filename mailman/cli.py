@@ -51,6 +51,7 @@ from mailman.orchestrator import orchestrate
 from mailman.prior_art import collect_prior_art
 from mailman.prompts import write_task_prompts
 from mailman.toolchain import prepare_agent_prompt, probe_tool, toolchain_executable
+from mailman.transcript import count_commands, parse_stream
 from mailman.view import render_run, summarize_runs, write_transcript_logs
 from mailman.review_page import write_run_page
 from mailman.workspace import commit_is_ancestor, inspect_workspace, prepare_workspace
@@ -693,6 +694,9 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         flush=True,
     )
     result = agent.run(request)
+    tally = count_commands(
+        parse_stream(result.command_result.stdout.splitlines(), agent.name)
+    )
     report_text = (
         result.report_path.read_text(encoding="utf-8", errors="replace")
         if result.report_present
@@ -709,6 +713,8 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         "turn_budget": agent.turn_budget,
         "reasoning_effort": arguments.reasoning_effort,
         "model_reported_by_cli": result.observed_model or "not reported",
+        "commands_run": tally["commands"],
+        "commands_refused_or_failed": tally["refused_or_failed"],
         "instruction_sources": describe_instruction_sources(agent.name),
         "process": result.command_result.to_dict(),
         "workflow_status_after_run": str(run.status),

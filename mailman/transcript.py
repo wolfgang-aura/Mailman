@@ -277,6 +277,28 @@ def observed_model(stdout: str, agent: str) -> str | None:
     return None
 
 
+def count_commands(events: Iterable[TranscriptEvent]) -> dict[str, int]:
+    """Count what an agent actually ran, and how much of it was refused.
+
+    Each vendor reports a refused or failing command differently: Codex opens
+    the result with its exit code, Claude marks the tool result as an error, and
+    both also emit bare error events. An agent that ran nothing is a fact worth
+    keeping in the run record, not only in a rendered page: a review asserted
+    without execution is worth much less than one that ran the gate.
+    """
+    items = list(events)
+    refused = sum(
+        1
+        for event in items
+        if event.kind == "error"
+        or (event.kind == "result" and event.summary.startswith(("exit ", "error")))
+    )
+    return {
+        "commands": sum(1 for event in items if event.kind == "command"),
+        "refused_or_failed": refused,
+    }
+
+
 def render(events: Iterable[TranscriptEvent], *, width: int = _SUMMARY_LIMIT) -> str:
     return "\n".join(redact(event.line(width=width)) for event in events)
 
