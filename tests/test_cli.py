@@ -16,6 +16,65 @@ from mailman.cli import _emit, main
 
 
 class CliTests(unittest.TestCase):
+    def _verify(self, data_root: Path, run_id: str, code: str, working: str):
+        stdout = StringIO()
+        stderr = StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            exit_code = main(
+                [
+                    "verify",
+                    run_id,
+                    "--data-root",
+                    str(data_root),
+                    "--working-directory",
+                    working,
+                    "--timeout",
+                    "30",
+                    "--",
+                    sys.executable,
+                    "-c",
+                    code,
+                ]
+            )
+        return exit_code, stdout.getvalue(), stderr.getvalue()
+
+    def test_verify_explains_a_failing_gate_on_stderr(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            failing = (
+                "import sys; print('9 failed, 57 passed'); "
+                "print('assertion detail', file=sys.stderr); sys.exit(1)"
+            )
+            exit_code, stdout, stderr = self._verify(
+                data_root, run.run_id, failing, temporary_directory
+            )
+
+            self.assertEqual(exit_code, 1)
+            summary = json.loads(stdout)
+            self.assertEqual(summary["exit_code"], 1)
+            self.assertIn("verification exited 1", stderr)
+            self.assertIn("9 failed, 57 passed", stderr)
+            self.assertIn("assertion detail", stderr)
+            record = run_directory / "commands" / f"{summary['record']:04d}.json"
+            self.assertIn(str(record), stderr)
+
+            passing = "print('all good')"
+            exit_code, stdout, stderr = self._verify(
+                data_root, run.run_id, passing, temporary_directory
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(json.loads(stdout)["exit_code"], 0)
+            self.assertEqual(stderr, "")
+
     def _run_for_prior_art(self, data_root: Path):
         return create_run(
             repository="https://github.com/example/project.git",

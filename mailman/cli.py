@@ -30,7 +30,7 @@ from mailman.environment import (
     load_plan,
     prepare_environment,
 )
-from mailman.executor import execute
+from mailman.executor import CommandResult, execute
 from mailman.export import export_patch
 from mailman.issue import (
     capture_issue_from_file,
@@ -942,9 +942,36 @@ def _verify(arguments: argparse.Namespace) -> int:
         "duration_seconds": result.duration_seconds,
     }
     print(json.dumps(summary, indent=2))
+    if result.timed_out or result.exit_code != 0:
+        _report_failed_command(
+            result, run_directory / "commands" / f"{command_number:04d}.json"
+        )
     if result.timed_out:
         return 124
     return result.exit_code or 0
+
+
+def _report_failed_command(result: CommandResult, record_path: Path) -> None:
+    """Say why a gate failed on stderr, so stdout stays one JSON document."""
+    reason = (
+        f"timed out after {result.timeout_seconds:g} seconds"
+        if result.timed_out
+        else f"exited {result.exit_code}"
+    )
+    # `execute` already redacted the command and its output.
+    print(f"verification {reason}: {' '.join(result.command)}", file=sys.stderr)
+    for stream_name, stream in (("stdout", result.stdout), ("stderr", result.stderr)):
+        tail = _tail(stream)
+        if tail:
+            print(f"--- last lines of {stream_name} ---", file=sys.stderr)
+            print(tail, file=sys.stderr)
+    print(f"full record: {record_path}", file=sys.stderr)
+
+
+def _tail(text: str, lines: int = 20) -> str:
+    if not text.strip():
+        return ""
+    return "\n".join(text.strip().splitlines()[-lines:])
 
 
 def main(arguments: list[str] | None = None) -> int:
