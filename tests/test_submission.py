@@ -12,7 +12,10 @@ from mailman.submission import (
     _match_rows,
     _query_terms,
     analyze_diff,
+    duplicate_is_related,
+    duplicate_strength,
     partition_duplicates,
+    related_duplicates,
     prepare_submission,
     record_duplicate_acknowledgement,
 )
@@ -280,9 +283,20 @@ class LocalMatchTests(unittest.TestCase):
         self.assertEqual([row["number"] for row in weak], [39682])
 
     def test_a_merged_pull_request_says_the_fix_already_landed(self) -> None:
-        merged = dict(_weak_match(1), state="merged", methods=["listing"])
+        merged = dict(_weak_match(1), state="merged", methods=["search"])
         strong, _ = partition_duplicates([merged])
         self.assertEqual([row["number"] for row in strong], [1])
+
+    def test_a_closed_attempt_is_still_relevant_prior_art(self) -> None:
+        # It must not block the gate and must still reach the prompts.
+        closed = dict(_weak_match(39682), state="closed", methods=["search"])
+        self.assertTrue(duplicate_is_related(closed))
+        self.assertEqual([row["number"] for row in related_duplicates([closed])], [39682])
+        self.assertEqual(partition_duplicates([closed])[0], [])
+
+    def test_a_merged_row_on_one_shared_word_is_not_an_upstream_fix(self) -> None:
+        stray = dict(_weak_match(1), state="merged")
+        self.assertEqual(duplicate_strength(stray), "weak")
 
     def test_partition_splits_index_hits_from_listing_noise(self) -> None:
         index_hit = dict(_weak_match(1), methods=["search"])
@@ -535,7 +549,7 @@ class PrepareSubmissionTests(unittest.TestCase):
                     "searched_at": "2026-09-03T00:00:00+00:00",
                     "success": True,
                     "complete": True,
-                    "matches": [dict(_weak_match(1), state="merged")],
+                    "matches": [dict(_weak_match(1), state="merged", methods=["search"])],
                 }
             ),
             encoding="utf-8",

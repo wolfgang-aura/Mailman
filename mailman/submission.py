@@ -737,6 +737,47 @@ DUPLICATE_ACKNOWLEDGEMENT_FILENAME = "duplicate-acknowledgement.json"
 _INDEX_METHODS = frozenset({"search", "list"})
 
 
+def duplicate_is_related(row: dict[str, Any]) -> bool:
+    """Say whether a row is about this issue, ignoring whether it is still open.
+
+    Relevance and blocking are different questions. A closed attempt is as
+    relevant as an open one, which is the whole point of reading prior art, but
+    only an open or merged one is a reason to hold the run back.
+    """
+    reasons = [str(reason) for reason in row.get("matched_by") or []]
+    if row.get("references_issue") or any(
+        reason.startswith("#") for reason in reasons
+    ):
+        return True
+    # An older record has no `methods`, and its `matched_by` held the method
+    # name for index hits. Read both so a run recorded before #31 still judges.
+    methods = [str(method) for method in row.get("methods") or []] or reasons
+    if any(method in _INDEX_METHODS for method in methods):
+        return True
+    matched = row.get("matched_terms") or []
+    term_count = row.get("term_count") or 0
+    return bool(term_count and len(matched) >= term_count)
+
+
+def related_duplicates(
+    matches: list[dict[str, Any]] | None,
+    *,
+    issue_number: int | None = None,
+) -> list[dict[str, Any]]:
+    """Every recorded row that is about this issue, whatever its state."""
+    return [
+        row
+        for row in matches or []
+        if isinstance(row, dict)
+        and duplicate_is_related(row)
+        and not (
+            issue_number is not None
+            and not row.get("pull_request")
+            and row.get("number") == issue_number
+        )
+    ]
+
+
 def duplicate_strength(row: dict[str, Any]) -> str:
     """Say whether a matched row looks like the same change or like noise.
 
@@ -749,29 +790,15 @@ def duplicate_strength(row: dict[str, Any]) -> str:
     human has to read them.
     """
     state = str(row.get("state") or "").lower()
-    if state == "merged":
+    if state == "merged" and duplicate_is_related(row):
         # The change is already upstream. Nothing about this run is worth
         # filing, whatever else the row matched on.
         return "merged"
-    reasons = [str(reason) for reason in row.get("matched_by") or []]
     if state == "closed":
         # A closed attempt is prior art, not a rival in flight. `prior-art`
         # reads it into both prompts; the gate only has to make a human look.
         return "weak"
-    if row.get("references_issue") or any(
-        reason.startswith("#") for reason in reasons
-    ):
-        return "strong"
-    # An older record has no `methods`, and its `matched_by` held the method
-    # name for index hits. Read both so a run recorded before #31 still judges.
-    methods = [str(method) for method in row.get("methods") or []] or reasons
-    if any(method in _INDEX_METHODS for method in methods):
-        return "strong"
-    matched = row.get("matched_terms") or []
-    term_count = row.get("term_count") or 0
-    if term_count and len(matched) >= term_count:
-        return "strong"
-    return "weak"
+    return "strong" if duplicate_is_related(row) else "weak"
 
 
 def _duplicate_key(row: dict[str, Any]) -> str:

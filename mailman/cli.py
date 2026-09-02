@@ -43,6 +43,7 @@ from mailman.submission import (
     TargetPolicy,
     partition_duplicates,
     prepare_submission,
+    related_duplicates,
     record_duplicate_acknowledgement,
     record_duplicate_search,
 )
@@ -459,13 +460,13 @@ def _prior_art(arguments: argparse.Namespace) -> int:
         # blocked a clean target on eight unrelated pull requests. See #33.
         reference = (load_issue_record(run_directory) or {}).get("reference")
         issue_number = reference.get("number") if isinstance(reference, dict) else None
-        strong, _ = partition_duplicates(
+        related = related_duplicates(
             search.get("matches"),
             issue_number=issue_number if isinstance(issue_number, int) else None,
         )
         numbers = [
             match["number"]
-            for match in strong
+            for match in related
             if match.get("pull_request") and isinstance(match.get("number"), int)
         ]
     # No matches is the best case, not a failure: record an empty prior art file
