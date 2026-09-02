@@ -1,0 +1,19 @@
+{
+  "name": "python-attrs/attrs",
+  "policy_url": "https://github.com/python-attrs/attrs/blob/main/.github/AI_POLICY.md",
+  "stance": "restricted",
+  "policy_read_on": "2026-09-02",
+  "disclosure_required": false,
+  "ai_trailer": "forbidden",
+  "requires_linked_issue": false,
+  "requires_maintainer_assignment": false,
+  "requires_duplicate_search": false,
+  "changelog_directory": "changelog.d",
+  "changelog_filename_template": "{issue}.change.md",
+  "checklist": [],
+  "notes": [
+    "Unsupervised agentic tools are forbidden outright.",
+    "A pull request listing an LLM as co-author cannot be merged and is closed without discussion.",
+    "Recorded as an example of a policy Mailman must refuse to prepare against, not as a target."
+  ]
+}
