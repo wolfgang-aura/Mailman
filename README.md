@@ -177,6 +177,19 @@ Agent executables are resolved at launch. Register one for a run with
 `mailman probe-tool RUN_ID --name claude --executable PATH` when it is not on
 `PATH`, or when a run must be pinned to an exact binary.
 
+Review a finished run as one page:
+
+```powershell
+mailman review RUN_ID
+```
+
+This writes `review.html` into the run directory and opens it. The page leads
+with the decision a human has to make: run status, reviewer verdict, and whether
+Mailman's own gate passed, then the diff, then the evidence behind it. It is a
+single file with no network dependency, so it opens from disk anywhere. Pass
+`--output` to write it elsewhere and `--no-open` to write it without a browser.
+`DESIGN.md` records the visual language it uses.
+
 While the loop runs it prints every command, edit, and message the agent
 produces, and appends the same lines to `agent-executions/ROLE-live.log` in the
 run directory. Read what a run did, during or after it:

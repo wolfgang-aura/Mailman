@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import webbrowser
 from pathlib import Path
 
 from mailman.agents import (
@@ -48,6 +49,7 @@ from mailman.prior_art import collect_prior_art
 from mailman.prompts import write_task_prompts
 from mailman.toolchain import prepare_agent_prompt, probe_tool, toolchain_executable
 from mailman.view import render_run, summarize_runs, write_transcript_logs
+from mailman.review_page import write_run_page
 from mailman.workspace import commit_is_ancestor, inspect_workspace, prepare_workspace
 
 
@@ -276,6 +278,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="write a .log transcript beside each stored agent execution",
     )
     show.add_argument("--data-root", type=Path)
+
+    review = subparsers.add_parser(
+        "review", help="write a single-page review of a run and open it"
+    )
+    review.add_argument("run_id")
+    review.add_argument(
+        "--output",
+        type=Path,
+        help="where to write the page, default review.html inside the run",
+    )
+    review.add_argument(
+        "--no-open", action="store_true", help="write the page without opening it"
+    )
+    review.add_argument("--data-root", type=Path)
 
     verify = subparsers.add_parser("verify", help="run and record a verification command")
     verify.add_argument("run_id")
@@ -872,6 +888,20 @@ def _show(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _review(arguments: argparse.Namespace) -> int:
+    _, run_directory = load_run(arguments.run_id, arguments.data_root)
+    destination = write_run_page(run_directory, arguments.output)
+    print(json.dumps({"run_id": arguments.run_id, "page": str(destination)}, indent=2))
+    if not arguments.no_open:
+        # A page nobody opens is a file nobody reads. Failing to open one is not
+        # a reason to fail the command, since the path is already printed.
+        try:
+            webbrowser.open(destination.resolve().as_uri())
+        except (OSError, ValueError) as error:
+            print(f"could not open a browser: {error}", file=sys.stderr)
+    return 0
+
+
 def _verify(arguments: argparse.Namespace) -> int:
     _, run_directory = load_run(arguments.run_id, arguments.data_root)
     command = environment_command(run_directory, arguments.command)
@@ -942,6 +972,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _check_target(parsed)
         if parsed.subcommand == "show":
             return _show(parsed)
+        if parsed.subcommand == "review":
+            return _review(parsed)
         if parsed.subcommand == "verify":
             return _verify(parsed)
     except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as error:
