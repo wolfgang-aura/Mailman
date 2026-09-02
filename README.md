@@ -199,7 +199,7 @@ Mailman may eventually prepare branches, patches, and pull request text. It must
 
 ## Project status
 
-This is foundation work, not a claim that the complete agent loop works. The [first Codex fixture record](docs/runs/0001-codex-fixture.md) documents both the failed and successful attempts. See [SOURCE_OF_TRUTH.md](SOURCE_OF_TRUTH.md) for verified environment facts and [ROADMAP.md](ROADMAP.md) for the next thin slice.
+The loop has run end to end against a repository this project does not own: [the first external issue](docs/runs/0004-first-external-issue.md), from an issue URL to an exported patch with no hand-written prompt. The revision cycle and a `BLOCKED` ending have live evidence too, in [the revision and blocking record](docs/runs/0005-revision-and-blocking-paths.md). Every run record keeps what went wrong, including the runs that failed. See [SOURCE_OF_TRUTH.md](SOURCE_OF_TRUTH.md) for verified environment facts and [ROADMAP.md](ROADMAP.md) for the next thin slice.
 
 ## License
 
