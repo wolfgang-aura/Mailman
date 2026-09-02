@@ -326,6 +326,17 @@ def _facts(
                 extras.append(f"{seconds / 60:.1f} min" if seconds >= 90 else f"{seconds:.0f}s")
             if budget:
                 extras.append(f"{_escape(budget)} turn budget")
+            # The operator's own instruction files reach the agent. Say how many,
+            # so a run's behavior is not explained by something invisible.
+            in_effect = [
+                source
+                for source in execution.record.get("instruction_sources") or []
+                if isinstance(source, dict)
+                and source.get("present")
+                and not source.get("suppressed")
+            ]
+            if in_effect:
+                extras.append(f"{len(in_effect)} personal instruction files read")
             if extras:
                 detail += "<br>" + " &middot; ".join(extras)
         cells.append(_fact(role.capitalize(), detail))

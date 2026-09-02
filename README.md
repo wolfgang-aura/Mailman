@@ -187,6 +187,12 @@ The effort is validated against the CLI's own catalog before launch and stored
 on the execution record, because a review at `max` and one at the default are
 not the same evidence.
 
+Every execution record also lists the instruction sources that were in effect:
+the operator's own `CLAUDE.md`, `AGENTS.md`, settings, and skill files, each with
+a SHA-256 digest and whether Mailman suppressed it. Neither CLI can be told to
+ignore all of them, so a run that is affected by machine-local text at least says
+which text, and the review page reports how many were read.
+
 Agent executables are resolved at launch. Register one for a run with
 `mailman probe-tool RUN_ID --name claude --executable PATH` when it is not on
 `PATH`, or when a run must be pinned to an exact binary.

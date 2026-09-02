@@ -9,6 +9,7 @@ from typing import Any, Callable, Sequence
 from mailman.agents.base import AgentRequest, EngineeringAgent
 from mailman.artifacts import append_agent_execution, append_verification, write_run
 from mailman.executor import CommandResult, execute
+from mailman.instructions import describe_instruction_sources
 from mailman.models import RunRecord, RunStatus, utc_now
 from mailman.redaction import redact
 from mailman.targeting import assess_target
@@ -262,6 +263,7 @@ class _Orchestration:
                 "report": report_text,
                 "prompt_path": str(prompt_path),
                 "turn_budget": agent.turn_budget,
+                "instruction_sources": describe_instruction_sources(agent.name),
                 "process": result.command_result.to_dict(),
                 "workflow_status_after_run": str(self.run.status),
             },

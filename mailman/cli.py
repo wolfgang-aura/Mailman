@@ -32,6 +32,7 @@ from mailman.environment import (
 )
 from mailman.executor import CommandResult, execute
 from mailman.export import export_patch
+from mailman.instructions import describe_instruction_sources
 from mailman.issue import (
     capture_issue_from_file,
     capture_issue_from_github,
@@ -707,6 +708,7 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         "prompt_path": str(prompt_path),
         "turn_budget": agent.turn_budget,
         "reasoning_effort": arguments.reasoning_effort,
+        "instruction_sources": describe_instruction_sources(agent.name),
         "process": result.command_result.to_dict(),
         "workflow_status_after_run": str(run.status),
     }
