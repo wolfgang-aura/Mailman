@@ -173,6 +173,16 @@ one run spent all thirty on an unfamiliar codebase and wrote no report. When an
 agent stops at its limit, the blocking message says so and names the budget it
 hit, instead of reporting only a missing report.
 
+A Codex run can also name how hard the model should think:
+
+```powershell
+mailman run-agent RUN_ID --role reviewer --model gpt-5.6-luna --reasoning-effort max
+```
+
+The effort is validated against the CLI's own catalog before launch and stored
+on the execution record, because a review at `max` and one at the default are
+not the same evidence.
+
 Agent executables are resolved at launch. Register one for a run with
 `mailman probe-tool RUN_ID --name claude --executable PATH` when it is not on
 `PATH`, or when a run must be pinned to an exact binary.
