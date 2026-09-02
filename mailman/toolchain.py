@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from hashlib import sha256
 from pathlib import Path
 
@@ -90,6 +91,25 @@ def toolchain_executable(run_directory: Path, name: str) -> str | None:
     if name not in tools:
         return None
     return _verified_executable(name, tools[name])
+
+
+def resolve_tool(run_directory: Path, name: str, *, fallback: str | None = None) -> str:
+    """Return a probed executable for one tool, then fall back to PATH.
+
+    Commands run without a shell, so a bare name has to be resolved here. A run
+    that pinned the tool keeps using the exact probed file.
+    """
+    pinned = toolchain_executable(run_directory, name)
+    if pinned is not None:
+        return pinned
+    found = shutil.which(fallback or name)
+    if found is None:
+        raise FileNotFoundError(
+            f"{name!r} was not found on PATH. Install it, or register it for the "
+            f"run with `mailman probe-tool {run_directory.name} --name {name} "
+            f"--executable <path>`."
+        )
+    return found
 
 
 def prepare_agent_prompt(

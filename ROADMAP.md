@@ -34,6 +34,17 @@ The acceptance test is one recorded run in which two real agent processes comple
 The acceptance test is one rule promoted into `SKILL.md` through the registry,
 with the evidence, the validation, and the provenance that the gates require.
 Not met. No lesson has entered the registry yet.
+## v0.4, first real external issue
+
+- [x] Capture a GitHub issue into the run record without leaking its accepted fix.
+- [x] Build primary and reviewer prompts from the captured issue.
+- [x] Install a target repository's dependencies outside its working tree.
+- [x] Export a reviewable patch, summary, and draft pull request text.
+- [ ] Carry one live two-model run on an external repository with real dependencies.
+- [ ] Record live evidence for the revision cycle and at least one blocking path.
+
+The acceptance test is one recorded run against a repository Mailman does not
+own, from issue URL to exported patch, with no hand-written prompt.
 
 ## Later, only after real-run evidence
 

@@ -15,11 +15,20 @@ from mailman.artifacts import (
     write_run,
 )
 from mailman.doctor import run_checks
+from mailman.environment import (
+    environment_command,
+    load_environment_record,
+    load_plan,
+    prepare_environment,
+)
 from mailman.executor import execute
+from mailman.export import export_patch
+from mailman.issue import capture_issue_from_file, capture_issue_from_github
 from mailman.knowledge.collect import collect_retrospective, write_retrospective
 from mailman.knowledge.retrospective import RETROSPECTIVE_SECTIONS
 from mailman.models import RunStatus
 from mailman.orchestrator import orchestrate
+from mailman.prompts import write_task_prompts
 from mailman.toolchain import prepare_agent_prompt, probe_tool, toolchain_executable
 from mailman.workspace import commit_is_ancestor, inspect_workspace, prepare_workspace
 
@@ -42,6 +51,50 @@ def _build_parser() -> argparse.ArgumentParser:
     init_run.add_argument("--primary-model")
     init_run.add_argument("--reviewer-model")
     init_run.add_argument("--data-root", type=Path)
+
+    fetch_issue = subparsers.add_parser(
+        "fetch-issue", help="capture the run's issue text into the private run record"
+    )
+    fetch_issue.add_argument("run_id")
+    fetch_issue.add_argument(
+        "--from-file",
+        type=Path,
+        help="read the issue body from a local file instead of the GitHub CLI",
+    )
+    fetch_issue.add_argument("--title", help="issue title to record with --from-file")
+    fetch_issue.add_argument("--executable", help="path to the GitHub CLI executable")
+    fetch_issue.add_argument("--timeout", type=float, default=60)
+    fetch_issue.add_argument("--data-root", type=Path)
+
+    build_prompts = subparsers.add_parser(
+        "build-prompts", help="turn the captured issue into primary and reviewer prompts"
+    )
+    build_prompts.add_argument("run_id")
+    build_prompts.add_argument(
+        "--verification",
+        help="the verification command to quote in both prompts, as one string",
+    )
+    build_prompts.add_argument("--data-root", type=Path)
+
+    prepare_environment_parser = subparsers.add_parser(
+        "prepare-environment",
+        help="install the target repository's dependencies outside its working tree",
+    )
+    prepare_environment_parser.add_argument("run_id")
+    prepare_environment_parser.add_argument("--plan", required=True, type=Path)
+    prepare_environment_parser.add_argument("--workspace", type=Path)
+    prepare_environment_parser.add_argument("--timeout", type=float, default=1800)
+    prepare_environment_parser.add_argument("--data-root", type=Path)
+
+    export = subparsers.add_parser(
+        "export-patch", help="write a reviewable patch package for a finished run"
+    )
+    export.add_argument("run_id")
+    export.add_argument("--workspace", type=Path)
+    export.add_argument("--output", type=Path)
+    export.add_argument("--allow-unfinished", action="store_true")
+    export.add_argument("--timeout", type=float, default=120)
+    export.add_argument("--data-root", type=Path)
 
     transition = subparsers.add_parser("transition", help="change a run workflow state")
     transition.add_argument("run_id")
@@ -83,8 +136,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="run the bounded primary, reviewer, and verification loop for a run",
     )
     orchestrate_parser.add_argument("run_id")
-    orchestrate_parser.add_argument("--primary-prompt", required=True, type=Path)
-    orchestrate_parser.add_argument("--reviewer-prompt", required=True, type=Path)
+    orchestrate_parser.add_argument("--primary-prompt", type=Path)
+    orchestrate_parser.add_argument("--reviewer-prompt", type=Path)
     orchestrate_parser.add_argument("--workspace", required=True, type=Path)
     orchestrate_parser.add_argument("--agent-timeout", type=float, default=3600)
     orchestrate_parser.add_argument("--verification-timeout", type=float, default=900)
@@ -136,6 +189,109 @@ def _init_run(arguments: argparse.Namespace) -> int:
         data_root=arguments.data_root,
     )
     print(json.dumps({"run_id": run.run_id, "path": str(run_directory)}, indent=2))
+    return 0
+
+
+def _fetch_issue(arguments: argparse.Namespace) -> int:
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    if arguments.from_file is not None:
+        record = capture_issue_from_file(
+            run_directory,
+            issue_url=run.issue,
+            source_file=arguments.from_file,
+            title=arguments.title,
+        )
+    else:
+        record = capture_issue_from_github(
+            run_directory,
+            issue_url=run.issue,
+            executable=arguments.executable,
+            timeout_seconds=arguments.timeout,
+        )
+    summary = {
+        "run_id": run.run_id,
+        "source": record["source"],
+        "success": record["success"],
+        "title": record.get("title"),
+        "body_characters": record.get("body_characters"),
+        "issue_markdown": str(run_directory / "issue.md"),
+    }
+    if not record["success"]:
+        summary["detail"] = record.get("detail")
+    print(json.dumps(summary, indent=2))
+    return 0 if record["success"] else 1
+
+
+def _build_prompts(arguments: argparse.Namespace) -> int:
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    verification = arguments.verification.split() if arguments.verification else None
+    primary_path, reviewer_path = write_task_prompts(
+        run, run_directory, verification_command=verification
+    )
+    print(
+        json.dumps(
+            {
+                "run_id": run.run_id,
+                "primary_prompt": str(primary_path),
+                "reviewer_prompt": str(reviewer_path),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _prepare_environment(arguments: argparse.Namespace) -> int:
+    _, run_directory = load_run(arguments.run_id, arguments.data_root)
+    workspace = arguments.workspace or (run_directory / "workspace")
+    plan = load_plan(arguments.plan.resolve(strict=True))
+    record = prepare_environment(
+        run_directory,
+        workspace=workspace,
+        plan=plan,
+        timeout_seconds=arguments.timeout,
+        announce=lambda message: print(message, flush=True),
+    )
+    summary = {
+        "steps": len(record["steps"]),
+        "failed_step": next(
+            (step["name"] for step in record["steps"] if not step["ok"]), None
+        ),
+        "workspace_clean": record["workspace_clean"],
+        "registered": [entry["name"] for entry in record["registered"]],
+        "success": record["success"],
+        "record": str(run_directory / "environment.json"),
+    }
+    if not record["success"]:
+        summary["detail"] = record.get("detail")
+    print(json.dumps(summary, indent=2))
+    return 0 if record["success"] else 1
+
+
+def _export_patch(arguments: argparse.Namespace) -> int:
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    workspace = arguments.workspace or (run_directory / "workspace")
+    destination = arguments.output or (run_directory / "export")
+    record = export_patch(
+        run,
+        run_directory,
+        workspace=workspace,
+        destination=destination,
+        timeout_seconds=arguments.timeout,
+        require_ready=not arguments.allow_unfinished,
+    )
+    print(
+        json.dumps(
+            {
+                "run_id": record["run_id"],
+                "status_at_export": record["status_at_export"],
+                "destination": record["destination"],
+                "branch": record["branch"],
+                "changed_files": record["changed_files"],
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -261,17 +417,40 @@ def _run_agent(arguments: argparse.Namespace) -> int:
     return result.exit_code or 0
 
 
+def _default_prompt(run_directory: Path, given: Path | None, name: str) -> Path:
+    """Fall back to the prompts `build-prompts` wrote for this run."""
+    if given is not None:
+        return given.resolve(strict=True)
+    generated = run_directory / name
+    if not generated.is_file():
+        raise ValueError(
+            f"no {name} for this run. Pass the prompt explicitly, or run "
+            "`mailman build-prompts` first."
+        )
+    return generated.resolve(strict=True)
+
+
 def _orchestrate(arguments: argparse.Namespace) -> int:
-    command = list(arguments.command)
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    command = environment_command(run_directory, arguments.command)
     if not command:
         raise ValueError("a verification command is required after --")
-    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    environment = load_environment_record(run_directory)
+    if environment is not None and not environment.get("success"):
+        raise ValueError(
+            "environment preparation for this run did not succeed. Fix the plan "
+            "and re-run `mailman prepare-environment` before orchestrating."
+        )
     outcome = orchestrate(
         run=run,
         run_directory=run_directory,
         workspace=arguments.workspace,
-        primary_prompt=arguments.primary_prompt.resolve(strict=True),
-        reviewer_prompt=arguments.reviewer_prompt.resolve(strict=True),
+        primary_prompt=_default_prompt(
+            run_directory, arguments.primary_prompt, "primary-task.md"
+        ),
+        reviewer_prompt=_default_prompt(
+            run_directory, arguments.reviewer_prompt, "reviewer-task.md"
+        ),
         verification_command=command,
         agent_factory=_pinned_agent_factory(run_directory, arguments.max_turns),
         agent_timeout_seconds=arguments.agent_timeout,
@@ -376,10 +555,10 @@ def _retrospective(arguments: argparse.Namespace) -> int:
 
 
 def _verify(arguments: argparse.Namespace) -> int:
-    command = list(arguments.command)
+    _, run_directory = load_run(arguments.run_id, arguments.data_root)
+    command = environment_command(run_directory, arguments.command)
     if not command:
         raise ValueError("a command is required after --")
-    _, run_directory = load_run(arguments.run_id, arguments.data_root)
     result = execute(
         command,
         working_directory=arguments.working_directory,
@@ -415,6 +594,14 @@ def main(arguments: list[str] | None = None) -> int:
             return _doctor()
         if parsed.subcommand == "init-run":
             return _init_run(parsed)
+        if parsed.subcommand == "fetch-issue":
+            return _fetch_issue(parsed)
+        if parsed.subcommand == "build-prompts":
+            return _build_prompts(parsed)
+        if parsed.subcommand == "prepare-environment":
+            return _prepare_environment(parsed)
+        if parsed.subcommand == "export-patch":
+            return _export_patch(parsed)
         if parsed.subcommand == "transition":
             return _transition(parsed)
         if parsed.subcommand == "run-agent":
