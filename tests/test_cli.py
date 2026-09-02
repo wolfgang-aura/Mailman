@@ -51,6 +51,38 @@ class CliTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["stdout"].strip(), "ok")
 
+    def test_build_prompts_expands_the_environment_token(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            (run_directory / "issue.md").write_text("# Issue\n\nBody.\n", encoding="utf-8")
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "build-prompts",
+                        run.run_id,
+                        "--verification",
+                        "{environment}/bin/python -m pytest",
+                        "--data-root",
+                        str(data_root),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0, stderr.getvalue())
+            prompt = (run_directory / "primary-task.md").read_text(encoding="utf-8")
+            # An agent reading a literal `{environment}` cannot run anything.
+            self.assertNotIn("{environment}", prompt)
+            self.assertIn("environment/bin/python -m pytest", prompt.replace("\\", "/"))
+
 
 if __name__ == "__main__":
     unittest.main()
