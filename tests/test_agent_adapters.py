@@ -8,7 +8,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mailman.agents.base import AgentRequest, resolve_executable
-from mailman.agents.claude_cli import ClaudeCliAgent, _final_result
+from mailman.agents.claude_cli import (
+    DEFAULT_MAX_TURNS,
+    ClaudeCliAgent,
+    _final_result,
+)
 from mailman.agents.codex_cli import CodexCliAgent
 from mailman.executor import CommandResult
 
@@ -213,6 +217,19 @@ class AgentAdapterTests(unittest.TestCase):
         self.assertIn("Bash(git diff:*)", allowed)
         self.assertNotIn("Bash(pytest:*)", allowed)
         self.assertNotIn("Bash(python:*)", allowed)
+
+
+class TurnBudgetTests(unittest.TestCase):
+    def test_the_default_budget_is_large_enough_for_an_unfamiliar_codebase(
+        self,
+    ) -> None:
+        # Thirty turns blocked a real run before it wrote anything.
+        self.assertGreaterEqual(DEFAULT_MAX_TURNS, 120)
+        self.assertEqual(ClaudeCliAgent().max_turns, DEFAULT_MAX_TURNS)
+
+    def test_claude_reports_its_budget_and_codex_reports_none(self) -> None:
+        self.assertEqual(ClaudeCliAgent(max_turns=42).turn_budget, 42)
+        self.assertIsNone(CodexCliAgent().turn_budget)
 
 
 class ClaudeResultTests(unittest.TestCase):

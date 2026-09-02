@@ -26,6 +26,20 @@ _STOP_REASONS = {
     "success": "the CLI reported success but wrote nothing",
 }
 
+
+def _describe_stop(reason: str | None, turn_budget: int | None) -> str:
+    """Say why the agent stopped, and against what budget it stopped.
+
+    A turn limit is only readable next to the limit, so the budget is named
+    here rather than left for whoever opens the execution record.
+    """
+    if not reason:
+        return ""
+    described = _STOP_REASONS.get(reason, reason)
+    if reason == "error_max_turns" and turn_budget:
+        return f"{described} (budget: {turn_budget} turns)"
+    return described
+
 _VERDICT_PATTERN = re.compile(
     r"^[ \t>*-]*MAILMAN-VERDICT:[ \t]*(APPROVE|REVISE)[ \t]*$", re.MULTILINE
 )
@@ -213,14 +227,13 @@ class _Orchestration:
                 "report_present": result.report_present,
                 "report": report_text,
                 "prompt_path": str(prompt_path),
+                "turn_budget": agent.turn_budget,
                 "process": result.command_result.to_dict(),
                 "workflow_status_after_run": str(self.run.status),
             },
         )
         ok = not result.timed_out and result.exit_code == 0 and result.report_present
-        stop_reason = _STOP_REASONS.get(
-            result.stop_reason or "", result.stop_reason or ""
-        )
+        stop_reason = _describe_stop(result.stop_reason, agent.turn_budget)
         if result.timed_out:
             detail = f"{agent.name} timed out"
         elif not result.report_present:
@@ -239,6 +252,7 @@ class _Orchestration:
                 "timed_out": result.timed_out,
                 "report_present": result.report_present,
                 "stop_reason": result.stop_reason,
+                "turn_budget": agent.turn_budget,
                 "execution_record": str(record_path),
                 "live_log": str(log_path),
             },

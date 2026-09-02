@@ -39,6 +39,12 @@ _READ_COMMANDS = (
 
 _TEST_COMMANDS = ("python", "python3", "py", "pytest", "tox", "make")
 
+# Thirty turns was the old default and it never once finished an external
+# target: run 20260902T111426Z-3fc769 spent all thirty on pytest and wrote no
+# report at all. The run that reached a verdict on the same issue was given
+# 120, so that is the budget an unfamiliar codebase actually costs.
+DEFAULT_MAX_TURNS = 120
+
 
 def _allowed_tools(role: str, verification_command: tuple[str, ...]) -> str:
     """Permit the commands the role needs and nothing else.
@@ -61,11 +67,15 @@ def _allowed_tools(role: str, verification_command: tuple[str, ...]) -> str:
 class ClaudeCliAgent(EngineeringAgent):
     executable: str = "claude"
     model: str | None = None
-    max_turns: int = 30
+    max_turns: int = DEFAULT_MAX_TURNS
 
     @property
     def name(self) -> str:
         return "claude"
+
+    @property
+    def turn_budget(self) -> int | None:
+        return self.max_turns
 
     def build_command(self, request: AgentRequest) -> list[str]:
         if self.max_turns <= 0:

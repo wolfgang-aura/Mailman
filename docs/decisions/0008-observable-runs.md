@@ -82,3 +82,19 @@ unchanged and still wins, so nothing here can push or open a pull request.
 Verified live against the installed CLI on 2026-09-02: `git status --short`,
 `git diff --stat`, and `python -c` all executed in a workspace where, before
 the change, every one of them came back `This command requires approval`.
+
+## Addendum: the budget a stop is read against
+
+Naming `error_max_turns` in the blocking message is only half of
+[#14](https://github.com/wolfgang-aura/Mailman/issues/14). A turn limit means
+nothing without the limit, so `turn_budget` is now recorded on every agent
+execution and named in the message: "it ran out of turns, so the work was cut
+off mid-task (budget: 120 turns)". Codex has no such bound and records `None`,
+which is itself the honest answer.
+
+The default moves from 30 to 120. Thirty was never chosen for external work; it
+was the value the first fixture happened to use. Run
+`20260902T111426Z-3fc769` spent all thirty turns on `pytest-dev/pytest` and
+produced nothing, while `20260902T111843Z-01b5f6`, given 120 on the same issue,
+reached a verdict and failed on the merits of its patch. Failing on the merits
+is a result. Running out of turns is not.

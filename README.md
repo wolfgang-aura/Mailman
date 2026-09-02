@@ -161,6 +161,12 @@ including a missing or contradictory verdict, is `BLOCKED`. The command exits
 `orchestration.json`. See [the orchestration decision](docs/decisions/0004-bounded-orchestration.md)
 for the reasoning.
 
+Claude's turn budget defaults to 120 (`--max-turns`) and is recorded with every
+execution. Thirty, the earlier default, never once finished an external target:
+one run spent all thirty on an unfamiliar codebase and wrote no report. When an
+agent stops at its limit, the blocking message says so and names the budget it
+hit, instead of reporting only a missing report.
+
 Agent executables are resolved at launch. Register one for a run with
 `mailman probe-tool RUN_ID --name claude --executable PATH` when it is not on
 `PATH`, or when a run must be pinned to an exact binary.

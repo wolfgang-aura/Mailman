@@ -77,6 +77,16 @@ class EngineeringAgent(ABC):
     def name(self) -> str:
         raise NotImplementedError
 
+    @property
+    def turn_budget(self) -> int | None:
+        """How many turns the agent is allowed, when its CLI bounds them.
+
+        Recorded with every execution so a run that stopped at its limit can
+        be read against the limit it was given. ``None`` when the CLI has no
+        such bound.
+        """
+        return None
+
     @abstractmethod
     def run(self, request: AgentRequest) -> AgentResult:
         raise NotImplementedError

@@ -38,14 +38,24 @@ def git(workspace: Path, *arguments: str) -> str:
 class ScriptedAgent(EngineeringAgent):
     """An agent that writes a queued report and reports a queued exit code."""
 
-    def __init__(self, agent_name: str, script: list[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        agent_name: str,
+        script: list[dict[str, object]],
+        turn_budget: int | None = None,
+    ) -> None:
         self._name = agent_name
         self.script = script
+        self._turn_budget = turn_budget
         self.calls: list[tuple[str, str]] = []
 
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def turn_budget(self) -> int | None:
+        return self._turn_budget
 
     def run(self, request: AgentRequest) -> AgentResult:
         if not self.script:
@@ -81,6 +91,7 @@ class ScriptedAgent(EngineeringAgent):
             timed_out=timed_out,
             report_present=isinstance(report, str) and bool(report.strip()),
             command_result=command_result,
+            stop_reason=step.get("stop_reason"),  # type: ignore[arg-type]
         )
 
 
@@ -137,9 +148,10 @@ class OrchestratorHarness(unittest.TestCase):
         reviewer_script: list[dict[str, object]],
         check: str = PASSING_CHECK,
         max_revisions: int = 1,
+        primary_turn_budget: int | None = None,
     ):
         run, run_directory = self.make_run()
-        primary = ScriptedAgent("codex", list(primary_script))
+        primary = ScriptedAgent("codex", list(primary_script), primary_turn_budget)
         reviewer = ScriptedAgent("claude", list(reviewer_script))
         agents = {"codex": primary, "claude": reviewer}
         outcome = orchestrate(
@@ -316,6 +328,39 @@ class OrchestrationTests(OrchestratorHarness):
             outcome.steps[-1].detail,
             "primary agent did not complete the primary stage",
         )
+
+    def test_a_turn_limit_is_named_with_the_budget_it_hit(self) -> None:
+        outcome, run_directory, _, _ = self.orchestrate(
+            primary_script=[{"exit_code": 1, "stop_reason": "error_max_turns"}],
+            reviewer_script=[],
+            primary_turn_budget=120,
+        )
+
+        self.assertEqual(outcome.status, RunStatus.BLOCKED)
+        agent_step = next(
+            step for step in outcome.steps if step.name == "agent:primary"
+        )
+        self.assertIn("it ran out of turns", agent_step.detail)
+        self.assertIn("budget: 120 turns", agent_step.detail)
+        self.assertEqual(agent_step.data["turn_budget"], 120)
+        record = json.loads(
+            (run_directory / "agent-executions" / "0001-primary.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(record["turn_budget"], 120)
+
+    def test_an_agent_without_a_turn_bound_records_none(self) -> None:
+        outcome, _, _, _ = self.orchestrate(
+            primary_script=[{"exit_code": 0}],
+            reviewer_script=[],
+        )
+
+        agent_step = next(
+            step for step in outcome.steps if step.name == "agent:primary"
+        )
+        self.assertIsNone(agent_step.data["turn_budget"])
+        self.assertEqual(agent_step.detail, "codex produced no report")
 
     def test_a_missing_agent_executable_blocks_the_run(self) -> None:
         class MissingExecutableAgent(EngineeringAgent):

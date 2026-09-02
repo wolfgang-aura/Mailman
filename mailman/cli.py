@@ -5,7 +5,12 @@ import json
 import sys
 from pathlib import Path
 
-from mailman.agents import ClaudeCliAgent, CodexCliAgent, EngineeringAgent
+from mailman.agents import (
+    DEFAULT_MAX_TURNS,
+    ClaudeCliAgent,
+    CodexCliAgent,
+    EngineeringAgent,
+)
 from mailman.agents.base import AgentRequest
 from mailman.artifacts import (
     append_agent_execution,
@@ -170,7 +175,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_agent.add_argument("--workspace", required=True, type=Path)
     run_agent.add_argument("--model")
     run_agent.add_argument("--timeout", type=float, default=3600)
-    run_agent.add_argument("--max-turns", type=int, default=30)
+    run_agent.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
     run_agent.add_argument(
         "--verification",
         help="the verification command, as one string, so the agent is "
@@ -205,7 +210,7 @@ def _build_parser() -> argparse.ArgumentParser:
     orchestrate_parser.add_argument("--workspace", required=True, type=Path)
     orchestrate_parser.add_argument("--agent-timeout", type=float, default=3600)
     orchestrate_parser.add_argument("--verification-timeout", type=float, default=900)
-    orchestrate_parser.add_argument("--max-turns", type=int, default=30)
+    orchestrate_parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
     orchestrate_parser.add_argument("--max-revisions", type=int, default=1)
     orchestrate_parser.add_argument(
         "--acknowledge-prior-attempts",
@@ -627,6 +632,7 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         "report_present": result.report_present,
         "report": report_text,
         "prompt_path": str(prompt_path),
+        "turn_budget": agent.turn_budget,
         "process": result.command_result.to_dict(),
         "workflow_status_after_run": str(run.status),
     }
@@ -640,6 +646,8 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         "process_exit_code": result.exit_code,
         "timed_out": result.timed_out,
         "report_present": result.report_present,
+        "stop_reason": result.stop_reason,
+        "turn_budget": agent.turn_budget,
         "execution_record": str(record_path),
         "workflow_status": str(run.status),
         "status_changed": False,
