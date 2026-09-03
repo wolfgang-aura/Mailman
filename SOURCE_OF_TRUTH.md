@@ -40,7 +40,16 @@ Last verified: 2026-09-03 in `Asia/Singapore`.
   It carries the fix for #33 and its follow-up: `prior-art` reads the rows that are about
   the issue whatever their state, and only open or merged rows stop a run.
 - Environment plan deployment: commit `d777218` passed GitHub Actions in run `33682705844`.
-  It adds the `langchain-core` environment plan. This is the current head of `main`.
+  It adds the `langchain-core` environment plan.
+- Verification-resolution deployment: commit `41d9eb7` passed GitHub Actions on Python 3.12
+  and 3.14 in run `33718702205`. It carries the fix for #39, so a verification command typed
+  as a bare `python` resolves through the run toolchain instead of running whatever is first
+  on PATH, and adds the `pytest` and `starlette` environment plans.
+- No-test acknowledgement deployment: commit `87bbd93` passed GitHub Actions in run
+  `33719939852`. It carries the fix for #40: `mailman acknowledge-no-test` lets a run answer
+  the `no-test-change` gate with recorded evidence, pinned to the paths the diff touches.
+- Run record deployment: commit `9e1174f` passed GitHub Actions in run `33720398351`. It adds
+  `docs/runs/0008-starlette-3497-submission-ready.md`. This is the current head of `main`.
 
 ### Warning: the history was rewritten on 2026-09-02
 
@@ -102,6 +111,37 @@ submission:
 Vetting a target now includes reading its contribution and AI policy before an
 agent runs, not before a pull request is opened.
 
+Three further screens, established by hand on 2026-09-03 across ninety candidate
+repositories and recorded on
+[#35](https://github.com/wolfgang-aura/Mailman/issues/35):
+
+- **Freshness must exclude bots.** `author_association` treats dependabot as a
+  `CONTRIBUTOR`. `PyCQA/bandit` scored one outside merge in fourteen days on that
+  basis and has merged no human outside pull request since May 2026. Filtering on
+  account type also takes `psf/black`, `psf/requests`, `encode/httpx`,
+  `fastapi/typer` and `Textualize/textual` to zero. Repositories that pass, with
+  human outside merges in the fortnight to 2026-09-03: `scrapy/scrapy` 48,
+  `celery/celery` 40, `sqlfluff/sqlfluff` 24, `pydantic/pydantic` 11,
+  `redis/redis-py` 11, `pypa/pipx` 11, `pdm-project/pdm` 9, `pypa/virtualenv` 9,
+  `pytest-dev/pytest` 7, `encode/starlette` 4.
+- **Saturation decides.** Every fresh bug in every recognizable Python repository
+  already has a pull request, usually within a day or two. `sqlfluff/sqlfluff`
+  #8354 had four attempts, all closed; `python-jsonschema/jsonschema` #1511 has
+  seven. Subtracting every issue number mentioned by the last 200 to 400 pull
+  requests is the cheap way to compute this: two REST calls per repository rather
+  than one search call per issue.
+- **Targets screen for automated accounts.** `sqlfluff/sqlfluff` runs an
+  `agentscan` workflow that closes a pull request when the account looks
+  automated, whatever the content says. `pytest-dev/pytest` uses an "ai rejected"
+  label. `PyCQA/bandit` appears to refuse pull request creation from
+  non-collaborators outright.
+
+An issue's age says nothing about whether its bug still exists. pytest #14964 was
+a precise same-day report with no pull request against it and was already fixed on
+`main`; only a hand-built reproduction at the base commit caught it, after the
+environment had been built. See
+[#37](https://github.com/wolfgang-aura/Mailman/issues/37).
+
 Vetting also includes searching the target's existing pull requests for the same
 change before a run starts. On 2026-09-02, three runs were spent on
 `pytest-dev/pytest` issue #14324 before anyone searched; the issue already had
@@ -156,6 +196,26 @@ policy, a run that is not `READY_FOR_HUMAN_REVIEW`, and a run with no passing
 verification. `mailman duplicate-search` records a GitHub CLI search of the
 target's pull requests and issues. Both were exercised against live run data on
 2026-09-02. Neither contacts an upstream repository for anything but a read.
+
+`mailman acknowledge-no-test` records why a change ships without a test, pinned to
+the exact paths its diff touches. With that record present the `no-test-change`
+finding is still reported and still visible in `submission.json`, but no longer
+blocks. It exists because run `20260903T052426Z-ad8196`'s reviewer proved, against
+an export of the base commit, that a test would be dead coverage, and
+`prepare-submission` had no way to accept that argument.
+
+The verification command's executable is resolved through the run toolchain before
+anything uses it, so the recorded command, the prompt text and the agent's allow
+rules all name the same file. Before that fix a bare `python` ran whatever was
+first on PATH, which failed run `20260903T050831Z-bed67e` on a missing dependency
+of the host interpreter rather than on the candidate.
+
+Run `20260903T052426Z-ad8196` is the first to reach `"ready": true` from
+`prepare-submission`: `encode/starlette` #3497, Claude Opus 5 as both primary and
+reviewer, one revision spent on the reviewer requiring the added test be removed.
+A branch, a written pull request body and an accountability brief are staged under
+the private run directory. Nothing has been sent. See
+`docs/runs/0008-starlette-3497-submission-ready.md`.
 
 Sanitized public run export is not implemented. Nothing in this project has ever
 pushed, commented, or opened anything on a repository it does not own.
