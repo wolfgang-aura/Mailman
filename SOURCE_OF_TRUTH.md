@@ -65,6 +65,10 @@ Last verified: 2026-09-03 in `Asia/Singapore`.
 - Reviewer-execution deployment: commit `b68f886` passed GitHub Actions in run `33786866250`.
   It carries the fix for #20: an APPROVE from a reviewer whose transcript shows no command
   blocks the run instead of clearing it. REVISE is unaffected.
+- Verification-claim deployment: commit `3bd94b8` passed GitHub Actions in run `33791836068`.
+  It carries the real fix for #20: an APPROVE requires `MAILMAN-VERIFICATION: RAN`. Exercised
+  live against a Codex reviewer in both states, which wrote BLOCKED under a read-only sandbox
+  and RAN under workspace-write, and declined to approve in the blocked case.
 - Repository screen deployment: commit `cf2dd1f` passed GitHub Actions in run `33790613015`.
   It carries #35: `mailman screen-target OWNER/REPO`, six gates, verdict cached under
   `screens/`. Exercised live against six repositories from the hand-screened table.
