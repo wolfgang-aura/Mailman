@@ -128,6 +128,17 @@ def record_clear_target(run_directory: Path, *, attempts: list | None = None) ->
         ),
         encoding="utf-8",
     )
+    (run_directory / "reproduction.json").write_text(
+        json.dumps(
+            {
+                "success": True,
+                "machine_checked": True,
+                "reproduced": True,
+                "checks": [],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 class OrchestratorHarness(unittest.TestCase):

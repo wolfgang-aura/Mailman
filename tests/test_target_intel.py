@@ -245,6 +245,17 @@ class TargetIntelGateTests(unittest.TestCase):
         (root / "prior-art.json").write_text(
             json.dumps({"success": True, "attempts": []}), encoding="utf-8"
         )
+        (root / "reproduction.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "machine_checked": True,
+                    "reproduced": True,
+                    "checks": [],
+                }
+            ),
+            encoding="utf-8",
+        )
         return root
 
     def test_a_missing_target_intel_record_blocks(self) -> None:

@@ -148,8 +148,10 @@ still a hand pass, which is what
 An issue's age says nothing about whether its bug still exists. pytest #14964 was
 a precise same-day report with no pull request against it and was already fixed on
 `main`; only a hand-built reproduction at the base commit caught it, after the
-environment had been built. See
-[#37](https://github.com/wolfgang-aura/Mailman/issues/37).
+environment had been built. That reading is now mechanical and blocking:
+`mailman reproduce` records it and `check-target` refuses without it.
+[#37](https://github.com/wolfgang-aura/Mailman/issues/37) is fixed but not yet
+exercised against a live target.
 
 Vetting also includes searching the target's existing pull requests for the same
 change before a run starts. On 2026-09-02, three runs were spent on
@@ -236,6 +238,19 @@ It reports counts against their denominators rather than verdicts, and it does n
 choose the target. Exercised against `langchain-ai/langchain` on 2026-09-03, where
 it found the `require-issue-link` and `block-fork-main` bot rules without being
 told to look. See `docs/decisions/0009-target-intel.md`.
+
+`mailman reproduce RUN_ID -- <command>` runs the reporter's own steps in the
+prepared workspace at the base commit and records `reproduction.json`.
+`check-target` refuses a run with no such record, and refuses again when the
+record says the reported behaviour did not happen; neither refusal is clearable
+by `--acknowledge-prior-attempts`. The default expectation is a command that
+fails; `--expect-output`, `--forbid-output` and `--expect-exit-code` cover a bug
+whose fixed and unfixed trees both fail and differ only in what they print, which
+is the pytest #14964 shape. A timeout is recorded as a timeout, never as a
+reproduction. `--not-machine-reproducible --note` records a human reading and
+warns instead of blocking. The command's executable resolves through the run
+toolchain. Covered by 19 unit tests. It has not yet run against a live target.
+See `docs/decisions/0010-reproduction-gate.md`.
 
 Sanitized public run export is not implemented. Nothing in this project has ever
 pushed, commented, or opened anything on a repository it does not own.

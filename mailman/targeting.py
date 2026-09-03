@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from mailman.reproduction import REPRODUCTION_FILENAME
 from mailman.submission import DUPLICATE_SEARCH_FILENAME
 from mailman.target_intel import TARGET_INTEL_FILENAME
 
@@ -20,6 +21,9 @@ PRIOR_ART_FILENAME = "prior-art.json"
 
 NO_DUPLICATE_SEARCH = "no-duplicate-search"
 NO_TARGET_INTEL = "no-target-intel"
+NO_REPRODUCTION = "no-reproduction"
+BUG_NOT_REPRODUCED = "bug-not-reproduced"
+UNVERIFIED_REPRODUCTION = "reproduction-not-machine-checked"
 FAILS_FRESHNESS_BAR = "fails-freshness-bar"
 OPEN_PULL_REQUEST = "open-pull-request"
 UNACKNOWLEDGED_ATTEMPTS = "unacknowledged-prior-attempts"
@@ -32,6 +36,7 @@ class TargetAssessment:
     searched: bool
     target_read: bool = False
     intel: dict[str, Any] = field(default_factory=dict)
+    reproduction: dict[str, Any] = field(default_factory=dict)
     open_attempts: list[dict[str, Any]] = field(default_factory=list)
     closed_attempts: list[dict[str, Any]] = field(default_factory=list)
     blocking: list[str] = field(default_factory=list)
@@ -46,6 +51,7 @@ class TargetAssessment:
             "searched": self.searched,
             "target_read": self.target_read,
             "intel": self.intel,
+            "reproduction": self.reproduction,
             "open_attempts": self.open_attempts,
             "closed_attempts": self.closed_attempts,
             "blocking": self.blocking,
@@ -79,6 +85,39 @@ class TargetAssessment:
             )
         return "\n".join(parts)
 
+    def _reproduction_summary(self) -> list[str]:
+        """Say whether the bug is still there, in the words that decide it."""
+        if not self.reproduction:
+            return [
+                "Nothing is recorded about whether the reported bug still "
+                "happens at the base commit. Run `mailman reproduce RUN_ID -- "
+                "<command>` after `prepare-environment`, or record a human "
+                "reading with `--not-machine-reproducible --note ...`."
+            ]
+        if self.reproduction.get("machine_checked") is not True:
+            note = self.reproduction.get("note", "")
+            return [
+                "reproduce  read by a human, not checked by machine: " + note
+            ]
+        if self.reproduction.get("reproduced") is True:
+            return [
+                "reproduce  the reported behaviour still happens at the base "
+                "commit"
+            ]
+        failed = [
+            check
+            for check in self.reproduction.get("checks", [])
+            if isinstance(check, dict) and not check.get("passed")
+        ]
+        lines = [
+            "reproduce  the reported behaviour did NOT happen at the base "
+            "commit. The bug may already be fixed, or the reproducer may be "
+            "wrong. Either way this is not a target yet."
+        ]
+        for check in failed:
+            lines.append(f"           {check.get('name')}: {check.get('detail')}")
+        return lines
+
     def summary(self) -> str:
         # The prior-art verdict is stated on its own terms. It used to be
         # inferred from "nothing else was printed", which the target-intel line
@@ -98,6 +137,7 @@ class TargetAssessment:
             )
         elif self.intel:
             lines.append(self._intel_summary())
+        lines.extend(self._reproduction_summary())
         for attempt in self.open_attempts:
             lines.append(
                 f"open      #{attempt.get('number')} {attempt.get('title', '')} "
@@ -141,6 +181,7 @@ def assess_target(
     duplicate_search = _read(run_directory / DUPLICATE_SEARCH_FILENAME)
     prior_art = _read(run_directory / PRIOR_ART_FILENAME)
     intel = _read(run_directory / TARGET_INTEL_FILENAME)
+    reproduction = _read(run_directory / REPRODUCTION_FILENAME)
     searched = duplicate_search.get("success") is True
     target_read = intel.get("success") is True
 
@@ -168,6 +209,17 @@ def assess_target(
         blocking.append(NO_TARGET_INTEL)
     elif not intel.get("assessment", {}).get("passes_freshness_bar", True):
         warnings.append(FAILS_FRESHNESS_BAR)
+    if reproduction.get("success") is not True:
+        # An agent run against an already-fixed issue is the most expensive way
+        # to learn nothing. See
+        # https://github.com/wolfgang-aura/Mailman/issues/37.
+        blocking.append(NO_REPRODUCTION)
+    elif reproduction.get("machine_checked") is not True:
+        warnings.append(UNVERIFIED_REPRODUCTION)
+    elif reproduction.get("reproduced") is not True:
+        # Not overridable, and deliberately so: the right response to a bug
+        # that no longer happens is to abandon the run, not to acknowledge it.
+        blocking.append(BUG_NOT_REPRODUCED)
     if open_attempts:
         # Deliberately not overridable. Every escape hatch here is one someone
         # takes at the wrong moment, and `run-agent` still exists for a
@@ -183,6 +235,7 @@ def assess_target(
         searched=searched,
         target_read=target_read,
         intel=intel,
+        reproduction=reproduction,
         open_attempts=open_attempts,
         closed_attempts=closed_attempts,
         blocking=blocking,

@@ -263,13 +263,63 @@ A run refuses to start against an issue somebody else has already claimed:
 mailman check-target RUN_ID
 ```
 
-It exits non-zero when no duplicate search is recorded, when a pull request is
-open against the issue, or when closed attempts have not been acknowledged.
+It exits non-zero when no duplicate search is recorded, when nothing is recorded
+about how the target hands out work, when no reproduction is recorded, when the
+reported bug did not reproduce at the base commit, when a pull request is open
+against the issue, or when closed attempts have not been acknowledged.
 `mailman orchestrate` runs the same check first and blocks the run rather than
 spending two agents on a target that was never worth having. An open pull
 request refuses outright and no flag overrides it. Closed attempts usually mean
 maintainers rejected the approach rather than the code, so read them, then pass
 `--acknowledge-prior-attempts`.
+
+Read how the target actually hands out and merges outside work, before a run is
+spent on it:
+
+```powershell
+mailman target-intel RUN_ID
+```
+
+It counts outside merges by human accounts only, subtracts the open issues that
+an open or merged pull request already references, quotes the rules a bot
+enforces from the bot's own comments, and traces the most recent outside merges
+back to the threads that won them, with the winning author's comments marked. It
+reports counts next to their denominators rather than verdicts, and it does not
+choose the target. `check-target` refuses without the record, and
+`--acknowledge-prior-attempts` does not clear that refusal. See
+[the target intel decision](docs/decisions/0009-target-intel.md).
+
+Then prove the bug is still there, after `prepare-environment` and before any
+agent runs:
+
+```powershell
+mailman reproduce RUN_ID -- {environment}\Scripts\python.exe -m pytest tests/test_x.py
+```
+
+The command runs in the prepared workspace at the base commit, records
+`reproduction.json` beside the run's other evidence, and exits non-zero when the
+reported behaviour did not happen. By default the bug is a command that fails.
+Where a fixed and an unfixed tree both fail and differ only in what they print,
+say so with `--expect-output`, repeatable, and `--forbid-output`; where the bug
+has a specific exit code, `--expect-exit-code`. A timeout is recorded as a
+timeout, never as a reproduction.
+
+Where the issue has no runnable reproducer, record the reading instead:
+
+```powershell
+mailman reproduce RUN_ID --not-machine-reproducible --note "the report is a screenshot"
+```
+
+That warns on every later `check-target` rather than blocking, which is what a
+human reading is worth. A bug that no longer reproduces blocks outright and no
+flag overrides it: the right response is to abandon the run.
+
+This gate exists because run `20260903T045152Z-369e77` passed every other one.
+pytest-dev/pytest #14964 was a precise, same-day, unclaimed regression report,
+the environment built in four steps, and the bug had already been fixed by a
+commit that landed after the 9.1.1 tag. Only a hand-built reproduction caught
+it, after the cost had been paid. See
+[issue #37](https://github.com/wolfgang-aura/Mailman/issues/37).
 
 Before running anything, find out what has already been tried:
 

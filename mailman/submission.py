@@ -10,6 +10,7 @@ from typing import Any
 from mailman.executor import CommandResult, execute
 from mailman.issue import load_issue_record
 from mailman.models import RunRecord, RunStatus
+from mailman.reproduction import not_reproductions
 from mailman.toolchain import resolve_tool
 
 
@@ -234,7 +235,9 @@ def _verification_rows(run_directory: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
     records = json.loads(path.read_text(encoding="utf-8"))
-    return [record for record in records if isinstance(record, dict)]
+    return not_reproductions(
+        [record for record in records if isinstance(record, dict)]
+    )
 
 
 def _issue_number(issue_record: dict[str, Any] | None) -> int | None:

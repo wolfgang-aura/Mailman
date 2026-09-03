@@ -20,8 +20,21 @@ def _record(
     attempts: list | None = None,
     intel: bool = True,
     fresh: bool = True,
+    reproduced: bool | None = True,
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
+    if reproduced is not None:
+        (root / "reproduction.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "machine_checked": True,
+                    "reproduced": reproduced,
+                    "checks": [],
+                }
+            ),
+            encoding="utf-8",
+        )
     (root / "duplicate-search.json").write_text(
         json.dumps({"success": searched, "matches": []}), encoding="utf-8"
     )

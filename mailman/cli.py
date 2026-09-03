@@ -55,6 +55,13 @@ from mailman.models import RunStatus
 from mailman.orchestrator import orchestrate
 from mailman.prior_art import collect_prior_art
 from mailman.prompts import write_task_prompts
+from mailman.reproduction import (
+    PURPOSE_KEY,
+    REPRODUCTION_PURPOSE,
+    Expectation,
+    record_command_reproduction,
+    record_human_reproduction,
+)
 from mailman.toolchain import (
     prepare_agent_prompt,
     probe_tool,
@@ -324,6 +331,48 @@ def _build_parser() -> argparse.ArgumentParser:
         "--skill", type=Path, help="skill file to read a version from"
     )
     retrospective.add_argument("--data-root", type=Path)
+
+    reproduce = subparsers.add_parser(
+        "reproduce",
+        help="prove the reported bug still happens at the base commit",
+    )
+    reproduce.add_argument("run_id")
+    reproduce.add_argument(
+        "--working-directory",
+        type=Path,
+        help="defaults to the workspace `prepare-workspace` wrote for this run",
+    )
+    reproduce.add_argument("--timeout", type=float, default=900)
+    reproduce.add_argument(
+        "--expect-exit-code",
+        type=int,
+        help="the exit code the bug produces; any non-zero exit by default",
+    )
+    reproduce.add_argument(
+        "--expect-output",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="text the output must contain, repeatable. Use this when a fixed "
+        "and an unfixed tree both fail and differ only in what they print",
+    )
+    reproduce.add_argument(
+        "--forbid-output",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="text the output must not contain, repeatable",
+    )
+    reproduce.add_argument(
+        "--not-machine-reproducible",
+        action="store_true",
+        help="record that a person read the bug and no command can check it",
+    )
+    reproduce.add_argument(
+        "--note",
+        help="what was read, required with --not-machine-reproducible",
+    )
+    reproduce.add_argument("--data-root", type=Path)
 
     check_target = subparsers.add_parser(
         "check-target",
@@ -1139,6 +1188,80 @@ def _review(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _reproduce(arguments: argparse.Namespace) -> int:
+    """Run the reporter's own steps at the base commit and record the result."""
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    if arguments.not_machine_reproducible:
+        if arguments.command:
+            raise ValueError(
+                "--not-machine-reproducible records a human reading, so it "
+                "takes no command"
+            )
+        record = record_human_reproduction(
+            run_directory,
+            note=arguments.note or "",
+            base_commit=run.base_commit,
+        )
+        print(json.dumps(_reproduction_summary(record), indent=2))
+        return 0
+
+    command = resolve_command(
+        run_directory, environment_command(run_directory, arguments.command)
+    )
+    if not command:
+        raise ValueError("a command is required after --")
+    working_directory = _resolve_workspace(run_directory, arguments.working_directory)
+    result = execute(
+        command,
+        working_directory=working_directory,
+        timeout_seconds=arguments.timeout,
+    )
+    command_number = append_verification(
+        run_directory, {**result.to_dict(), PURPOSE_KEY: REPRODUCTION_PURPOSE}
+    )
+    record = record_command_reproduction(
+        run_directory,
+        result=result,
+        expectation=Expectation(
+            exit_code=arguments.expect_exit_code,
+            required_output=tuple(arguments.expect_output),
+            forbidden_output=tuple(arguments.forbid_output),
+        ),
+        working_directory=working_directory,
+        command_record=command_number,
+        base_commit=run.base_commit,
+    )
+    print(json.dumps(_reproduction_summary(record), indent=2))
+    if record["reproduced"]:
+        return 0
+    # Failing here is the point: the run should stop rather than hand an
+    # already-fixed issue to an agent.
+    print(
+        "the reported behaviour did not happen at "
+        f"{run.base_commit}. Failed checks:",
+        file=sys.stderr,
+    )
+    for check in record["checks"]:
+        if not check["passed"]:
+            print(f"  {check['name']}: {check['detail']}", file=sys.stderr)
+    print(
+        f"full record: {run_directory / 'commands' / f'{command_number:04d}.json'}",
+        file=sys.stderr,
+    )
+    return 3
+
+
+def _reproduction_summary(record: dict[str, object]) -> dict[str, object]:
+    return {
+        "method": record["method"],
+        "machine_checked": record["machine_checked"],
+        "reproduced": record["reproduced"],
+        "base_commit": record["base_commit"],
+        "exit_code": record["exit_code"],
+        "command_record": record["command_record"],
+    }
+
+
 def _verify(arguments: argparse.Namespace) -> int:
     _, run_directory = load_run(arguments.run_id, arguments.data_root)
     command = resolve_command(
@@ -1194,14 +1317,15 @@ def _tail(text: str, lines: int = 20) -> str:
 def main(arguments: list[str] | None = None) -> int:
     raw_arguments = list(arguments if arguments is not None else sys.argv[1:])
     verification_command: list[str] | None = None
-    if raw_arguments[:1] in (["verify"], ["orchestrate"]) and "--" in raw_arguments:
+    passthrough = (["verify"], ["orchestrate"], ["reproduce"])
+    if raw_arguments[:1] in passthrough and "--" in raw_arguments:
         delimiter = raw_arguments.index("--")
         verification_command = raw_arguments[delimiter + 1 :]
         raw_arguments = raw_arguments[:delimiter]
 
     parser = _build_parser()
     parsed = parser.parse_args(raw_arguments)
-    if parsed.subcommand in ("verify", "orchestrate"):
+    if parsed.subcommand in ("verify", "orchestrate", "reproduce"):
         parsed.command = verification_command or []
     try:
         if parsed.subcommand == "doctor":
@@ -1240,6 +1364,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _prepare_workspace(parsed)
         if parsed.subcommand == "retrospective":
             return _retrospective(parsed)
+        if parsed.subcommand == "reproduce":
+            return _reproduce(parsed)
         if parsed.subcommand == "check-target":
             return _check_target(parsed)
         if parsed.subcommand == "show":

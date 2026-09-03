@@ -19,6 +19,7 @@ from mailman.knowledge.taxonomy import (
     Scope,
 )
 from mailman.models import RunRecord, RunStatus
+from mailman.reproduction import not_reproductions
 
 
 RETROSPECTIVE_JSON = "retrospective.json"
@@ -254,9 +255,12 @@ def collect_retrospective(
 ) -> Retrospective:
     """Draft a retrospective from what Mailman recorded, and nothing else."""
     verifications = _read_json(run_directory / "verification.json")
-    verifications = [
-        record for record in (verifications or []) if isinstance(record, dict)
-    ]
+    # A reproduction is recorded in the same stream and is expected to fail.
+    # Counting one here would seed a failed-verification observation for a gate
+    # that did exactly what it was asked to do.
+    verifications = not_reproductions(
+        [record for record in (verifications or []) if isinstance(record, dict)]
+    )
     executions = _load_executions(run_directory)
     orchestration = _read_json(run_directory / "orchestration.json")
     orchestration = orchestration if isinstance(orchestration, dict) else None
