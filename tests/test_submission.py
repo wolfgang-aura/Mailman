@@ -18,6 +18,7 @@ from mailman.submission import (
     related_duplicates,
     prepare_submission,
     record_duplicate_acknowledgement,
+    record_no_test_acknowledgement,
 )
 
 
@@ -134,6 +135,29 @@ class AnalyzeDiffTests(unittest.TestCase):
         report = analyze_diff(source_only)
         codes = {finding["code"] for finding in report["findings"]}
         self.assertIn("no-test-change", codes)
+
+    def test_an_acknowledgement_keeps_the_finding_but_stops_it_blocking(self) -> None:
+        source_only = SOURCE_DIFF.split("diff --git a/tests")[0]
+        report = analyze_diff(
+            source_only,
+            no_test_acknowledgement={"covered_paths": ["src/thing.py"]},
+        )
+        finding = next(
+            entry
+            for entry in report["findings"]
+            if entry["code"] == "no-test-change"
+        )
+        self.assertFalse(finding["blocking"])
+        self.assertFalse(report["blocking"])
+        self.assertIn("no-test-acknowledgement.json", finding["detail"])
+
+    def test_an_acknowledgement_does_not_cover_a_different_path(self) -> None:
+        source_only = SOURCE_DIFF.split("diff --git a/tests")[0]
+        report = analyze_diff(
+            source_only,
+            no_test_acknowledgement={"covered_paths": ["src/other.py"]},
+        )
+        self.assertTrue(report["blocking"])
 
     def test_a_source_path_containing_test_is_not_a_test_file(self) -> None:
         # src/_pytest/raises.py is production code in pytest's own tree. A
@@ -744,3 +768,40 @@ class PrepareSubmissionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoTestAcknowledgementRecordTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary = TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        self.run_directory = Path(self._temporary.name)
+
+    def test_the_record_pins_the_paths_the_diff_touched(self) -> None:
+        source_only = SOURCE_DIFF.split("diff --git a/tests")[0]
+        record = record_no_test_acknowledgement(
+            self.run_directory, note="the suite already fails harder", diff=source_only
+        )
+        self.assertEqual(record["covered_paths"], ["src/thing.py"])
+        stored = json.loads(
+            (self.run_directory / "no-test-acknowledgement.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(stored["note"], "the suite already fails harder")
+
+    def test_an_empty_note_is_refused(self) -> None:
+        source_only = SOURCE_DIFF.split("diff --git a/tests")[0]
+        with self.assertRaises(ValueError):
+            record_no_test_acknowledgement(
+                self.run_directory, note="   ", diff=source_only
+            )
+
+    def test_a_diff_that_already_changes_a_test_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            record_no_test_acknowledgement(
+                self.run_directory, note="why", diff=SOURCE_DIFF
+            )
+
+    def test_an_empty_diff_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            record_no_test_acknowledgement(self.run_directory, note="why", diff="")

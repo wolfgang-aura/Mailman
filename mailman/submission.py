@@ -136,7 +136,9 @@ def _is_test_path(path: str) -> bool:
     return name.startswith("test_") or name.endswith(("_test.py", "_tests.py"))
 
 
-def analyze_diff(diff: str) -> dict[str, Any]:
+def analyze_diff(
+    diff: str, *, no_test_acknowledgement: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Report what a diff actually contains, before a maintainer has to.
 
     The autosound export carried a trailing-newline change nobody asked for and
@@ -200,13 +202,19 @@ def analyze_diff(diff: str) -> dict[str, Any]:
                 )
             )
     if files and not any(entry["test"] for entry in files):
+        covered = set((no_test_acknowledgement or {}).get("covered_paths") or [])
+        acknowledged = bool(covered) and covered == {entry["path"] for entry in files}
         findings.append(
             Finding(
                 code="no-test-change",
-                blocking=True,
+                blocking=not acknowledged,
                 detail=(
-                    "no test file changed, so nothing proves the fix matters or "
-                    "stays fixed"
+                    "no test file changed. A human read why one would not add "
+                    "coverage and recorded it in "
+                    f"{NO_TEST_ACKNOWLEDGEMENT_FILENAME}"
+                    if acknowledged
+                    else "no test file changed, so nothing proves the fix matters "
+                    "or stays fixed"
                 ),
             )
         )
@@ -649,7 +657,13 @@ def prepare_submission(
     """
     issue_record = load_issue_record(run_directory)
     issue_number = _issue_number(issue_record)
-    hygiene = analyze_diff(diff)
+    no_test_path = run_directory / NO_TEST_ACKNOWLEDGEMENT_FILENAME
+    no_test_acknowledgement = (
+        json.loads(no_test_path.read_text(encoding="utf-8"))
+        if no_test_path.is_file()
+        else None
+    )
+    hygiene = analyze_diff(diff, no_test_acknowledgement=no_test_acknowledgement)
     changed_paths = [entry["path"] for entry in hygiene["files"]]
     verifications = _verification_rows(run_directory)
     duplicate_search_path = run_directory / DUPLICATE_SEARCH_FILENAME
@@ -730,6 +744,7 @@ def prepare_submission(
 
 DUPLICATE_SEARCH_FILENAME = "duplicate-search.json"
 DUPLICATE_ACKNOWLEDGEMENT_FILENAME = "duplicate-acknowledgement.json"
+NO_TEST_ACKNOWLEDGEMENT_FILENAME = "no-test-acknowledgement.json"
 
 # A row GitHub's own index returned is worth more than a locally matched one.
 # Both `gh search` and `gh <kind> list --search` AND every term server-side, so
@@ -1180,3 +1195,41 @@ def _write_json(path: Path, payload: dict[str, Any]) -> Path:
         json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     return path
+
+
+def record_no_test_acknowledgement(
+    run_directory: Path, *, note: str, diff: str
+) -> dict[str, Any]:
+    """Record why this change ships without a test, against its exact diff.
+
+    The `no-test-change` gate is right almost always, and a run that argues
+    past it has to say why in writing. Run 20260903T052426Z-ad8196 is the case
+    it is wrong for: the reviewer exported encode/starlette at the base commit
+    and showed that `filterwarnings = ["error"]` already turns the reported
+    regression into a conftest import failure across the whole suite, so a
+    dedicated test can never be the thing that catches it, and it required the
+    added test be removed.
+
+    The record pins the paths the diff touched. A later diff that touches
+    anything else is not covered by it, so this cannot become a standing
+    waiver.
+    """
+    if not note.strip():
+        raise ValueError("an acknowledgement needs a note saying why no test changed")
+    hygiene = analyze_diff(diff)
+    files = hygiene["files"]
+    if not files:
+        raise ValueError("the diff is empty, so there is nothing to acknowledge")
+    if any(entry["test"] for entry in files):
+        raise ValueError(
+            "this diff already changes a test file, so there is nothing to "
+            "acknowledge"
+        )
+    record = {
+        "schema_version": 1,
+        "acknowledged_at": datetime.now(UTC).isoformat(),
+        "note": note.strip(),
+        "covered_paths": sorted(entry["path"] for entry in files),
+    }
+    _write_json(run_directory / NO_TEST_ACKNOWLEDGEMENT_FILENAME, record)
+    return record

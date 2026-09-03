@@ -45,6 +45,7 @@ from mailman.submission import (
     prepare_submission,
     related_duplicates,
     record_duplicate_acknowledgement,
+    record_no_test_acknowledgement,
     record_duplicate_search,
 )
 from mailman.knowledge.collect import collect_retrospective, write_retrospective
@@ -195,6 +196,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="what you read and why none of them is this change",
     )
     acknowledge.add_argument("--data-root", type=Path)
+
+    acknowledge_no_test = subparsers.add_parser(
+        "acknowledge-no-test",
+        help="record why this run's change ships without a test",
+    )
+    acknowledge_no_test.add_argument("run_id")
+    acknowledge_no_test.add_argument(
+        "--note",
+        required=True,
+        help="why a test would not catch this regression, with the evidence",
+    )
+    acknowledge_no_test.add_argument(
+        "--diff",
+        type=Path,
+        help="unified diff to pin the record to, defaults to the run's exported "
+        "changes.diff",
+    )
+    acknowledge_no_test.add_argument("--data-root", type=Path)
 
     transition = subparsers.add_parser("transition", help="change a run workflow state")
     transition.add_argument("run_id")
@@ -583,6 +602,28 @@ def _acknowledge_duplicates(arguments: argparse.Namespace) -> int:
             "acknowledgement clears them.",
             file=sys.stderr,
         )
+    return 0
+
+
+def _acknowledge_no_test(arguments: argparse.Namespace) -> int:
+    _, run_directory = load_run(arguments.run_id, arguments.data_root)
+    diff_path = arguments.diff or (run_directory / "export" / "changes.diff")
+    if not diff_path.is_file():
+        raise ValueError(
+            f"no diff at {diff_path}. Run export-patch first, or pass --diff."
+        )
+    record = record_no_test_acknowledgement(
+        run_directory,
+        note=arguments.note,
+        diff=diff_path.read_text(encoding="utf-8", errors="replace"),
+    )
+    print(json.dumps(record, indent=2))
+    print(
+        "This covers only "
+        + ", ".join(record["covered_paths"])
+        + ". A diff that touches anything else is not acknowledged.",
+        file=sys.stderr,
+    )
     return 0
 
 
@@ -1126,6 +1167,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _duplicate_search(parsed)
         if parsed.subcommand == "acknowledge-duplicates":
             return _acknowledge_duplicates(parsed)
+        if parsed.subcommand == "acknowledge-no-test":
+            return _acknowledge_no_test(parsed)
         if parsed.subcommand == "prior-art":
             return _prior_art(parsed)
         if parsed.subcommand == "transition":
