@@ -19,9 +19,12 @@
     "The new test fails without the source change"
   ],
   "notes": [
-    "A bot closes any pull request whose linked issue is not assigned to its author, within hours and without review. Three separate outside fixes for issue #39797 were closed this way on the day they were opened.",
+    "A bot closes any pull request whose linked issue is not assigned to its author, within hours and without review. Measured on 2026-09-03: 15 outside pull requests by humans merged in the previous fortnight, against 129 closed unmerged in the nine days to 2026-09-03.",
+    "Assignment is NOT reporter-only. #38351 was reported by Fr3ya, assigned to Sourav1331, and merged as #38355 on 2026-08-30. The earlier note that only a bug's reporter can win the assignment is contradicted by that row.",
+    "A linked issue is the norm, not an absolute. #39631, fix(core): make StructuredTool JSON-serializable, merged on 2026-08-27 from an outside author with no linked issue at all.",
+    "Assignment turnaround, where it happened, was fast: #39935, #39897 and #39895 were each reported, assigned to the reporter, fixed and merged within one to two days.",
     "The template says a large, clearly AI-generated description may see the pull request ignored or closed. It says nothing against AI-assisted code.",
-    "Roughly six outside code fixes merged in the two weeks to 2026-09-02, so the assignment gate is passable but it is a human step Mailman cannot take.",
-    "The repository is a monorepo. Tests run per package under libs/, not from the root."
+    "The repository is a monorepo. Tests run per package under libs/, not from the root.",
+    "Because the enforcement bot mass-closes, a saturation screen that treats any referencing pull request as a claim reads this target as fully saturated. On 2026-09-03 that naive subtraction left 3 unassigned open bugs; counting only open or merged pull requests as a claim left 53."
   ]
 }
