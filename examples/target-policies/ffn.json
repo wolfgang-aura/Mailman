@@ -1,0 +1,25 @@
+{
+  "name": "pmorissette/ffn",
+  "policy_url": null,
+  "stance": "unknown",
+  "policy_read_on": "2026-09-04",
+  "disclosure_required": true,
+  "ai_trailer": "optional",
+  "requires_linked_issue": false,
+  "requires_maintainer_assignment": false,
+  "requires_duplicate_search": true,
+  "changelog_directory": null,
+  "changelog_filename_template": null,
+  "checklist": [
+    "The new tests fail without the source change",
+    "The change works on the oldest supported pandas, `pandas<2` with `numpy<2` on Python 3.10, which the CI matrix builds and this run never exercised",
+    "The pull request body is written by the submitting human, not pasted",
+    "The submitting human can answer why this fix and not another"
+  ],
+  "notes": [
+    "There is no written contribution policy to read. No CONTRIBUTING file, no code of conduct, no org-level `.github` repository, and nothing in the README, the issue templates, or pyproject.toml about pull requests or AI assistance. GitHub's community profile reports `contributing: null`.",
+    "The stance is therefore `unknown`, which blocks preparation. That is the correct outcome, not a gap: silence is not permission, and a human has to decide what to do about a project that has never said.",
+    "The default branch is `master`, not `main`.",
+    "CI builds Python 3.10 across three pandas ranges, including `pandas<2` with `numpy<2`. A change to alignment behaviour has to hold on the oldest of them."
+  ]
+}

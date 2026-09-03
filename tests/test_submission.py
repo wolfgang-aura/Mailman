@@ -200,7 +200,14 @@ class TargetPolicyTests(unittest.TestCase):
         directory = Path(__file__).resolve().parent.parent / "examples" / "target-policies"
         names = sorted(path.name for path in directory.glob("*.json"))
         self.assertEqual(
-            names, ["attrs.json", "langchain.json", "pytest.json", "starlette.json"]
+            names,
+            [
+                "attrs.json",
+                "ffn.json",
+                "langchain.json",
+                "pytest.json",
+                "starlette.json",
+            ],
         )
         for path in directory.glob("*.json"):
             policy = TargetPolicy.load(path)
@@ -657,6 +664,13 @@ class PrepareSubmissionTests(unittest.TestCase):
         self._merged_match_already_in_base(reproduced=True)
         record = self._prepare()
         self.assertNotIn("already-fixed-upstream", record["blocking_codes"])
+        # It is not a rival either. Reporting a merged pull request as open
+        # blocked the run on the evidence that was supposed to clear it.
+        self.assertNotIn("possible-duplicate", record["blocking_codes"])
+        self.assertIn(
+            "merged-fix-already-in-base",
+            [finding["code"] for finding in record["findings"]],
+        )
 
     def test_a_merged_match_in_base_still_blocks_without_a_reproduction(self) -> None:
         self._merged_match_already_in_base(reproduced=False)

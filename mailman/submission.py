@@ -387,7 +387,30 @@ def _policy_findings(
                 ),
             )
         )
-    open_rivals = [row for row in strong if row not in merged]
+    superseded = [
+        row
+        for row in strong
+        if duplicate_strength(row) == "merged"
+        and row.get("number") in superseded_numbers
+    ]
+    if superseded:
+        findings.append(
+            Finding(
+                code="merged-fix-already-in-base",
+                blocking=False,
+                detail=(
+                    "a merged pull request matches this work, but its merge "
+                    "commit is already an ancestor of the base commit and the "
+                    "reproduction failed at that same commit, so it is not "
+                    "this change: "
+                    + ", ".join(_duplicate_key(row) for row in superseded)
+                ),
+            )
+        )
+    # A superseded row is neither a rival nor a fix. Leaving it here reported a
+    # merged pull request as open and blocked the run the evidence just
+    # cleared. See https://github.com/wolfgang-aura/Mailman/issues/46.
+    open_rivals = [row for row in strong if row not in merged and row not in superseded]
     if open_rivals:
         findings.append(
             Finding(
