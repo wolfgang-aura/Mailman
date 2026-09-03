@@ -264,10 +264,11 @@ mailman check-target RUN_ID
 ```
 
 It exits non-zero when no duplicate search is recorded, when nothing is recorded
-about how the target hands out work, when no reproduction is recorded, when the
-reported bug did not reproduce at the base commit, when a pull request is open
-against the issue, when a pull request against it was merged, or when closed
-attempts have not been acknowledged.
+about how the target hands out work, when nobody has read the issue's own
+comments, when no reproduction is recorded, when the reported bug did not
+reproduce at the base commit, when a pull request is open against the issue,
+when a pull request against it was merged, when somebody has claimed the issue
+in a comment, or when closed attempts have not been acknowledged.
 `mailman orchestrate` runs the same check first and blocks the run rather than
 spending two agents on a target that was never worth having.
 
@@ -278,6 +279,28 @@ and no flag overrides that either: nobody rejected it, it is what the repository
 ships. Only genuinely closed attempts are acknowledgeable, and those usually
 mean maintainers rejected the approach rather than the code, so read them, then
 pass `--acknowledge-prior-attempts`.
+
+Read who has already claimed the issue, in the issue's own comments:
+
+```powershell
+mailman claims RUN_ID
+```
+
+Every other prior-art gate reads pull requests, which misses the earlier and
+more common form: somebody saying "I'd like to work on this" and not having
+opened one yet. On `openai/openai-agents-python` #4775 the duplicate search was
+empty and `check-target` called the target unclaimed while the second comment
+was a claim with a three-point scope plan under it.
+
+The command records `claims.json` and tells three states apart. A GitHub
+assignee refuses outright. A maintainer answering a claim by handing the work
+over refuses outright too, because that is the assignee field written in prose.
+An offer nobody answered is worth a human reading rather than a hard stop, so it
+is the one state `--acknowledge-claims` clears; `--acknowledge-prior-attempts`
+does not, because they answer different questions. A comment that only asks
+after the bug is not a claim, and neither is "PRs welcome". The comments are
+read for this judgement alone and never written into `issue.md`, which is the
+same rule that keeps a merged pull request's diff out of an agent's prompt.
 
 Read how the target actually hands out and merges outside work, before a run is
 spent on it:

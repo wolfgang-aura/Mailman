@@ -139,6 +139,20 @@ def record_clear_target(run_directory: Path, *, attempts: list | None = None) ->
         ),
         encoding="utf-8",
     )
+    (run_directory / "claims.json").write_text(
+        json.dumps(
+            {
+                "success": True,
+                "repository": "example/project",
+                "issue_number": 1,
+                "comments_read": 0,
+                "claims": [],
+                "assignments": [],
+                "assignees": [],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 class OrchestratorHarness(unittest.TestCase):

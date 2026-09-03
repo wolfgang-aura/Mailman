@@ -7,9 +7,13 @@ from pathlib import Path
 
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
+    ISSUE_ASSIGNED,
+    NO_CLAIM_CHECK,
     NO_DUPLICATE_SEARCH,
     OPEN_PULL_REQUEST,
     UNACKNOWLEDGED_ATTEMPTS,
+    UNACKNOWLEDGED_CLAIM,
+    WORK_HANDED_OVER,
     assess_target,
 )
 
@@ -22,8 +26,27 @@ def _record(
     intel: bool = True,
     fresh: bool = True,
     reproduced: bool | None = True,
+    claims: list | None = None,
+    assignments: list | None = None,
+    assignees: list | None = None,
+    claims_read: bool = True,
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
+    if claims_read:
+        (root / "claims.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "repository": "example/project",
+                    "issue_number": 4775,
+                    "comments_read": 2,
+                    "claims": claims or [],
+                    "assignments": assignments or [],
+                    "assignees": assignees or [],
+                }
+            ),
+            encoding="utf-8",
+        )
     if reproduced is not None:
         (root / "reproduction.json").write_text(
             json.dumps(
@@ -83,6 +106,20 @@ _MERGED = {
     "title": "fix #14004 - connect conftests to nodeids/nodes",
     "outcome": "merged",
     "url": "https://github.com/pytest-dev/pytest/pull/14098",
+}
+
+
+_CLAIM = {
+    "author": "someone",
+    "association": "NONE",
+    "created_at": "2026-09-01T00:00:00Z",
+    "quote": "I'd like to work on this issue.",
+}
+_ASSIGNMENT = {
+    "author": "maintainer",
+    "association": "MEMBER",
+    "created_at": "2026-09-01T01:00:00Z",
+    "quote": "Go ahead, all yours",
 }
 
 
@@ -235,6 +272,97 @@ class AssessTargetTests(unittest.TestCase):
         self.assertEqual(recorded["merged_attempts"], [_MERGED])
         self.assertEqual(recorded["closed_attempts"], [])
         self.assertFalse(recorded["may_start"])
+
+    def test_an_unread_comment_thread_cannot_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(
+                _record(Path(temporary), attempts=[], claims_read=False)
+            )
+
+        self.assertFalse(assessment.may_start)
+        self.assertIn(NO_CLAIM_CHECK, assessment.blocking)
+        self.assertIn("mailman claims", assessment.summary())
+
+    def test_a_claim_in_the_comments_refuses_an_otherwise_clean_target(self) -> None:
+        # openai/openai-agents-python #4775: no pull request against it, so the
+        # duplicate search was empty and the target read as unclaimed. See
+        # https://github.com/wolfgang-aura/Mailman/issues/36.
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(
+                _record(Path(temporary), attempts=[], claims=[_CLAIM])
+            )
+        summary = assessment.summary()
+
+        self.assertFalse(assessment.may_start)
+        self.assertIn(UNACKNOWLEDGED_CLAIM, assessment.blocking)
+        self.assertNotIn("unclaimed", summary)
+        self.assertIn("someone", summary)
+        self.assertIn("work on this issue", summary)
+
+    def test_an_unanswered_claim_may_be_acknowledged(self) -> None:
+        # An offer nobody answered is worth a human reading, not a hard stop.
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(
+                _record(Path(temporary), attempts=[], claims=[_CLAIM]),
+                acknowledged_claims=True,
+            )
+
+        self.assertTrue(assessment.may_start)
+        self.assertIn(UNACKNOWLEDGED_CLAIM, assessment.warnings)
+
+    def test_acknowledging_prior_attempts_does_not_acknowledge_a_claim(self) -> None:
+        # Two different questions, so two different flags.
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(
+                _record(Path(temporary), attempts=[], claims=[_CLAIM]),
+                acknowledged=True,
+            )
+
+        self.assertFalse(assessment.may_start)
+        self.assertIn(UNACKNOWLEDGED_CLAIM, assessment.blocking)
+
+    def test_a_maintainer_handing_the_work_over_refuses_outright(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(
+                _record(
+                    Path(temporary),
+                    attempts=[],
+                    claims=[_CLAIM],
+                    assignments=[_ASSIGNMENT],
+                ),
+                acknowledged_claims=True,
+            )
+
+        self.assertFalse(assessment.may_start)
+        self.assertIn(WORK_HANDED_OVER, assessment.blocking)
+        self.assertIn("maintainer", assessment.summary())
+
+    def test_an_assigned_issue_refuses_outright(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(
+                _record(Path(temporary), attempts=[], assignees=["maintainer"]),
+                acknowledged_claims=True,
+            )
+
+        self.assertFalse(assessment.may_start)
+        self.assertIn(ISSUE_ASSIGNED, assessment.blocking)
+
+    def test_a_read_thread_with_no_claim_still_looks_unclaimed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(_record(Path(temporary), attempts=[]))
+        summary = assessment.summary()
+
+        self.assertTrue(assessment.may_start)
+        self.assertIn("unclaimed", summary)
+        self.assertIn("2 comment(s)", summary)
+
+    def test_the_assessment_record_carries_the_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            recorded = assess_target(
+                _record(Path(temporary), attempts=[], claims=[_CLAIM])
+            ).to_dict()
+
+        self.assertEqual(recorded["claims"]["claims"], [_CLAIM])
 
     def test_a_malformed_record_is_treated_as_no_search(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

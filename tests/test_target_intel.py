@@ -256,6 +256,20 @@ class TargetIntelGateTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        (root / "claims.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "repository": "example/project",
+                    "issue_number": 1,
+                    "comments_read": 0,
+                    "claims": [],
+                    "assignments": [],
+                    "assignees": [],
+                }
+            ),
+            encoding="utf-8",
+        )
         return root
 
     def test_a_missing_target_intel_record_blocks(self) -> None:

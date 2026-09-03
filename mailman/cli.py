@@ -38,6 +38,7 @@ from mailman.issue import (
     capture_issue_from_github,
     load_issue_record,
 )
+from mailman.claims import read_claims, render_claims
 from mailman.target_intel import collect_target_intel, render_target_intel
 from mailman.targeting import assess_target
 from mailman.submission import (
@@ -244,6 +245,15 @@ def _build_parser() -> argparse.ArgumentParser:
     intel.add_argument("--timeout", type=float, default=120)
     intel.add_argument("--data-root", type=Path)
 
+    claims = subparsers.add_parser(
+        "claims",
+        help="read who has already claimed the target issue, in its own comments",
+    )
+    claims.add_argument("run_id")
+    claims.add_argument("--executable", help="path to the GitHub CLI executable")
+    claims.add_argument("--timeout", type=float, default=60)
+    claims.add_argument("--data-root", type=Path)
+
     transition = subparsers.add_parser("transition", help="change a run workflow state")
     transition.add_argument("run_id")
     transition.add_argument("target", choices=[str(status) for status in RunStatus])
@@ -315,6 +325,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="start even though closed pull requests already attempted this "
         "issue; an open or merged one still refuses",
     )
+    orchestrate_parser.add_argument(
+        "--acknowledge-claims",
+        action="store_true",
+        help="start even though somebody claimed this issue in its comments "
+        "and nobody answered them; an assignment still refuses",
+    )
     orchestrate_parser.add_argument("--data-root", type=Path)
 
     retrospective = subparsers.add_parser(
@@ -384,6 +400,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="treat closed attempts as read rather than as a blocker; an open "
         "or merged pull request still refuses",
+    )
+    check_target.add_argument(
+        "--acknowledge-claims",
+        action="store_true",
+        help="treat an unanswered claim in the issue's comments as read; an "
+        "assigned issue or a maintainer handing the work over still refuses",
     )
     check_target.add_argument("--data-root", type=Path)
 
@@ -732,6 +754,33 @@ def _target_intel(arguments: argparse.Namespace) -> int:
     return 0 if record.get("success") else 1
 
 
+def _claims(arguments: argparse.Namespace) -> int:
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    record = read_claims(
+        run_directory,
+        executable=arguments.executable,
+        timeout_seconds=arguments.timeout,
+    )
+    _emit(render_claims(record))
+    print(
+        json.dumps(
+            {
+                "run_id": run.run_id,
+                "repository": record.get("repository"),
+                "issue_number": record.get("issue_number"),
+                "success": record.get("success"),
+                "comments_read": record.get("comments_read"),
+                "claims": len(record.get("claims") or []),
+                "assignments": len(record.get("assignments") or []),
+                "assignees": record.get("assignees"),
+                "detail": record.get("detail"),
+            },
+            indent=2,
+        )
+    )
+    return 0 if record.get("success") else 1
+
+
 def _prepare_submission(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
     policy = TargetPolicy.load(arguments.policy)
@@ -1012,6 +1061,7 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
         max_revisions=arguments.max_revisions,
         announce=_emit,
         acknowledge_prior_attempts=arguments.acknowledge_prior_attempts,
+        acknowledge_claims=arguments.acknowledge_claims,
     )
     summary = {
         "run_id": outcome.run_id,
@@ -1137,7 +1187,9 @@ def _emit(text: str) -> None:
 def _check_target(arguments: argparse.Namespace) -> int:
     _, run_directory = load_run(arguments.run_id, arguments.data_root)
     assessment = assess_target(
-        run_directory, acknowledged=arguments.acknowledge_prior_attempts
+        run_directory,
+        acknowledged=arguments.acknowledge_prior_attempts,
+        acknowledged_claims=arguments.acknowledge_claims,
     )
     _emit(assessment.summary())
     if assessment.blocking:
@@ -1351,6 +1403,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _acknowledge_no_test(parsed)
         if parsed.subcommand == "target-intel":
             return _target_intel(parsed)
+        if parsed.subcommand == "claims":
+            return _claims(parsed)
         if parsed.subcommand == "prior-art":
             return _prior_art(parsed)
         if parsed.subcommand == "transition":

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from mailman.claims import CLAIMS_FILENAME
 from mailman.reproduction import REPRODUCTION_FILENAME
 from mailman.submission import DUPLICATE_SEARCH_FILENAME
 from mailman.target_intel import TARGET_INTEL_FILENAME
@@ -21,6 +22,10 @@ PRIOR_ART_FILENAME = "prior-art.json"
 
 NO_DUPLICATE_SEARCH = "no-duplicate-search"
 NO_TARGET_INTEL = "no-target-intel"
+NO_CLAIM_CHECK = "no-claim-check"
+ISSUE_ASSIGNED = "issue-assigned"
+WORK_HANDED_OVER = "work-handed-over"
+UNACKNOWLEDGED_CLAIM = "unacknowledged-claim"
 NO_REPRODUCTION = "no-reproduction"
 BUG_NOT_REPRODUCED = "bug-not-reproduced"
 UNVERIFIED_REPRODUCTION = "reproduction-not-machine-checked"
@@ -40,6 +45,7 @@ class TargetAssessment:
     target_read: bool = False
     intel: dict[str, Any] = field(default_factory=dict)
     reproduction: dict[str, Any] = field(default_factory=dict)
+    claims: dict[str, Any] = field(default_factory=dict)
     open_attempts: list[dict[str, Any]] = field(default_factory=list)
     merged_attempts: list[dict[str, Any]] = field(default_factory=list)
     closed_attempts: list[dict[str, Any]] = field(default_factory=list)
@@ -56,6 +62,7 @@ class TargetAssessment:
             "target_read": self.target_read,
             "intel": self.intel,
             "reproduction": self.reproduction,
+            "claims": self.claims,
             "open_attempts": self.open_attempts,
             "merged_attempts": self.merged_attempts,
             "closed_attempts": self.closed_attempts,
@@ -123,6 +130,38 @@ class TargetAssessment:
             lines.append(f"           {check.get('name')}: {check.get('detail')}")
         return lines
 
+    def _claims_summary(self) -> list[str]:
+        """Say who has already said they are on this, in their own words."""
+        if self.claims.get("success") is not True:
+            return [
+                "Nothing is recorded about who has already claimed this issue "
+                "in its own comments. Run `mailman claims RUN_ID`: a claim made "
+                "in a comment is the earliest form of prior art and the "
+                "duplicate search cannot see it."
+            ]
+        assignees = self.claims.get("assignees") or []
+        lines: list[str] = []
+        if assignees:
+            lines.append(
+                "assigned  this issue is assigned to " + ", ".join(assignees)
+            )
+        for row in self.claims.get("claims") or []:
+            lines.append(
+                f"claimed   {row.get('author')} ({row.get('association')}, "
+                f"{row.get('created_at')}): {row.get('quote', '')[:200]}"
+            )
+        for row in self.claims.get("assignments") or []:
+            lines.append(
+                f"handed    a maintainer, {row.get('author')}, handed the work "
+                f"over: {row.get('quote', '')[:200]}"
+            )
+        if not lines:
+            lines.append(
+                f"claims    {self.claims.get('comments_read', 0)} comment(s) "
+                "read, none of them a claim"
+            )
+        return lines
+
     def summary(self) -> str:
         # The prior-art verdict is stated on its own terms. It used to be
         # inferred from "nothing else was printed", which the target-intel line
@@ -143,6 +182,7 @@ class TargetAssessment:
         elif self.intel:
             lines.append(self._intel_summary())
         lines.extend(self._reproduction_summary())
+        lines.extend(self._claims_summary())
         for attempt in self.open_attempts:
             lines.append(
                 f"open      #{attempt.get('number')} {attempt.get('title', '')} "
@@ -163,6 +203,22 @@ class TargetAssessment:
                 "An open pull request means someone is already on this. A "
                 "second one is the contribution maintainers close and ban for."
             )
+        if self.claims.get("assignees"):
+            lines.append(
+                "An assigned issue belongs to whoever holds it. Pick another."
+            )
+        elif self.claims.get("assignments"):
+            lines.append(
+                "A maintainer already handed this work to somebody in the "
+                "thread. That is an assignment written in prose rather than in "
+                "the assignee field, and it counts the same."
+            )
+        elif self.claims.get("claims"):
+            lines.append(
+                "Somebody has said in the comments that they are taking this, "
+                "and nobody has answered them. Read the thread, then pass "
+                "--acknowledge-claims to start anyway."
+            )
         if self.merged_attempts:
             lines.append(
                 "A merged pull request on this issue is already upstream. "
@@ -181,6 +237,8 @@ class TargetAssessment:
             and not self.open_attempts
             and not self.merged_attempts
             and not self.closed_attempts
+            and not (self.claims.get("claims") or self.claims.get("assignments"))
+            and not self.claims.get("assignees")
         ):
             lines.append("No prior attempt found. This target looks unclaimed.")
         return "\n".join(lines)
@@ -197,13 +255,17 @@ def _read(path: Path) -> dict[str, Any]:
 
 
 def assess_target(
-    run_directory: Path, *, acknowledged: bool = False
+    run_directory: Path,
+    *,
+    acknowledged: bool = False,
+    acknowledged_claims: bool = False,
 ) -> TargetAssessment:
     """Judge a target from the searches already recorded in the run."""
     duplicate_search = _read(run_directory / DUPLICATE_SEARCH_FILENAME)
     prior_art = _read(run_directory / PRIOR_ART_FILENAME)
     intel = _read(run_directory / TARGET_INTEL_FILENAME)
     reproduction = _read(run_directory / REPRODUCTION_FILENAME)
+    claims = _read(run_directory / CLAIMS_FILENAME)
     searched = duplicate_search.get("success") is True
     target_read = intel.get("success") is True
 
@@ -251,6 +313,27 @@ def assess_target(
         # Not overridable, and deliberately so: the right response to a bug
         # that no longer happens is to abandon the run, not to acknowledge it.
         blocking.append(BUG_NOT_REPRODUCED)
+    if claims.get("success") is not True:
+        # A comment claim is prior art the duplicate search cannot see. See
+        # https://github.com/wolfgang-aura/Mailman/issues/36.
+        blocking.append(NO_CLAIM_CHECK)
+    elif claims.get("assignees"):
+        # Not overridable: somebody holds this issue.
+        blocking.append(ISSUE_ASSIGNED)
+    elif claims.get("assignments"):
+        # A maintainer handing the work over is the assignee field written in
+        # prose. Not overridable, for the same reason.
+        blocking.append(WORK_HANDED_OVER)
+    elif claims.get("claims"):
+        # An offer nobody answered is worth a human reading rather than a hard
+        # stop, so this is the one claim state a flag can clear. Its own flag:
+        # --acknowledge-prior-attempts answers a different question, and one
+        # flag for two questions is the defect in
+        # https://github.com/wolfgang-aura/Mailman/issues/38.
+        if acknowledged_claims:
+            warnings.append(UNACKNOWLEDGED_CLAIM)
+        else:
+            blocking.append(UNACKNOWLEDGED_CLAIM)
     if open_attempts:
         # Deliberately not overridable. Every escape hatch here is one someone
         # takes at the wrong moment, and `run-agent` still exists for a
@@ -273,6 +356,7 @@ def assess_target(
         target_read=target_read,
         intel=intel,
         reproduction=reproduction,
+        claims=claims,
         open_attempts=open_attempts,
         merged_attempts=merged_attempts,
         closed_attempts=closed_attempts,

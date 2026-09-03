@@ -172,6 +172,7 @@ class _Orchestration:
         announce: Callable[[str], None],
         check_target: bool = True,
         acknowledge_prior_attempts: bool = False,
+        acknowledge_claims: bool = False,
     ) -> None:
         self.run = run
         self.run_directory = run_directory
@@ -186,6 +187,7 @@ class _Orchestration:
         self.announce = announce
         self.check_target = check_target
         self.acknowledge_prior_attempts = acknowledge_prior_attempts
+        self.acknowledge_claims = acknowledge_claims
         self.steps: list[OrchestrationStep] = []
         self.revisions_used = 0
 
@@ -401,7 +403,9 @@ class _Orchestration:
 
         if self.check_target:
             assessment = assess_target(
-                self.run_directory, acknowledged=self.acknowledge_prior_attempts
+                self.run_directory,
+                acknowledged=self.acknowledge_prior_attempts,
+                acknowledged_claims=self.acknowledge_claims,
             )
             self.announce(assessment.summary())
             if not assessment.may_start:
@@ -573,6 +577,7 @@ def orchestrate(
     announce: Callable[[str], None] = lambda message: None,
     check_target: bool = True,
     acknowledge_prior_attempts: bool = False,
+    acknowledge_claims: bool = False,
 ) -> OrchestrationOutcome:
     """Run one bounded primary, reviewer, and verification loop for a run."""
     return _Orchestration(
@@ -589,4 +594,5 @@ def orchestrate(
         announce=announce,
         check_target=check_target,
         acknowledge_prior_attempts=acknowledge_prior_attempts,
+        acknowledge_claims=acknowledge_claims,
     ).execute()
