@@ -166,11 +166,21 @@ the review report. It allows at most one revision, verifies again after
 approval, and only then reaches `READY_FOR_HUMAN_REVIEW`. A verification that
 fails after a primary stage spends that same single revision: the agent is
 handed the failing command and its output and gets one attempt to fix it.
-An `APPROVE` from a reviewer whose transcript shows no command is refused. That
-reviewer read the candidate rather than checking it, and the loop must not
-report a two-agent check it did not get; Codex under a read-only sandbox has
-done exactly this on a live run. A `REVISE` from the same reviewer still counts,
-since a finding from a careful read is worth acting on. Every other ending,
+An `APPROVE` also requires the reviewer to have written
+`MAILMAN-VERIFICATION: RAN`, meaning it ran the run's verification command
+itself and saw it finish. `BLOCKED` is the honest answer when a sandbox refused
+to start the interpreter, and it carries no penalty, but it cannot accompany an
+approval: that reviewer read the candidate rather than checking it, and the loop
+must not report a two-agent check it did not get. A missing claim blocks the
+same way a missing verdict does, and a claim of `RAN` from a reviewer whose
+transcript shows no command at all is refused as a contradiction. A `REVISE`
+from a blocked reviewer still counts, since a finding from a careful read is
+worth acting on.
+
+Counting commands alone does not answer this, which is why the reviewer is asked
+outright. In the run that started this, the Codex reviewer ran three commands:
+two file reads that succeeded and one `pytest` that exited 1. It then said in
+prose that it made no test-pass claim, and approved. Every other ending,
 including a missing or contradictory verdict, is `BLOCKED`. The command exits
 `0` only for a run that is ready for a human, and writes each step to
 `orchestration.json`. See [the orchestration decision](docs/decisions/0004-bounded-orchestration.md)

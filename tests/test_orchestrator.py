@@ -114,6 +114,10 @@ RAN_ONE_COMMAND = json.dumps(
     }
 )
 
+#: The report a reviewer writes when it actually ran the gate and found
+#: nothing. Both lines are required before an APPROVE counts.
+APPROVED = "no findings\nMAILMAN-VERIFICATION: RAN\nMAILMAN-VERDICT: APPROVE\n"
+
 PASSING_CHECK = "import sys; sys.exit(0)"
 FAILING_CHECK = "import sys; sys.exit(1)"
 # Fails until the agent leaves a marker in the workspace, which is the closest
@@ -275,7 +279,7 @@ class WorkspaceChangeRecordingTests(OrchestratorHarness):
             primary_script=[
                 {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
             ],
-            reviewer_script=[{"report": "no findings\nMAILMAN-VERDICT: APPROVE\n"}],
+            reviewer_script=[{"report": APPROVED}],
         )
 
         recorded = {step.name: step for step in outcome.steps}[
@@ -298,7 +302,9 @@ class OrchestrationTests(OrchestratorHarness):
                 {
                     "report": (
                         "I could not run the requested tests, so I make no "
-                        "test-pass claim.\nMAILMAN-VERDICT: APPROVE\n"
+                        "test-pass claim.\n"
+                        "MAILMAN-VERIFICATION: BLOCKED\n"
+                        "MAILMAN-VERDICT: APPROVE\n"
                     ),
                     "stdout": "",
                 }
@@ -310,21 +316,107 @@ class OrchestrationTests(OrchestratorHarness):
         record = json.loads(
             (run_directory / "orchestration.json").read_text(encoding="utf-8")
         )
-        blocked = [step for step in record["steps"] if step["name"] == "blocked"]
-        self.assertIn("executed nothing", blocked[-1]["detail"])
         execution = [
             step for step in record["steps"] if step["name"] == "reviewer-execution"
         ]
         self.assertFalse(execution[-1]["ok"])
         self.assertEqual(execution[-1]["data"]["commands_run"], 0)
+        self.assertEqual(execution[-1]["data"]["verification_claim"], "BLOCKED")
 
     def test_a_reviewer_that_ran_the_gate_still_clears_the_run(self) -> None:
         outcome, _, _, _ = self.orchestrate(
             primary_script=[{"report": "candidate ready\n"}],
-            reviewer_script=[{"report": "no findings\nMAILMAN-VERDICT: APPROVE\n"}],
+            reviewer_script=[{"report": APPROVED}],
         )
 
         self.assertIs(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+
+    def test_a_reviewer_that_says_it_could_not_verify_cannot_approve(self) -> None:
+        # The real shape of run 20260902T144544Z-5dbf69. Three commands ran:
+        # two file reads that succeeded and one pytest that exited 1. Counting
+        # commands does not catch that, and the reviewer said so in prose.
+        outcome, run_directory, _, _ = self.orchestrate(
+            primary_script=[{"report": "candidate ready\n"}],
+            reviewer_script=[
+                {
+                    "report": (
+                        "I could not run the requested tests, so I make no "
+                        "test-pass claim.\n"
+                        "MAILMAN-VERIFICATION: BLOCKED\n"
+                        "MAILMAN-VERDICT: APPROVE\n"
+                    )
+                }
+            ],
+        )
+        record = json.loads(
+            (run_directory / "orchestration.json").read_text(encoding="utf-8")
+        )
+        blocked = [step for step in record["steps"] if step["name"] == "blocked"]
+
+        self.assertIs(outcome.status, RunStatus.BLOCKED)
+        self.assertIn("without running the verification", blocked[-1]["detail"])
+
+    def test_a_reviewer_that_says_nothing_about_verifying_cannot_approve(self) -> None:
+        outcome, run_directory, _, _ = self.orchestrate(
+            primary_script=[{"report": "candidate ready\n"}],
+            reviewer_script=[
+                {"report": "read it, looks fine\nMAILMAN-VERDICT: APPROVE\n"}
+            ],
+        )
+        record = json.loads(
+            (run_directory / "orchestration.json").read_text(encoding="utf-8")
+        )
+        blocked = [step for step in record["steps"] if step["name"] == "blocked"]
+
+        self.assertIs(outcome.status, RunStatus.BLOCKED)
+        self.assertIn("did not say", blocked[-1]["detail"])
+
+    def test_a_claim_to_have_verified_with_no_command_at_all_is_a_contradiction(
+        self,
+    ) -> None:
+        outcome, run_directory, _, _ = self.orchestrate(
+            primary_script=[{"report": "candidate ready\n"}],
+            reviewer_script=[{"report": APPROVED, "stdout": ""}],
+        )
+        record = json.loads(
+            (run_directory / "orchestration.json").read_text(encoding="utf-8")
+        )
+        blocked = [step for step in record["steps"] if step["name"] == "blocked"]
+
+        self.assertIs(outcome.status, RunStatus.BLOCKED)
+        self.assertIn("executed nothing", blocked[-1]["detail"])
+
+    def test_a_blocked_verification_still_allows_a_revision(self) -> None:
+        # A reviewer that could not run the gate can still read the code and
+        # find something. Only its approval is worthless.
+        outcome, _, primary, _ = self.orchestrate(
+            primary_script=[
+                {"report": "candidate ready\n"},
+                {"report": "revised\n"},
+            ],
+            reviewer_script=[
+                {
+                    "report": (
+                        "cannot run the suite, but this name is wrong\n"
+                        "MAILMAN-VERIFICATION: BLOCKED\n"
+                        "MAILMAN-VERDICT: REVISE\n"
+                    )
+                },
+                {"report": APPROVED},
+            ],
+        )
+
+        self.assertIs(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        self.assertEqual(outcome.revisions_used, 1)
+        self.assertEqual(len(primary.calls), 2)
+
+    def test_the_reviewer_prompt_states_the_verification_contract(self) -> None:
+        _, _, _, reviewer = self.orchestrate(
+            primary_script=[{"report": "candidate ready\n"}],
+            reviewer_script=[{"report": APPROVED}],
+        )
+
+        self.assertIn("MAILMAN-VERIFICATION", reviewer.calls[0][1])
 
     def test_a_reviewer_that_executed_nothing_may_still_ask_for_a_revision(
         self,
@@ -341,7 +433,7 @@ class OrchestrationTests(OrchestratorHarness):
                     "report": "rename the helper\nMAILMAN-VERDICT: REVISE\n",
                     "stdout": "",
                 },
-                {"report": "looks right now\nMAILMAN-VERDICT: APPROVE\n"},
+                {"report": APPROVED},
             ],
         )
 
@@ -368,7 +460,7 @@ class OrchestrationTests(OrchestratorHarness):
     def test_approved_candidate_reaches_human_review(self) -> None:
         outcome, run_directory, primary, reviewer = self.orchestrate(
             primary_script=[{"report": "candidate ready\n"}],
-            reviewer_script=[{"report": "no findings\nMAILMAN-VERDICT: APPROVE\n"}],
+            reviewer_script=[{"report": APPROVED}],
         )
 
         self.assertEqual(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
@@ -399,7 +491,7 @@ class OrchestrationTests(OrchestratorHarness):
             ],
             reviewer_script=[
                 {"report": "- add fix.txt\nMAILMAN-VERDICT: REVISE\n"},
-                {"report": "resolved\nMAILMAN-VERDICT: APPROVE\n"},
+                {"report": APPROVED},
             ],
         )
 
@@ -472,7 +564,7 @@ class OrchestrationTests(OrchestratorHarness):
                 {"report": "candidate ready\n"},
                 {"report": "fixed it\n", "touch": ("repaired.txt", "done")},
             ],
-            reviewer_script=[{"report": "MAILMAN-VERDICT: APPROVE\n"}],
+            reviewer_script=[{"report": APPROVED}],
             check=REPAIRABLE_CHECK,
         )
 
@@ -666,7 +758,7 @@ class VerificationExecutableTests(OrchestratorHarness):
         agents = {
             "codex": ScriptedAgent("codex", [{"report": "candidate ready\n"}], None),
             "claude": ScriptedAgent(
-                "claude", [{"report": "MAILMAN-VERDICT: APPROVE\n"}], None
+                "claude", [{"report": APPROVED}], None
             ),
         }
         outcome = orchestrate(
@@ -724,7 +816,7 @@ class OrchestrateCliTests(OrchestratorHarness):
         agents = {
             "codex": ScriptedAgent("codex", [{"report": "candidate ready\n"}]),
             "claude": ScriptedAgent(
-                "claude", [{"report": "MAILMAN-VERDICT: APPROVE\n"}]
+                "claude", [{"report": APPROVED}]
             ),
         }
         exit_code, output = self._invoke(agents, PASSING_CHECK)

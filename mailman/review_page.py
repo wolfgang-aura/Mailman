@@ -126,7 +126,10 @@ table.prose th { background: var(--gutter); font-weight: 600; }
 
 _KIND_STYLES = {"error": "denied"}
 
-_VERDICT_LINE = re.compile(r"^[ \t>*-]*MAILMAN-VERDICT:[ \t]*[A-Za-z]+[ \t]*$", re.MULTILINE)
+_VERDICT_LINE = re.compile(
+    r"^[ \t>*-]*MAILMAN-(?:VERDICT|VERIFICATION):[ \t]*[A-Za-z]+[ \t]*$",
+    re.MULTILINE,
+)
 
 
 def _escape(value: Any) -> str:

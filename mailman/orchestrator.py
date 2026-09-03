@@ -45,7 +45,25 @@ _VERDICT_PATTERN = re.compile(
     r"^[ \t>*-]*MAILMAN-VERDICT:[ \t]*(APPROVE|REVISE)[ \t]*$", re.MULTILINE
 )
 
+VERIFICATION_RAN = "RAN"
+VERIFICATION_BLOCKED = "BLOCKED"
+
+_VERIFICATION_PATTERN = re.compile(
+    r"^[ \t>*-]*MAILMAN-VERIFICATION:[ \t]*(RAN|BLOCKED)[ \t]*$", re.MULTILINE
+)
+
 _VERDICT_CONTRACT = """
+## Required verification claim
+
+Before the verdict line, write exactly one line of the form
+`MAILMAN-VERIFICATION: RAN` or `MAILMAN-VERIFICATION: BLOCKED`.
+
+Write RAN only if you ran this run's verification command yourself and saw it
+finish. Write BLOCKED if anything stopped you: a sandbox that refused to start
+the interpreter, a missing dependency, a command that never completed. BLOCKED
+is not a failure on your part and carries no penalty. Claiming RAN when you did
+not is the one answer that makes the whole run worthless.
+
 ## Required verdict
 
 Finish your reply with exactly one line of the form `MAILMAN-VERDICT: APPROVE`
@@ -54,6 +72,10 @@ or `MAILMAN-VERDICT: REVISE`, written on its own line and nowhere else.
 Choose REVISE when the candidate needs a change, and list every required change
 above the verdict line. Choose APPROVE only when no change is required. A
 missing, repeated, or contradictory verdict stops the run for a human.
+
+An APPROVE is a claim that you checked the candidate, so it requires
+`MAILMAN-VERIFICATION: RAN`. If you could not verify, REVISE with what you found
+by reading, or say plainly that you cannot judge it.
 """
 
 _REVISION_CONTRACT = """
@@ -97,6 +119,26 @@ def _describe_failure(result: CommandResult) -> str:
     header = "```" + chr(10) + " ".join(result.command) + chr(10) + "```"
     body = chr(10) + chr(10) + (chr(10) + chr(10)).join(tail) if tail else ""
     return f"The command {outcome}." + chr(10) + chr(10) + header + body
+
+
+def parse_verification_claim(report_text: str | None) -> str | None:
+    """Return the reviewer's own answer to whether it ran the gate.
+
+    Counting commands cannot answer this. In run 20260902T144544Z-5dbf69 the
+    Codex reviewer ran three: two file reads that succeeded and one pytest that
+    exited 1. Pairing a command to its result does not answer it either, since
+    Claude issues tool calls in parallel and the results arrive out of order.
+    The reviewer knows, and on the run that started
+    https://github.com/wolfgang-aura/Mailman/issues/20 it said so in prose that
+    nothing could act on. This makes the same sentence machine-readable, and the
+    command tally still catches a reviewer that claims RAN having run nothing.
+    """
+    if not report_text:
+        return None
+    claims = set(_VERIFICATION_PATTERN.findall(report_text))
+    if len(claims) != 1:
+        return None
+    return claims.pop()
 
 
 def parse_verdict(report_text: str | None) -> str | None:
@@ -485,25 +527,46 @@ class _Orchestration:
                 self._block("reviewer verdict was missing or contradictory")
                 return self._outcome()
             if verdict == VERDICT_APPROVE:
-                # An APPROVE asserts a check. A reviewer whose transcript shows
-                # no command ran did not perform one, however honestly it said
-                # so in prose, and the loop must not report a two-agent check it
-                # did not get. REVISE is unaffected: a finding from a reviewer
-                # that only read the code is still worth acting on. See
+                # An APPROVE asserts a check, so the loop must not report a
+                # two-agent check it did not get. REVISE is unaffected: a
+                # finding from a reviewer that only read the code is still worth
+                # acting on. See
                 # https://github.com/wolfgang-aura/Mailman/issues/20.
+                claim = parse_verification_claim(review_report)
                 reviewer_commands = self.commands_run.get("reviewer", 0)
+                verified = claim == VERIFICATION_RAN and reviewer_commands > 0
                 self._step(
                     "reviewer-execution",
-                    ok=reviewer_commands > 0,
-                    detail=f"reviewer ran {reviewer_commands} command(s)",
-                    data={"commands_run": reviewer_commands},
+                    ok=verified,
+                    detail=(
+                        f"reviewer claimed {claim or 'nothing'} and ran "
+                        f"{reviewer_commands} command(s)"
+                    ),
+                    data={
+                        "verification_claim": claim,
+                        "commands_run": reviewer_commands,
+                    },
                 )
+                if claim is None:
+                    self._block(
+                        "the reviewer approved the candidate but did not say "
+                        "whether it ran the verification. A missing or repeated "
+                        "MAILMAN-VERIFICATION line stops the run for a human."
+                    )
+                    return self._outcome()
+                if claim == VERIFICATION_BLOCKED:
+                    self._block(
+                        "the reviewer approved the candidate without running "
+                        "the verification, so the review is a code read rather "
+                        "than a check. Re-review with an agent that can run the "
+                        "verification command."
+                    )
+                    return self._outcome()
                 if reviewer_commands == 0:
                     self._block(
-                        "the reviewer approved the candidate but executed "
-                        "nothing, so the review is a code read rather than a "
-                        "check. Re-review with an agent that can run the "
-                        "verification command."
+                        "the reviewer claimed it ran the verification but "
+                        "executed nothing at all, which is a contradiction. "
+                        "Treat this review as unusable."
                     )
                     return self._outcome()
                 break
