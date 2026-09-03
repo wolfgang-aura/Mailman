@@ -73,6 +73,18 @@ Last verified: 2026-09-03 in `Asia/Singapore`.
   It carries #35: `mailman screen-target OWNER/REPO`, six gates, verdict cached under
   `screens/`. Exercised live against six repositories from the hand-screened table.
   It carries `mailman reproduce` and the two `check-target` refusals behind it.
+- Defect-report deployment: commit `65a7b4d` passed GitHub Actions in run `33797195813`.
+  It carries #45: `init-run --defect-report PATH` as an alternative to `--issue`, exactly one
+  of the two required. `fetch-issue` renders the file through the same capture boundary and
+  `claims` records that no thread exists. The duplicate search and the reproduction stay
+  mandatory and carry the whole evidence burden. 420 unit tests, up from 412.
+
+### Reproduce gate, live-verified 2026-09-04
+
+Run `20260903T190542Z-65ac37` against `pmorissette/bt` #461 refused with `bug-not-reproduced`.
+0 failures in 1200 randomized trials at base `db6163e`; the same reproducer gives 3 failures
+in 256 trials at `2a607df^`, the commit before merged PR #530. That control is what makes the
+non-reproduction evidence. No agent ran. Issue #37 closed on it.
 
 ### Warning: the history was rewritten on 2026-09-02
 
