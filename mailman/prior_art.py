@@ -15,7 +15,7 @@ PRIOR_ART_MARKDOWN = "prior-art.md"
 
 _PULL_REQUEST_FIELDS = (
     "number,title,state,url,body,author,createdAt,closedAt,mergedAt,"
-    "files,comments,reviews"
+    "mergeCommit,files,comments,reviews"
 )
 
 # GitHub's author association for someone who can merge. A comment from one of
@@ -98,6 +98,16 @@ def summarize_pull_request(payload: dict[str, Any]) -> dict[str, Any]:
         summary["body"] = None
         summary["changed_files"] = []
         summary["comments"] = []
+        # The merge commit is a forty character name, not the fix. Recording it
+        # is what lets `check-target` ask whether this merge is already an
+        # ancestor of the run's base commit, which is the difference between
+        # "upstream already ships this" and "upstream shipped something else to
+        # the same function". See
+        # https://github.com/wolfgang-aura/Mailman/issues/46.
+        merge_commit = payload.get("mergeCommit")
+        summary["merge_commit"] = (
+            merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+        )
         return summary
     summary["body"] = _trim(payload.get("body"), _BODY_CHARACTER_LIMIT)
     summary["changed_files"] = changed

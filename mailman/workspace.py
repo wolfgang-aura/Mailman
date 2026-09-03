@@ -69,6 +69,10 @@ def workspace_fingerprint(path: Path) -> str:
     return hashlib.sha256((status + "\n" + diff).encode("utf-8")).hexdigest()
 
 
+#: Where `prepare-workspace` puts the clone, relative to the run directory.
+WORKSPACE_DIRECTORY = "workspace"
+
+
 def commit_is_ancestor(workspace: Path, ancestor: str) -> bool:
     completed = subprocess.run(
         ["git", "-C", str(workspace), "merge-base", "--is-ancestor", ancestor, "HEAD"],
@@ -101,7 +105,7 @@ def prepare_workspace(
     run_directory: Path,
     timeout_seconds: float,
 ) -> dict[str, object]:
-    destination = run_directory / "workspace"
+    destination = run_directory / WORKSPACE_DIRECTORY
     record_path = run_directory / "workspace.json"
     if destination.exists():
         if not destination.is_dir():

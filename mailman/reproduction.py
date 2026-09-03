@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from mailman.executor import CommandResult
+from mailman.workspace import WORKSPACE_DIRECTORY, commit_is_ancestor
 
 REPRODUCTION_FILENAME = "reproduction.json"
 REPRODUCTION_SCHEMA_VERSION = 1
@@ -232,6 +233,57 @@ def record_human_reproduction(
     }
     _write(run_directory, record)
     return record
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def merge_is_in_base(
+    run_directory: Path, attempt: dict[str, Any], reproduction: dict[str, Any]
+) -> bool:
+    """Say whether a merged attempt is already in the tree the run starts from.
+
+    Two things have to be true, and neither is a judgement call. The merge
+    commit must be an ancestor of the base commit, so the accepted fix is
+    already in the code the agent would be handed. And the reproduction must
+    have failed at that same base commit, so the defect demonstrably survived
+    it. Together they answer the question `already-fixed-upstream` asks and
+    gets wrong: upstream shipped something to this code, and it was not this.
+
+    Anything missing or unreadable is a no. A refusal that cannot be checked
+    stays a refusal. See https://github.com/wolfgang-aura/Mailman/issues/46.
+    """
+    merge_commit = attempt.get("merge_commit")
+    if not isinstance(merge_commit, str) or not merge_commit.strip():
+        return False
+    if reproduction.get("success") is not True:
+        return False
+    if reproduction.get("machine_checked") is not True:
+        return False
+    if reproduction.get("reproduced") is not True:
+        return False
+    base_commit = reproduction.get("base_commit")
+    if not isinstance(base_commit, str) or not base_commit.strip():
+        return False
+    workspace = run_directory / WORKSPACE_DIRECTORY
+    if not (workspace / ".git").exists():
+        return False
+    recorded_head = _read_json(run_directory / "workspace.json").get("head")
+    if recorded_head != base_commit:
+        # The reproduction ran somewhere other than this clone's base commit,
+        # so an ancestry check against this clone proves nothing about it.
+        return False
+    try:
+        return commit_is_ancestor(workspace, merge_commit.strip())
+    except (ValueError, OSError):
+        return False
 
 
 def load_reproduction(run_directory: Path) -> dict[str, Any] | None:

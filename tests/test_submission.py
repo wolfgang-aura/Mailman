@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -582,6 +583,85 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertFalse(record["ready"])
         self.assertIn("already-fixed-upstream", record["blocking_codes"])
         self.assertNotIn("possible-duplicate", record["blocking_codes"])
+
+    def _merged_match_already_in_base(self, *, reproduced: bool) -> None:
+        """Record a merged match whose merge commit precedes the base commit."""
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-03T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [dict(_weak_match(1), state="merged", methods=["search"])],
+                }
+            ),
+            encoding="utf-8",
+        )
+        workspace = self.run_directory / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        def git(*arguments: str) -> str:
+            completed = subprocess.run(
+                ["git", "-C", str(workspace), *arguments],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
+            )
+            return completed.stdout.strip()
+
+        git("init", "--quiet")
+        git("config", "user.email", "test@example.com")
+        git("config", "user.name", "Test")
+        (workspace / "core.py").write_text("first\n", encoding="utf-8")
+        git("add", "core.py")
+        git("commit", "--quiet", "-m", "the merged fix")
+        merged = git("rev-parse", "HEAD")
+        (workspace / "core.py").write_text("second\n", encoding="utf-8")
+        git("add", "core.py")
+        git("commit", "--quiet", "-m", "later work")
+        base = git("rev-parse", "HEAD")
+        (self.run_directory / "workspace.json").write_text(
+            json.dumps({"head": base, "clean": True}), encoding="utf-8"
+        )
+        (self.run_directory / "reproduction.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "machine_checked": True,
+                    "reproduced": reproduced,
+                    "base_commit": base,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.run_directory / "prior-art.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "attempts": [
+                        {
+                            "number": 1,
+                            "outcome": "merged",
+                            "url": "https://github.com/example/project/pull/1",
+                            "merge_commit": merged,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_a_merged_match_already_in_the_base_commit_does_not_block(self) -> None:
+        """See https://github.com/wolfgang-aura/Mailman/issues/46."""
+        self._merged_match_already_in_base(reproduced=True)
+        record = self._prepare()
+        self.assertNotIn("already-fixed-upstream", record["blocking_codes"])
+
+    def test_a_merged_match_in_base_still_blocks_without_a_reproduction(self) -> None:
+        self._merged_match_already_in_base(reproduced=False)
+        record = self._prepare()
+        self.assertIn("already-fixed-upstream", record["blocking_codes"])
 
     def test_a_closed_attempt_can_be_acknowledged(self) -> None:
         (self.run_directory / "duplicate-search.json").write_text(

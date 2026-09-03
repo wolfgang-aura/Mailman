@@ -43,6 +43,7 @@ MERGED_PULL_REQUEST = {
     "createdAt": "2026-01-01T00:00:00Z",
     "closedAt": "2026-01-05T00:00:00Z",
     "mergedAt": "2026-01-05T00:00:00Z",
+    "mergeCommit": {"oid": "f3d1a4c5b6e7889900aabbccddeeff0011223344"},
     "files": [{"path": "src/_pytest/raises.py"}],
     "comments": [{"author": {"login": "x"}, "authorAssociation": "MEMBER", "body": "lgtm"}],
     "reviews": [],
@@ -94,6 +95,20 @@ class SummarizeTests(unittest.TestCase):
         self.assertIsNone(summary["body"])
         self.assertEqual(summary["changed_files"], [])
         self.assertEqual(summary["comments"], [])
+        # The merge commit is a name, not the fix, and `check-target` needs it
+        # to ask whether this merge is already in the run's base commit. See
+        # https://github.com/wolfgang-aura/Mailman/issues/46.
+        self.assertEqual(
+            summary["merge_commit"], "f3d1a4c5b6e7889900aabbccddeeff0011223344"
+        )
+
+    def test_a_merged_pull_request_with_no_merge_commit_records_none(self) -> None:
+        payload = dict(MERGED_PULL_REQUEST)
+        payload.pop("mergeCommit")
+        self.assertIsNone(summarize_pull_request(payload)["merge_commit"])
+
+    def test_a_closed_pull_request_records_no_merge_commit(self) -> None:
+        self.assertNotIn("merge_commit", summarize_pull_request(CLOSED_PULL_REQUEST))
 
     def test_an_open_pull_request_is_reported_as_open(self) -> None:
         self.assertEqual(summarize_pull_request(OPEN_PULL_REQUEST)["outcome"], "open")

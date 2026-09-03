@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
+    BUG_NOT_REPRODUCED,
+    MERGED_FIX_ALREADY_IN_BASE,
     ISSUE_ASSIGNED,
     NO_CLAIM_CHECK,
     NO_DUPLICATE_SEARCH,
@@ -376,3 +379,168 @@ class AssessTargetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _git(workspace: Path, *arguments: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(workspace), *arguments],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    return completed.stdout.strip()
+
+
+class MergedFixAlreadyInBaseTests(unittest.TestCase):
+    """A merged match that is already in the base commit is not this change.
+
+    See https://github.com/wolfgang-aura/Mailman/issues/46. A defect report
+    names the function it lives in, so any past fix to that function is a
+    whole-query match, and `already-fixed-upstream` had no way to say that the
+    accepted fix is already in the tree the reproduction failed against.
+    """
+
+    def _workspace(self, root: Path) -> tuple[str, str]:
+        """Build a two commit clone and return (first commit, base commit)."""
+        workspace = root / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        _git(workspace, "init", "--quiet")
+        _git(workspace, "config", "user.email", "test@example.com")
+        _git(workspace, "config", "user.name", "Test")
+        (workspace / "core.py").write_text("first\n", encoding="utf-8")
+        _git(workspace, "add", "core.py")
+        _git(workspace, "commit", "--quiet", "-m", "the merged fix")
+        merged = _git(workspace, "rev-parse", "HEAD")
+        (workspace / "core.py").write_text("second\n", encoding="utf-8")
+        _git(workspace, "add", "core.py")
+        _git(workspace, "commit", "--quiet", "-m", "later work")
+        base = _git(workspace, "rev-parse", "HEAD")
+        return merged, base
+
+    def _prepare(
+        self,
+        root: Path,
+        *,
+        merge_commit: str | None,
+        base_commit: str,
+        recorded_head: str | None,
+        reproduced: bool = True,
+    ) -> Path:
+        attempt = dict(_MERGED)
+        attempt["merge_commit"] = merge_commit
+        _record(root, attempts=[attempt])
+        (root / "reproduction.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "machine_checked": True,
+                    "reproduced": reproduced,
+                    "base_commit": base_commit,
+                    "checks": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        if recorded_head is not None:
+            (root / "workspace.json").write_text(
+                json.dumps({"head": recorded_head, "clean": True}), encoding="utf-8"
+            )
+        return root
+
+    def test_a_merge_already_in_the_base_commit_does_not_refuse(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            merged, base = self._workspace(root)
+            assessment = assess_target(
+                self._prepare(
+                    root, merge_commit=merged, base_commit=base, recorded_head=base
+                )
+            )
+            self.assertNotIn(ALREADY_FIXED_UPSTREAM, assessment.blocking)
+            self.assertIn(MERGED_FIX_ALREADY_IN_BASE, assessment.warnings)
+            self.assertEqual([], assessment.merged_attempts)
+            self.assertEqual(
+                [14098], [row["number"] for row in assessment.superseded_attempts]
+            )
+            self.assertTrue(assessment.may_start)
+
+    def test_the_summary_names_the_merge_it_cleared(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            merged, base = self._workspace(root)
+            summary = assess_target(
+                self._prepare(
+                    root, merge_commit=merged, base_commit=base, recorded_head=base
+                )
+            ).summary()
+            self.assertIn("in base   #14098", summary)
+            self.assertIn("already an ancestor of the base commit", summary)
+            self.assertNotIn("This target looks unclaimed", summary)
+
+    def test_a_merge_that_is_not_an_ancestor_still_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, base = self._workspace(root)
+            unrelated = "0" * 40
+            assessment = assess_target(
+                self._prepare(
+                    root, merge_commit=unrelated, base_commit=base, recorded_head=base
+                )
+            )
+            self.assertIn(ALREADY_FIXED_UPSTREAM, assessment.blocking)
+            self.assertEqual([], assessment.superseded_attempts)
+
+    def test_a_merge_with_no_recorded_commit_still_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, base = self._workspace(root)
+            assessment = assess_target(
+                self._prepare(
+                    root, merge_commit=None, base_commit=base, recorded_head=base
+                )
+            )
+            self.assertIn(ALREADY_FIXED_UPSTREAM, assessment.blocking)
+
+    def test_a_reproduction_from_another_commit_does_not_clear_it(self) -> None:
+        """The clone must be standing at the commit the reproduction ran at."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            merged, base = self._workspace(root)
+            assessment = assess_target(
+                self._prepare(
+                    root,
+                    merge_commit=merged,
+                    base_commit=merged,
+                    recorded_head=base,
+                )
+            )
+            self.assertIn(ALREADY_FIXED_UPSTREAM, assessment.blocking)
+
+    def test_no_workspace_record_does_not_clear_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            merged, base = self._workspace(root)
+            assessment = assess_target(
+                self._prepare(
+                    root, merge_commit=merged, base_commit=base, recorded_head=None
+                )
+            )
+            self.assertIn(ALREADY_FIXED_UPSTREAM, assessment.blocking)
+
+    def test_a_bug_that_did_not_reproduce_does_not_clear_it(self) -> None:
+        """Nothing clears a merged match when the defect no longer happens."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            merged, base = self._workspace(root)
+            assessment = assess_target(
+                self._prepare(
+                    root,
+                    merge_commit=merged,
+                    base_commit=base,
+                    recorded_head=base,
+                    reproduced=False,
+                )
+            )
+            self.assertIn(ALREADY_FIXED_UPSTREAM, assessment.blocking)
+            self.assertIn(BUG_NOT_REPRODUCED, assessment.blocking)

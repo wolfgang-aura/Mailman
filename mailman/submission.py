@@ -10,7 +10,11 @@ from typing import Any
 from mailman.executor import CommandResult, execute
 from mailman.issue import load_issue_record
 from mailman.models import RunRecord, RunStatus
-from mailman.reproduction import not_reproductions
+from mailman.reproduction import (
+    REPRODUCTION_FILENAME,
+    merge_is_in_base,
+    not_reproductions,
+)
 from mailman.toolchain import resolve_tool
 
 
@@ -274,6 +278,7 @@ def _policy_findings(
     changed_paths: list[str],
     duplicate_search: dict[str, Any] | None,
     acknowledgement: dict[str, Any] | None = None,
+    superseded_numbers: frozenset[int] = frozenset(),
 ) -> list[Finding]:
     findings: list[Finding] = []
     if policy.stance == "unknown":
@@ -364,7 +369,12 @@ def _policy_findings(
     strong, weak = partition_duplicates(
         (duplicate_search or {}).get("matches"), issue_number=issue_number
     )
-    merged = [row for row in strong if duplicate_strength(row) == "merged"]
+    merged = [
+        row
+        for row in strong
+        if duplicate_strength(row) == "merged"
+        and row.get("number") not in superseded_numbers
+    ]
     if merged:
         findings.append(
             Finding(
@@ -650,6 +660,37 @@ def _accountability_markdown(run: RunRecord, *, policy: TargetPolicy) -> str:
     )
 
 
+def _superseded_merges(run_directory: Path) -> frozenset[int]:
+    """Merged pull requests already in the tree the run started from."""
+    prior_art = run_directory / "prior-art.json"
+    if not prior_art.is_file():
+        return frozenset()
+    try:
+        payload = json.loads(prior_art.read_text(encoding="utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return frozenset()
+    attempts = payload.get("attempts") if isinstance(payload, dict) else None
+    if not isinstance(attempts, list):
+        return frozenset()
+    reproduction_path = run_directory / REPRODUCTION_FILENAME
+    try:
+        reproduction = json.loads(
+            reproduction_path.read_text(encoding="utf-8", errors="replace")
+        )
+    except (OSError, json.JSONDecodeError):
+        return frozenset()
+    if not isinstance(reproduction, dict):
+        return frozenset()
+    return frozenset(
+        attempt["number"]
+        for attempt in attempts
+        if isinstance(attempt, dict)
+        and isinstance(attempt.get("number"), int)
+        and attempt.get("outcome") == "merged"
+        and merge_is_in_base(run_directory, attempt, reproduction)
+    )
+
+
 def prepare_submission(
     run: RunRecord,
     run_directory: Path,
@@ -691,6 +732,12 @@ def prepare_submission(
         else None
     )
 
+    # A merged pull request whose merge commit is already an ancestor of the
+    # base commit, on a run whose reproduction failed at that same commit, is
+    # not this change. `check-target` reaches the same conclusion from the same
+    # two records. See https://github.com/wolfgang-aura/Mailman/issues/46.
+    superseded_numbers = _superseded_merges(run_directory)
+
     findings = [Finding(**entry) for entry in hygiene["findings"]]
     findings.extend(
         _policy_findings(
@@ -700,6 +747,7 @@ def prepare_submission(
             changed_paths=changed_paths,
             duplicate_search=duplicate_search,
             acknowledgement=acknowledgement,
+            superseded_numbers=superseded_numbers,
         )
     )
     findings.extend(_evidence_findings(run, verifications))

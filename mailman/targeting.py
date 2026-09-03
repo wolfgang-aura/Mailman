@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from mailman.claims import CLAIMS_FILENAME
-from mailman.reproduction import REPRODUCTION_FILENAME
+from mailman.reproduction import REPRODUCTION_FILENAME, merge_is_in_base
 from mailman.submission import DUPLICATE_SEARCH_FILENAME
 from mailman.target_intel import TARGET_INTEL_FILENAME
 
@@ -34,6 +34,10 @@ OPEN_PULL_REQUEST = "open-pull-request"
 # The same code `prepare-submission` uses for a merged duplicate. The
 # judgement is identical; `check-target` only reaches it earlier.
 ALREADY_FIXED_UPSTREAM = "already-fixed-upstream"
+# A merged pull request that is already an ancestor of the base commit the
+# reproduction failed at. Upstream shipped something to the same code and the
+# defect survived it, so this is a warning to read rather than a refusal.
+MERGED_FIX_ALREADY_IN_BASE = "merged-fix-already-in-base"
 UNACKNOWLEDGED_ATTEMPTS = "unacknowledged-prior-attempts"
 
 
@@ -48,6 +52,7 @@ class TargetAssessment:
     claims: dict[str, Any] = field(default_factory=dict)
     open_attempts: list[dict[str, Any]] = field(default_factory=list)
     merged_attempts: list[dict[str, Any]] = field(default_factory=list)
+    superseded_attempts: list[dict[str, Any]] = field(default_factory=list)
     closed_attempts: list[dict[str, Any]] = field(default_factory=list)
     blocking: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -65,6 +70,7 @@ class TargetAssessment:
             "claims": self.claims,
             "open_attempts": self.open_attempts,
             "merged_attempts": self.merged_attempts,
+            "superseded_attempts": self.superseded_attempts,
             "closed_attempts": self.closed_attempts,
             "blocking": self.blocking,
             "warnings": self.warnings,
@@ -201,6 +207,11 @@ class TargetAssessment:
                 f"merged    #{attempt.get('number')} {attempt.get('title', '')} "
                 f"({attempt.get('url', '')})"
             )
+        for attempt in self.superseded_attempts:
+            lines.append(
+                f"in base   #{attempt.get('number')} {attempt.get('title', '')} "
+                f"({attempt.get('url', '')})"
+            )
         for attempt in self.closed_attempts:
             lines.append(
                 f"closed    #{attempt.get('number')} {attempt.get('title', '')} "
@@ -234,6 +245,14 @@ class TargetAssessment:
                 "before assuming there is anything left to fix, and re-check "
                 "the reproduction against a tree that includes it."
             )
+        if self.superseded_attempts:
+            lines.append(
+                "A merged pull request matched, but its merge commit is "
+                "already an ancestor of the base commit, and the reproduction "
+                "failed at that same commit. Upstream shipped something to "
+                "this code and the defect survived it, so this is not the "
+                "same change. Read it anyway before repeating any of it."
+            )
         if self.closed_attempts and not self.open_attempts:
             lines.append(
                 "Closed attempts usually mean the maintainers rejected the "
@@ -244,6 +263,7 @@ class TargetAssessment:
             self.searched
             and not self.open_attempts
             and not self.merged_attempts
+            and not self.superseded_attempts
             and not self.closed_attempts
             and not (self.claims.get("claims") or self.claims.get("assignments"))
             and not self.claims.get("assignees")
@@ -284,10 +304,18 @@ def assess_target(
         for attempt in attempts
         if isinstance(attempt, dict) and attempt.get("outcome") == "open"
     ]
-    merged_attempts = [
+    all_merged = [
         attempt
         for attempt in attempts
         if isinstance(attempt, dict) and attempt.get("outcome") == "merged"
+    ]
+    superseded_attempts = [
+        attempt
+        for attempt in all_merged
+        if merge_is_in_base(run_directory, attempt, reproduction)
+    ]
+    merged_attempts = [
+        attempt for attempt in all_merged if attempt not in superseded_attempts
     ]
     # Three buckets, because a row's state changes what it means. `merged` used
     # to land here and be reported as a rejection, which is the opposite of the
@@ -353,6 +381,10 @@ def assess_target(
         # already ships this", and `prepare-submission` blocks the same case
         # under the same code hours later.
         blocking.append(ALREADY_FIXED_UPSTREAM)
+    if superseded_attempts:
+        # Deliberately not a flag. The evidence already answers the question,
+        # so nothing is being waved through.
+        warnings.append(MERGED_FIX_ALREADY_IN_BASE)
     if closed_attempts:
         if acknowledged:
             warnings.append(UNACKNOWLEDGED_ATTEMPTS)
@@ -367,6 +399,7 @@ def assess_target(
         claims=claims,
         open_attempts=open_attempts,
         merged_attempts=merged_attempts,
+        superseded_attempts=superseded_attempts,
         closed_attempts=closed_attempts,
         blocking=blocking,
         warnings=warnings,
