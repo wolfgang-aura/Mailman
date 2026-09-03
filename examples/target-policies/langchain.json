@@ -11,6 +11,7 @@
   "changelog_directory": null,
   "changelog_filename_template": null,
   "checklist": [
+    "The head branch is not `main` or `master` on the fork",
     "A maintainer has assigned the linked issue to the submitting human",
     "The description keeps `Fixes #NNNNN` as its first line",
     "The title follows TYPE(SCOPE): DESCRIPTION, for example fix(core): ...",
@@ -20,6 +21,8 @@
   ],
   "notes": [
     "A bot closes any pull request whose linked issue is not assigned to its author, within hours and without review. Measured on 2026-09-03: 15 outside pull requests by humans merged in the previous fortnight, against 129 closed unmerged in the nine days to 2026-09-03.",
+    "A second bot rule: a pull request whose head branch is `main` or `master` on a fork is auto-closed, whatever else is true. #38640 was closed for this before the assignment check even ran. A branch named after the issue avoids it.",
+    "The assignment bot closes within minutes, not hours, and its comment says so in plain text: opening a pull request before assignment 'is discouraged and is not an indication that it will be accepted'. #38640, #38641 and #38647 were each closed the same minute they opened, so none of the three approaches on issue #38637 has ever been reviewed on merit. A pile of closed pull requests on a langchain issue is therefore not evidence that an approach was rejected.",
     "Assignment is NOT reporter-only. #38351 was reported by Fr3ya, assigned to Sourav1331, and merged as #38355 on 2026-08-30. The earlier note that only a bug's reporter can win the assignment is contradicted by that row.",
     "A linked issue is the norm, not an absolute. #39631, fix(core): make StructuredTool JSON-serializable, merged on 2026-08-27 from an outside author with no linked issue at all.",
     "Assignment turnaround, where it happened, was fast: #39935, #39897 and #39895 were each reported, assigned to the reporter, fixed and merged within one to two days.",
