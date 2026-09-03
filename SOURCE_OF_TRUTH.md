@@ -1,6 +1,6 @@
 # Source of truth
 
-Last verified: 2026-09-03 in `Asia/Singapore`.
+Last verified: 2026-09-04 in `Asia/Singapore`.
 
 ## Repository
 
@@ -78,6 +78,12 @@ Last verified: 2026-09-03 in `Asia/Singapore`.
   of the two required. `fetch-issue` renders the file through the same capture boundary and
   `claims` records that no thread exists. The duplicate search and the reproduction stay
   mandatory and carry the whole evidence burden. 420 unit tests, up from 412.
+- Superseded-merge deployment: commit `bd7c5bd` passed GitHub Actions in run `33802398911`.
+  It carries #46: prior art records `mergeCommit`, and a merged duplicate is cleared when its
+  merge commit is an ancestor of the base commit and the reproduction failed at that same
+  commit. `check-target` reports `merged-fix-already-in-base` and `prepare-submission` makes
+  it a non-blocking finding. Also `examples/target-policies/ffn.json`, stance `unknown`, the
+  first target with no written policy at all. 431 unit tests, up from 420.
 
 ### Reproduce gate, live-verified 2026-09-04
 
