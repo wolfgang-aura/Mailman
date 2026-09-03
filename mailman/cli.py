@@ -39,7 +39,12 @@ from mailman.issue import (
     load_issue_record,
 )
 from mailman.claims import read_claims, render_claims
-from mailman.target_intel import collect_target_intel, render_target_intel
+from mailman.screen import load_screen, render_screen, screen_repository
+from mailman.target_intel import (
+    collect_target_intel,
+    render_target_intel,
+    repository_slug,
+)
 from mailman.targeting import assess_target
 from mailman.submission import (
     TargetPolicy,
@@ -253,6 +258,26 @@ def _build_parser() -> argparse.ArgumentParser:
     claims.add_argument("--executable", help="path to the GitHub CLI executable")
     claims.add_argument("--timeout", type=float, default=60)
     claims.add_argument("--data-root", type=Path)
+
+    screen = subparsers.add_parser(
+        "screen-target",
+        help="judge a repository before a run is spent on it",
+    )
+    screen.add_argument("repository", help="OWNER/REPO or a clone URL")
+    screen.add_argument(
+        "--window-days",
+        type=int,
+        default=14,
+        help="how recent an outside merge has to be to count as fresh",
+    )
+    screen.add_argument(
+        "--refresh",
+        action="store_true",
+        help="re-screen a candidate that already has a recorded verdict",
+    )
+    screen.add_argument("--executable", help="path to the GitHub CLI executable")
+    screen.add_argument("--timeout", type=float, default=120)
+    screen.add_argument("--data-root", type=Path)
 
     transition = subparsers.add_parser("transition", help="change a run workflow state")
     transition.add_argument("run_id")
@@ -752,6 +777,28 @@ def _target_intel(arguments: argparse.Namespace) -> int:
         )
     )
     return 0 if record.get("success") else 1
+
+
+def _screen_target(arguments: argparse.Namespace) -> int:
+    data_root = (arguments.data_root or default_data_root()).resolve()
+    slug = repository_slug(arguments.repository)
+    if not arguments.refresh:
+        cached = load_screen(data_root, slug)
+        if cached and cached.get("success"):
+            _emit(render_screen(cached))
+            _emit(f"  (recorded {cached.get('screened_at')}; --refresh to re-read)")
+            return 0 if cached.get("verdict") == "pass" else 1
+    record = screen_repository(
+        arguments.repository,
+        data_root=data_root,
+        window_days=arguments.window_days,
+        executable=arguments.executable,
+        timeout_seconds=arguments.timeout,
+    )
+    _emit(render_screen(record))
+    if not record.get("success"):
+        return 2
+    return 0 if record.get("verdict") == "pass" else 1
 
 
 def _claims(arguments: argparse.Namespace) -> int:
@@ -1405,6 +1452,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _target_intel(parsed)
         if parsed.subcommand == "claims":
             return _claims(parsed)
+        if parsed.subcommand == "screen-target":
+            return _screen_target(parsed)
         if parsed.subcommand == "prior-art":
             return _prior_art(parsed)
         if parsed.subcommand == "transition":

@@ -26,7 +26,7 @@ import json
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from mailman.executor import CommandResult, execute
 from mailman.toolchain import resolve_tool
@@ -146,16 +146,21 @@ class _Gh:
     """One `gh api` caller that records every command it ran."""
 
     def __init__(
-        self, executable: str, working_directory: Path, timeout_seconds: float
+        self,
+        executable: str,
+        working_directory: Path,
+        timeout_seconds: float,
+        run: Callable[..., CommandResult] = execute,
     ) -> None:
         self.executable = executable
         self.working_directory = working_directory
         self.timeout_seconds = timeout_seconds
+        self.run = run
         self.commands: list[dict[str, Any]] = []
         self.failures: list[str] = []
 
     def json(self, path: str) -> Any | None:
-        result: CommandResult = execute(
+        result: CommandResult = self.run(
             [self.executable, "api", path],
             working_directory=self.working_directory,
             timeout_seconds=self.timeout_seconds,

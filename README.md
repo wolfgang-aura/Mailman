@@ -285,6 +285,41 @@ ships. Only genuinely closed attempts are acknowledgeable, and those usually
 mean maintainers rejected the approach rather than the code, so read them, then
 pass `--acknowledge-prior-attempts`.
 
+Judge a repository before any run is spent on it:
+
+```powershell
+mailman screen-target OWNER/REPO
+```
+
+Six gates, in the order a candidate actually dies in. Freshness runs first
+because it kills most of them for two API calls. Stars run last because they
+have never changed a decision: `OpenBB-finance/OpenBB` has 72.6k of them and has
+merged nothing from outside in six weeks.
+
+1. **Freshness.** Outside human merges in the window, bots excluded by account
+   type and by name. Fails when nobody outside has merged, when one person wrote
+   every outside merge in ninety days, or when one person wrote 80% of them.
+2. **CI.** A workflow that runs a test suite, not only publish and lint. The
+   pattern is deliberately wide, since a false negative here rejects a good
+   candidate: `ccxt/ccxt` runs its Python suite as `npm run test-base-rest-py`.
+3. **Pure Python.** Fails on a Cython or Rust build, which this host has no
+   compiler for, and on a repository where Python is a minority of the source
+   and may be generated from the majority language.
+4. **Policy.** Reads the contributing guide for a rule that closes an
+   AI-assisted pull request unread. Matched narrowly on purpose, because "AI"
+   appears in every model library's guide.
+5. **Saturation.** How many unassigned open issues have no open pull request
+   naming them, and how old they are.
+6. **Stars.** Reported, never decisive.
+
+Every gate prints its numbers next to the threshold that judged them, and the
+verdict is written to `screens/OWNER__REPO.json` under the data root so a
+rejected candidate is not screened twice. Pass `--refresh` to re-read one. The
+command exits `0` for a repository worth a run and `1` for a rejected one.
+
+The screen does not judge assignment protocol; that is `target-intel`, one level
+down, once a run exists.
+
 Read who has already claimed the issue, in the issue's own comments:
 
 ```powershell
