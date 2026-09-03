@@ -313,7 +313,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--acknowledge-prior-attempts",
         action="store_true",
         help="start even though closed pull requests already attempted this "
-        "issue; an open one still refuses",
+        "issue; an open or merged one still refuses",
     )
     orchestrate_parser.add_argument("--data-root", type=Path)
 
@@ -382,7 +382,8 @@ def _build_parser() -> argparse.ArgumentParser:
     check_target.add_argument(
         "--acknowledge-prior-attempts",
         action="store_true",
-        help="treat closed attempts as read rather than as a blocker",
+        help="treat closed attempts as read rather than as a blocker; an open "
+        "or merged pull request still refuses",
     )
     check_target.add_argument("--data-root", type=Path)
 

@@ -26,6 +26,9 @@ BUG_NOT_REPRODUCED = "bug-not-reproduced"
 UNVERIFIED_REPRODUCTION = "reproduction-not-machine-checked"
 FAILS_FRESHNESS_BAR = "fails-freshness-bar"
 OPEN_PULL_REQUEST = "open-pull-request"
+# The same code `prepare-submission` uses for a merged duplicate. The
+# judgement is identical; `check-target` only reaches it earlier.
+ALREADY_FIXED_UPSTREAM = "already-fixed-upstream"
 UNACKNOWLEDGED_ATTEMPTS = "unacknowledged-prior-attempts"
 
 
@@ -38,6 +41,7 @@ class TargetAssessment:
     intel: dict[str, Any] = field(default_factory=dict)
     reproduction: dict[str, Any] = field(default_factory=dict)
     open_attempts: list[dict[str, Any]] = field(default_factory=list)
+    merged_attempts: list[dict[str, Any]] = field(default_factory=list)
     closed_attempts: list[dict[str, Any]] = field(default_factory=list)
     blocking: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -53,6 +57,7 @@ class TargetAssessment:
             "intel": self.intel,
             "reproduction": self.reproduction,
             "open_attempts": self.open_attempts,
+            "merged_attempts": self.merged_attempts,
             "closed_attempts": self.closed_attempts,
             "blocking": self.blocking,
             "warnings": self.warnings,
@@ -143,6 +148,11 @@ class TargetAssessment:
                 f"open      #{attempt.get('number')} {attempt.get('title', '')} "
                 f"({attempt.get('url', '')})"
             )
+        for attempt in self.merged_attempts:
+            lines.append(
+                f"merged    #{attempt.get('number')} {attempt.get('title', '')} "
+                f"({attempt.get('url', '')})"
+            )
         for attempt in self.closed_attempts:
             lines.append(
                 f"closed    #{attempt.get('number')} {attempt.get('title', '')} "
@@ -153,13 +163,25 @@ class TargetAssessment:
                 "An open pull request means someone is already on this. A "
                 "second one is the contribution maintainers close and ban for."
             )
+        if self.merged_attempts:
+            lines.append(
+                "A merged pull request on this issue is already upstream. "
+                "Nobody rejected it; it is what the repository ships. Read it "
+                "before assuming there is anything left to fix, and re-check "
+                "the reproduction against a tree that includes it."
+            )
         if self.closed_attempts and not self.open_attempts:
             lines.append(
                 "Closed attempts usually mean the maintainers rejected the "
                 "approach, not the code. Read them before repeating one. Pass "
                 "--acknowledge-prior-attempts to start anyway."
             )
-        if self.searched and not self.open_attempts and not self.closed_attempts:
+        if (
+            self.searched
+            and not self.open_attempts
+            and not self.merged_attempts
+            and not self.closed_attempts
+        ):
             lines.append("No prior attempt found. This target looks unclaimed.")
         return "\n".join(lines)
 
@@ -192,10 +214,19 @@ def assess_target(
         for attempt in attempts
         if isinstance(attempt, dict) and attempt.get("outcome") == "open"
     ]
+    merged_attempts = [
+        attempt
+        for attempt in attempts
+        if isinstance(attempt, dict) and attempt.get("outcome") == "merged"
+    ]
+    # Three buckets, because a row's state changes what it means. `merged` used
+    # to land here and be reported as a rejection, which is the opposite of the
+    # truth. See https://github.com/wolfgang-aura/Mailman/issues/38.
     closed_attempts = [
         attempt
         for attempt in attempts
-        if isinstance(attempt, dict) and attempt.get("outcome") != "open"
+        if isinstance(attempt, dict)
+        and attempt.get("outcome") not in ("open", "merged")
     ]
 
     blocking: list[str] = []
@@ -225,6 +256,12 @@ def assess_target(
         # takes at the wrong moment, and `run-agent` still exists for a
         # deliberate run against a claimed issue.
         blocking.append(OPEN_PULL_REQUEST)
+    if merged_attempts:
+        # Not overridable. `--acknowledge-prior-attempts` answers "the
+        # maintainers closed an attempt"; it has no answer for "upstream
+        # already ships this", and `prepare-submission` blocks the same case
+        # under the same code hours later.
+        blocking.append(ALREADY_FIXED_UPSTREAM)
     if closed_attempts:
         if acknowledged:
             warnings.append(UNACKNOWLEDGED_ATTEMPTS)
@@ -237,6 +274,7 @@ def assess_target(
         intel=intel,
         reproduction=reproduction,
         open_attempts=open_attempts,
+        merged_attempts=merged_attempts,
         closed_attempts=closed_attempts,
         blocking=blocking,
         warnings=warnings,

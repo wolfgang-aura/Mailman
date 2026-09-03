@@ -266,12 +266,18 @@ mailman check-target RUN_ID
 It exits non-zero when no duplicate search is recorded, when nothing is recorded
 about how the target hands out work, when no reproduction is recorded, when the
 reported bug did not reproduce at the base commit, when a pull request is open
-against the issue, or when closed attempts have not been acknowledged.
+against the issue, when a pull request against it was merged, or when closed
+attempts have not been acknowledged.
 `mailman orchestrate` runs the same check first and blocks the run rather than
-spending two agents on a target that was never worth having. An open pull
-request refuses outright and no flag overrides it. Closed attempts usually mean
-maintainers rejected the approach rather than the code, so read them, then pass
-`--acknowledge-prior-attempts`.
+spending two agents on a target that was never worth having.
+
+Prior attempts are read three ways, because a row's state changes what it means.
+An open pull request refuses outright and no flag overrides it. A merged one
+refuses under the same `already-fixed-upstream` code `prepare-submission` uses,
+and no flag overrides that either: nobody rejected it, it is what the repository
+ships. Only genuinely closed attempts are acknowledgeable, and those usually
+mean maintainers rejected the approach rather than the code, so read them, then
+pass `--acknowledge-prior-attempts`.
 
 Read how the target actually hands out and merges outside work, before a run is
 spent on it:

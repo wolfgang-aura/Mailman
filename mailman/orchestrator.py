@@ -420,7 +420,7 @@ class _Orchestration:
                 ok=True,
                 detail=(
                     f"{len(assessment.closed_attempts)} closed attempt(s), "
-                    "no open pull request"
+                    "no open or merged pull request"
                 ),
                 data=assessment.to_dict(),
             )
