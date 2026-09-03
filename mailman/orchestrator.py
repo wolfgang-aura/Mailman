@@ -188,6 +188,9 @@ class _Orchestration:
         self.check_target = check_target
         self.acknowledge_prior_attempts = acknowledge_prior_attempts
         self.acknowledge_claims = acknowledge_claims
+        #: How many commands each role ran in its most recent stage. A reviewer
+        #: that ran none has read the candidate, not checked it.
+        self.commands_run: dict[str, int] = {}
         self.steps: list[OrchestrationStep] = []
         self.revisions_used = 0
 
@@ -306,6 +309,7 @@ class _Orchestration:
                 "live_log": str(log_path),
             },
         )
+        self.commands_run[role] = tally["commands"]
         return ok, report_text
 
     def _verify(self, stage: str) -> tuple[bool, CommandResult]:
@@ -481,6 +485,27 @@ class _Orchestration:
                 self._block("reviewer verdict was missing or contradictory")
                 return self._outcome()
             if verdict == VERDICT_APPROVE:
+                # An APPROVE asserts a check. A reviewer whose transcript shows
+                # no command ran did not perform one, however honestly it said
+                # so in prose, and the loop must not report a two-agent check it
+                # did not get. REVISE is unaffected: a finding from a reviewer
+                # that only read the code is still worth acting on. See
+                # https://github.com/wolfgang-aura/Mailman/issues/20.
+                reviewer_commands = self.commands_run.get("reviewer", 0)
+                self._step(
+                    "reviewer-execution",
+                    ok=reviewer_commands > 0,
+                    detail=f"reviewer ran {reviewer_commands} command(s)",
+                    data={"commands_run": reviewer_commands},
+                )
+                if reviewer_commands == 0:
+                    self._block(
+                        "the reviewer approved the candidate but executed "
+                        "nothing, so the review is a code read rather than a "
+                        "check. Re-review with an agent that can run the "
+                        "verification command."
+                    )
+                    return self._outcome()
                 break
             if self.revisions_used >= self.max_revisions:
                 self._block("reviewer requested changes beyond the revision budget")

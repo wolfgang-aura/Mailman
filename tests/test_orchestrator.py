@@ -80,7 +80,7 @@ class ScriptedAgent(EngineeringAgent):
             started_at="2026-09-02T00:00:00+00:00",
             duration_seconds=0.01,
             exit_code=None if timed_out else int(exit_code),  # type: ignore[arg-type]
-            stdout="",
+            stdout=str(step.get("stdout", RAN_ONE_COMMAND)),
             stderr="",
             timed_out=timed_out,
             timeout_seconds=request.timeout_seconds,
@@ -95,6 +95,24 @@ class ScriptedAgent(EngineeringAgent):
             stop_reason=step.get("stop_reason"),  # type: ignore[arg-type]
         )
 
+
+#: A Claude-format transcript showing one shell command. Scripted agents emit
+#: this by default so they look like an agent that actually ran something; a
+#: step passing `stdout=""` is an agent that ran nothing.
+RAN_ONE_COMMAND = json.dumps(
+    {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "Bash",
+                    "input": {"command": "python -m pytest tests/"},
+                }
+            ]
+        },
+    }
+)
 
 PASSING_CHECK = "import sys; sys.exit(0)"
 FAILING_CHECK = "import sys; sys.exit(1)"
@@ -269,6 +287,84 @@ class WorkspaceChangeRecordingTests(OrchestratorHarness):
 
 
 class OrchestrationTests(OrchestratorHarness):
+    def test_a_reviewer_that_executed_nothing_cannot_clear_a_run(self) -> None:
+        # Run 20260902T144544Z-5dbf69: Codex could not start the interpreter in
+        # its sandbox, said so, and returned APPROVE anyway. The run reached
+        # READY_FOR_HUMAN_REVIEW with only one agent having run the tests. See
+        # https://github.com/wolfgang-aura/Mailman/issues/20.
+        outcome, run_directory, _, _ = self.orchestrate(
+            primary_script=[{"report": "candidate ready\n"}],
+            reviewer_script=[
+                {
+                    "report": (
+                        "I could not run the requested tests, so I make no "
+                        "test-pass claim.\nMAILMAN-VERDICT: APPROVE\n"
+                    ),
+                    "stdout": "",
+                }
+            ],
+        )
+
+        self.assertIs(outcome.status, RunStatus.BLOCKED)
+        self.assertFalse(outcome.ready)
+        record = json.loads(
+            (run_directory / "orchestration.json").read_text(encoding="utf-8")
+        )
+        blocked = [step for step in record["steps"] if step["name"] == "blocked"]
+        self.assertIn("executed nothing", blocked[-1]["detail"])
+        execution = [
+            step for step in record["steps"] if step["name"] == "reviewer-execution"
+        ]
+        self.assertFalse(execution[-1]["ok"])
+        self.assertEqual(execution[-1]["data"]["commands_run"], 0)
+
+    def test_a_reviewer_that_ran_the_gate_still_clears_the_run(self) -> None:
+        outcome, _, _, _ = self.orchestrate(
+            primary_script=[{"report": "candidate ready\n"}],
+            reviewer_script=[{"report": "no findings\nMAILMAN-VERDICT: APPROVE\n"}],
+        )
+
+        self.assertIs(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+
+    def test_a_reviewer_that_executed_nothing_may_still_ask_for_a_revision(
+        self,
+    ) -> None:
+        # REVISE from a reviewer that only read the code is still worth acting
+        # on. Only an APPROVE claims a check that did not happen.
+        outcome, _, primary, _ = self.orchestrate(
+            primary_script=[
+                {"report": "candidate ready\n"},
+                {"report": "revised\n"},
+            ],
+            reviewer_script=[
+                {
+                    "report": "rename the helper\nMAILMAN-VERDICT: REVISE\n",
+                    "stdout": "",
+                },
+                {"report": "looks right now\nMAILMAN-VERDICT: APPROVE\n"},
+            ],
+        )
+
+        self.assertIs(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        self.assertEqual(outcome.revisions_used, 1)
+        self.assertEqual(len(primary.calls), 2)
+
+    def test_the_reviewer_execution_count_is_on_the_record(self) -> None:
+        _, run_directory, _, _ = self.orchestrate(
+            primary_script=[{"report": "candidate ready\n"}],
+            reviewer_script=[
+                {"report": "no findings\nMAILMAN-VERDICT: APPROVE\n", "stdout": ""}
+            ],
+        )
+        reviewer_rows = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted(
+                (run_directory / "agent-executions").glob("*-reviewer.json")
+            )
+        ]
+
+        self.assertEqual(reviewer_rows[-1]["commands_run"], 0)
+
     def test_approved_candidate_reaches_human_review(self) -> None:
         outcome, run_directory, primary, reviewer = self.orchestrate(
             primary_script=[{"report": "candidate ready\n"}],
