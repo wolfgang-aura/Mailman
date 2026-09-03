@@ -49,7 +49,7 @@ Last verified: 2026-09-03 in `Asia/Singapore`.
   `33719939852`. It carries the fix for #40: `mailman acknowledge-no-test` lets a run answer
   the `no-test-change` gate with recorded evidence, pinned to the paths the diff touches.
 - Run record deployment: commit `9e1174f` passed GitHub Actions in run `33720398351`. It adds
-  `docs/runs/0008-starlette-3497-submission-ready.md`. This is the current head of `main`.
+  `docs/runs/0008-starlette-3497-submission-ready.md`.
 
 ### Warning: the history was rewritten on 2026-09-02
 
