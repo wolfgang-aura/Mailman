@@ -8,7 +8,12 @@ import unittest
 from pathlib import Path
 
 from mailman.artifacts import create_run
-from mailman.toolchain import prepare_agent_prompt, probe_tool, toolchain_executable
+from mailman.toolchain import (
+    prepare_agent_prompt,
+    probe_tool,
+    resolve_command,
+    toolchain_executable,
+)
 
 
 class ToolchainExecutableTests(unittest.TestCase):
@@ -140,3 +145,61 @@ class ToolchainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResolveCommandTests(unittest.TestCase):
+    """A bare executable name in a verification command names the run's tool.
+
+    Before this, `python -m pytest ...` ran whatever interpreter was first on
+    PATH. In run 20260903T050831Z-bed67e that was the host interpreter, which
+    has none of the target's dependencies, so Mailman's own gate failed on
+    ModuleNotFoundError rather than on the candidate.
+    """
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        self.root = Path(self._temporary.name)
+        _, self.run_directory = create_run(
+            repository="https://github.com/example/project.git",
+            issue="https://github.com/example/project/issues/1",
+            base_commit="a" * 40,
+            primary="claude",
+            reviewer="claude",
+            data_root=self.root / "runs",
+        )
+
+    def test_a_bare_name_resolves_to_the_registered_executable(self) -> None:
+        probe_tool(
+            self.run_directory,
+            name="python",
+            executable=Path(sys.executable),
+            probe_arguments=["--version"],
+            timeout_seconds=30,
+        )
+        self.assertEqual(
+            resolve_command(self.run_directory, ["python", "-m", "pytest", "-q"]),
+            [str(Path(sys.executable).resolve()), "-m", "pytest", "-q"],
+        )
+
+    def test_an_executable_written_as_a_path_is_left_alone(self) -> None:
+        probe_tool(
+            self.run_directory,
+            name="python",
+            executable=Path(sys.executable),
+            probe_arguments=["--version"],
+            timeout_seconds=30,
+        )
+        written = str(self.run_directory / "environment" / "Scripts" / "python.exe")
+        self.assertEqual(
+            resolve_command(self.run_directory, [written, "-m", "pytest"]),
+            [written, "-m", "pytest"],
+        )
+
+    def test_an_unregistered_bare_name_falls_back_to_path(self) -> None:
+        resolved = resolve_command(self.run_directory, ["python", "--version"])
+        self.assertTrue(Path(resolved[0]).is_file())
+        self.assertEqual(resolved[1:], ["--version"])
+
+    def test_an_empty_command_is_returned_unchanged(self) -> None:
+        self.assertEqual(resolve_command(self.run_directory, []), [])

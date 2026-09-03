@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "steps": [
+    {
+      "name": "create-virtualenv",
+      "command": ["C:/ProgramData/mailman-python/python.exe", "-m", "venv", "{environment}"],
+      "working_directory": "run"
+    },
+    {
+      "name": "upgrade-pip",
+      "command": [
+        "{environment}/Scripts/python.exe",
+        "-m", "pip", "install", "--disable-pip-version-check", "--upgrade", "pip"
+      ],
+      "working_directory": "run"
+    },
+    {
+      "name": "install-target-with-full-extra",
+      "command": [
+        "{environment}/Scripts/python.exe",
+        "-m", "pip", "install", "--disable-pip-version-check", "-e", ".[full]"
+      ],
+      "working_directory": "workspace"
+    },
+    {
+      "name": "install-dev-dependency-group",
+      "command": [
+        "{environment}/Scripts/python.exe",
+        "-m", "pip", "install", "--disable-pip-version-check", "--group", "dev"
+      ],
+      "working_directory": "workspace"
+    },
+    {
+      "name": "install-anyio-with-the-deprecated-alias",
+      "command": [
+        "{environment}/Scripts/python.exe",
+        "-m", "pip", "install", "--disable-pip-version-check", "anyio>=4.15.0"
+      ],
+      "working_directory": "workspace"
+    }
+  ],
+  "register": [
+    {
+      "name": "python",
+      "executable": "{environment}/Scripts/python.exe",
+      "probe_arguments": ["--version"]
+    }
+  ]
+}

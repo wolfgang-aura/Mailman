@@ -53,7 +53,12 @@ from mailman.models import RunStatus
 from mailman.orchestrator import orchestrate
 from mailman.prior_art import collect_prior_art
 from mailman.prompts import write_task_prompts
-from mailman.toolchain import prepare_agent_prompt, probe_tool, toolchain_executable
+from mailman.toolchain import (
+    prepare_agent_prompt,
+    probe_tool,
+    resolve_command,
+    toolchain_executable,
+)
 from mailman.transcript import count_commands, parse_stream
 from mailman.view import render_run, summarize_runs, write_transcript_logs
 from mailman.review_page import write_run_page
@@ -390,7 +395,10 @@ def _fetch_issue(arguments: argparse.Namespace) -> int:
 def _build_prompts(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
     verification = (
-        environment_command(run_directory, arguments.verification.split())
+        resolve_command(
+            run_directory,
+            environment_command(run_directory, arguments.verification.split()),
+        )
         if arguments.verification
         else None
     )
@@ -744,7 +752,12 @@ def _run_agent(arguments: argparse.Namespace) -> int:
     )
     report_path = run_directory / f"{arguments.role}-report.md"
     verification = (
-        tuple(environment_command(run_directory, arguments.verification.split()))
+        tuple(
+            resolve_command(
+                run_directory,
+                environment_command(run_directory, arguments.verification.split()),
+            )
+        )
         if arguments.verification
         else ()
     )
@@ -1032,7 +1045,9 @@ def _review(arguments: argparse.Namespace) -> int:
 
 def _verify(arguments: argparse.Namespace) -> int:
     _, run_directory = load_run(arguments.run_id, arguments.data_root)
-    command = environment_command(run_directory, arguments.command)
+    command = resolve_command(
+        run_directory, environment_command(run_directory, arguments.command)
+    )
     if not command:
         raise ValueError("a command is required after --")
     result = execute(

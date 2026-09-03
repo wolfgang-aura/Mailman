@@ -13,7 +13,7 @@ from mailman.instructions import describe_instruction_sources
 from mailman.models import RunRecord, RunStatus, utc_now
 from mailman.redaction import redact
 from mailman.targeting import assess_target
-from mailman.toolchain import prepare_agent_prompt
+from mailman.toolchain import prepare_agent_prompt, resolve_command
 from mailman.transcript import TranscriptEvent, count_commands, parse_stream
 from mailman.workspace import inspect_workspace
 
@@ -178,7 +178,7 @@ class _Orchestration:
         self.workspace = workspace
         self.primary_prompt = primary_prompt
         self.reviewer_prompt = reviewer_prompt
-        self.verification_command = list(verification_command)
+        self.verification_command = resolve_command(run_directory, verification_command)
         self.agent_factory = agent_factory
         self.agent_timeout_seconds = agent_timeout_seconds
         self.verification_timeout_seconds = verification_timeout_seconds

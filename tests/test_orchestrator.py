@@ -15,6 +15,7 @@ from mailman.artifacts import create_run, load_run
 from mailman.cli import main
 from mailman.executor import CommandResult
 from mailman.models import RunStatus
+from mailman.toolchain import probe_tool
 from mailman.orchestrator import (
     VERDICT_APPROVE,
     VERDICT_REVISE,
@@ -507,6 +508,49 @@ class OrchestrationTests(OrchestratorHarness):
                 agent_factory=lambda name, model: ScriptedAgent("codex", []),
             )
         self.assertIn("requires an INITIALIZED run", str(caught.exception))
+
+
+class VerificationExecutableTests(OrchestratorHarness):
+    """The gate runs the run's own interpreter, not whatever PATH offers.
+
+    Run 20260903T050831Z-bed67e recorded ["python", "-m", "pytest", ...] and
+    executed the host interpreter, which had none of the target's dependencies,
+    so the gate failed on ModuleNotFoundError rather than on the candidate.
+    """
+
+    def test_a_bare_executable_is_resolved_through_the_run_toolchain(self) -> None:
+        run, run_directory = self.make_run()
+        probe_tool(
+            run_directory,
+            name="python",
+            executable=Path(sys.executable),
+            probe_arguments=["--version"],
+            timeout_seconds=30,
+        )
+        agents = {
+            "codex": ScriptedAgent("codex", [{"report": "candidate ready\n"}], None),
+            "claude": ScriptedAgent(
+                "claude", [{"report": "MAILMAN-VERDICT: APPROVE\n"}], None
+            ),
+        }
+        outcome = orchestrate(
+            run=run,
+            run_directory=run_directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=["python", "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: agents[name],
+        )
+
+        self.assertEqual(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        verifications = json.loads(
+            (run_directory / "verification.json").read_text(encoding="utf-8")
+        )
+        for verification in verifications:
+            self.assertEqual(
+                verification["command"][0], str(Path(sys.executable).resolve())
+            )
 
 
 class OrchestrateCliTests(OrchestratorHarness):

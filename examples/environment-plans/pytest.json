@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "steps": [
+    {
+      "name": "create-virtualenv",
+      "command": ["C:/ProgramData/mailman-python/python.exe", "-m", "venv", "{environment}"],
+      "working_directory": "run"
+    },
+    {
+      "name": "upgrade-pip",
+      "command": [
+        "{environment}/Scripts/python.exe",
+        "-m", "pip", "install", "--disable-pip-version-check",
+        "--upgrade", "pip"
+      ],
+      "working_directory": "run"
+    },
+    {
+      "name": "install-pytest-with-dev-extra",
+      "command": [
+        "{environment}/Scripts/python.exe",
+        "-m", "pip", "install", "--disable-pip-version-check",
+        "-e", ".[dev]"
+      ],
+      "working_directory": "workspace"
+    }
+  ],
+  "register": [
+    {
+      "name": "python",
+      "executable": "{environment}/Scripts/python.exe",
+      "probe_arguments": ["--version"]
+    }
+  ]
+}

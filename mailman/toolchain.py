@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from collections.abc import Sequence
 from hashlib import sha256
 from pathlib import Path
 
@@ -110,6 +111,35 @@ def resolve_tool(run_directory: Path, name: str, *, fallback: str | None = None)
             f"--executable <path>`."
         )
     return found
+
+
+def resolve_command(
+    run_directory: Path, command: Sequence[str]
+) -> list[str]:
+    """Resolve a command's executable through the run toolchain.
+
+    A verification command is usually typed as a bare name. `git` and `gh` were
+    already resolved here; the verification command was not, so `python -m
+    pytest ...` ran whatever interpreter happened to be first on PATH. In run
+    20260903T050831Z-bed67e that was the host interpreter, which has none of the
+    target's dependencies, and Mailman's own gate failed on ModuleNotFoundError
+    rather than on the candidate. The same hole can pass a run for the same
+    reason. See https://github.com/wolfgang-aura/Mailman/issues/39.
+
+    Only a bare name is resolved. An executable written with any path
+    separator is the operator naming a file, including the `{environment}`
+    token `environment_command` has already expanded, and is left alone.
+    """
+    parts = list(command)
+    if not parts:
+        return parts
+    executable = parts[0]
+    if Path(executable).name != executable:
+        return parts
+    parts[0] = resolve_tool(
+        run_directory, Path(executable).stem or executable, fallback=executable
+    )
+    return parts
 
 
 def prepare_agent_prompt(
