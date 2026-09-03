@@ -1,7 +1,7 @@
 {
   "name": "pmorissette/ffn",
   "policy_url": null,
-  "stance": "unknown",
+  "stance": "permitted_with_disclosure",
   "policy_read_on": "2026-09-04",
   "disclosure_required": true,
   "ai_trailer": "optional",
@@ -18,7 +18,7 @@
   ],
   "notes": [
     "There is no written contribution policy to read. No CONTRIBUTING file, no code of conduct, no org-level `.github` repository, and nothing in the README, the issue templates, or pyproject.toml about pull requests or AI assistance. GitHub's community profile reports `contributing: null`.",
-    "The stance is therefore `unknown`, which blocks preparation. That is the correct outcome, not a gap: silence is not permission, and a human has to decide what to do about a project that has never said.",
+    "There is still no written policy. The stance was `unknown`, which blocked preparation, and a human lifted it to `permitted_with_disclosure` on 2026-09-04 after reading the evidence: five outside pull requests from humans merged in the preceding fourteen days, so the project accepts contributions without saying so in writing. Silence is not permission; this is a recorded human decision, not an inference the harness made.",
     "The default branch is `master`, not `main`.",
     "CI builds Python 3.10 across three pandas ranges, including `pandas<2` with `numpy<2`. A change to alignment behaviour has to hold on the oldest of them."
   ]
