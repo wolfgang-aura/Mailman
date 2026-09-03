@@ -113,6 +113,21 @@ def record_clear_target(run_directory: Path, *, attempts: list | None = None) ->
     (run_directory / "prior-art.json").write_text(
         json.dumps({"success": True, "attempts": attempts or []}), encoding="utf-8"
     )
+    (run_directory / "target-intel.json").write_text(
+        json.dumps(
+            {
+                "success": True,
+                "repository": "example/project",
+                "window_days": 14,
+                "freshness": {
+                    "human_outside_merges": 3,
+                    "outside_pull_requests_closed_unmerged": 1,
+                },
+                "assessment": {"passes_freshness_bar": True},
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 class OrchestratorHarness(unittest.TestCase):

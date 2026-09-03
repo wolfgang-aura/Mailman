@@ -1,4 +1,253 @@
 {
-  "lessons": [],
+  "lessons": [
+    {
+      "category": "REPRODUCTION",
+      "conditions": [],
+      "created_at": "2026-09-03T08:42:09.972211+00:00",
+      "evidence": [
+        {
+          "channel": "AUTOMATED_VERIFICATION",
+          "note": "pytest 9.1.1 gives '2 passed, 1 error' on the reported order; base commit 51e9a9f gives '1 passed, 2 errors'.",
+          "observation_id": null,
+          "run_id": "20260903T045152Z-369e77",
+          "weight": 5
+        }
+      ],
+      "guidance": "Before any agent starts, run the issue's reproduction at the base commit and record the result. A reproduction that passes means the target is already fixed and the run must be abandoned, not started.",
+      "history": [
+        {
+          "at": "2026-09-03T08:42:09.972245+00:00",
+          "from": "OBSERVATION",
+          "reason": "seeded from the run that found it",
+          "to": "HYPOTHESIS"
+        },
+        {
+          "at": "2026-09-03T08:42:09.972250+00:00",
+          "from": "HYPOTHESIS",
+          "reason": "the guidance is specific enough to follow without rereading the run",
+          "to": "CANDIDATE_LESSON"
+        }
+      ],
+      "hypothesis": "An issue's age, precision and claim status say nothing about whether its bug still exists on the default branch. Only running the reporter's own steps at the base commit answers that.",
+      "layer": "CORE",
+      "lesson_id": "LESSON-0001",
+      "observation": "pytest #14964 was a precise, same-day, unclaimed regression report whose bug did not exist at the base commit. Commit fc8f56bd2 had fixed it after the 9.1.1 tag the reporter tested. Every gate Mailman has passed the target, and only a hand-built reproduction caught it, after the environment was built.",
+      "schema_version": 1,
+      "scope": "UNIVERSAL",
+      "state": "CANDIDATE_LESSON",
+      "updated_at": "2026-09-03T08:42:09.972250+00:00",
+      "validation": []
+    },
+    {
+      "category": "VERIFICATION",
+      "conditions": [],
+      "created_at": "2026-09-03T08:42:09.972263+00:00",
+      "evidence": [
+        {
+          "channel": "AUTOMATED_VERIFICATION",
+          "note": "verification.json recorded ['python', '-m', 'pytest', ...] and the traceback named the host interpreter.",
+          "observation_id": null,
+          "run_id": "20260903T050831Z-bed67e",
+          "weight": 5
+        },
+        {
+          "channel": "AUTOMATED_VERIFICATION",
+          "note": "After the fix the same command recorded the run environment's Scripts/python.exe and the loop reached READY_FOR_HUMAN_REVIEW.",
+          "observation_id": null,
+          "run_id": "20260903T052426Z-ad8196",
+          "weight": 5
+        }
+      ],
+      "guidance": "Resolve the executable through the run toolchain at the point the command is accepted, and use the resolved path for the record, the prompt and the allow rules alike.",
+      "history": [
+        {
+          "at": "2026-09-03T08:42:09.972275+00:00",
+          "from": "OBSERVATION",
+          "reason": "seeded from the run that found it",
+          "to": "HYPOTHESIS"
+        },
+        {
+          "at": "2026-09-03T08:42:09.972278+00:00",
+          "from": "HYPOTHESIS",
+          "reason": "the guidance is specific enough to follow without rereading the run",
+          "to": "CANDIDATE_LESSON"
+        }
+      ],
+      "hypothesis": "Any command the harness treats as authoritative must name an exact executable before it is recorded, quoted in a prompt, or turned into a permission rule.",
+      "layer": "CORE",
+      "lesson_id": "LESSON-0002",
+      "observation": "A verification command written as a bare `python` was never resolved through the run toolchain, so Mailman's own gate executed the host interpreter and failed on ModuleNotFoundError rather than on the candidate. The agent's allow rules were built from the same unresolved token, so every absolute-path spelling of the run's interpreter was refused and it reported its reproduction from the host's anyio 4.13 rather than the pinned 4.15.",
+      "schema_version": 1,
+      "scope": "UNIVERSAL",
+      "state": "CANDIDATE_LESSON",
+      "updated_at": "2026-09-03T08:42:09.972278+00:00",
+      "validation": []
+    },
+    {
+      "category": "TEST_DESIGN",
+      "conditions": [
+        "the target promotes warnings to errors in its test configuration"
+      ],
+      "created_at": "2026-09-03T08:42:09.972287+00:00",
+      "evidence": [
+        {
+          "channel": "REVIEWER_FINDING",
+          "note": "Reviewer verdict REVISE, cycle 1, with the base-commit export as its evidence.",
+          "observation_id": null,
+          "run_id": "20260903T052426Z-ad8196",
+          "weight": 2
+        },
+        {
+          "channel": "AUTOMATED_VERIFICATION",
+          "note": "Confirmed independently: the full suite collects nothing at the base commit and is 1187 passed with the patch.",
+          "observation_id": null,
+          "run_id": "20260903T052426Z-ad8196",
+          "weight": 5
+        }
+      ],
+      "guidance": "Before adding a regression test, run the existing suite at the base commit. If it already fails on the reported defect, say so and add nothing; record the reasoning with `mailman acknowledge-no-test` so the submission gate can see a human answered it.",
+      "history": [
+        {
+          "at": "2026-09-03T08:42:09.972297+00:00",
+          "from": "OBSERVATION",
+          "reason": "seeded from the run that found it",
+          "to": "HYPOTHESIS"
+        },
+        {
+          "at": "2026-09-03T08:42:09.972300+00:00",
+          "from": "HYPOTHESIS",
+          "reason": "the guidance is specific enough to follow without rereading the run",
+          "to": "CANDIDATE_LESSON"
+        }
+      ],
+      "hypothesis": "A regression test is worthless when the suite already fails earlier and harder on the same defect, and a project's warning configuration can be the real guard.",
+      "layer": "CONDITIONAL",
+      "lesson_id": "LESSON-0003",
+      "observation": "The reviewer exported encode/starlette at the base commit and showed that `filterwarnings = [\"error\"]` already turns the reported regression into a conftest import failure for the whole suite. It required the primary agent's added test be removed, and spent the run's one revision doing it.",
+      "schema_version": 1,
+      "scope": "ECOSYSTEM",
+      "state": "CANDIDATE_LESSON",
+      "updated_at": "2026-09-03T08:42:09.972300+00:00",
+      "validation": []
+    },
+    {
+      "category": "REPOSITORY_ORIENTATION",
+      "conditions": [],
+      "created_at": "2026-09-03T08:42:09.972306+00:00",
+      "evidence": [
+        {
+          "channel": "HUMAN_REVIEW",
+          "note": "Ninety-repository hand screen on 2026-09-03; the bot filter also took psf/black, psf/requests and encode/httpx to zero.",
+          "observation_id": null,
+          "run_id": "20260903T052426Z-ad8196",
+          "weight": 5
+        }
+      ],
+      "guidance": "Exclude accounts whose type is Bot or whose login ends in `[bot]` before counting outside merges, and count refusals over the same window alongside them.",
+      "history": [
+        {
+          "at": "2026-09-03T08:42:09.972313+00:00",
+          "from": "OBSERVATION",
+          "reason": "seeded from the run that found it",
+          "to": "HYPOTHESIS"
+        },
+        {
+          "at": "2026-09-03T08:42:09.972316+00:00",
+          "from": "HYPOTHESIS",
+          "reason": "the guidance is specific enough to follow without rereading the run",
+          "to": "CANDIDATE_LESSON"
+        }
+      ],
+      "hypothesis": "A repository's willingness to merge outside work can only be measured from merges by human accounts; bot merges say nothing about it.",
+      "layer": "CORE",
+      "lesson_id": "LESSON-0004",
+      "observation": "Counting merged outside pull requests by `author_association` treats dependabot as a CONTRIBUTOR. PyCQA/bandit scored one outside merge in a fortnight on that basis while having merged no human outside pull request since May 2026, with roughly twenty sitting open and untouched.",
+      "schema_version": 1,
+      "scope": "ECOSYSTEM",
+      "state": "CANDIDATE_LESSON",
+      "updated_at": "2026-09-03T08:42:09.972316+00:00",
+      "validation": []
+    },
+    {
+      "category": "REPOSITORY_ORIENTATION",
+      "conditions": [
+        "the target closes outside pull requests automatically"
+      ],
+      "created_at": "2026-09-03T08:42:09.972321+00:00",
+      "evidence": [
+        {
+          "channel": "HUMAN_REVIEW",
+          "note": "885 pull requests and 358 open issues read on 2026-09-03.",
+          "observation_id": null,
+          "run_id": "20260902T204924Z-3d1463",
+          "weight": 5
+        }
+      ],
+      "guidance": "When screening a target for open ground, count a claim only from an open or merged pull request, and report the two counts separately so the gap itself is visible.",
+      "history": [
+        {
+          "at": "2026-09-03T08:42:09.972329+00:00",
+          "from": "OBSERVATION",
+          "reason": "seeded from the run that found it",
+          "to": "HYPOTHESIS"
+        },
+        {
+          "at": "2026-09-03T08:42:09.972331+00:00",
+          "from": "HYPOTHESIS",
+          "reason": "the guidance is specific enough to follow without rereading the run",
+          "to": "CANDIDATE_LESSON"
+        }
+      ],
+      "hypothesis": "On a repository that automatically closes outside pull requests, a closed unmerged row is evidence that the issue is unclaimed, not that it is taken.",
+      "layer": "CONDITIONAL",
+      "lesson_id": "LESSON-0005",
+      "observation": "Subtracting every issue mentioned by any pull request read langchain-ai/langchain as fully saturated, leaving 3 unassigned open bugs. Counting only open or merged pull requests as a claim left 53. Fifty of the difference are issues whose only pull requests the enforcement bot closed unread, which is the record of someone being refused rather than of someone working.",
+      "schema_version": 1,
+      "scope": "ECOSYSTEM",
+      "state": "CANDIDATE_LESSON",
+      "updated_at": "2026-09-03T08:42:09.972331+00:00",
+      "validation": []
+    },
+    {
+      "category": "MAINTAINER_ALIGNMENT",
+      "conditions": [
+        "the target requires a maintainer to assign the issue first"
+      ],
+      "created_at": "2026-09-03T08:42:09.972336+00:00",
+      "evidence": [
+        {
+          "channel": "MAINTAINER_FEEDBACK",
+          "note": "Four merged outside fixes traced to their issues: #39935, #39897, #39895 assigned to their reporters, #38351 assigned to Sourav1331 who did not report it.",
+          "observation_id": null,
+          "run_id": "20260902T204924Z-3d1463",
+          "weight": 6
+        }
+      ],
+      "guidance": "Read the threads that preceded recent outside merges before asking for an assignment. The ask should carry a reproduction, the exact symbols to change, an explicit scope limit, and one open question for the maintainer to settle. Do not open the pull request first: on a gated target it is closed unread and does not win the assignment.",
+      "history": [
+        {
+          "at": "2026-09-03T08:42:09.972343+00:00",
+          "from": "OBSERVATION",
+          "reason": "seeded from the run that found it",
+          "to": "HYPOTHESIS"
+        },
+        {
+          "at": "2026-09-03T08:42:09.972345+00:00",
+          "from": "HYPOTHESIS",
+          "reason": "the guidance is specific enough to follow without rereading the run",
+          "to": "CANDIDATE_LESSON"
+        }
+      ],
+      "hypothesis": "Where assignment gates merging, it is won by the request that hands the maintainer a decision backed by something the asker ran, not by being first or by having a pull request ready.",
+      "layer": "CONDITIONAL",
+      "lesson_id": "LESSON-0006",
+      "observation": "On langchain-ai/langchain, every outside merge read had its linked issue assigned to the pull request's author first. Bare assignment requests lost even when they were hours earlier; the request that won reproduced the bug, named the exact file and function, committed to minimal scope and said where the regression test would go. One winner was assigned to an issue somebody else had reported, which the recorded policy denied.",
+      "schema_version": 1,
+      "scope": "ECOSYSTEM",
+      "state": "CANDIDATE_LESSON",
+      "updated_at": "2026-09-03T08:42:09.972345+00:00",
+      "validation": []
+    }
+  ],
   "schema_version": 1
 }

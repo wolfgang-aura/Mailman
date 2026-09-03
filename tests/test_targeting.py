@@ -13,11 +13,38 @@ from mailman.targeting import (
 )
 
 
-def _record(root: Path, *, searched: bool = True, attempts: list | None = None) -> Path:
+def _record(
+    root: Path,
+    *,
+    searched: bool = True,
+    attempts: list | None = None,
+    intel: bool = True,
+    fresh: bool = True,
+) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     (root / "duplicate-search.json").write_text(
         json.dumps({"success": searched, "matches": []}), encoding="utf-8"
     )
+    if intel:
+        (root / "target-intel.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "repository": "example/project",
+                    "window_days": 14,
+                    "freshness": {
+                        "human_outside_merges": 4 if fresh else 0,
+                        "outside_pull_requests_closed_unmerged": 2,
+                    },
+                    "assessment": {
+                        "passes_freshness_bar": fresh,
+                        "assignment_looks_required": False,
+                        "automated_enforcement": [],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
     if attempts is not None:
         (root / "prior-art.json").write_text(
             json.dumps({"success": True, "attempts": attempts}), encoding="utf-8"

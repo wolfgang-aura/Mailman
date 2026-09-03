@@ -38,6 +38,7 @@ from mailman.issue import (
     capture_issue_from_github,
     load_issue_record,
 )
+from mailman.target_intel import collect_target_intel, render_target_intel
 from mailman.targeting import assess_target
 from mailman.submission import (
     TargetPolicy,
@@ -214,6 +215,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "changes.diff",
     )
     acknowledge_no_test.add_argument("--data-root", type=Path)
+
+    intel = subparsers.add_parser(
+        "target-intel",
+        help="read how a target merges outside work, before a run is spent on it",
+    )
+    intel.add_argument("run_id")
+    intel.add_argument(
+        "--window-days",
+        type=int,
+        default=14,
+        help="how far back to count outside merges and refusals",
+    )
+    intel.add_argument(
+        "--merge-paths",
+        type=int,
+        default=6,
+        help="how many recent outside merges to trace back to their issue thread",
+    )
+    intel.add_argument("--executable", help="path to the GitHub CLI executable")
+    intel.add_argument("--timeout", type=float, default=120)
+    intel.add_argument("--data-root", type=Path)
 
     transition = subparsers.add_parser("transition", help="change a run workflow state")
     transition.add_argument("run_id")
@@ -625,6 +647,39 @@ def _acknowledge_no_test(arguments: argparse.Namespace) -> int:
         file=sys.stderr,
     )
     return 0
+
+
+def _target_intel(arguments: argparse.Namespace) -> int:
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    record = collect_target_intel(
+        run_directory,
+        repository=run.repository,
+        window_days=arguments.window_days,
+        merge_paths=arguments.merge_paths,
+        executable=arguments.executable,
+        timeout_seconds=arguments.timeout,
+    )
+    if record.get("success"):
+        print(render_target_intel(record))
+    print(
+        json.dumps(
+            {
+                "run_id": run.run_id,
+                "repository": record.get("repository"),
+                "success": record.get("success"),
+                "freshness": record.get("freshness"),
+                "saturation": {
+                    key: value
+                    for key, value in (record.get("saturation") or {}).items()
+                    if key != "candidates"
+                },
+                "assessment": record.get("assessment"),
+                "detail": record.get("detail"),
+            },
+            indent=2,
+        )
+    )
+    return 0 if record.get("success") else 1
 
 
 def _prepare_submission(arguments: argparse.Namespace) -> int:
@@ -1169,6 +1224,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _acknowledge_duplicates(parsed)
         if parsed.subcommand == "acknowledge-no-test":
             return _acknowledge_no_test(parsed)
+        if parsed.subcommand == "target-intel":
+            return _target_intel(parsed)
         if parsed.subcommand == "prior-art":
             return _prior_art(parsed)
         if parsed.subcommand == "transition":
