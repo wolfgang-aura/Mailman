@@ -54,6 +54,14 @@ Last verified: 2026-09-03 in `Asia/Singapore`.
   carries `mailman target-intel`, the `check-target` precondition that refuses a run against a
   repository nobody has read, and the first six lessons in `knowledge/lessons.json`.
 - Reproduction gate deployment: commit `5009949` passed GitHub Actions in run `33766732724`.
+- Merged-attempt deployment: commit `133d7dc` passed GitHub Actions in run `33771151452`.
+  It carries the fix for #38: `check-target` splits prior attempts three ways, and a merged
+  one blocks under `already-fixed-upstream` rather than being reported as a rejection that
+  `--acknowledge-prior-attempts` clears.
+- Comment-claim deployment: commit `156b8cb` passed GitHub Actions in run `33772783849`.
+  It carries the fix for #36: `mailman claims` reads the target issue's own thread, and
+  `check-target` refuses without that record, on an assignee, on a maintainer handing the
+  work over, and on an unanswered claim until `--acknowledge-claims` is passed.
   It carries `mailman reproduce` and the two `check-target` refusals behind it.
 
 ### Warning: the history was rewritten on 2026-09-02
