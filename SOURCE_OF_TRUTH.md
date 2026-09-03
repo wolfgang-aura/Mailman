@@ -50,6 +50,9 @@ Last verified: 2026-09-03 in `Asia/Singapore`.
   the `no-test-change` gate with recorded evidence, pinned to the paths the diff touches.
 - Run record deployment: commit `9e1174f` passed GitHub Actions in run `33720398351`. It adds
   `docs/runs/0008-starlette-3497-submission-ready.md`.
+- Target intel deployment: commit `77f094c` passed GitHub Actions in run `33735205372`. It
+  carries `mailman target-intel`, the `check-target` precondition that refuses a run against a
+  repository nobody has read, and the first six lessons in `knowledge/lessons.json`.
 
 ### Warning: the history was rewritten on 2026-09-02
 
@@ -136,6 +139,12 @@ repositories and recorded on
   label. `PyCQA/bandit` appears to refuse pull request creation from
   non-collaborators outright.
 
+The freshness, saturation and enforcement screens are now mechanical: `mailman
+target-intel` computes all three for one named repository and `check-target`
+refuses to start without the record. Choosing which repositories to feed it is
+still a hand pass, which is what
+[#35](https://github.com/wolfgang-aura/Mailman/issues/35) asks for.
+
 An issue's age says nothing about whether its bug still exists. pytest #14964 was
 a precise same-day report with no pull request against it and was already fixed on
 `main`; only a hand-built reproduction at the base commit caught it, after the
@@ -217,6 +226,17 @@ A branch, a written pull request body and an accountability brief are staged und
 the private run directory. Nothing has been sent. See
 `docs/runs/0008-starlette-3497-submission-ready.md`.
 
+`mailman target-intel RUN_ID` records how a target actually hands out and merges
+outside work: human-only outside merges in a window, open issues no open or merged
+pull request references, the automated rules a bot enforces quoted from its own
+comments, and the thread that preceded each recent outside merge with the winning
+author's comments marked. `check-target` refuses to clear a run without a
+successful record, and `--acknowledge-prior-attempts` does not clear that refusal.
+It reports counts against their denominators rather than verdicts, and it does not
+choose the target. Exercised against `langchain-ai/langchain` on 2026-09-03, where
+it found the `require-issue-link` and `block-fork-main` bot rules without being
+told to look. See `docs/decisions/0009-target-intel.md`.
+
 Sanitized public run export is not implemented. Nothing in this project has ever
 pushed, commented, or opened anything on a repository it does not own.
 
@@ -236,7 +256,16 @@ weighted learning channels, the retrospective schema, and the lesson registry
 with its promotion gates are implemented and unit-covered. See
 `docs/decisions/0005-knowledge-flywheel.md`.
 
-`knowledge/lessons.json` is empty. No lesson has been recorded, validated, or
-promoted through the registry, and the command has not yet been run against a
-live run. Skill versioning and the regression suite are not implemented, so
-every retrospective records `skill_version` as `unversioned`.
+`knowledge/lessons.json` holds six lessons as of 2026-09-03, written through the
+registry's own dataclasses so the state machine and promotion gates were enforced
+rather than asserted. All six sit at `CANDIDATE_LESSON`: reproduction at the base
+commit, executable resolution before a command is recorded, dead regression
+coverage, human-only merge counting, closed-unmerged rows on a repository that
+auto-closes, and how assignment is actually won. Only the executable-resolution
+lesson has the two distinct supporting runs `VALIDATED` requires, and it was not
+promoted on that basis alone.
+
+Nothing yet writes a lesson automatically at the end of a run, so the registry
+does not gain evidence without a hand pass. `mailman retrospective` has still not
+been run against a live run. Skill versioning and the regression suite are not
+implemented, so every retrospective records `skill_version` as `unversioned`.
