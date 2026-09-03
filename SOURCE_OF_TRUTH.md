@@ -62,6 +62,12 @@ Last verified: 2026-09-03 in `Asia/Singapore`.
   It carries the fix for #36: `mailman claims` reads the target issue's own thread, and
   `check-target` refuses without that record, on an assignee, on a maintainer handing the
   work over, and on an unanswered claim until `--acknowledge-claims` is passed.
+- Reviewer-execution deployment: commit `b68f886` passed GitHub Actions in run `33786866250`.
+  It carries the fix for #20: an APPROVE from a reviewer whose transcript shows no command
+  blocks the run instead of clearing it. REVISE is unaffected.
+- Repository screen deployment: commit `cf2dd1f` passed GitHub Actions in run `33790613015`.
+  It carries #35: `mailman screen-target OWNER/REPO`, six gates, verdict cached under
+  `screens/`. Exercised live against six repositories from the hand-screened table.
   It carries `mailman reproduce` and the two `check-target` refusals behind it.
 
 ### Warning: the history was rewritten on 2026-09-02
