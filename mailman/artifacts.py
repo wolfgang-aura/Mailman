@@ -26,7 +26,8 @@ def new_run_id() -> str:
 def create_run(
     *,
     repository: str,
-    issue: str,
+    issue: str | None = None,
+    defect_report: Path | None = None,
     base_commit: str,
     primary: str,
     reviewer: str,
@@ -42,8 +43,18 @@ def create_run(
             parsed_repository.scheme == "https" and parsed_repository.username
         ):
             raise ValueError("repository URL must not contain embedded credentials")
-    if not issue.startswith("https://"):
+    if (issue is None) == (defect_report is None):
+        raise ValueError(
+            "give exactly one of issue and defect_report: an upstream issue "
+            "URL, or a defect report you wrote because the target has no usable "
+            "tracker"
+        )
+    if issue is not None and not issue.startswith("https://"):
         raise ValueError("issue must be an HTTPS URL")
+    if defect_report is not None:
+        defect_report = Path(defect_report).resolve()
+        if not defect_report.is_file():
+            raise ValueError("defect_report must be a readable file")
     if not _COMMIT_PATTERN.fullmatch(base_commit):
         raise ValueError(
             "base_commit must be a full 40 or 64 character hexadecimal Git object ID"
@@ -59,6 +70,7 @@ def create_run(
         run_id=new_run_id(),
         repository=repository,
         issue=issue,
+        defect_report=str(defect_report) if defect_report else None,
         base_commit=base_commit.lower(),
         primary=AgentConfig(agent=primary, model=primary_model),
         reviewer=AgentConfig(agent=reviewer, model=reviewer_model),
@@ -68,8 +80,9 @@ def create_run(
     run_directory.mkdir(parents=True, exist_ok=False)
     (run_directory / "commands").mkdir()
     write_run(run, run_directory)
+    source = issue if issue is not None else f"defect report {defect_report}"
     (run_directory / "issue.md").write_text(
-        f"# Issue\n\nSource: {issue}\n\nIssue content has not been captured.\n",
+        f"# Issue\n\nSource: {source}\n\nIssue content has not been captured.\n",
         encoding="utf-8",
     )
     (run_directory / "primary-report.md").write_text(

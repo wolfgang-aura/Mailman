@@ -100,7 +100,12 @@ def _summary_markdown(
         f"# Human review package for {run.run_id}",
         "",
         f"- Repository: {run.repository}",
-        f"- Issue: {run.issue}" + (f" ({title})" if title else ""),
+        (
+            f"- Issue: {run.issue}" + (f" ({title})" if title else "")
+            if run.issue is not None
+            else "- Issue: none upstream; started from a defect report"
+            + (f" ({title})" if title else "")
+        ),
         f"- Base commit: `{run.base_commit}`",
         f"- Primary agent: {run.primary.agent}"
         + (f" ({run.primary.model})" if run.primary.model else ""),
@@ -188,8 +193,18 @@ def _pull_request_markdown(
     title = _issue_title(issue_record)
     reference = (issue_record or {}).get("reference")
     number = reference.get("number") if isinstance(reference, dict) else None
-    heading = title or f"Address {run.issue}"
-    closes = f"Closes #{number}." if isinstance(number, int) else f"Refs {run.issue}."
+    heading = title or f"Address {run.issue or 'the defect reported with this run'}"
+    if isinstance(number, int):
+        closes = f"Closes #{number}."
+    elif run.issue is not None:
+        closes = f"Refs {run.issue}."
+    else:
+        # No upstream issue exists to close or refer to. Say what the change is
+        # for in its own words rather than pointing at nothing.
+        closes = (
+            "There is no upstream issue for this. The defect and how to "
+            "reproduce it are described below."
+        )
     return _PULL_REQUEST_TEMPLATE.format(
         branch=branch, heading=heading, closes=closes
     )

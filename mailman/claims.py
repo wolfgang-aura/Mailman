@@ -183,6 +183,24 @@ def read_claims(
         "commands": [],
     }
     issue = load_issue_record(run_directory) or {}
+    if issue.get("self_reported") is True:
+        # A defect the operator wrote has no upstream thread, so there is
+        # nothing to claim and nobody to have claimed it. That is a different
+        # fact from "the thread was read and held no claim", and `check-target`
+        # is entitled to see which one it got.
+        record.update(
+            {
+                "success": True,
+                "self_reported": True,
+                "detail": (
+                    "no upstream issue: this run started from a defect report, "
+                    "so no thread exists to claim it in. The duplicate search "
+                    "is the only prior-art evidence here."
+                ),
+            }
+        )
+        _write(run_directory, record)
+        return record
     reference = issue.get("reference") or {}
     owner = reference.get("owner")
     name = reference.get("repository")
@@ -258,6 +276,14 @@ def read_claims(
 
 def render_claims(record: dict[str, Any]) -> str:
     """Render the thread's verdict, in the words that decide a run."""
+    if record.get("self_reported") is True:
+        return (
+            "# Claims\n\n"
+            "This run started from a defect report, not an upstream issue.\n"
+            "There is no thread, so there is nothing to claim and nobody to\n"
+            "have claimed it. Prior art here rests entirely on the duplicate\n"
+            "search.\n"
+        )
     slug = record.get("repository")
     number = record.get("issue_number")
     lines = [

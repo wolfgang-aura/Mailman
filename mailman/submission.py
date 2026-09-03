@@ -498,7 +498,15 @@ def _pull_request_markdown(
     title: str,
     verifications: list[dict[str, Any]],
 ) -> str:
-    reference = f"Closes #{issue_number}." if issue_number else f"Refs {run.issue}."
+    if issue_number:
+        reference = f"Closes #{issue_number}."
+    elif run.issue is not None:
+        reference = f"Refs {run.issue}."
+    else:
+        reference = (
+            "There is no upstream issue for this. The defect and how to "
+            "reproduce it are described below."
+        )
     disclosure = (
         f"This change was drafted with AI assistance ({_agent_credit(run.primary)} "
         f"wrote the patch, {_agent_credit(run.reviewer)} reviewed it), running "

@@ -34,6 +34,7 @@ from mailman.executor import CommandResult, execute
 from mailman.export import export_patch
 from mailman.instructions import describe_instruction_sources
 from mailman.issue import (
+    capture_defect_report,
     capture_issue_from_file,
     capture_issue_from_github,
     load_issue_record,
@@ -91,7 +92,21 @@ def _build_parser() -> argparse.ArgumentParser:
 
     init_run = subparsers.add_parser("init-run", help="create a private local run record")
     init_run.add_argument("--repository", required=True)
-    init_run.add_argument("--issue", required=True)
+    # Exactly one of these. A target whose contributors never file issues has
+    # no issue to point at, and refusing those targets ruled out the
+    # repositories that merge outside work fastest. See
+    # https://github.com/wolfgang-aura/Mailman/issues/45.
+    defect_source = init_run.add_mutually_exclusive_group(required=True)
+    defect_source.add_argument("--issue", help="upstream GitHub issue URL")
+    defect_source.add_argument(
+        "--defect-report",
+        type=Path,
+        help=(
+            "a defect you found and wrote up, for a target with no usable "
+            "issue tracker. The duplicate search and the reproduction then "
+            "carry the whole evidence burden."
+        ),
+    )
     init_run.add_argument("--base-commit", required=True)
     init_run.add_argument("--primary", required=True)
     init_run.add_argument("--reviewer", required=True)
@@ -489,6 +504,7 @@ def _init_run(arguments: argparse.Namespace) -> int:
     run, run_directory = create_run(
         repository=arguments.repository,
         issue=arguments.issue,
+        defect_report=arguments.defect_report,
         base_commit=arguments.base_commit,
         primary=arguments.primary,
         reviewer=arguments.reviewer,
@@ -502,7 +518,15 @@ def _init_run(arguments: argparse.Namespace) -> int:
 
 def _fetch_issue(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
-    if arguments.from_file is not None:
+    if run.issue is None:
+        # The run started from a defect report. Capturing it is a file read,
+        # and there is no upstream issue to prefer over it.
+        record = capture_defect_report(
+            run_directory,
+            source_file=arguments.from_file or Path(run.defect_report or ""),
+            title=arguments.title,
+        )
+    elif arguments.from_file is not None:
         record = capture_issue_from_file(
             run_directory,
             issue_url=run.issue,
@@ -842,7 +866,12 @@ def _prepare_submission(arguments: argparse.Namespace) -> int:
     branch = arguments.branch or (
         f"mailman/issue-{number}" if isinstance(number, int) else f"mailman/run-{run.run_id}"
     )
-    title = arguments.title or (issue_record or {}).get("title") or f"Address {run.issue}"
+    fallback_title = (
+        f"Address {run.issue}"
+        if run.issue is not None
+        else "Address the defect reported with this run"
+    )
+    title = arguments.title or (issue_record or {}).get("title") or fallback_title
     record = prepare_submission(
         run,
         run_directory,

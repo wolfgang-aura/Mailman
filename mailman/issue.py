@@ -214,6 +214,76 @@ def capture_issue_from_file(
     return record
 
 
+
+def render_defect_report(
+    *, title: str | None, body: str, source_file: Path, captured_at: str
+) -> str:
+    """Render a defect the operator found into the same briefing shape.
+
+    A self-reported defect reaches the agents through exactly the file an
+    upstream issue would, so nothing downstream has to know which it was.
+    """
+    heading = f"# Self-reported defect: {title}" if title else "# Self-reported defect"
+    lines = [
+        heading,
+        "",
+        "- Source: no upstream issue; this defect was found and written here",
+        f"- Capture method: defect report ({source_file.name})",
+        f"- Captured at: {captured_at}",
+        "",
+        "## Defect report",
+        "",
+        redact(body).strip(),
+        "",
+        "## Capture boundary",
+        "",
+        "There is no upstream issue thread, so there are no comments and no",
+        "linked pull requests to withhold. The duplicate search is the only",
+        "prior-art evidence for this run, and the reproduction is the only",
+        "evidence the defect is real.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def capture_defect_report(
+    run_directory: Path, *, source_file: Path, title: str | None = None
+) -> dict[str, Any]:
+    """Capture a defect the operator wrote, for a target with no tracker.
+
+    See https://github.com/wolfgang-aura/Mailman/issues/45: the repositories
+    that merge outside work fastest are often the ones whose contributors never
+    file issues, so their trackers hold questions and their defects do not
+    exist upstream until somebody fixes one.
+    """
+    path = source_file.resolve(strict=True)
+    if not path.is_file():
+        raise ValueError("defect report must be a file")
+    body = path.read_text(encoding="utf-8")
+    if not body.strip():
+        raise ValueError("defect report is empty")
+    captured_at = datetime.now(UTC).isoformat()
+    markdown = render_defect_report(
+        title=title, body=body, source_file=path, captured_at=captured_at
+    )
+    (run_directory / "issue.md").write_text(markdown, encoding="utf-8")
+    record = {
+        "schema_version": 1,
+        "source": "defect-report",
+        "self_reported": True,
+        "reference": None,
+        "captured_at": captured_at,
+        "source_file": str(path),
+        "source_sha256": sha256(path.read_bytes()).hexdigest(),
+        "title": title,
+        "body_characters": len(body),
+        "issue_markdown": str((run_directory / "issue.md").resolve()),
+        "success": True,
+    }
+    _write_record(run_directory, record)
+    return record
+
+
 def load_issue_record(run_directory: Path) -> dict[str, Any] | None:
     path = run_directory / "issue.json"
     if not path.is_file():

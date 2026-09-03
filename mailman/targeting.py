@@ -139,6 +139,14 @@ class TargetAssessment:
                 "in a comment is the earliest form of prior art and the "
                 "duplicate search cannot see it."
             ]
+        if self.claims.get("self_reported") is True:
+            # Worth stating rather than passing quietly. The reader should know
+            # the claim gate found nothing because nothing exists, not because
+            # a thread was read and came back clean.
+            return [
+                "claims    no upstream issue: this run started from a defect "
+                "report, so the duplicate search is the only prior art"
+            ]
         assignees = self.claims.get("assignees") or []
         lines: list[str] = []
         if assignees:

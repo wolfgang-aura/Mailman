@@ -76,7 +76,11 @@ class AgentConfig:
 class RunRecord:
     run_id: str
     repository: str
-    issue: str
+    # One of these two carries the defect. `issue` is an upstream GitHub issue;
+    # `defect_report` is a file the operator wrote because the target has no
+    # usable tracker. See
+    # https://github.com/wolfgang-aura/Mailman/issues/45.
+    issue: str | None
     base_commit: str
     primary: AgentConfig
     reviewer: AgentConfig
@@ -84,6 +88,7 @@ class RunRecord:
     schema_version: int = SCHEMA_VERSION
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
+    defect_report: str | None = None
     review_cycles: int = 0
     human_decision: str | None = None
     history: list[dict[str, str]] = field(default_factory=list)
@@ -115,10 +120,11 @@ class RunRecord:
         return cls(
             run_id=data["run_id"],
             repository=data["repository"],
-            issue=data["issue"],
+            issue=data.get("issue"),
             base_commit=data["base_commit"],
             primary=primary,
             reviewer=reviewer,
+            defect_report=data.get("defect_report"),
             status=RunStatus(data["status"]),
             schema_version=data.get("schema_version", SCHEMA_VERSION),
             created_at=data["created_at"],
