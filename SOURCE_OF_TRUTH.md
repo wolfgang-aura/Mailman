@@ -53,6 +53,8 @@ Last verified: 2026-09-03 in `Asia/Singapore`.
 - Target intel deployment: commit `77f094c` passed GitHub Actions in run `33735205372`. It
   carries `mailman target-intel`, the `check-target` precondition that refuses a run against a
   repository nobody has read, and the first six lessons in `knowledge/lessons.json`.
+- Reproduction gate deployment: commit `5009949` passed GitHub Actions in run `33766732724`.
+  It carries `mailman reproduce` and the two `check-target` refusals behind it.
 
 ### Warning: the history was rewritten on 2026-09-02
 
@@ -150,8 +152,10 @@ a precise same-day report with no pull request against it and was already fixed 
 `main`; only a hand-built reproduction at the base commit caught it, after the
 environment had been built. That reading is now mechanical and blocking:
 `mailman reproduce` records it and `check-target` refuses without it.
-[#37](https://github.com/wolfgang-aura/Mailman/issues/37) is fixed but not yet
-exercised against a live target.
+[#37](https://github.com/wolfgang-aura/Mailman/issues/37) is fixed and exercised
+through the CLI against a scratch run, including the shape where a fixed tree
+still fails and differs only in its counts. It has not yet run against a live
+target.
 
 Vetting also includes searching the target's existing pull requests for the same
 change before a run starts. On 2026-09-02, three runs were spent on
@@ -249,7 +253,12 @@ whose fixed and unfixed trees both fail and differ only in what they print, whic
 is the pytest #14964 shape. A timeout is recorded as a timeout, never as a
 reproduction. `--not-machine-reproducible --note` records a human reading and
 warns instead of blocking. The command's executable resolves through the run
-toolchain. Covered by 19 unit tests. It has not yet run against a live target.
+toolchain. Covered by 19 unit tests, and exercised end to end through the CLI on
+2026-09-03 against a scratch run: a bug that still fails passes the gate, a
+command that now succeeds is refused, the counts-only pytest #14964 shape is
+refused through `--expect-output`/`--forbid-output`, and
+`--acknowledge-prior-attempts` clears neither refusal. It has not yet run
+against a live target.
 See `docs/decisions/0010-reproduction-gate.md`.
 
 Sanitized public run export is not implemented. Nothing in this project has ever
