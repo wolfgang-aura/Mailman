@@ -84,6 +84,12 @@ Last verified: 2026-09-04 in `Asia/Singapore`.
   commit. `check-target` reports `merged-fix-already-in-base` and `prepare-submission` makes
   it a non-blocking finding. Also `examples/target-policies/ffn.json`, stance `unknown`, the
   first target with no written policy at all. 431 unit tests, up from 420.
+- Handoff-gate deployment: commit `4023709` passed GitHub Actions in run `33836739688`.
+  It carries #47: `mailman handoff` prints the whole body in one block with the single `gh`
+  command that posts it, records the body's SHA-256, and emits `--body-file` so the previewed
+  bytes are the posted bytes. `mailman handoff-check` re-hashes the file and exits non-zero
+  once it changed after the preview. A first-person read-or-tested claim exits non-zero and
+  names the line. 447 unit tests, up from 431.
 
 ### Reproduce gate, live-verified 2026-09-04
 
