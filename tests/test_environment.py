@@ -9,6 +9,7 @@ from pathlib import Path
 
 from mailman.artifacts import create_run
 from mailman.environment import (
+    check_executable,
     environment_command,
     load_environment_record,
     load_plan,
@@ -73,7 +74,7 @@ class PlanValidationTests(unittest.TestCase):
             {
                 "schema_version": 1,
                 "steps": [
-                    {"name": "install", "command": ["echo"], "working_directory": "home"}
+                    {"name": "install", "command": ["python"], "working_directory": "home"}
                 ],
             }
         )
@@ -84,12 +85,75 @@ class PlanValidationTests(unittest.TestCase):
         path = self._plan(
             {
                 "schema_version": 1,
-                "steps": [{"name": "install", "command": ["echo"]}],
+                "steps": [{"name": "install", "command": ["python"]}],
                 "register": [{"name": "python"}],
             }
         )
         with self.assertRaisesRegex(ValueError, "name and an executable"):
             load_plan(path)
+
+
+class PlanExecutableTests(unittest.TestCase):
+    """A plan is drafted from a target's own guide, so its steps are its claims."""
+
+    def _plan(self, command: list[str]) -> Path:
+        directory = Path(tempfile.mkdtemp())
+        path = directory / "plan.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "steps": [
+                        {
+                            "name": "install",
+                            "command": command,
+                            "working_directory": "workspace",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_a_step_that_downloads_and_runs_a_script_is_refused(self) -> None:
+        path = self._plan(["curl", "-sSL", "https://example.invalid/setup.sh"])
+        with self.assertRaisesRegex(ValueError, "may run a Python interpreter"):
+            load_plan(path)
+
+    def test_a_shell_step_is_refused(self) -> None:
+        for shell in ("bash", "sh", "powershell.exe", "cmd.exe"):
+            with self.subTest(shell=shell):
+                with self.assertRaises(ValueError):
+                    load_plan(self._plan([shell, "-c", "true"]))
+
+    def test_the_interpreter_spellings_a_real_plan_uses_are_permitted(self) -> None:
+        for command in (
+            "python",
+            "python3",
+            "python3.12",
+            "C:/ProgramData/mailman-python/python.exe",
+            "{environment}/Scripts/python.exe",
+            r"{environment}\Scripts\python.exe",
+            "/usr/bin/python3.14",
+        ):
+            with self.subTest(command=command):
+                check_executable([command, "-m", "venv", "x"], step="create")
+
+    def test_git_is_permitted_because_submodules_are_part_of_the_target(self) -> None:
+        check_executable(["git", "submodule", "update", "--init"], step="submodules")
+
+    def test_a_lookalike_name_is_not_read_as_an_interpreter(self) -> None:
+        for name in ("pythonic-installer", "python-is-not.sh", "mypython"):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    check_executable([name], step="install")
+
+    def test_the_substituted_path_is_checked_not_only_the_token(self) -> None:
+        # load_plan sees "{environment}/..." and prepare_environment sees what it
+        # expanded to. A plan assembled in memory never met load_plan at all.
+        with self.assertRaises(ValueError):
+            check_executable(["/tmp/evil/curl"], step="install")
 
 
 class EnvironmentPreparationTests(unittest.TestCase):

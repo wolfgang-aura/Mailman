@@ -301,12 +301,22 @@ Judge a repository before any run is spent on it:
 mailman screen-target OWNER/REPO
 ```
 
-Six gates, in the order a candidate actually dies in. Freshness runs first
+Seven gates, in the order a candidate actually dies in. Freshness runs first
 because it kills most of them for two API calls. Stars run last because they
 have never changed a decision: `OpenBB-finance/OpenBB` has 72.6k of them and has
 merged nothing from outside in six weeks.
 
-1. **Freshness.** Outside human merges in the window, bots excluded by account
+1. **Provenance.** Reported first, computed after freshness because it reuses
+   the author count freshness already paid for. Every other gate asks whether a
+   target is worth a run. This one asks whether its code should execute on the
+   host at all, because `prepare-environment` runs the target's build back end
+   and verification imports its `conftest.py`, both as you. It passes a
+   repository a year old with 500 stars, or one with ten outside authors in
+   ninety days, and refuses a fork outright. `pmorissette/ffn` passes on the
+   author route, `pydantic/pydantic-ai` on both. It is not a sandbox and does
+   not pretend to be one: a hostile `setup.py` in a repository that clears this
+   gate still runs. The gate is the decision not to point pip at a stranger.
+2. **Freshness.** Outside human merges in the window, bots excluded by account
    type and by name. Fails when nobody outside has merged, when one person wrote
    every outside merge in ninety days, when one person wrote 80% of them, or
    when every merge inside the window is by one author who wrote 35% or more of
@@ -315,10 +325,10 @@ merged nothing from outside in six weeks.
    all by the same recurring collaborator. The line names the authors it counted
    and the bots it excluded, so a pass resting on one person says whose merges
    it counted.
-2. **CI.** A workflow that runs a test suite, not only publish and lint. The
+3. **CI.** A workflow that runs a test suite, not only publish and lint. The
    pattern is deliberately wide, since a false negative here rejects a good
    candidate: `ccxt/ccxt` runs its Python suite as `npm run test-base-rest-py`.
-3. **Pure Python.** Fails on a Cython or Rust build, which this host has no
+4. **Pure Python.** Fails on a Cython or Rust build, which this host has no
    compiler for, and on a repository where Python is a minority of the source
    and may be generated from the majority language. Extensions are not the only
    way a compiler gets in: it also reads `[build-system].requires`, because
@@ -327,15 +337,15 @@ merged nothing from outside in six weeks.
    names the `source-tree` plan in `examples/environment-plans/`, which installs
    the dependencies and puts the workspace on the path without installing the
    package.
-4. **Policy.** Reads the contributing guide for three separate rules, because a
+5. **Policy.** Reads the contributing guide for three separate rules, because a
    project can permit the code and still refuse the prose. A ban on AI-assisted
    code fails the gate. A rule requiring the author's own words in descriptions,
    or commits under a human account, passes it and is recorded with the sentence
    that said so. Matched narrowly on purpose, because "AI" appears in every
    model library's guide.
-5. **Saturation.** How many unassigned open issues have no open pull request
+6. **Saturation.** How many unassigned open issues have no open pull request
    naming them, and how old they are.
-6. **Stars.** Reported, never decisive.
+7. **Stars.** Reported, never decisive.
 
 Every gate prints its numbers next to the threshold that judged them, and the
 verdict is written to `screens/OWNER__REPO.json` under the data root so a

@@ -7,7 +7,10 @@ ninety candidates by hand was most of one session. See
 https://github.com/wolfgang-aura/Mailman/issues/35.
 
 The gates run in the order a candidate actually dies in. Freshness kills most of
-them, and it costs two API calls, so it runs first. Stars run last because they
+them, and it costs two API calls, so it runs first. Provenance is reported ahead
+of it because it answers a different question, whether this repository's code
+should execute on the host at all, but it is computed from what freshness
+already fetched. Stars run last because they
 have never once changed a decision: `OpenBB-finance/OpenBB` has 72.6k of them and
 has merged nothing from outside in six weeks.
 
@@ -22,7 +25,7 @@ import json
 import re
 import statistics
 from collections import Counter
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -43,6 +46,27 @@ SCREENS_DIRECTORY = "screens"
 #: freshness window. One recent merge means nothing if the same person wrote
 #: every outside merge for three years, which is `freqtrade/freqtrade`.
 PATTERN_DAYS = 90
+
+#: Provenance thresholds. These do not ask whether a target is worth a run, which
+#: is what every other gate asks. They ask whether its code has been read by
+#: enough people that installing it and running its test suite on the host is
+#: reasonable. `prepare-environment` executes the target's build back end and
+#: verification imports its `conftest.py`, both as the invoking user, so the
+#: decision to point pip at a stranger is made here or nowhere. See
+#: https://github.com/wolfgang-aura/Mailman/issues/48.
+#:
+#: Stars decide nothing about quality, which is why gate 6 only reports them.
+#: They mean something different here: a repository with a thousand of them,
+#: standing for a year, has been read by people who were not us.
+PROVENANCE_MINIMUM_AGE_DAYS = 365
+PROVENANCE_MINIMUM_STARS = 500
+
+#: The other way through. A young project with a broad contributor base has also
+#: been read widely, and `pydantic/pydantic-ai` is that shape. `pmorissette/ffn`
+#: passes the age route with 11 authors and would fail this one, which is why
+#: either route is enough on its own.
+PROVENANCE_MINIMUM_AUTHORS = 10
+
 
 #: A repository whose entire outside contribution is one person is closed in
 #: practice however busy it looks.
@@ -214,6 +238,79 @@ def _decoded(payload: Any) -> str:
         except (ValueError, TypeError):
             return ""
     return content
+
+
+def _provenance_gate(meta: dict[str, Any], freshness: dict[str, Any]) -> dict[str, Any]:
+    """Gate 0. Has anyone but us read this code before we execute it?
+
+    Runs after freshness because it reuses the author count freshness already
+    paid for, and is reported first because it is the gate that decides whether
+    the host runs a stranger's `setup.py`.
+    """
+    created = str(meta.get("created_at") or "")[:10]
+    age_days: int | None = None
+    if created:
+        try:
+            age_days = (datetime.now(UTC).date() - date.fromisoformat(created)).days
+        except ValueError:
+            age_days = None
+    stars = meta.get("stargazers_count")
+    authors = freshness.get("data", {}).get("distinct_outside_authors", 0)
+    forked = bool(meta.get("fork"))
+    data = {
+        "created_at": created or None,
+        "age_days": age_days,
+        "stars": stars,
+        "distinct_outside_authors": authors,
+        "fork": forked,
+        "minimum_age_days": PROVENANCE_MINIMUM_AGE_DAYS,
+        "minimum_stars": PROVENANCE_MINIMUM_STARS,
+        "minimum_authors": PROVENANCE_MINIMUM_AUTHORS,
+    }
+    if forked:
+        return _gate(
+            "provenance",
+            passed=False,
+            blocking=True,
+            detail=(
+                "this is a fork, so its code is one push away from whoever owns "
+                "the fork and carries none of the upstream's history"
+            ),
+            data=data,
+        )
+    established = (
+        age_days is not None
+        and age_days >= PROVENANCE_MINIMUM_AGE_DAYS
+        and isinstance(stars, int)
+        and stars >= PROVENANCE_MINIMUM_STARS
+    )
+    broad = authors >= PROVENANCE_MINIMUM_AUTHORS
+    if established or broad:
+        reason = (
+            f"{authors} outside author(s) in {PATTERN_DAYS} days"
+            if broad
+            else f"{stars} star(s) over {age_days} day(s)"
+        )
+        return _gate(
+            "provenance",
+            passed=True,
+            blocking=True,
+            detail=(
+                f"{reason}; safe enough to install and run its suite on this host"
+            ),
+            data=data,
+        )
+    return _gate(
+        "provenance",
+        passed=False,
+        blocking=True,
+        detail=(
+            f"{stars} star(s), {age_days} day(s) old, {authors} outside author(s) "
+            f"in {PATTERN_DAYS} days. Too few people have read this code to run "
+            "its build back end and its test suite on this machine."
+        ),
+        data=data,
+    )
 
 
 def _freshness_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
@@ -737,8 +834,10 @@ def screen_repository(
         _write(data_root, record)
         return record
 
+    freshness = _freshness_gate(gh, slug, window_days)
     gates = [
-        _freshness_gate(gh, slug, window_days),
+        _provenance_gate(meta, freshness),
+        freshness,
         _ci_gate(gh, slug),
         _python_gate(gh, slug),
         _policy_gate(gh, slug),

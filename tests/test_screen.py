@@ -99,6 +99,8 @@ class FakeGitHub:
                 "stargazers_count": 4200,
                 "default_branch": "main",
                 "archived": False,
+                "created_at": _days_ago(1500),
+                "fork": False,
             },
         )
         self.missing_workflows = overrides.pop("missing_workflows", False)
@@ -134,6 +136,11 @@ class FakeGitHub:
         if "/issues" in base:
             return self.issues if "page=1" in path or "page=" not in path else []
         return self.meta
+
+
+def _named(record: dict, name: str) -> dict:
+    """Look a gate up by name. Positions shift whenever a gate is added."""
+    return next(gate for gate in record["gates"] if gate["name"] == name)
 
 
 def _screen(root: Path, gh: FakeGitHub, **keywords) -> dict:
@@ -174,7 +181,7 @@ class ScreenTests(unittest.TestCase):
 
         self.assertEqual(record["verdict"], "fail")
         self.assertIn("freshness", record["failed_gates"])
-        freshness = record["gates"][0]
+        freshness = _named(record, "freshness")
         self.assertEqual(freshness["data"]["merges_in_window"], 0)
         self.assertIn("no outside human merge", freshness["detail"])
 
@@ -192,7 +199,7 @@ class ScreenTests(unittest.TestCase):
                     ]
                 ),
             )
-        freshness = record["gates"][0]
+        freshness = _named(record, "freshness")
 
         self.assertEqual(record["verdict"], "fail")
         self.assertIn("freshness", record["failed_gates"])
@@ -213,7 +220,7 @@ class ScreenTests(unittest.TestCase):
                     + [_pull(99, author="visitor", merged_days_ago=40)]
                 ),
             )
-        freshness = record["gates"][0]
+        freshness = _named(record, "freshness")
 
         self.assertIn("freshness", record["failed_gates"])
         self.assertEqual(freshness["data"]["distinct_outside_authors"], 2)
@@ -244,7 +251,7 @@ class ScreenTests(unittest.TestCase):
                     ]
                 ),
             )
-        freshness = record["gates"][0]
+        freshness = _named(record, "freshness")
 
         self.assertIn("freshness", record["failed_gates"])
         self.assertEqual(freshness["data"]["distinct_outside_authors"], 7)
@@ -258,7 +265,7 @@ class ScreenTests(unittest.TestCase):
             record = _screen(Path(temporary), FakeGitHub())
 
         self.assertEqual(record["verdict"], "pass")
-        self.assertEqual(record["gates"][0]["data"]["authors_in_window"], ["alice"])
+        self.assertEqual(_named(record, "freshness")["data"]["authors_in_window"], ["alice"])
 
     def test_a_pass_names_the_authors_it_counted_and_the_bots_it_did_not(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -273,7 +280,7 @@ class ScreenTests(unittest.TestCase):
                     ]
                 ),
             )
-        freshness = record["gates"][0]
+        freshness = _named(record, "freshness")
 
         self.assertEqual(freshness["data"]["authors_in_window"], ["alice", "bob"])
         self.assertEqual(
@@ -298,7 +305,7 @@ class ScreenTests(unittest.TestCase):
                     ]
                 ),
             )
-        freshness = record["gates"][0]
+        freshness = _named(record, "freshness")
 
         self.assertNotIn("freshness", record["failed_gates"])
         self.assertEqual(freshness["data"]["distinct_authors_in_window"], 1)
@@ -322,7 +329,7 @@ class ScreenTests(unittest.TestCase):
             )
 
         self.assertNotIn("ci", record["failed_gates"])
-        self.assertIn("python.yml", record["gates"][1]["data"]["workflows_running_tests"])
+        self.assertIn("python.yml", _named(record, "ci")["data"]["workflows_running_tests"])
 
     def test_a_workflow_that_only_publishes_fails_the_ci_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -332,7 +339,7 @@ class ScreenTests(unittest.TestCase):
             )
 
         self.assertIn("ci", record["failed_gates"])
-        self.assertIn("none of them runs a test suite", record["gates"][1]["detail"])
+        self.assertIn("none of them runs a test suite", _named(record, "ci")["detail"])
 
     def test_no_workflows_at_all_fails_the_ci_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -350,7 +357,7 @@ class ScreenTests(unittest.TestCase):
                 Path(temporary),
                 FakeGitHub(languages={"TypeScript": 900000, "Python": 100000}),
             )
-        gate = record["gates"][2]
+        gate = _named(record, "pure-python")
 
         self.assertIn("pure-python", record["failed_gates"])
         self.assertIn("TypeScript is the majority", gate["detail"])
@@ -365,7 +372,7 @@ class ScreenTests(unittest.TestCase):
             )
 
         self.assertIn("pure-python", record["failed_gates"])
-        self.assertIn("compiler is in the build", record["gates"][2]["detail"])
+        self.assertIn("compiler is in the build", _named(record, "pure-python")["detail"])
 
     def test_a_rust_workspace_fails_the_language_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -378,7 +385,7 @@ class ScreenTests(unittest.TestCase):
             )
 
         self.assertIn("pure-python", record["failed_gates"])
-        self.assertIn("Cargo.toml", record["gates"][2]["data"]["root_markers"])
+        self.assertIn("Cargo.toml", _named(record, "pure-python")["data"]["root_markers"])
 
     def test_a_cython_build_back_end_fails_even_at_100_percent_python(self) -> None:
         # pmorissette/bt is every-file-a-.py and compiles bt/core.py through a
@@ -398,7 +405,7 @@ class ScreenTests(unittest.TestCase):
                     },
                 ),
             )
-        gate = record["gates"][2]
+        gate = _named(record, "pure-python")
 
         self.assertIn("pure-python", record["failed_gates"])
         self.assertEqual(gate["data"]["build_requires_compilers"], ["cython"])
@@ -421,7 +428,7 @@ class ScreenTests(unittest.TestCase):
                     }
                 ),
             )
-        gate = record["gates"][2]
+        gate = _named(record, "pure-python")
 
         self.assertEqual(record["verdict"], "pass")
         self.assertEqual(gate["data"]["environment_plan"], "source-tree")
@@ -445,7 +452,7 @@ class ScreenTests(unittest.TestCase):
                     }
                 ),
             )
-        gate = record["gates"][2]
+        gate = _named(record, "pure-python")
 
         self.assertIsNone(gate["data"]["wheel_only_hook"])
         self.assertIn("pure-python", record["failed_gates"])
@@ -465,7 +472,7 @@ class ScreenTests(unittest.TestCase):
                     }
                 ),
             )
-        gate = record["gates"][2]
+        gate = _named(record, "pure-python")
 
         self.assertEqual(record["verdict"], "pass")
         self.assertEqual(gate["data"]["build_requires_compilers"], [])
@@ -486,7 +493,7 @@ class ScreenTests(unittest.TestCase):
             )
 
         self.assertIn("policy", record["failed_gates"])
-        self.assertIn("refuses AI-assisted work", record["gates"][3]["detail"])
+        self.assertIn("refuses AI-assisted work", _named(record, "policy")["detail"])
 
     def test_a_policy_requiring_disclosure_passes_and_says_so(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -501,7 +508,7 @@ class ScreenTests(unittest.TestCase):
                     }
                 ),
             )
-        gate = record["gates"][3]
+        gate = _named(record, "policy")
 
         self.assertNotIn("policy", record["failed_gates"])
         self.assertTrue(gate["data"]["requires_disclosure"])
@@ -528,7 +535,7 @@ class ScreenTests(unittest.TestCase):
                     }
                 ),
             )
-        gate = record["gates"][3]
+        gate = _named(record, "policy")
 
         self.assertEqual(record["verdict"], "pass")
         self.assertTrue(gate["passed"])
@@ -580,7 +587,7 @@ class ScreenTests(unittest.TestCase):
             )
 
         self.assertIn("saturation", record["failed_gates"])
-        self.assertEqual(record["gates"][4]["data"]["unclaimed"], 0)
+        self.assertEqual(_named(record, "saturation")["data"]["unclaimed"], 0)
 
     def test_an_assigned_issue_does_not_count_as_available_work(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -588,29 +595,107 @@ class ScreenTests(unittest.TestCase):
                 Path(temporary),
                 FakeGitHub(issues=[_issue(10, assignee={"login": "someone"})]),
             )
-        gate = record["gates"][4]
+        gate = _named(record, "saturation")
 
         self.assertEqual(gate["data"]["open_issues"], 1)
         self.assertEqual(gate["data"]["unassigned"], 0)
 
     def test_stars_never_decide_the_verdict(self) -> None:
+        # Provenance reads stars too, so the contributor route has to carry this
+        # repository instead. Otherwise the fixture would be testing provenance.
+        crowd = [
+            _pull(index, author=f"author{index}", merged_days_ago=index + 1)
+            for index in range(12)
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    closed_pulls=crowd,
+                    meta={
+                        "full_name": "example/project",
+                        "stargazers_count": 3,
+                        "default_branch": "main",
+                        "archived": False,
+                        "created_at": _days_ago(30),
+                        "fork": False,
+                    },
+                ),
+            )
+        stars = _named(record, "stars")
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertFalse(stars["blocking"])
+        self.assertEqual(stars["data"]["stars"], 3)
+
+    def test_a_young_thin_repository_is_refused_before_its_code_runs(self) -> None:
+        # Nothing else here fails: the merges are fresh, the suite runs, the
+        # Python is clean. The objection is that nobody but the author has read
+        # the build back end that prepare-environment is about to execute.
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(
                 Path(temporary),
                 FakeGitHub(
                     meta={
                         "full_name": "example/project",
-                        "stargazers_count": 3,
+                        "stargazers_count": 11,
                         "default_branch": "main",
                         "archived": False,
+                        "created_at": _days_ago(20),
+                        "fork": False,
                     }
                 ),
             )
-        stars = record["gates"][-1]
+        gate = _named(record, "provenance")
+
+        self.assertEqual(record["verdict"], "fail")
+        self.assertEqual(record["failed_gates"], ["provenance"])
+        self.assertEqual(gate["name"], "provenance")
+        self.assertEqual(gate["data"]["age_days"], 20)
+        self.assertEqual(gate["data"]["stars"], 11)
+
+    def test_a_long_standing_repository_passes_on_age_and_stars(self) -> None:
+        # pmorissette/ffn is this shape: 2638 stars since 2014, 11 outside
+        # authors in ninety days, which is under the contributor threshold.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    meta={
+                        "full_name": "example/project",
+                        "stargazers_count": 2638,
+                        "default_branch": "main",
+                        "archived": False,
+                        "created_at": _days_ago(4400),
+                        "fork": False,
+                    }
+                ),
+            )
+        gate = _named(record, "provenance")
 
         self.assertEqual(record["verdict"], "pass")
-        self.assertFalse(stars["blocking"])
-        self.assertEqual(stars["data"]["stars"], 3)
+        self.assertTrue(gate["passed"])
+        self.assertIn("2638 star(s)", gate["detail"])
+
+    def test_a_fork_is_refused_however_popular_the_upstream_is(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    meta={
+                        "full_name": "example/project",
+                        "stargazers_count": 90000,
+                        "default_branch": "main",
+                        "archived": False,
+                        "created_at": _days_ago(4400),
+                        "fork": True,
+                    }
+                ),
+            )
+        gate = _named(record, "provenance")
+
+        self.assertEqual(record["failed_gates"], ["provenance"])
+        self.assertIn("fork", gate["detail"])
 
     def test_an_archived_repository_stops_before_any_other_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

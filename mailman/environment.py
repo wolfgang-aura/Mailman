@@ -12,6 +12,41 @@ from mailman.workspace import inspect_workspace, workspace_fingerprint
 
 ENVIRONMENT_DIRECTORY = "environment"
 
+#: The only programs a preparation step may start. A plan is drafted from a
+#: target's own contributing guide, so its contents are as trustworthy as the
+#: target, and a step is the first thing Mailman runs on the host. Restricting
+#: the executable stops a plan that reaches for `curl`, a shell, or a package
+#: manager installing system-wide.
+#:
+#: This does not make a hostile target safe. `pip install -e .` still runs the
+#: target's build back end, and it has to. The provenance gate in
+#: `mailman.screen` is what decides whether that target is worth trusting with
+#: it. See https://github.com/wolfgang-aura/Mailman/issues/48.
+PERMITTED_EXECUTABLES = ("git",)
+
+
+def _executable_name(command: str) -> str:
+    """The bare program name, whichever separator the plan happened to use."""
+    return command.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
+def _is_python(name: str) -> bool:
+    stem = name[:-4] if name.endswith(".exe") else name
+    return stem == "python" or (
+        stem.startswith("python") and stem[6:].replace(".", "").isdigit()
+    )
+
+
+def check_executable(command: Sequence[str], *, step: str) -> None:
+    """Refuse a step that starts anything but a Python interpreter or git."""
+    name = _executable_name(command[0])
+    if _is_python(name) or name in PERMITTED_EXECUTABLES:
+        return
+    raise ValueError(
+        f"step {step} runs {command[0]!r}. A preparation step may run a Python "
+        f"interpreter or {', '.join(PERMITTED_EXECUTABLES)}, nothing else."
+    )
+
 
 def _substitute(value: str, replacements: dict[str, str]) -> str:
     result = value
@@ -44,6 +79,7 @@ def load_plan(path: Path) -> dict[str, Any]:
             raise ValueError(
                 f"step {name} working_directory must be workspace, environment, or run"
             )
+        check_executable(command, step=name)
     registrations = data.get("register", [])
     if not isinstance(registrations, list):
         raise ValueError("environment plan register must be a list")
@@ -117,6 +153,10 @@ def prepare_environment(
 
     for step in plan["steps"]:
         command = [_substitute(part, replacements) for part in step["command"]]
+        # Checked again after substitution, because load_plan saw the token and
+        # this sees the path it expanded to. A plan built in memory by a caller
+        # never passed through load_plan at all.
+        check_executable(command, step=step["name"])
         location = locations[step.get("working_directory", "workspace")]
         announce(f"run  environment:{step['name']}: {' '.join(command)}")
         result = execute(
