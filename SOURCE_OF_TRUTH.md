@@ -90,6 +90,14 @@ Last verified: 2026-09-04 in `Asia/Singapore`.
   bytes are the posted bytes. `mailman handoff-check` re-hashes the file and exits non-zero
   once it changed after the preview. A first-person read-or-tested claim exits non-zero and
   names the line. 447 unit tests, up from 431.
+- Screening-gate deployment: commit `fc0ccae` passed GitHub Actions in run `33837443444`.
+  It carries #42, #43 and #44. Freshness fails when every merge in the window is by one author
+  who wrote 35% or more of the pattern-window merges over a sample of at least eight, and the
+  gate line names the authors counted and the bots excluded. The policy gate reads three rules
+  rather than one, and `TargetPolicy.requires_own_words` blocks a generated body in
+  `prepare-submission`. The pure-python gate reads `[build-system].requires`, failing a
+  compiling back end and passing a wheel-only hook with the new `source-tree` environment plan.
+  457 unit tests, up from 447.
 
 ### Reproduce gate, live-verified 2026-09-04
 
