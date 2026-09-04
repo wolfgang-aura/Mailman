@@ -473,6 +473,31 @@ The draft it writes follows [the pull request standard](docs/pull-request-standa
 which covers the step Mailman does not automate: how a person turns the patch
 package into a pull request a maintainer wants to read.
 
+Once the final body is written to a file, hand it over:
+
+```powershell
+mailman handoff RUN_ID --body .mailman\drafts\slug.md --repo OWNER/REPO `
+  --head Mailman-Fork:BRANCH --base master --title "..."
+```
+
+This prints the whole body immediately above the one `gh` command that posts it,
+in a block the two cannot be separated from each other, and records the body's
+SHA-256. The command it emits reads the body with `--body-file`, so the bytes
+that were previewed are the bytes that get posted, and it is prefixed with
+`mailman handoff-check RUN_ID`, which re-hashes the file and exits non-zero once
+it has changed since the preview. An edit made after the last preview cannot
+reach GitHub without a second read.
+
+`handoff` also exits non-zero, naming the line, when the body makes a
+first-person claim the poster alone can make true — "I have read, tested, and
+take responsibility for every line of it". Only the person whose name goes on
+the pull request can decide whether that sentence is true.
+
+This exists because it once was not. On 2026-09-04 a body carrying exactly that
+sentence was posted by someone who had not read it, because the preview lived in
+prose and in an agent's memory rather than in the harness. See
+[issue #47](https://github.com/wolfgang-aura/Mailman/issues/47).
+
 ## Human boundary
 
 Mailman may eventually prepare branches, patches, and pull request text. It must not push, open a pull request, comment on an issue, or otherwise change an upstream project without a separate human approval step.

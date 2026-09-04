@@ -40,6 +40,7 @@ from mailman.issue import (
     load_issue_record,
 )
 from mailman.claims import read_claims, render_claims
+from mailman.handoff import build_handoff, check_handoff
 from mailman.screen import load_screen, render_screen, screen_repository
 from mailman.target_intel import (
     collect_target_intel,
@@ -185,6 +186,35 @@ def _build_parser() -> argparse.ArgumentParser:
     submission.add_argument("--branch")
     submission.add_argument("--title")
     submission.add_argument("--data-root", type=Path)
+
+    handoff = subparsers.add_parser(
+        "handoff",
+        help="print the exact body to be posted above the command that posts it",
+    )
+    handoff.add_argument("run_id")
+    handoff.add_argument(
+        "--body", type=Path, required=True, help="the final body, as it will be posted"
+    )
+    handoff.add_argument(
+        "--repo", required=True, help="upstream repository, for example pmorissette/ffn"
+    )
+    handoff.add_argument(
+        "--kind",
+        choices=("pull-request", "issue-comment"),
+        default="pull-request",
+    )
+    handoff.add_argument("--title", help="pull request title")
+    handoff.add_argument("--head", help="fork branch, for example Mailman-Fork:branch")
+    handoff.add_argument("--base", help="upstream branch to target")
+    handoff.add_argument("--issue", type=int, help="issue number, for an issue comment")
+    handoff.add_argument("--data-root", type=Path)
+
+    handoff_check = subparsers.add_parser(
+        "handoff-check",
+        help="refuse to publish when the body changed since the last handoff",
+    )
+    handoff_check.add_argument("run_id")
+    handoff_check.add_argument("--data-root", type=Path)
 
     prior_art = subparsers.add_parser(
         "prior-art",
@@ -890,11 +920,43 @@ def _prepare_submission(arguments: argparse.Namespace) -> int:
                 "ready": record["ready"],
                 "blocking_codes": record["blocking_codes"],
                 "branch": record["branch"],
+                "next": (
+                    f"mailman handoff {record['run_id']} --body <final-body.md> "
+                    f"--repo {record['target']} --head <fork>:{record['branch']} "
+                    "--base <default-branch> --title <title>"
+                ),
             },
             indent=2,
         )
     )
     return 0 if record["ready"] else 1
+
+
+def _handoff(arguments: argparse.Namespace) -> int:
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    record, block = build_handoff(
+        run_id=run.run_id,
+        run_directory=run_directory,
+        body_path=arguments.body,
+        kind=arguments.kind,
+        repository=arguments.repo,
+        title=arguments.title,
+        head=arguments.head,
+        base=arguments.base,
+        issue_number=arguments.issue,
+        data_root=arguments.data_root,
+    )
+    print(block)
+    # A body claiming the human read it is not ready until the human says so.
+    # Exiting non-zero stops a chained publish command from running behind it.
+    return 1 if record["first_person_claims"] else 0
+
+
+def _handoff_check(arguments: argparse.Namespace) -> int:
+    _, run_directory = load_run(arguments.run_id, arguments.data_root)
+    result = check_handoff(run_directory)
+    print(json.dumps(result, indent=2))
+    return 0 if result["ok"] else 1
 
 
 def _export_patch(arguments: argparse.Namespace) -> int:
@@ -1471,6 +1533,10 @@ def main(arguments: list[str] | None = None) -> int:
             return _export_patch(parsed)
         if parsed.subcommand == "prepare-submission":
             return _prepare_submission(parsed)
+        if parsed.subcommand == "handoff":
+            return _handoff(parsed)
+        if parsed.subcommand == "handoff-check":
+            return _handoff_check(parsed)
         if parsed.subcommand == "duplicate-search":
             return _duplicate_search(parsed)
         if parsed.subcommand == "acknowledge-duplicates":

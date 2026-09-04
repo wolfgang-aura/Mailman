@@ -655,6 +655,11 @@ def _pull_request_markdown(
             "- [ ] You have read the diff yourself against that branch",
             "- [ ] Opened as a real pull request, not a draft, so CI runs",
             "",
+            "Write the final body to its own file, then hand it over with",
+            "`mailman handoff`. That prints the whole body immediately above the",
+            "`gh` command that posts it and refuses once the file changes, so",
+            "nothing goes out under your name that you have not just read.",
+            "",
         ]
     )
     return "\n".join(lines)
