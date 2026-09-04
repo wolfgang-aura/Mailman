@@ -45,6 +45,14 @@ class TargetPolicy:
     requires_linked_issue: bool = False
     requires_maintainer_assignment: bool = False
     requires_duplicate_search: bool = False
+    #: The project asks that comments, issues and pull request descriptions be
+    #: written in the author's own words. Mailman's draft body is model-written,
+    #: so under this rule the body is the violation however good the patch is.
+    #: See https://github.com/wolfgang-aura/Mailman/issues/43.
+    requires_own_words: bool = False
+    #: Set once a person has rewritten the body themselves, which is the only
+    #: thing that can satisfy `requires_own_words`.
+    own_words_confirmed: bool = False
     changelog_directory: str | None = None
     changelog_filename_template: str | None = None
     checklist: list[str] = field(default_factory=list)
@@ -289,6 +297,19 @@ def _policy_findings(
                 detail=(
                     f"{policy.name} has no recorded contribution stance. Read the "
                     "project's policy and record it before preparing a submission."
+                ),
+            )
+        )
+    if policy.requires_own_words and not policy.own_words_confirmed:
+        findings.append(
+            Finding(
+                code="policy-requires-own-words",
+                blocking=True,
+                detail=(
+                    f"{policy.name} requires issues, comments and pull request "
+                    "descriptions to be in the author's own words. The generated "
+                    "draft cannot satisfy that. Rewrite the body yourself, then "
+                    "set `own_words_confirmed` in the policy file."
                 ),
             )
         )

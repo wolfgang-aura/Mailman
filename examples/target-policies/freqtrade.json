@@ -1,0 +1,25 @@
+{
+  "name": "freqtrade/freqtrade",
+  "policy_url": "https://github.com/freqtrade/freqtrade/blob/develop/CONTRIBUTING.md",
+  "stance": "permitted_with_disclosure",
+  "policy_read_on": "2026-09-04",
+  "disclosure_required": true,
+  "ai_trailer": "forbidden",
+  "requires_linked_issue": false,
+  "requires_maintainer_assignment": false,
+  "requires_duplicate_search": false,
+  "requires_own_words": true,
+  "own_words_confirmed": false,
+  "changelog_directory": null,
+  "changelog_filename_template": null,
+  "checklist": [
+    "The description is written by you, not by a model",
+    "You can explain the change without rereading it",
+    "The commit is authored by your own account"
+  ],
+  "notes": [
+    "The 'AI Assisted Contributions' section permits the code and constrains the prose: comments, issues and pull request descriptions must be in the author's own words.",
+    "The rule is enforced. On issue #13479 the maintainer opened his first reply by quoting it at the reporter.",
+    "Commits must be linked to a human account rather than a generic AI account, which is why ai_trailer is forbidden here."
+  ]
+}

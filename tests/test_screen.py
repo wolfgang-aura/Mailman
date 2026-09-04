@@ -220,6 +220,69 @@ class ScreenTests(unittest.TestCase):
         self.assertGreaterEqual(freshness["data"]["top_author_share"], 0.8)
         self.assertIn("trickle", freshness["detail"])
 
+    def test_a_window_carried_by_one_frequent_author_fails(self) -> None:
+        # freqtrade/freqtrade on 2026-09-04: three merges inside fourteen days,
+        # all by stash86, who wrote 48% of the twenty-five outside merges in
+        # ninety days. Thirteen distinct authors over the longer window made it
+        # pass. https://github.com/wolfgang-aura/Mailman/issues/42
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    closed_pulls=[
+                        _pull(1, author="stash86", merged_days_ago=1),
+                        _pull(2, author="stash86", merged_days_ago=2),
+                        _pull(3, author="stash86", merged_days_ago=3),
+                    ]
+                    + [
+                        _pull(10 + n, author="stash86", merged_days_ago=20 + n)
+                        for n in range(3)
+                    ]
+                    + [
+                        _pull(20 + n, author=f"visitor{n}", merged_days_ago=30 + n)
+                        for n in range(6)
+                    ]
+                ),
+            )
+        freshness = record["gates"][0]
+
+        self.assertIn("freshness", record["failed_gates"])
+        self.assertEqual(freshness["data"]["distinct_outside_authors"], 7)
+        self.assertEqual(freshness["data"]["authors_in_window"], ["stash86"])
+        self.assertIn("every one of the 3 merge(s)", freshness["detail"])
+        self.assertIn("stash86", freshness["detail"])
+
+    def test_a_single_window_author_on_a_small_sample_still_passes(self) -> None:
+        # A share over two merges is arithmetic, not evidence about the project.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), FakeGitHub())
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(record["gates"][0]["data"]["authors_in_window"], ["alice"])
+
+    def test_a_pass_names_the_authors_it_counted_and_the_bots_it_did_not(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    closed_pulls=[
+                        _pull(1, author="alice", merged_days_ago=2),
+                        _pull(2, author="bob", merged_days_ago=3),
+                        _pull(3, author="dependabot[bot]", merged_days_ago=1),
+                        _pull(4, author="freqtrade-bot", merged_days_ago=1),
+                    ]
+                ),
+            )
+        freshness = record["gates"][0]
+
+        self.assertEqual(freshness["data"]["authors_in_window"], ["alice", "bob"])
+        self.assertEqual(
+            freshness["data"]["excluded_bot_authors"],
+            ["dependabot[bot]", "freqtrade-bot"],
+        )
+        self.assertIn("alice, bob", freshness["detail"])
+        self.assertIn("excluded dependabot[bot], freqtrade-bot", freshness["detail"])
+
     def test_a_broadly_shared_repository_passes_despite_a_leading_author(self) -> None:
         # freqtrade sits near 0.44 with fourteen authors and is genuinely open.
         with tempfile.TemporaryDirectory() as temporary:
@@ -317,6 +380,97 @@ class ScreenTests(unittest.TestCase):
         self.assertIn("pure-python", record["failed_gates"])
         self.assertIn("Cargo.toml", record["gates"][2]["data"]["root_markers"])
 
+    def test_a_cython_build_back_end_fails_even_at_100_percent_python(self) -> None:
+        # pmorissette/bt is every-file-a-.py and compiles bt/core.py through a
+        # build hook. https://github.com/wolfgang-aura/Mailman/issues/44
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    languages={"Python": 100000},
+                    # `policies` answers any /contents/<path> lookup.
+                    policies={
+                        "pyproject.toml": (
+                            "[build-system]\n"
+                            'requires = ["hatchling", "Cython>=0.29.25"]\n'
+                            'build-backend = "hatchling.build"\n'
+                        )
+                    },
+                ),
+            )
+        gate = record["gates"][2]
+
+        self.assertIn("pure-python", record["failed_gates"])
+        self.assertEqual(gate["data"]["build_requires_compilers"], ["cython"])
+        self.assertIn("compiler is in the build back end", gate["detail"])
+        self.assertIn("Cython>=0.29.25", gate["detail"])
+
+    def test_a_wheel_only_hook_passes_with_a_source_tree_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "pyproject.toml": (
+                            "[build-system]\n"
+                            'requires = ["hatchling", "hatch-cython", "Cython"]\n'
+                            "\n"
+                            "[tool.hatch.build.targets.wheel.hooks.cython]\n"
+                            'dependencies = ["hatch-cython"]\n'
+                        )
+                    }
+                ),
+            )
+        gate = record["gates"][2]
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(gate["data"]["environment_plan"], "source-tree")
+        self.assertIn("hooks.cython", gate["data"]["wheel_only_hook"])
+        self.assertIn("source-tree", gate["detail"])
+
+    def test_hatch_cython_in_requires_alone_is_not_read_as_a_wheel_only_hook(
+        self,
+    ) -> None:
+        # The requires line names the hook package. Only a configured hook table
+        # means the source tree stays importable.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "pyproject.toml": (
+                            "[build-system]\n"
+                            'requires = ["hatchling", "hatch-cython"]\n'
+                        )
+                    }
+                ),
+            )
+        gate = record["gates"][2]
+
+        self.assertIsNone(gate["data"]["wheel_only_hook"])
+        self.assertIn("pure-python", record["failed_gates"])
+
+    def test_a_plain_pyproject_leaves_the_language_gate_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "pyproject.toml": (
+                            "[build-system]\n"
+                            'requires = ["hatchling"]\n'
+                            "\n[project]\n"
+                            'dependencies = ["cython-free-lib"]\n'
+                        )
+                    }
+                ),
+            )
+        gate = record["gates"][2]
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(gate["data"]["build_requires_compilers"], [])
+        self.assertIn("no compiler markers", gate["detail"])
+
     def test_a_policy_that_refuses_ai_work_fails_the_policy_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(
@@ -351,6 +505,41 @@ class ScreenTests(unittest.TestCase):
 
         self.assertNotIn("policy", record["failed_gates"])
         self.assertTrue(gate["data"]["requires_disclosure"])
+
+    def test_a_guide_that_permits_code_but_requires_own_words_records_it(
+        self,
+    ) -> None:
+        # freqtrade's "AI Assisted Contributions" section permits the code and
+        # forbids the prose, and the gate used to call that a clean pass.
+        # https://github.com/wolfgang-aura/Mailman/issues/43
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "CONTRIBUTING.md": (
+                            "## AI Assisted Contributions\n\n"
+                            "- **Never let an LLM speak for you** - all comments, "
+                            "issues and PR descriptions should be written in your "
+                            "own words.\n"
+                            "- Commits must be linked to your own account, not "
+                            "some generic AI account.\n"
+                        )
+                    }
+                ),
+            )
+        gate = record["gates"][3]
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertTrue(gate["passed"])
+        self.assertTrue(gate["data"]["requires_own_words"])
+        self.assertTrue(gate["data"]["requires_human_account"])
+        self.assertEqual(
+            [entry["kind"] for entry in gate["data"]["constraints"]],
+            ["own-words", "human-account"],
+        )
+        self.assertIn("constrains the submission", gate["detail"])
+        self.assertIn("requires_own_words", gate["detail"])
 
     def test_a_machine_learning_guide_is_not_read_as_an_ai_ban(self) -> None:
         # "AI" appears in every model library's contributing guide. Matching it

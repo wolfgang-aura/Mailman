@@ -53,6 +53,18 @@ MINIMUM_OUTSIDE_AUTHORS = 2
 #: where a second name appears once and the same person writes everything else.
 DOMINANT_AUTHOR_SHARE = 0.8
 
+#: When every merge inside the freshness window is by one person, that person's
+#: share of the longer window decides whether the window is evidence of an open
+#: door or of one recurring collaborator. `freqtrade/freqtrade` on 2026-09-04
+#: passed on three merges inside fourteen days, all by `stash86`, who wrote 48%
+#: of the outside merges in ninety days. See
+#: https://github.com/wolfgang-aura/Mailman/issues/42.
+WINDOW_SINGLE_AUTHOR_SHARE = 0.35
+
+#: A share computed over two merges is arithmetic, not evidence. Below this many
+#: outside merges in the pattern window, the single-author rule does not apply.
+SHARE_SAMPLE_MINIMUM = 8
+
 #: Python has to be the language the repository is actually written in. On
 #: `ccxt/ccxt` the Python is generated from TypeScript, and a patch to it is
 #: thrown away by the next build.
@@ -83,6 +95,33 @@ _TEST_RUNNER = re.compile(
 _COMPILED_MARKERS = ("Cargo.toml", "setup.py", "Makefile", "meson.build")
 _COMPILED_LANGUAGES = ("Cython", "Rust", "C", "C++", "Go", "Zig")
 
+#: Build requirements that mean a compiler runs at install time even when every
+#: file on disk is a `.py`. `pmorissette/bt` is 100% Python by GitHub's count
+#: and compiles `bt/core.py` with Cython through a hatch build hook, so it
+#: passed the extension check and then failed `prepare-environment`. See
+#: https://github.com/wolfgang-aura/Mailman/issues/44.
+_BUILD_COMPILERS = (
+    "cython",
+    "cffi",
+    "pybind11",
+    "setuptools-rust",
+    "setuptools_rust",
+    "maturin",
+    "scikit-build",
+    "scikit_build",
+    "meson-python",
+    "nanobind",
+)
+
+#: The Cython build hook `bt` configures, as a table header. Matched on the
+#: header alone: `hatch-cython` also appears in `[build-system].requires`, and a
+#: project that lists it there without configuring the hook is not the same
+#: case. A wheel-only compiler leaves the source tree importable, so the target
+#: stays usable; a build back end that compiles the package does not.
+_WHEEL_ONLY_HOOK_HEADER = re.compile(
+    r"^\[[^\]]*\bhooks\.cython\b[^\]]*\]", re.IGNORECASE
+)
+
 #: A policy that closes an AI-assisted pull request unread. Phrased as several
 #: narrow patterns rather than one loose one: "AI" alone matches every machine
 #: learning library's contributing guide.
@@ -106,6 +145,32 @@ _POLICY_DISCLOSURE = re.compile(
     r"|\b(?:ai|llm)\b.{0,40}must\s+be\s+disclosed"
     r"|declare\s+.{0,30}\bai\b"
     r"|state\s+.{0,30}\bai[- ]assisted"
+    r")",
+    re.IGNORECASE,
+)
+
+#: A policy that permits the code and constrains the prose. Our pull request
+#: bodies are model-written, so on these projects the body is itself the
+#: violation however good the patch is. `freqtrade/freqtrade` enforces this:
+#: on issue #13479 the maintainer quoted the rule at a reporter, who apologised.
+#: See https://github.com/wolfgang-aura/Mailman/issues/43.
+_POLICY_OWN_WORDS = re.compile(
+    r"(?:"
+    r"in\s+your\s+own\s+words"
+    r"|never\s+let\s+an?\s+(?:llm|ai)\s+(?:speak|think)\s+for\s+you"
+    r"|written\s+by\s+you,?\s+not"
+    r"|(?:comments|issues|descriptions?)\s+.{0,60}your\s+own\s+words"
+    r"|do\s+not\s+.{0,30}(?:llm|ai)[- ]generated\s+(?:text|prose|descriptions?)"
+    r")",
+    re.IGNORECASE,
+)
+
+#: A policy that wants the commit tied to a person, not to a tool's account.
+_POLICY_HUMAN_ACCOUNT = re.compile(
+    r"(?:"
+    r"commits?\s+.{0,60}(?:human|personal|your own)\s+account"
+    r"|(?:not|never)\s+.{0,40}generic\s+ai\s+account"
+    r"|author\s+.{0,40}must\s+be\s+a\s+(?:human|person)"
     r")",
     re.IGNORECASE,
 )
@@ -178,6 +243,19 @@ def _freshness_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
         for row in recent
         if isinstance(row.get("user"), dict)
     }
+    # Named, not just counted. A pass resting on three merges is a different
+    # repository depending on whether one account or three wrote them, and the
+    # reader cannot tell from a number.
+    excluded_bots = sorted(
+        {
+            (row.get("user") or {}).get("login")
+            for row in closed
+            if row.get("merged_at")
+            and isinstance(row.get("user"), dict)
+            and _is_bot(row.get("user"))
+            and (row.get("user") or {}).get("login")
+        }
+    )
     share = round(authors.most_common(1)[0][1] / len(longer), 2) if longer else None
     latest = max((row["merged_at"] for row in merged_outside), default=None)
     data = {
@@ -188,6 +266,8 @@ def _freshness_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
         # window written by one person is a different repository from three
         # written by three, and only the operator can weigh that.
         "distinct_authors_in_window": len(window_authors),
+        "authors_in_window": sorted(name for name in window_authors if name),
+        "excluded_bot_authors": excluded_bots,
         "top_author": authors.most_common(1)[0][0] if authors else None,
         "top_author_share": share,
         "latest_outside_merge": latest,
@@ -230,14 +310,38 @@ def _freshness_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
             ),
             data=data,
         )
+    # The whole freshness case can rest on one author while the ninety-day
+    # spread looks broad. That author is a recurring collaborator, and their
+    # merges say nothing about whether a stranger's pull request lands.
+    sole = sorted(name for name in window_authors if name)
+    if (
+        len(sole) == 1
+        and len(longer) >= SHARE_SAMPLE_MINIMUM
+        and authors.get(sole[0], 0) / len(longer) >= WINDOW_SINGLE_AUTHOR_SHARE
+    ):
+        sole_share = authors[sole[0]] / len(longer)
+        return _gate(
+            "freshness",
+            passed=False,
+            blocking=True,
+            detail=(
+                f"every one of the {len(recent)} merge(s) in {window_days} days "
+                f"is by {sole[0]}, who wrote {sole_share:.0%} of the {len(longer)} "
+                f"outside merge(s) in {PATTERN_DAYS} days. That is a recurring "
+                "collaborator, not evidence a stranger's pull request lands."
+            ),
+            data=data,
+        )
+    named = ", ".join(sole) if sole else "no named author"
     return _gate(
         "freshness",
         passed=True,
         blocking=True,
         detail=(
             f"{len(recent)} outside human merge(s) in {window_days} days by "
-            f"{len(window_authors)} author(s), {distinct} distinct author(s) in "
-            f"{PATTERN_DAYS} days, top author {share:.0%}"
+            f"{len(window_authors)} author(s) ({named}), {distinct} distinct "
+            f"author(s) in {PATTERN_DAYS} days, top author {share:.0%}"
+            + (f"; excluded {', '.join(excluded_bots)}" if excluded_bots else "")
         ),
         data=data,
     )
@@ -291,6 +395,40 @@ def _ci_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     )
 
 
+def _build_requires(pyproject: str) -> tuple[list[str], str | None]:
+    """Compiler names in `[build-system].requires`, with the line that said so.
+
+    Parsed by reading the table rather than the whole file, because `Cython`
+    appears in the dependencies of plenty of projects that never compile.
+    """
+    section = re.search(
+        r"^\[build-system\]\s*$(.*?)(?=^\[|\Z)",
+        pyproject,
+        re.MULTILINE | re.DOTALL,
+    )
+    if not section:
+        return [], None
+    requires = re.search(
+        r"requires\s*=\s*\[(.*?)\]", section.group(1), re.DOTALL | re.IGNORECASE
+    )
+    if not requires:
+        return [], None
+    value = requires.group(1)
+    lowered = value.lower()
+    found = sorted({name for name in _BUILD_COMPILERS if name in lowered})
+    evidence = "requires = [" + " ".join(value.split()) + "]"
+    return found, evidence
+
+
+def _wheel_only_hook(pyproject: str) -> str | None:
+    """The configured build hook that compiles only the wheel, if there is one."""
+    for line in pyproject.split("\n"):
+        stripped = line.strip()
+        if _WHEEL_ONLY_HOOK_HEADER.match(stripped):
+            return stripped
+    return None
+
+
 def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     """Gate 3. Is this Python we can build, and Python that is not generated?"""
     languages = gh.json(f"repos/{slug}/languages")
@@ -307,11 +445,22 @@ def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         if isinstance(entry, dict)
     } if isinstance(root, list) else set()
     markers = sorted(root_names & set(_COMPILED_MARKERS))
+    pyproject = (
+        _decoded(gh.json(f"repos/{slug}/contents/pyproject.toml"))
+        if "pyproject.toml" in root_names
+        else ""
+    )
+    build_compilers, requires_line = _build_requires(pyproject)
+    wheel_hook = _wheel_only_hook(pyproject)
     data = {
         "python_share": round(python_share, 3),
         "compiled_languages": compiled,
         "root_markers": markers,
         "languages": languages,
+        "build_requires_compilers": build_compilers,
+        "build_requires_line": requires_line,
+        "wheel_only_hook": wheel_hook,
+        "environment_plan": None,
     }
     if total and python_share < MINIMUM_PYTHON_SHARE:
         dominant = max(languages, key=languages.get)
@@ -334,6 +483,36 @@ def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
                 "a compiler is in the build ("
                 + ", ".join(markers + sorted(compiled))
                 + ") and this host has no Rust or MSVC toolchain"
+            ),
+            data=data,
+        )
+    # Every file is a `.py` and a compiler still runs at install time. When the
+    # hook only builds the wheel, the source tree itself imports, so the target
+    # stays usable under a plan that never installs the package.
+    if build_compilers or wheel_hook:
+        data["environment_plan"] = "source-tree" if wheel_hook else None
+        evidence = wheel_hook or requires_line or ", ".join(build_compilers)
+        if wheel_hook:
+            return _gate(
+                "pure-python",
+                passed=True,
+                blocking=True,
+                detail=(
+                    f"Python is {python_share:.0%} of the source, but the wheel "
+                    f"compiles ({evidence}). This host has no MSVC, so use the "
+                    "`source-tree` environment plan: install the dependencies, "
+                    "put the workspace on the path, never install the package."
+                ),
+                data=data,
+            )
+        return _gate(
+            "pure-python",
+            passed=False,
+            blocking=True,
+            detail=(
+                f"Python is {python_share:.0%} of the source, but a compiler is "
+                f"in the build back end ({evidence}) and this host has no Rust "
+                "or MSVC toolchain"
             ),
             data=data,
         )
@@ -362,19 +541,45 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
                 detail=f"{relative} refuses AI-assisted work: {ban.group(0)!r}",
                 data={"source": relative, "quote": ban.group(0)},
             )
+        # Three separate questions, not one. A project can permit the code and
+        # still refuse a model-written body or a commit under a tool's account,
+        # and those constraints have to reach the run rather than be summarised
+        # away into the word "pass".
         disclosure = _POLICY_DISCLOSURE.search(flat)
+        own_words = _POLICY_OWN_WORDS.search(flat)
+        human_account = _POLICY_HUMAN_ACCOUNT.search(flat)
+        constraints = [
+            {"kind": kind, "quote": match.group(0)}
+            for kind, match in (
+                ("disclosure", disclosure),
+                ("own-words", own_words),
+                ("human-account", human_account),
+            )
+            if match
+        ]
+        if constraints:
+            summary = "; ".join(
+                f"{entry['kind']}: {entry['quote']!r}" for entry in constraints
+            )
+            detail = f"{relative} permits the code and constrains the submission - {summary}"
+            if own_words:
+                detail += (
+                    ". Set `requires_own_words` in the target policy so "
+                    "prepare-submission refuses a generated body."
+                )
+        else:
+            detail = f"{relative} says nothing that closes AI-assisted work"
         return _gate(
             "policy",
             passed=True,
             blocking=True,
-            detail=(
-                f"{relative} requires disclosure: {disclosure.group(0)!r}"
-                if disclosure
-                else f"{relative} says nothing that closes AI-assisted work"
-            ),
+            detail=detail,
             data={
                 "source": relative,
                 "requires_disclosure": bool(disclosure),
+                "requires_own_words": bool(own_words),
+                "requires_human_account": bool(human_account),
+                "constraints": constraints,
                 "quote": disclosure.group(0) if disclosure else None,
             },
         )

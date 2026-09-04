@@ -23,7 +23,18 @@ appreciates a `Co-authored-by:` trailer crediting the tool; attrs closes any pul
 request that carries one; the Linux kernel and Kubernetes want an `Assisted-by:`
 line instead. Set it from the project's text, not from habit.
 
-The three files here are the three shapes seen so far: `pytest.json` permits with
-disclosure and wants a changelog fragment, `starlette.json` permits and makes a
-duplicate search mandatory, and `attrs.json` is `restricted` and exists as the
-case Mailman has to refuse rather than as a target.
+`requires_own_words` is separate from `stance`, because a project can permit the
+code and refuse the prose. freqtrade's contributing guide says "Never let an LLM
+speak for you" and asks that comments, issues and pull request descriptions be in
+the author's own words. Mailman's draft body is model-written, so under that rule
+the body is the violation however good the patch is. Preparation blocks with
+`policy-requires-own-words` until a person has rewritten the body and set
+`own_words_confirmed`. The screen's policy gate reports the sentence that decided
+it, so the constraint reaches the run instead of being summarised into a verdict
+word.
+
+The files here are the shapes seen so far: `pytest.json` permits with disclosure
+and wants a changelog fragment, `starlette.json` permits and makes a duplicate
+search mandatory, `freqtrade.json` permits the code and requires the author's own
+words, and `attrs.json` is `restricted` and exists as the case Mailman has to
+refuse rather than as a target.

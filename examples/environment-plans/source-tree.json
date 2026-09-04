@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "steps": [
+    {
+      "name": "create-virtualenv",
+      "command": ["python", "-m", "venv", "{environment}"],
+      "working_directory": "run"
+    },
+    {
+      "name": "install-dependencies-only",
+      "command": [
+        "{environment}/Scripts/python.exe",
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "-r",
+        "requirements.txt"
+      ],
+      "working_directory": "workspace"
+    },
+    {
+      "name": "put-the-source-tree-on-the-path",
+      "command": [
+        "{environment}/Scripts/python.exe",
+        "-c",
+        "import pathlib,sysconfig;pathlib.Path(sysconfig.get_paths()['purelib'],'mailman-target.pth').write_text(r'{workspace}',encoding='utf-8')"
+      ],
+      "working_directory": "run"
+    }
+  ],
+  "register": [
+    {
+      "name": "python",
+      "executable": "{environment}/Scripts/python.exe",
+      "probe_arguments": ["--version"]
+    }
+  ]
+}

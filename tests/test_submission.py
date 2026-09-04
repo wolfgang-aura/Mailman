@@ -204,6 +204,7 @@ class TargetPolicyTests(unittest.TestCase):
             [
                 "attrs.json",
                 "ffn.json",
+                "freqtrade.json",
                 "langchain.json",
                 "pytest.json",
                 "starlette.json",
@@ -399,6 +400,21 @@ class PrepareSubmissionTests(unittest.TestCase):
     def test_an_unread_policy_blocks(self) -> None:
         record = self._prepare(policy=_policy(stance="unknown"))
         self.assertIn("policy-unread", record["blocking_codes"])
+
+    def test_a_project_requiring_the_authors_own_words_blocks_a_generated_body(
+        self,
+    ) -> None:
+        # freqtrade permits AI-assisted code and refuses an AI-written
+        # description. https://github.com/wolfgang-aura/Mailman/issues/43
+        record = self._prepare(policy=_policy(requires_own_words=True))
+        self.assertFalse(record["ready"])
+        self.assertIn("policy-requires-own-words", record["blocking_codes"])
+
+    def test_own_words_clears_once_a_person_has_rewritten_the_body(self) -> None:
+        record = self._prepare(
+            policy=_policy(requires_own_words=True, own_words_confirmed=True)
+        )
+        self.assertNotIn("policy-requires-own-words", record["blocking_codes"])
 
     def test_a_missing_changelog_entry_blocks(self) -> None:
         record = self._prepare(policy=_policy(changelog_directory="changelog"))
