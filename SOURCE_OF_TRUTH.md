@@ -90,6 +90,16 @@ Last verified: 2026-09-04 in `Asia/Singapore`.
   bytes are the posted bytes. `mailman handoff-check` re-hashes the file and exits non-zero
   once it changed after the preview. A first-person read-or-tested claim exits non-zero and
   names the line. 447 unit tests, up from 431.
+- Provenance-gate deployment: commit `23107ba` passed GitHub Actions in run `33855131252`.
+  It carries #48. `screen-target` now runs seven gates, with provenance reported first: a
+  repository passes at a year old with 500 stars, or at ten outside authors in ninety days,
+  and a fork is refused outright. It reuses the freshness gate's author count, so it costs no
+  extra API call. Re-screened live on 2026-09-04: `pydantic/pydantic-ai` 44 authors,
+  `langchain-ai/langchain` 34, `pmorissette/ffn` 11, all passing. An environment plan step may
+  start only a Python interpreter or `git`; `check_executable` runs in `load_plan` and again on
+  the substituted command in `prepare_environment`. This is not isolation. A hostile `setup.py`
+  in a repository that clears the gate still executes as the invoking user, and no sandbox
+  exists. 466 unit tests, up from 447.
 - Screening-gate deployment: commit `fc0ccae` passed GitHub Actions in run `33837443444`.
   It carries #42, #43 and #44. Freshness fails when every merge in the window is by one author
   who wrote 35% or more of the pattern-window merges over a sample of at least eight, and the
