@@ -79,6 +79,13 @@ from mailman.toolchain import (
 from mailman.transcript import count_commands, parse_stream
 from mailman.view import render_run, summarize_runs, write_transcript_logs
 from mailman.review_page import write_run_page
+from mailman.provenance import (
+    collect_contributions,
+    deletion_is_safe,
+    load_provenance,
+    record_provenance,
+    render_contributions,
+)
 from mailman.identity import (
     Identity,
     author_violations,
@@ -380,6 +387,27 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("run_id")
     prepare.add_argument("--timeout", type=float, default=600)
     prepare.add_argument("--data-root", type=Path)
+
+    provenance_parser = subparsers.add_parser(
+        "provenance",
+        help="record the patch and the upstream state of a run's contribution",
+    )
+    provenance_parser.add_argument("run_id")
+    provenance_parser.add_argument("--pr", type=int, help="upstream pull request number")
+    provenance_parser.add_argument("--head", help="fork branch the work was pushed to")
+    provenance_parser.add_argument(
+        "--superseded-by",
+        type=int,
+        help="pull request that carried this work after ours was closed",
+    )
+    provenance_parser.add_argument("--data-root", type=Path)
+
+    contributions_parser = subparsers.add_parser(
+        "contributions",
+        help="list every run's upstream commit, its state, and its permalink",
+    )
+    contributions_parser.add_argument("--json", action="store_true")
+    contributions_parser.add_argument("--data-root", type=Path)
 
     identity_parser = subparsers.add_parser(
         "identity",
@@ -1306,6 +1334,36 @@ def _prepare_workspace(arguments: argparse.Namespace) -> int:
     return 1
 
 
+def _provenance(arguments: argparse.Namespace) -> int:
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    record = record_provenance(
+        run_id=run.run_id,
+        run_directory=run_directory,
+        repository=run.repository,
+        base_commit=run.base_commit,
+        pull_request=arguments.pr,
+        head=arguments.head,
+        superseded_by=arguments.superseded_by,
+    )
+    print(json.dumps(record, indent=2))
+    safe, reason = deletion_is_safe(record)
+    print(
+        f"\nfork deletion: {'safe' if safe else 'not safe'} -- {reason}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _contributions(arguments: argparse.Namespace) -> int:
+    data_root = (arguments.data_root or default_data_root()).resolve()
+    found = collect_contributions(data_root)
+    if arguments.json:
+        print(json.dumps([entry.to_dict() for entry in found], indent=2))
+    else:
+        print(render_contributions(found))
+    return 0
+
+
 def _identity(arguments: argparse.Namespace) -> int:
     data_root = (arguments.data_root or default_data_root()).resolve()
     if arguments.set_name or arguments.set_email:
@@ -1663,6 +1721,10 @@ def main(arguments: list[str] | None = None) -> int:
             return _probe_tool(parsed)
         if parsed.subcommand == "prepare-workspace":
             return _prepare_workspace(parsed)
+        if parsed.subcommand == "provenance":
+            return _provenance(parsed)
+        if parsed.subcommand == "contributions":
+            return _contributions(parsed)
         if parsed.subcommand == "identity":
             return _identity(parsed)
         if parsed.subcommand == "check-authors":

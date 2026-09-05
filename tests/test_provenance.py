@@ -1,0 +1,286 @@
+"""Evidence a contribution survives the fork that carried it."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from mailman.provenance import (
+    ProvenanceError,
+    collect_contributions,
+    contribution_from_record,
+    deletion_is_safe,
+    load_provenance,
+    record_provenance,
+    render_contributions,
+    repository_slug,
+    write_patch,
+)
+
+
+def _git(repository: Path, *arguments: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repository), *arguments],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    return completed.stdout.strip()
+
+
+def _repository(root: Path) -> tuple[Path, str]:
+    path = root / "workspace"
+    path.mkdir(parents=True)
+    _git(path, "init", "--initial-branch=main")
+    _git(path, "config", "user.name", "wolfgang-aura")
+    _git(path, "config", "user.email", "9+w@users.noreply.github.com")
+    (path / "core.py").write_text("value = 1\n", encoding="utf-8")
+    _git(path, "add", "core.py")
+    _git(path, "commit", "-m", "base")
+    base = _git(path, "rev-parse", "HEAD")
+    (path / "core.py").write_text("value = 2\n", encoding="utf-8")
+    _git(path, "commit", "-am", "Align the value")
+    return path, base
+
+
+def _merged(repository: str, number: int) -> dict[str, object]:
+    return {
+        "available": True,
+        "state": "MERGED",
+        "merged_at": "2026-09-06T00:00:00Z",
+        "merge_commit": "b" * 40,
+        "url": f"https://github.com/{repository}/pull/{number}",
+        "title": "Align the value",
+    }
+
+
+def _closed(repository: str, number: int) -> dict[str, object]:
+    return {
+        "available": True,
+        "state": "CLOSED",
+        "merged_at": None,
+        "merge_commit": None,
+        "url": f"https://github.com/{repository}/pull/{number}",
+        "title": "Align the value",
+    }
+
+
+def _offline(repository: str, number: int) -> dict[str, object]:
+    return {"available": False, "detail": "gh is not installed"}
+
+
+class RepositorySlugTests(unittest.TestCase):
+    def test_a_clone_url_becomes_a_slug(self) -> None:
+        self.assertEqual(
+            repository_slug("https://github.com/pmorissette/ffn.git"), "pmorissette/ffn"
+        )
+
+    def test_an_ssh_url_becomes_a_slug(self) -> None:
+        self.assertEqual(
+            repository_slug("git@github.com:pmorissette/ffn.git"), "pmorissette/ffn"
+        )
+
+    def test_a_slug_survives_unchanged(self) -> None:
+        self.assertEqual(repository_slug("pmorissette/ffn"), "pmorissette/ffn")
+
+    def test_nonsense_is_refused(self) -> None:
+        with self.assertRaises(ProvenanceError):
+            repository_slug("not a repository")
+
+
+class PatchTests(unittest.TestCase):
+    def test_the_patch_keeps_the_author_and_the_message(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            workspace, base = _repository(root)
+            destination = write_patch(workspace, base, root / "out.patch")
+            text = destination.read_text(encoding="utf-8")
+            self.assertIn("Align the value", text)
+            self.assertIn("wolfgang-aura", text)
+            self.assertIn("-value = 1", text)
+            self.assertIn("+value = 2", text)
+
+    def test_a_branch_with_no_commits_is_refused(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            workspace, _ = _repository(root)
+            head = _git(workspace, "rev-parse", "HEAD")
+            with self.assertRaises(ProvenanceError):
+                write_patch(workspace, head, root / "out.patch")
+
+
+class RecordTests(unittest.TestCase):
+    def test_a_merged_pull_request_is_recorded_with_its_merge_commit(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            workspace, base = _repository(root)
+            record = record_provenance(
+                run_id="20260906T000000Z-cccccc",
+                run_directory=root,
+                repository="https://github.com/pmorissette/ffn.git",
+                base_commit=base,
+                workspace=workspace,
+                pull_request=330,
+                state_lookup=_merged,
+            )
+            self.assertEqual(record["repository"], "pmorissette/ffn")
+            self.assertEqual(record["state"], "MERGED")
+            self.assertEqual(record["merge_commit"], "b" * 40)
+            self.assertEqual(len(record["commits"]), 1)
+            self.assertTrue(
+                record["permalinks"][0].startswith(
+                    "https://github.com/pmorissette/ffn/commit/"
+                )
+            )
+            self.assertTrue(Path(record["patch_path"]).is_file())
+            self.assertEqual(load_provenance(root), record)
+
+    def test_a_superseded_pull_request_names_the_one_that_carried_it(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            workspace, base = _repository(root)
+            record = record_provenance(
+                run_id="20260906T000000Z-dddddd",
+                run_directory=root,
+                repository="pmorissette/ffn",
+                base_commit=base,
+                workspace=workspace,
+                pull_request=328,
+                superseded_by=330,
+                state_lookup=_closed,
+            )
+            self.assertEqual(record["state"], "CLOSED")
+            self.assertEqual(record["superseded_by"], 330)
+
+    def test_a_second_pass_keeps_what_the_first_established(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            workspace, base = _repository(root)
+            record_provenance(
+                run_id="20260906T000000Z-eeeeee",
+                run_directory=root,
+                repository="pmorissette/ffn",
+                base_commit=base,
+                workspace=workspace,
+                pull_request=328,
+                superseded_by=330,
+                state_lookup=_closed,
+            )
+            second = record_provenance(
+                run_id="20260906T000000Z-eeeeee",
+                run_directory=root,
+                repository="pmorissette/ffn",
+                base_commit=base,
+                workspace=workspace,
+                state_lookup=_closed,
+            )
+            self.assertEqual(second["pull_request"], 328)
+            self.assertEqual(second["superseded_by"], 330)
+
+    def test_an_unreachable_github_leaves_the_state_unclaimed(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            workspace, base = _repository(root)
+            record = record_provenance(
+                run_id="20260906T000000Z-ffffff",
+                run_directory=root,
+                repository="pmorissette/ffn",
+                base_commit=base,
+                workspace=workspace,
+                pull_request=330,
+                state_lookup=_offline,
+            )
+            self.assertIsNone(record["state"])
+            self.assertFalse(record["lookup"]["available"])
+
+
+class DeletionTests(unittest.TestCase):
+    def test_a_merged_pull_request_frees_the_fork(self) -> None:
+        safe, reason = deletion_is_safe({"state": "MERGED"})
+        self.assertTrue(safe)
+        self.assertIn("upstream", reason)
+
+    def test_an_open_pull_request_holds_the_fork(self) -> None:
+        safe, reason = deletion_is_safe({"state": "OPEN"})
+        self.assertFalse(safe)
+        self.assertIn("would close it", reason)
+
+    def test_a_patch_on_disk_frees_a_closed_pull_request(self) -> None:
+        with TemporaryDirectory() as name:
+            patch = Path(name) / "contribution.patch"
+            patch.write_text("From abc\n", encoding="utf-8")
+            safe, reason = deletion_is_safe(
+                {"state": "CLOSED", "patch_path": str(patch)}
+            )
+            self.assertTrue(safe)
+            self.assertIn("patch", reason)
+
+    def test_a_closed_pull_request_with_no_patch_is_not_safe(self) -> None:
+        safe, reason = deletion_is_safe({"state": "CLOSED"})
+        self.assertFalse(safe)
+        self.assertIn("nothing proves", reason)
+
+    def test_a_recorded_patch_that_is_gone_is_not_safe(self) -> None:
+        safe, _ = deletion_is_safe(
+            {"state": "CLOSED", "patch_path": "/nowhere/contribution.patch"}
+        )
+        self.assertFalse(safe)
+
+
+class ListingTests(unittest.TestCase):
+    def test_runs_without_provenance_are_skipped(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            (data_root / "20260101T000000Z-aaaaaa").mkdir()
+            self.assertEqual(collect_contributions(data_root), [])
+            self.assertIn("no run", render_contributions([]))
+
+    def test_a_recorded_run_is_listed_with_its_permalink(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            run_directory = data_root / "20260906T000000Z-cccccc"
+            workspace_root = run_directory
+            workspace, base = _repository(workspace_root)
+            record_provenance(
+                run_id="20260906T000000Z-cccccc",
+                run_directory=run_directory,
+                repository="pmorissette/ffn",
+                base_commit=base,
+                workspace=workspace,
+                pull_request=330,
+                state_lookup=_merged,
+            )
+            found = collect_contributions(data_root)
+            self.assertEqual(len(found), 1)
+            rendered = render_contributions(found)
+            self.assertIn("pmorissette/ffn", rendered)
+            self.assertIn("#330", rendered)
+            self.assertIn("MERGED", rendered)
+            self.assertIn("/commit/", rendered)
+            self.assertIn("merged as", rendered)
+
+    def test_a_record_round_trips_through_the_dataclass(self) -> None:
+        record = {
+            "run_id": "r",
+            "repository": "pmorissette/ffn",
+            "commits": ["a" * 40],
+            "pull_request": 328,
+            "state": "CLOSED",
+            "superseded_by": 330,
+        }
+        contribution = contribution_from_record(record)
+        payload = contribution.to_dict()
+        self.assertEqual(payload["superseded_by"], 330)
+        self.assertEqual(
+            payload["permalinks"],
+            ["https://github.com/pmorissette/ffn/commit/" + "a" * 40],
+        )
+        self.assertEqual(json.loads(json.dumps(payload))["state"], "CLOSED")
+
+
+if __name__ == "__main__":
+    unittest.main()
