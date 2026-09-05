@@ -14,9 +14,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 HANDOFF_FILENAME = "handoff.json"
@@ -43,6 +45,119 @@ _FIRST_PERSON_CLAIMS = (
         r"\bmy\s+(?:own\s+)?(?:testing|machine|checkout|reading)\b", re.IGNORECASE
     ),
 )
+
+
+# A claim that something still works is a test result, not an opinion, and it
+# is the kind a maintainer checks rather than takes on trust. A pull request
+# said ndarray input was "unchanged" when it had never worked at all, and the
+# maintainer found that in minutes.
+#
+# See https://github.com/wolfgang-aura/Mailman/issues/50.
+_PRESERVATION_TRIGGERS = re.compile(
+    r"\b(?:"
+    r"unchanged|unaffected|preserved|untouched|"
+    r"still\s+works?|still\s+passes|"
+    r"not\s+(?:broken|affected|changed|altered)|"
+    r"no\s+(?:behaviou?ral\s+)?change|"
+    r"behaviou?r\s+is\s+(?:the\s+same|identical)|"
+    r"backwards?[- ]compatible"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_BULLET = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+
+
+def preservation_claims(text: str) -> list[dict[str, Any]]:
+    """Every line asserting that something kept working, and its list items.
+
+    A lead-in such as "Existing behavior is unchanged for:" makes each bullet
+    under it a separate claim about a separate input shape. Returning only the
+    lead-in would hide exactly the item that turns out to be false, so the
+    items come back too, attributed to the line that introduced them.
+    """
+    lines = text.replace("\r\n", "\n").split("\n")
+    found: list[dict[str, Any]] = []
+    lead_in: int | None = None
+    for number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        is_bullet = bool(_BULLET.match(line))
+        if lead_in is not None and is_bullet:
+            found.append({"line": number, "text": stripped, "under": lead_in})
+            continue
+        if not is_bullet:
+            lead_in = None
+        if _PRESERVATION_TRIGGERS.search(stripped):
+            found.append({"line": number, "text": stripped, "under": None})
+            if not is_bullet:
+                lead_in = number
+    return found
+
+
+def head_owner(head: str | None) -> str | None:
+    """The account a pull request's head branch lives under, if it is named."""
+    if not head or ":" not in head:
+        return None
+    owner = head.split(":", 1)[0].strip()
+    return owner or None
+
+
+def github_owner_type(owner: str) -> str | None:
+    """"User", "Organization", or None when GitHub could not be asked.
+
+    None is not a pass. The caller turns it into a warning that says the
+    question went unanswered, because an unanswered question here is what the
+    org-owned fork looked like right up until the push was denied.
+    """
+    if shutil.which("gh") is None:
+        return None
+    try:
+        completed = subprocess.run(
+            ["gh", "api", f"users/{owner}", "--jq", ".type"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+            shell=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
+def maintainer_edit_warning(owner: str | None, owner_type: str | None) -> str | None:
+    """Why a maintainer will not be able to push to this branch.
+
+    GitHub grants "allow edits by maintainers" only on forks owned by a user
+    account. On an organisation-owned fork the permission cannot be granted,
+    `maintainerCanModify` still reports true, and the maintainer finds out only
+    when the push is denied. That is how pmorissette/ffn#328 was closed and
+    reopened as somebody else's pull request.
+
+    See https://github.com/wolfgang-aura/Mailman/issues/49.
+    """
+    if owner is None:
+        return None
+    if owner_type == "Organization":
+        return (
+            f"{owner} is a GitHub organisation. Maintainer edits cannot be "
+            "granted on an organisation-owned fork, so a maintainer who wants "
+            "to amend this branch will be denied the push, and may close the "
+            "pull request instead. Push from a fork owned by your user account."
+        )
+    if owner_type is None:
+        return (
+            f"could not determine whether {owner} is a user or an organisation. "
+            "If it is an organisation, maintainers will not be able to push to "
+            "this branch."
+        )
+    return None
 
 
 def body_digest(text: str) -> str:
@@ -117,6 +232,40 @@ def _preamble(record: dict[str, Any], claims: list[dict[str, Any]]) -> list[str]
         f"Digest:    {record['digest']}",
         "",
     ]
+    warning = record.get("maintainer_edit_warning")
+    if warning:
+        lines.extend(
+            [
+                "-" * 72,
+                "FORK OWNERSHIP -- a maintainer may not be able to push here",
+                "-" * 72,
+                "",
+                "  " + warning,
+                "",
+            ]
+        )
+    preservation = record.get("preservation_claims") or []
+    if preservation:
+        lines.extend(
+            [
+                "-" * 72,
+                "PRESERVATION CLAIMS -- each one is a test result",
+                "-" * 72,
+                "",
+            ]
+        )
+        for claim in preservation:
+            indent = "    " if claim.get("under") else "  "
+            lines.append(f"{indent}line {claim['line']}: {claim['text']}")
+        lines.extend(
+            [
+                "",
+                "Each of these says something kept working. Name the command that",
+                "showed it, or rewrite it as what you actually established.",
+                '"Not exercised by this change" is honest and costs nothing.',
+                "",
+            ]
+        )
     if claims:
         lines.extend(
             [
@@ -175,6 +324,7 @@ def build_handoff(
     base: str | None = None,
     issue_number: int | None = None,
     data_root: Path | None = None,
+    owner_type_lookup: Callable[[str], str | None] = github_owner_type,
 ) -> tuple[dict[str, Any], str]:
     """Record the body's digest and render the block that hands it over."""
     resolved = body_path.resolve()
@@ -201,6 +351,8 @@ def build_handoff(
         base=base,
         issue_number=issue_number,
     )
+    owner = head_owner(head) if kind == "pull-request" else None
+    owner_type = owner_type_lookup(owner) if owner else None
     verify = f"mailman handoff-check {run_id}"
     if data_root is not None:
         verify += f' --data-root "{data_root}"'
@@ -217,6 +369,10 @@ def build_handoff(
         "body_path": str(resolved),
         "digest": body_digest(body),
         "first_person_claims": first_person_claims(body),
+        "preservation_claims": preservation_claims(body),
+        "head_owner": owner,
+        "head_owner_type": owner_type,
+        "maintainer_edit_warning": maintainer_edit_warning(owner, owner_type),
         "command": command,
         "verify_command": verify,
     }
@@ -280,4 +436,6 @@ def check_handoff(run_directory: Path) -> dict[str, Any]:
         "detail": "the body matches the text the last handoff printed.",
         "digest": current,
         "first_person_claims": record.get("first_person_claims") or [],
+        "preservation_claims": record.get("preservation_claims") or [],
+        "maintainer_edit_warning": record.get("maintainer_edit_warning"),
     }
