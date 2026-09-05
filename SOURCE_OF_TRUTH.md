@@ -108,6 +108,16 @@ Last verified: 2026-09-04 in `Asia/Singapore`.
   `prepare-submission`. The pure-python gate reads `[build-system].requires`, failing a
   compiling back end and passing a wheel-only hook with the new `source-tree` environment plan.
   457 unit tests, up from 447.
+- Publication-gate deployment: commit `a6bc0a4` passed GitHub Actions in run `33993117842`.
+  It carries #49, #50, #51 and #52, all four found by what happened to pmorissette/ffn#328.
+  `prepare-workspace` writes a configured identity into the clone's own git config and
+  `check-authors` refuses a branch carrying an address outside the allowlist, so a run can no
+  longer commit under the machine's global identity. The handoff block resolves the head fork
+  owner's account type and warns that maintainer edits cannot be granted on an
+  organisation-owned fork, and lists every preservation claim in the body next to the demand
+  to name the command that showed it. `provenance` writes the run's commits as a patch file
+  and records the pull request's state, merge commit and upstream permalink; `contributions`
+  lists them; `deletion_is_safe` decides whether a fork can go. 510 unit tests, up from 477.
 
 ### Reproduce gate, live-verified 2026-09-04
 
