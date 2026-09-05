@@ -1,9 +1,11 @@
+"""Whose address ends up on a commit that leaves this machine."""
+
 from __future__ import annotations
 
 import subprocess
+import unittest
 from pathlib import Path
-
-import pytest
+from tempfile import TemporaryDirectory
 
 from mailman.identity import (
     Identity,
@@ -19,6 +21,7 @@ from mailman.identity import (
 
 
 PRIVATE = "169568318+wolfgang-aura@users.noreply.github.com"
+OTHER_PRIVATE = "9+someone@users.noreply.github.com"
 PERSONAL = "someone.real@gmail.com"
 
 
@@ -33,9 +36,9 @@ def _git(repository: Path, *arguments: str) -> str:
     return completed.stdout.strip()
 
 
-@pytest.fixture
-def repository(tmp_path: Path) -> Path:
-    path = tmp_path / "repo"
+def _repository(root: Path) -> Path:
+    """A clone whose only identity is the machine's, as a fresh one would be."""
+    path = root / "repo"
     path.mkdir()
     _git(path, "init", "--initial-branch=main")
     _git(path, "config", "user.name", "Machine Default")
@@ -46,88 +49,129 @@ def repository(tmp_path: Path) -> Path:
     return path
 
 
-def test_private_email_recognises_the_noreply_suffix() -> None:
-    assert is_private_email(PRIVATE)
-    assert is_private_email("  " + PRIVATE.upper() + " ")
-    assert not is_private_email(PERSONAL)
+class PrivateEmailTests(unittest.TestCase):
+    def test_the_noreply_suffix_is_recognised(self) -> None:
+        self.assertTrue(is_private_email(PRIVATE))
+        self.assertTrue(is_private_email("  " + PRIVATE.upper() + " "))
+        self.assertFalse(is_private_email(PERSONAL))
 
 
-def test_resolve_prefers_the_environment_over_the_data_root(tmp_path: Path) -> None:
-    save_identity(tmp_path, Identity(name="From File", email=PRIVATE))
-    resolved = resolve_identity(
-        tmp_path,
-        environment={"MAILMAN_GIT_NAME": "From Env", "MAILMAN_GIT_EMAIL": PRIVATE},
-    )
-    assert resolved == Identity(name="From Env", email=PRIVATE)
+class ResolutionTests(unittest.TestCase):
+    def test_the_environment_beats_the_data_root(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            save_identity(root, Identity(name="From File", email=PRIVATE))
+            resolved = resolve_identity(
+                root,
+                environment={
+                    "MAILMAN_GIT_NAME": "From Env",
+                    "MAILMAN_GIT_EMAIL": PRIVATE,
+                },
+            )
+            self.assertEqual(resolved, Identity(name="From Env", email=PRIVATE))
+
+    def test_nothing_configured_never_falls_back_to_the_machine(self) -> None:
+        # The whole point: an unset identity stays visible instead of being
+        # quietly replaced by whatever git config --global happens to hold.
+        with TemporaryDirectory() as name:
+            self.assertIsNone(resolve_identity(Path(name), environment={}))
+
+    def test_a_saved_identity_round_trips(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            identity = Identity(name="wolfgang-aura", email=PRIVATE)
+            save_identity(root, identity)
+            self.assertEqual(load_identity(root), identity)
+
+    def test_half_an_environment_is_an_error(self) -> None:
+        with TemporaryDirectory() as name:
+            with self.assertRaises(IdentityError):
+                resolve_identity(
+                    Path(name), environment={"MAILMAN_GIT_NAME": "No Address"}
+                )
+
+    def test_a_malformed_address_is_an_error(self) -> None:
+        with TemporaryDirectory() as name:
+            with self.assertRaises(IdentityError):
+                resolve_identity(
+                    Path(name),
+                    environment={
+                        "MAILMAN_GIT_NAME": "N",
+                        "MAILMAN_GIT_EMAIL": "not-an-email",
+                    },
+                )
+
+    def test_a_file_that_is_not_json_is_an_error(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "identity.json").write_text("{", encoding="utf-8")
+            with self.assertRaises(IdentityError):
+                load_identity(root)
 
 
-def test_resolve_never_falls_back_to_the_machine(tmp_path: Path) -> None:
-    # The whole point: an unconfigured identity is visible, not substituted.
-    assert resolve_identity(tmp_path, environment={}) is None
+class ApplicationTests(unittest.TestCase):
+    def test_the_applied_identity_beats_the_repository_default(self) -> None:
+        with TemporaryDirectory() as name:
+            repository = _repository(Path(name))
+            apply_identity(repository, Identity(name="wolfgang-aura", email=PRIVATE))
+            (repository / "file.txt").write_text("changed\n", encoding="utf-8")
+            _git(repository, "commit", "-am", "change")
+            self.assertEqual(_git(repository, "log", "-1", "--format=%ae"), PRIVATE)
 
 
-def test_saved_identity_round_trips(tmp_path: Path) -> None:
-    identity = Identity(name="wolfgang-aura", email=PRIVATE)
-    save_identity(tmp_path, identity)
-    assert load_identity(tmp_path) == identity
+class ViolationTests(unittest.TestCase):
+    def test_a_commit_under_the_machine_identity_is_a_violation(self) -> None:
+        with TemporaryDirectory() as name:
+            repository = _repository(Path(name))
+            base = _git(repository, "rev-parse", "HEAD")
+            (repository / "file.txt").write_text("changed\n", encoding="utf-8")
+            _git(repository, "commit", "-am", "change")
+
+            commits = branch_commits(repository, base)
+            self.assertEqual(len(commits), 1)
+            self.assertEqual(commits[0]["author_email"], PERSONAL)
+
+            violations = author_violations(
+                commits, Identity(name="wolfgang-aura", email=PRIVATE)
+            )
+            self.assertEqual(len(violations), 1)
+            self.assertEqual(violations[0]["sha"], commits[0]["sha"])
+            roles = {entry["role"] for entry in violations[0]["emails"]}
+            self.assertEqual(roles, {"author", "committer"})
+
+    def test_a_noreply_address_passes_whoever_owns_it(self) -> None:
+        with TemporaryDirectory() as name:
+            repository = _repository(Path(name))
+            base = _git(repository, "rev-parse", "HEAD")
+            apply_identity(
+                repository, Identity(name="Someone Else", email=OTHER_PRIVATE)
+            )
+            (repository / "file.txt").write_text("changed\n", encoding="utf-8")
+            _git(repository, "commit", "-am", "change")
+            commits = branch_commits(repository, base)
+            self.assertEqual(
+                author_violations(
+                    commits, Identity(name="wolfgang-aura", email=PRIVATE)
+                ),
+                [],
+            )
+
+    def test_without_a_configured_identity_a_personal_address_is_a_violation(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as name:
+            repository = _repository(Path(name))
+            base = _git(repository, "rev-parse", "HEAD")
+            (repository / "file.txt").write_text("changed\n", encoding="utf-8")
+            _git(repository, "commit", "-am", "change")
+            self.assertTrue(author_violations(branch_commits(repository, base), None))
+
+    def test_an_unchanged_branch_has_nothing_to_check(self) -> None:
+        with TemporaryDirectory() as name:
+            repository = _repository(Path(name))
+            base = _git(repository, "rev-parse", "HEAD")
+            self.assertEqual(branch_commits(repository, base), [])
 
 
-def test_a_half_configured_environment_is_an_error(tmp_path: Path) -> None:
-    with pytest.raises(IdentityError):
-        resolve_identity(tmp_path, environment={"MAILMAN_GIT_NAME": "No Address"})
-
-
-def test_a_malformed_address_is_an_error(tmp_path: Path) -> None:
-    with pytest.raises(IdentityError):
-        resolve_identity(
-            tmp_path,
-            environment={"MAILMAN_GIT_NAME": "N", "MAILMAN_GIT_EMAIL": "not-an-email"},
-        )
-
-
-def test_applied_identity_beats_the_repository_default(repository: Path) -> None:
-    apply_identity(repository, Identity(name="wolfgang-aura", email=PRIVATE))
-    (repository / "file.txt").write_text("changed\n", encoding="utf-8")
-    _git(repository, "commit", "-am", "change")
-    assert _git(repository, "log", "-1", "--format=%ae") == PRIVATE
-
-
-def test_a_commit_under_the_machine_identity_is_a_violation(repository: Path) -> None:
-    base = _git(repository, "rev-parse", "HEAD")
-    (repository / "file.txt").write_text("changed\n", encoding="utf-8")
-    _git(repository, "commit", "-am", "change")
-    commits = branch_commits(repository, base)
-    assert len(commits) == 1
-    assert commits[0]["author_email"] == PERSONAL
-
-    identity = Identity(name="wolfgang-aura", email=PRIVATE)
-    violations = author_violations(commits, identity)
-    assert len(violations) == 1
-    assert violations[0]["sha"] == commits[0]["sha"]
-    roles = {entry["role"] for entry in violations[0]["emails"]}
-    assert roles == {"author", "committer"}
-
-
-def test_a_noreply_address_passes_whoever_owns_it(repository: Path) -> None:
-    base = _git(repository, "rev-parse", "HEAD")
-    apply_identity(repository, Identity(name="Someone Else", email="9+x" + "@users.noreply.github.com"))
-    (repository / "file.txt").write_text("changed\n", encoding="utf-8")
-    _git(repository, "commit", "-am", "change")
-    commits = branch_commits(repository, base)
-    identity = Identity(name="wolfgang-aura", email=PRIVATE)
-    assert author_violations(commits, identity) == []
-
-
-def test_without_a_configured_identity_every_personal_address_is_a_violation(
-    repository: Path,
-) -> None:
-    base = _git(repository, "rev-parse", "HEAD")
-    (repository / "file.txt").write_text("changed\n", encoding="utf-8")
-    _git(repository, "commit", "-am", "change")
-    commits = branch_commits(repository, base)
-    assert author_violations(commits, None)
-
-
-def test_an_unchanged_branch_has_nothing_to_check(repository: Path) -> None:
-    base = _git(repository, "rev-parse", "HEAD")
-    assert branch_commits(repository, base) == []
+if __name__ == "__main__":
+    unittest.main()
