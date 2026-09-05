@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mailman.executor import execute
+from mailman.identity import Identity, apply_identity
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,7 @@ def prepare_workspace(
     base_commit: str,
     run_directory: Path,
     timeout_seconds: float,
+    identity: Identity | None = None,
 ) -> dict[str, object]:
     destination = run_directory / WORKSPACE_DIRECTORY
     record_path = run_directory / "workspace.json"
@@ -125,8 +127,11 @@ def prepare_workspace(
             or not isinstance(record.get("checkout"), dict)
         ):
             raise ValueError("existing workspace preparation record does not match")
+        if identity is not None:
+            apply_identity(destination, identity)
         record.update(
             {
+                "identity": identity.to_dict() if identity else None,
                 "head": state.head,
                 "clean": state.clean,
                 "reused": True,
@@ -164,6 +169,7 @@ def prepare_workspace(
         "repository": repository,
         "base_commit": base_commit,
         "path": str(destination.resolve()),
+        "identity": identity.to_dict() if identity else None,
         "reused": False,
         "reuse_count": 0,
         "clone": clone.to_dict(),
@@ -193,6 +199,12 @@ def prepare_workspace(
     if checkout.timed_out or checkout.exit_code != 0:
         _write_workspace_record(record_path, record)
         return record
+
+    # Before anything can be committed here: a clone with no local identity
+    # commits under the machine's global one, which is how a personal address
+    # reached a public repository. See identity.py.
+    if identity is not None:
+        apply_identity(destination, identity)
 
     state = inspect_workspace(destination)
     record.update(

@@ -7,6 +7,14 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from mailman.artifacts import default_data_root
+from mailman.identity import (
+    IdentityError,
+    is_private_email,
+    machine_identity,
+    resolve_identity,
+)
+
 
 @dataclass(frozen=True)
 class Check:
@@ -62,6 +70,30 @@ def describe_interpreter_reach(base: Path, home: Path) -> tuple[bool, str]:
     return True, f"base interpreter is outside the user profile ({base})"
 
 
+def describe_commit_identity() -> tuple[bool, str]:
+    """Whether a run's commits would carry a configured address or the machine's.
+
+    Reported because the failure is silent and permanent: a clone with no
+    identity of its own commits under the global one, and a personal address
+    that reaches a public repository cannot be withdrawn.
+    """
+    try:
+        identity = resolve_identity(default_data_root().resolve())
+    except IdentityError as error:
+        return False, f"configured identity is unusable: {error}"
+    machine = machine_identity()
+    if identity is None:
+        global_email = machine.get("user.email") or "unset"
+        return False, (
+            "no identity configured, so runs would commit as "
+            f"{global_email}. Set one with `mailman identity`."
+        )
+    detail = f"{identity.name} <{identity.email}>"
+    if not is_private_email(identity.email):
+        return False, f"{detail} is not a GitHub noreply address"
+    return True, detail
+
+
 def run_checks() -> list[Check]:
     python_ok = sys.version_info >= (3, 12)
     git_version = _command_version("git", ["--version"])
@@ -69,6 +101,7 @@ def run_checks() -> list[Check]:
     codex_version = _command_version("codex", ["--version"])
     claude_version = _command_version("claude", ["--version"])
     return [
+        Check("commit identity", *describe_commit_identity(), True),
         Check(
             "python",
             python_ok,

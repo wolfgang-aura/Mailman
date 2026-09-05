@@ -79,6 +79,14 @@ from mailman.toolchain import (
 from mailman.transcript import count_commands, parse_stream
 from mailman.view import render_run, summarize_runs, write_transcript_logs
 from mailman.review_page import write_run_page
+from mailman.identity import (
+    Identity,
+    author_violations,
+    branch_commits,
+    machine_identity,
+    resolve_identity,
+    save_identity,
+)
 from mailman.workspace import commit_is_ancestor, inspect_workspace, prepare_workspace
 
 
@@ -372,6 +380,21 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("run_id")
     prepare.add_argument("--timeout", type=float, default=600)
     prepare.add_argument("--data-root", type=Path)
+
+    identity_parser = subparsers.add_parser(
+        "identity",
+        help="show or set the author every run's commits are made under",
+    )
+    identity_parser.add_argument("--set-name")
+    identity_parser.add_argument("--set-email")
+    identity_parser.add_argument("--data-root", type=Path)
+
+    check_authors = subparsers.add_parser(
+        "check-authors",
+        help="refuse a branch carrying an email that must not be published",
+    )
+    check_authors.add_argument("run_id")
+    check_authors.add_argument("--data-root", type=Path)
 
     orchestrate_parser = subparsers.add_parser(
         "orchestrate",
@@ -1243,14 +1266,26 @@ def _prepare_workspace(arguments: argparse.Namespace) -> int:
         f"{arguments.timeout:g} second timeout per Git command.",
         flush=True,
     )
+    data_root = (arguments.data_root or default_data_root()).resolve()
+    identity = resolve_identity(data_root)
+    if identity is None:
+        print(
+            "warning: no commit identity is configured, so this clone will "
+            "commit under the machine's global git identity. Set one with "
+            "`mailman identity --set-name ... --set-email ...`.",
+            file=sys.stderr,
+            flush=True,
+        )
     record = prepare_workspace(
         repository=run.repository,
         base_commit=run.base_commit,
         run_directory=run_directory,
         timeout_seconds=arguments.timeout,
+        identity=identity,
     )
     summary = {
         "path": record["path"],
+        "identity": record.get("identity"),
         "head": record.get("head"),
         "clean": record.get("clean"),
         "reused": record["reused"],
@@ -1269,6 +1304,73 @@ def _prepare_workspace(arguments: argparse.Namespace) -> int:
     if isinstance(clone, dict) and clone.get("timed_out"):
         return 124
     return 1
+
+
+def _identity(arguments: argparse.Namespace) -> int:
+    data_root = (arguments.data_root or default_data_root()).resolve()
+    if arguments.set_name or arguments.set_email:
+        if not (arguments.set_name and arguments.set_email):
+            print(
+                "error: --set-name and --set-email go together",
+                file=sys.stderr,
+            )
+            return 2
+        identity = Identity(name=arguments.set_name, email=arguments.set_email)
+        path = save_identity(data_root, identity)
+        print(json.dumps({"saved": str(path), **identity.to_dict()}, indent=2))
+        return 0
+    resolved = resolve_identity(data_root)
+    print(
+        json.dumps(
+            {
+                "data_root": str(data_root),
+                "identity": resolved.to_dict() if resolved else None,
+                "machine": machine_identity(),
+            },
+            indent=2,
+        )
+    )
+    return 0 if resolved else 1
+
+
+def _check_authors(arguments: argparse.Namespace) -> int:
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    data_root = (arguments.data_root or default_data_root()).resolve()
+    identity = resolve_identity(data_root)
+    workspace = run_directory / "workspace"
+    if not workspace.is_dir():
+        print(f"error: no workspace at {workspace}", file=sys.stderr)
+        return 2
+    commits = branch_commits(workspace, run.base_commit)
+    violations = author_violations(commits, identity)
+    print(
+        json.dumps(
+            {
+                "commits": len(commits),
+                "identity": identity.to_dict() if identity else None,
+                "violations": violations,
+            },
+            indent=2,
+        )
+    )
+    if violations:
+        print(
+            "refusing: these commits carry an address that would be published "
+            "and cannot be taken back. Rewrite them before pushing:\n"
+            "  git rebase -r --exec 'git commit --amend --no-edit --reset-author' "
+            f"{run.base_commit}",
+            file=sys.stderr,
+        )
+        return 1
+    if identity is None:
+        print(
+            "refusing: no commit identity is configured, so nothing here was "
+            "checked against a known address. Run `mailman identity --set-name "
+            "... --set-email ...`.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 def _retrospective(arguments: argparse.Namespace) -> int:
@@ -1561,6 +1663,10 @@ def main(arguments: list[str] | None = None) -> int:
             return _probe_tool(parsed)
         if parsed.subcommand == "prepare-workspace":
             return _prepare_workspace(parsed)
+        if parsed.subcommand == "identity":
+            return _identity(parsed)
+        if parsed.subcommand == "check-authors":
+            return _check_authors(parsed)
         if parsed.subcommand == "retrospective":
             return _retrospective(parsed)
         if parsed.subcommand == "reproduce":
