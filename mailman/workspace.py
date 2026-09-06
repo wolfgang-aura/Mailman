@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +74,51 @@ def workspace_fingerprint(path: Path) -> str:
 #: Where `prepare-workspace` puts the clone, relative to the run directory.
 WORKSPACE_DIRECTORY = "workspace"
 
+#: Windows refuses to create a path longer than this unless every tool in the
+#: chain opts in to long paths, and Git is only one of those tools.
+WINDOWS_PATH_LIMIT = 260
+
+#: The longest relative path in a mainstream Python target measured so far is
+#: 121 characters, in `pytest-dev/pytest`:
+#: `testing/example_scripts/fixtures/fill_fixtures/test_extend_fixture_conftest_module/test_extend_fixture_conftest_module.py`.
+#: A workspace with less room than that cannot check such a target out, and Git
+#: reports it as `Filename too long` partway through, leaving a half-written
+#: tree behind. See https://github.com/wolfgang-aura/Mailman/issues/12.
+MINIMUM_PATH_BUDGET = 130
+
+
+def path_budget(destination: Path) -> int:
+    """How many characters a target's own relative paths may use."""
+    return WINDOWS_PATH_LIMIT - len(str(destination)) - len(os.sep)
+
+
+def check_path_budget(
+    destination: Path,
+    *,
+    minimum: int = MINIMUM_PATH_BUDGET,
+    system: str | None = None,
+) -> int:
+    """Refuse a workspace too deep to hold a target's own file names.
+
+    The check is a precondition rather than a git error partway through a
+    checkout. Note that `prepare_workspace` clones with the system and global
+    Git configuration switched off, so a `core.longpaths` set globally on this
+    machine does not apply to it.
+    """
+    budget = path_budget(destination)
+    if (system or platform.system()) != "Windows":
+        return budget
+    if budget >= minimum:
+        return budget
+    raise ValueError(
+        f"the workspace path {destination} leaves {budget} characters for the "
+        f"target's own file names, and {minimum} is the least that has been "
+        "enough for a mainstream Python target on Windows. Git would fail "
+        "partway through the checkout with 'Filename too long'. Re-run with a "
+        "shorter --data-root, or set MAILMAN_DATA_ROOT to a short directory "
+        "such as C:\\mailman."
+    )
+
 
 def commit_is_ancestor(workspace: Path, ancestor: str) -> bool:
     completed = subprocess.run(
@@ -141,6 +187,7 @@ def prepare_workspace(
         _write_workspace_record(record_path, record)
         return record
 
+    budget = check_path_budget(destination.resolve())
     empty_hooks = run_directory / "empty-git-hooks"
     empty_hooks.mkdir(exist_ok=True)
     controlled_environment = {
@@ -169,6 +216,7 @@ def prepare_workspace(
         "repository": repository,
         "base_commit": base_commit,
         "path": str(destination.resolve()),
+        "path_budget": budget,
         "identity": identity.to_dict() if identity else None,
         "reused": False,
         "reuse_count": 0,

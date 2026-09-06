@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 from datetime import UTC, datetime
@@ -14,8 +15,57 @@ from mailman.models import AgentConfig, RunRecord
 _COMMIT_PATTERN = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 
 
+#: An explicit home for run records, holding what `--data-root` would take, for
+#: shells that are not sitting in this repository. Without it the default
+#: follows the current directory, which is how a run record once landed inside
+#: a target checkout.
+DATA_ROOT_VARIABLE = "MAILMAN_DATA_ROOT"
+
+
 def default_data_root() -> Path:
+    configured = os.environ.get(DATA_ROOT_VARIABLE)
+    if configured and configured.strip():
+        return Path(configured.strip()).expanduser()
     return Path.cwd() / ".mailman" / "runs"
+
+
+def _worktree_root(path: Path) -> Path | None:
+    """The Git working tree that contains `path`, if any."""
+    for candidate in (path, *path.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def mailman_repository_root() -> Path | None:
+    """This Mailman checkout, when the code is running from one at all."""
+    return _worktree_root(Path(__file__).resolve().parent)
+
+
+def check_data_root(root: Path) -> None:
+    """Refuse to create a run inside somebody else's working tree.
+
+    `default_data_root` follows the current directory, so a shell sitting in a
+    target checkout writes the whole run record into that checkout. The
+    checkout is then dirty, and `orchestrate` and `run-agent` refuse to start
+    on it: a confusing failure a long way from the command that caused it.
+    Refusing here turns it into a precondition that names its own cause.
+
+    See https://github.com/wolfgang-aura/Mailman/issues/11.
+    """
+    enclosing = _worktree_root(root)
+    if enclosing is None:
+        return
+    own = mailman_repository_root()
+    if own is not None and enclosing == own:
+        return
+    raise ValueError(
+        f"refusing to create a run under {root}, which is inside the Git "
+        f"working tree at {enclosing}. A run record written there makes that "
+        "tree dirty, and orchestration then refuses to start on it. Pass "
+        f"--data-root, or set {DATA_ROOT_VARIABLE}, to a directory outside "
+        "any target checkout."
+    )
 
 
 def new_run_id() -> str:
@@ -76,6 +126,7 @@ def create_run(
         reviewer=AgentConfig(agent=reviewer, model=reviewer_model),
     )
     root = (data_root or default_data_root()).resolve()
+    check_data_root(root)
     run_directory = root / run.run_id
     run_directory.mkdir(parents=True, exist_ok=False)
     (run_directory / "commands").mkdir()

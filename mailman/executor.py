@@ -140,6 +140,13 @@ def execute(
     started = datetime.now(UTC).isoformat()
     start_clock = time.monotonic()
     process_environment = os.environ.copy()
+    # A Python command run inside a workspace leaves `__pycache__` behind, and
+    # a target with no `.gitignore` for it is then dirty: environment
+    # preparation fails for a change it did not make, and the workspace-change
+    # step reports work that never happened. Every child of a child inherits
+    # this, so an agent's own pytest run is covered too.
+    # See https://github.com/wolfgang-aura/Mailman/issues/11.
+    process_environment["PYTHONDONTWRITEBYTECODE"] = "1"
     if environment:
         process_environment.update(environment)
 
