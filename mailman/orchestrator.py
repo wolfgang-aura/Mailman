@@ -476,9 +476,17 @@ class _Orchestration:
     # Entry point -------------------------------------------------------
 
     def execute(self) -> OrchestrationOutcome:
-        if self.run.status is not RunStatus.INITIALIZED:
+        # BLOCKED is resumable because the target gate below is what blocks a
+        # run before the primary ever starts, and its preconditions are
+        # satisfied by commands the operator runs afterwards. Refusing to
+        # restart would make a missing `target-intel` record cost a fresh
+        # clone. The gate runs again a few lines down, so a precondition that
+        # is still unsatisfied blocks the run a second time rather than
+        # slipping past.
+        if self.run.status not in (RunStatus.INITIALIZED, RunStatus.BLOCKED):
             raise ValueError(
-                f"orchestration requires an INITIALIZED run, found {self.run.status}"
+                "orchestration requires an INITIALIZED or BLOCKED run, "
+                f"found {self.run.status}"
             )
         if self.max_revisions < 0:
             raise ValueError("max_revisions cannot be negative")

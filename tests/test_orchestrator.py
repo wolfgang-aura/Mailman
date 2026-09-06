@@ -794,7 +794,35 @@ class OrchestrationTests(OrchestratorHarness):
                 verification_command=[sys.executable, "-c", PASSING_CHECK],
                 agent_factory=lambda name, model: ScriptedAgent("codex", []),
             )
-        self.assertIn("requires an INITIALIZED run", str(caught.exception))
+        self.assertIn("requires an INITIALIZED or BLOCKED run", str(caught.exception))
+
+    def test_a_blocked_run_can_be_orchestrated_again(self) -> None:
+        """A precondition refusal must not cost a fresh clone.
+
+        Run 20260906T104815Z-29582c was blocked before the primary started,
+        for a missing `target-intel` record and a missing claim check. Both
+        were recorded a minute later, and the run was then unreachable: the
+        state table allows BLOCKED to PRIMARY_RUNNING, but orchestration
+        demanded INITIALIZED and nothing transitions back to it.
+        """
+        run, run_directory = self.make_run()
+        run.transition(RunStatus.BLOCKED, "no target intel")
+        primary = ScriptedAgent(
+            "codex", [{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}]
+        )
+        reviewer = ScriptedAgent("claude", [{"report": APPROVED}])
+        agents = {"codex": primary, "claude": reviewer}
+        outcome = orchestrate(
+            run=run,
+            run_directory=run_directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: agents[name],
+        )
+        self.assertEqual(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        self.assertTrue(outcome.ready)
 
 
 class VerificationExecutableTests(OrchestratorHarness):
