@@ -40,13 +40,15 @@ def _pull(number: int, *, author: str, merged_days_ago: int | None) -> dict:
     }
 
 
-def _issue(number: int, *, days_old: int = 3, assignee: object = None) -> dict:
+def _issue(
+    number: int, *, days_old: int = 3, assignee: object = None, labels: object = None
+) -> dict:
     return {
         "number": number,
         "title": f"bug {number}",
         "created_at": _days_ago(days_old),
         "assignee": assignee,
-        "labels": [],
+        "labels": labels or [],
         "comments": 0,
     }
 
@@ -86,6 +88,7 @@ class FakeGitHub:
         )
         self.open_pulls = overrides.pop("open_pulls", [])
         self.issues = overrides.pop("issues", [_issue(10), _issue(11)])
+        self.issue_comments = overrides.pop("issue_comments", {})
         self.languages = overrides.pop("languages", {"Python": 100000})
         self.workflows = overrides.pop(
             "workflows", {"ci.yml": HEALTHY_WORKFLOW}
@@ -133,6 +136,10 @@ class FakeGitHub:
         if "/pulls" in base:
             rows = self.open_pulls if "state=open" in path else self.closed_pulls
             return rows if "page=1" in path or "page=" not in path else []
+        if "/comments" in base:
+            # repos/<slug>/issues/<number>/comments, one thread per call.
+            number = int(base.rsplit("/", 2)[-2])
+            return self.issue_comments.get(number, [])
         if "/issues" in base:
             return self.issues if "page=1" in path or "page=" not in path else []
         return self.meta
@@ -599,6 +606,85 @@ class ScreenTests(unittest.TestCase):
 
         self.assertEqual(gate["data"]["open_issues"], 1)
         self.assertEqual(gate["data"]["unassigned"], 0)
+
+    def test_an_unanswered_work_claim_in_comments_counts_as_a_claim(self) -> None:
+        # openai/openai-agents-python on 2026-09-06: the claim that decides the
+        # tracker is a comment, not GitHub linkage. See
+        # https://github.com/wolfgang-aura/Mailman/issues/53.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    issues=[_issue(10), _issue(11)],
+                    issue_comments={
+                        11: [
+                            {
+                                "user": {"login": "rival", "type": "User"},
+                                "author_association": "NONE",
+                                "body": "I'm working on this, a fix is ready.",
+                                "created_at": _days_ago(1),
+                            }
+                        ]
+                    },
+                ),
+            )
+        gate = _named(record, "saturation")
+
+        self.assertEqual(gate["data"]["claimed_by_comment"], 1)
+        self.assertEqual(gate["data"]["unclaimed"], 1)
+        self.assertIn("no claim of any kind", gate["detail"])
+
+    def test_an_unclaimed_tracker_that_is_all_enhancements_and_stale_fails(
+        self) -> None:
+        # The four free issues on openai/openai-agents-python were an OIDC
+        # request, a February tracing report, a defaults change, and a
+        # localization enhancement: nine nominal openings, no work.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    issues=[
+                        _issue(10, days_old=1, labels=["enhancement"]),
+                        _issue(11, days_old=40),
+                        _issue(12, days_old=2, labels=["feature-request"]),
+                    ],
+                    issue_comments={11: []},
+                ),
+            )
+        gate = _named(record, "saturation")
+
+        self.assertIn("saturation", record["failed_gates"])
+        self.assertEqual(gate["data"]["unclaimed"], 3)
+        self.assertEqual(gate["data"]["workable"], 0)
+        self.assertIn("none is workable", gate["detail"])
+        self.assertIn("enhancement-labelled", gate["detail"])
+
+    def test_the_workable_count_excludes_labels_and_staleness_from_the_median(
+        self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    issues=[
+                        _issue(10, days_old=3),
+                        _issue(11, days_old=30),
+                        _issue(12, days_old=1, labels=["enhancement"]),
+                    ],
+                    issue_comments={10: []},
+                ),
+            )
+        gate = _named(record, "saturation")
+
+        self.assertNotIn("saturation", record["failed_gates"])
+        self.assertEqual(gate["data"]["unclaimed"], 3)
+        self.assertEqual(gate["data"]["workable"], 1)
+        self.assertEqual(gate["data"]["median_workable_age_days"], 3)
+        self.assertIn(
+            f"{gate['data']['unclaimed']} of "
+            f"{gate['data']['unassigned']} unassigned issue(s) have no claim "
+            "of any kind, 1 of them workable",
+            gate["detail"],
+        )
 
     def test_stars_never_decide_the_verdict(self) -> None:
         # Provenance reads stars too, so the contributor route has to carry this
