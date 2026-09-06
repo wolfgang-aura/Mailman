@@ -58,9 +58,16 @@ review, and a `BLOCKED` ending were recorded live the same day in
 - [x] Draft policy-shaped pull request text and a human accountability brief.
 - [x] Record a duplicate search of a target's open and closed pull requests.
 - [x] Put earlier attempts, and why they were rejected, into both agent prompts.
-- [ ] Prove the fix fails without its source change, as a recorded command.
-- [ ] Carry one live run on a permissive, recognizable target to a ready
-      submission.
+- [x] Prove the fix fails without its source change, as a recorded command. Met
+      2026-09-03 by private run `20260903T194455Z-140c59`, whose `reproduce`
+      record shows the defect at the base commit and nothing after.
+- [x] Carry one live run on a permissive, recognizable target to a ready
+      submission. Met 2026-09-03 by private run `20260903T052426Z-ad8196`
+      against `encode/starlette`, recorded in
+      `docs/runs/0008-starlette-3497-submission-ready.md`. The first of these
+      submissions to reach a merge is `pmorissette/ffn` #330 on 2026-09-06,
+      from run `20260903T194455Z-140c59`, recorded in
+      `docs/runs/0009-ffn-330-first-merge.md`.
 
 The acceptance test is a submission package a maintainer of that project would
 recognize as following their own written rules, prepared without contacting
