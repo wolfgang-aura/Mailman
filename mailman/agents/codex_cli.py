@@ -45,6 +45,16 @@ class CodexCliAgent(EngineeringAgent):
                 f"Supported: {', '.join(REASONING_EFFORTS)}."
             )
         sandbox_mode = "workspace-write" if request.role == "primary" else "read-only"
+        if request.role == "reviewer" and request.scratch_directory is not None:
+            # A read-only sandbox blocks temp writes everywhere, so a suite
+            # that needs a temp directory failed inside the review for reasons
+            # that had nothing to do with the candidate: run
+            # 20260902T144544Z-5dbf69 saw two FileNotFoundError from
+            # tempfile.py and a Permission denied on .pytest_cache. The
+            # workspace the reviewer may now write is watched by the
+            # orchestrator's workspace-change:reviewer step, so an edit ships
+            # nowhere. See https://github.com/wolfgang-aura/Mailman/issues/29.
+            sandbox_mode = "workspace-write"
         command = [
             self.executable,
             "exec",
@@ -54,6 +64,13 @@ class CodexCliAgent(EngineeringAgent):
         if self.windows_sandbox:
             command.extend(
                 ["--config", f"windows.sandbox='{self.windows_sandbox}'"]
+            )
+        if request.role == "reviewer" and request.scratch_directory is not None:
+            # Single-quoted TOML literal strings: double quotes would make the
+            # backslashes in a Windows path escape sequences.
+            scratch = request.scratch_directory.resolve().as_posix()
+            command.extend(
+                ["--config", f"sandbox_workspace_write.writable_roots=['{scratch}']"]
             )
         command.extend(
             [
@@ -79,6 +96,19 @@ class CodexCliAgent(EngineeringAgent):
 
     def run(self, request: AgentRequest) -> AgentResult:
         prompt = request.prompt_path.read_text(encoding="utf-8")
+        environment = None
+        if request.role == "reviewer" and request.scratch_directory is not None:
+            scratch = str(request.scratch_directory.resolve())
+            # The scratch directory is where temp writes belong. pytest's own
+            # cache writes into the workspace root, so it is disabled for the
+            # reviewer's runs: the second run of the same gate must not dirty
+            # the workspace the primary stage left behind.
+            environment = {
+                "TMP": scratch,
+                "TEMP": scratch,
+                "TMPDIR": scratch,
+                "PYTEST_ADDOPTS": "-p no:cacheprovider",
+            }
         report_before = (
             (
                 request.report_path.stat().st_mtime_ns,
@@ -93,6 +123,7 @@ class CodexCliAgent(EngineeringAgent):
             command,
             working_directory=request.workspace,
             timeout_seconds=request.timeout_seconds,
+            environment=environment,
             stdin_text=prompt,
             on_stdout_line=request.observe(self.name),
         )

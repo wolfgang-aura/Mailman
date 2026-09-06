@@ -106,6 +106,70 @@ class AgentAdapterTests(unittest.TestCase):
         sandbox_index = command.index("--sandbox")
         self.assertEqual(command[sandbox_index + 1], "read-only")
 
+    def test_codex_reviewer_with_a_scratch_directory_writes_only_there(self) -> None:
+        # The read-only sandbox blocked temp writes everywhere, so every suite
+        # that needs a temp directory failed inside the review. See
+        # https://github.com/wolfgang-aura/Mailman/issues/29.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            scratch = root / "runs" / "run-1" / "scratch"
+            request = AgentRequest(
+                run_id="run-1",
+                role="reviewer",
+                prompt_path=root / "prompt.md",
+                workspace=root / "workspace",
+                report_path=root / "review-report.md",
+                scratch_directory=scratch,
+            )
+            command = CodexCliAgent(windows_sandbox=None).build_command(request)
+
+        sandbox_index = command.index("--sandbox")
+        self.assertEqual(command[sandbox_index + 1], "workspace-write")
+        roots = [part for part in command if "writable_roots" in part]
+        self.assertEqual(len(roots), 1)
+        self.assertIn(scratch.resolve().as_posix(), roots[0])
+
+    def test_codex_reviewer_temp_variables_point_at_the_scratch_directory(
+        self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            scratch = root / "scratch"
+            prompt = root / "prompt.md"
+            prompt.write_text("review the fixture", encoding="utf-8")
+            request = AgentRequest(
+                run_id="run-1",
+                role="reviewer",
+                prompt_path=prompt,
+                workspace=root,
+                report_path=root / "review-report.md",
+                scratch_directory=scratch,
+            )
+            process = CommandResult(
+                command=["codex", "exec"],
+                working_directory=str(root),
+                started_at="2026-09-02T00:00:00+00:00",
+                duration_seconds=0.1,
+                exit_code=0,
+                stdout="",
+                stderr="",
+                timed_out=False,
+                timeout_seconds=60,
+                environment={},
+            )
+            with patch(
+                "mailman.agents.codex_cli.execute", return_value=process
+            ) as fake_execute:
+                CodexCliAgent(windows_sandbox=None).run(request)
+
+        environment = fake_execute.call_args.kwargs["environment"]
+        resolved = str(scratch.resolve())
+        self.assertEqual(environment["TMP"], resolved)
+        self.assertEqual(environment["TEMP"], resolved)
+        self.assertEqual(environment["TMPDIR"], resolved)
+        # pytest's cache would write into the workspace root on the reviewer's
+        # run and dirty the candidate the primary stage left behind.
+        self.assertEqual(environment["PYTEST_ADDOPTS"], "-p no:cacheprovider")
+
     def test_codex_rejects_unknown_windows_sandbox_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
