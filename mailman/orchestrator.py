@@ -99,6 +99,20 @@ rather than a patch, REVISE means the work is still owed, and the findings you
 list are what the next attempt has to address.
 """
 
+_REVIEWER_SANDBOX_NOTICE = """
+## Where you can write
+
+Your sandbox permits writes inside the workspace and inside the run's scratch
+directory `{scratch}`, and the temporary-directory environment variables point
+at the scratch directory, so a test suite that needs temp files has them.
+Everything else is read-only.
+
+You are still a reviewer. Do not edit, create, or delete anything in the
+workspace: any change you leave behind stops the run, because the workspace
+diff is the candidate and a reviewer's edit would enter the submission
+silently.
+"""
+
 _REVISION_CONTRACT = """
 ## Reviewer findings to address
 
@@ -294,6 +308,15 @@ class _Orchestration:
             self.run_directory, role=role, source_prompt=source_prompt
         )
         report_path = self.run_directory / f"{role}-report.md"
+        # The reviewer needs a writable temp directory or every suite that
+        # needs one fails inside the review for reasons that have nothing to
+        # do with the candidate (#29). The scratch lives beside the run
+        # record, outside the workspace, so using it cannot dirty the
+        # candidate; the adapter makes it writable to the agent's sandbox.
+        scratch_directory: Path | None = None
+        if role == "reviewer":
+            scratch_directory = self.run_directory / "scratch"
+            scratch_directory.mkdir(parents=True, exist_ok=True)
         self.announce(
             f"run  {role}: {agent.name} with a "
             f"{self.agent_timeout_seconds:g} second timeout."
@@ -318,6 +341,7 @@ class _Orchestration:
                     timeout_seconds=self.agent_timeout_seconds,
                     on_event=watch,
                     verification_command=tuple(self.verification_command),
+                    scratch_directory=scratch_directory,
                 )
             )
         report_text = (
@@ -432,6 +456,33 @@ class _Orchestration:
         )
         return changed
 
+    def _record_reviewer_change(self, before: tuple[str, ...]) -> bool:
+        """Record whether the reviewer changed the workspace it was only reading.
+
+        The reviewer now runs with a writable temp directory, because a
+        read-only sandbox could not run any suite that needs one (#29). The
+        permission reaches as far as the workspace, so a reviewer that edits
+        code would otherwise ship its edit inside the submission. The compare
+        is against the status the primary stage left behind - that dirt is the
+        candidate - so only paths the reviewer introduced count as a finding,
+        and any finding stops the run for a human.
+        """
+        state = inspect_workspace(self.workspace)
+        introduced = tuple(line for line in state.changes if line not in before)
+        changed = bool(introduced)
+        self._step(
+            "workspace-change:reviewer",
+            ok=not changed,
+            detail=(
+                f"the reviewer introduced {len(introduced)} path(s): "
+                + ", ".join(introduced[:10])
+                if changed
+                else "the reviewer left the workspace as the primary stage left it"
+            ),
+            data={"changed": changed, "changes": list(introduced)},
+        )
+        return changed
+
     def _write_derived_prompt(self, name: str, text: str) -> Path:
         destination = self.run_directory / name
         destination.write_text(text, encoding="utf-8")
@@ -449,8 +500,11 @@ class _Orchestration:
         """
         source = self.reviewer_prompt.read_text(encoding="utf-8").rstrip()
         notice = "" if self.workspace_changed else _EMPTY_CANDIDATE_NOTICE
+        sandbox = _REVIEWER_SANDBOX_NOTICE.format(
+            scratch=self.run_directory / "scratch"
+        )
         return self._write_derived_prompt(
-            "review-input.md", f"{source}\n{notice}{_VERDICT_CONTRACT}"
+            "review-input.md", f"{source}\n{notice}{sandbox}{_VERDICT_CONTRACT}"
         )
 
     def _revision_prompt(self, findings: str) -> Path:
@@ -555,11 +609,21 @@ class _Orchestration:
         while True:
             review_prompt = self._review_prompt()
             self._transition(RunStatus.REVIEW_PENDING, "reviewer reading the candidate")
+            reviewer_before = inspect_workspace(self.workspace).changes
             reviewer_ok, review_report = self._run_agent("reviewer", review_prompt)
             self.run.review_cycles += 1
             write_run(self.run, self.run_directory)
             if not reviewer_ok:
                 self._block("reviewer did not complete a readable review")
+                return self._outcome()
+            if self._record_reviewer_change(reviewer_before):
+                self._block(
+                    "the reviewer changed the workspace it was only supposed "
+                    "to read. The workspace diff is the candidate, so a "
+                    "reviewer's edit would enter the submission silently; the "
+                    "changed paths are in the record and a human decides what "
+                    "to keep."
+                )
                 return self._outcome()
 
             verdict = parse_verdict(review_report)

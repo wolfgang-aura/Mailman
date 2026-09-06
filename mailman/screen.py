@@ -29,6 +29,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
+from mailman.claims import classify_comment
 from mailman.executor import CommandResult, execute
 from mailman.target_intel import (
     _Gh,
@@ -689,8 +690,73 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     )
 
 
-def _saturation_gate(gh: _Gh, slug: str) -> dict[str, Any]:
-    """Gate 5. Is there any unclaimed work left, or has the tracker been mined?"""
+#: Label spellings that mark an issue as a request rather than a defect. A
+#: tracker can carry forty unclaimed enhancement requests and still have no
+#: work a bug run could take.
+_ENHANCEMENT_LABELS = ("enhancement", "feature", "feature-request")
+
+#: Reading one issue's comments costs one API call, so the reads stop after
+#: this many unclaimed candidates. A tracker with more unclaimed issues than
+#: this is not saturated in any sense this gate needs to measure precisely;
+#: the cap is recorded rather than hidden.
+_COMMENT_THREAD_LIMIT = 40
+
+
+def _is_enhancement(row: dict[str, Any]) -> bool:
+    labels = row.get("labels")
+    if not isinstance(labels, list):
+        return False
+    names = []
+    for entry in labels:
+        if isinstance(entry, dict):
+            names.append(str(entry.get("name") or "").lower())
+        elif isinstance(entry, str):
+            names.append(entry.lower())
+    return any(
+        "enhancement" in name or name in _ENHANCEMENT_LABELS for name in names
+    )
+
+
+def _age_in_days(row: dict[str, Any], now: datetime) -> int | None:
+    created = str(row.get("created_at") or "")[:10]
+    if not created:
+        return None
+    try:
+        return (now - datetime.fromisoformat(created).replace(tzinfo=UTC)).days
+    except ValueError:
+        return None
+
+
+def _comment_claims(gh: _Gh, slug: str, number: str) -> bool:
+    """Say whether one issue's thread carries an unanswered work claim.
+
+    This is the claim form GitHub itself does not track: a comment saying
+    "I'm on it" that no maintainer has answered. `mailman claims` reads the
+    same thread for a single run; saturation applies the same judgement, so
+    the two gates cannot disagree about what a claim is.
+    """
+    comments = gh.pages(
+        f"repos/{slug}/issues/{number}/comments?per_page=100", pages=1
+    )
+    return any(
+        classify_comment(comment) in {"claim", "assignment"} for comment in comments
+    )
+
+
+def _saturation_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
+    """Gate 5. Is there any unclaimed work left, or has the tracker been mined?
+
+    A claim is counted from three sources, because no one of them covers the
+    field. An open pull request that names the issue in its title, body, or
+    branch is one. A cross-reference from an open pull request is GitHub's own
+    record of the same thing. And an unanswered work claim in the issue's
+    comments is the claim that has not become a pull request yet - on
+    `openai/openai-agents-python` on 2026-09-06, seventeen of twenty-two
+    unassigned issues were claimed by an open pull request whose body merely
+    mentioned the issue in prose, which GitHub does not treat as a claim and a
+    maintainer does. See
+    https://github.com/wolfgang-aura/Mailman/issues/53.
+    """
     issues = gh.pages(
         f"repos/{slug}/issues?state=open&sort=created&direction=desc", pages=4
     )
@@ -700,31 +766,60 @@ def _saturation_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     claims = classify_claims(
         gh.pages(f"repos/{slug}/pulls?state=open&sort=updated&direction=desc", pages=4)
     )
+    claimed = set(claims["claiming"])
+    claimed_by_comment: set[str] = set()
+    # An issue already claimed by a pull request needs no comment read, so the
+    # extra API calls are spent only where they can change the answer.
+    candidates = [
+        row for row in unassigned if str(row["number"]) not in claimed
+    ]
+    threads_capped = max(0, len(candidates) - _COMMENT_THREAD_LIMIT)
+    for row in candidates[:_COMMENT_THREAD_LIMIT]:
+        number = str(row["number"])
+        if _comment_claims(gh, slug, number):
+            claimed_by_comment.add(number)
+    claimed |= claimed_by_comment
+
     unclaimed = [
-        row for row in unassigned if str(row["number"]) not in claims["claiming"]
+        row for row in unassigned if str(row["number"]) not in claimed
     ]
     now = datetime.now(UTC)
-    ages = []
+    # Unclaimed is not the same as workable. An enhancement request is not a
+    # bug run, and an issue nobody has touched since before the freshness
+    # window is not evidence of current capacity either; letting either into
+    # the median age turned nine nominal openings into one real one on
+    # openai/openai-agents-python.
+    workable = []
+    enhancement_labelled = 0
+    stale_beyond_window = 0
     for row in unclaimed:
-        created = str(row.get("created_at") or "")[:10]
-        if created:
-            try:
-                ages.append(
-                    (now - datetime.fromisoformat(created).replace(tzinfo=UTC)).days
-                )
-            except ValueError:
-                continue
+        if _is_enhancement(row):
+            enhancement_labelled += 1
+            continue
+        age = _age_in_days(row, now)
+        if age is None or age > window_days:
+            stale_beyond_window += 1
+            continue
+        workable.append(age)
     data = {
         "open_issues": len(open_issues),
         "open_pull_requests_seen": len(open_pulls),
         "unassigned": len(unassigned),
+        "claimed_by_pull_request": len(claims["claiming"]),
+        "claimed_by_comment": len(claimed_by_comment),
         "unclaimed": len(unclaimed),
+        "workable": len(workable),
+        "enhancement_labelled": enhancement_labelled,
+        "stale_beyond_window": stale_beyond_window,
+        "median_workable_age_days": (
+            round(statistics.median(workable)) if workable else None
+        ),
+        "comment_threads_read": min(len(candidates), _COMMENT_THREAD_LIMIT),
+        "comment_threads_capped": threads_capped,
         "claimed_share": (
             round(1 - len(unclaimed) / len(unassigned), 2) if unassigned else None
         ),
-        "median_unclaimed_age_days": (
-            round(statistics.median(ages)) if ages else None
-        ),
+        "window_days": window_days,
     }
     if not unclaimed:
         return _gate(
@@ -733,7 +828,19 @@ def _saturation_gate(gh: _Gh, slug: str) -> dict[str, Any]:
             blocking=True,
             detail=(
                 f"{len(unassigned)} unassigned open issue(s) and an open pull "
-                "request already names every one of them"
+                "request or a comment already names every one of them"
+            ),
+            data=data,
+        )
+    if not workable:
+        return _gate(
+            "saturation",
+            passed=False,
+            blocking=True,
+            detail=(
+                f"{len(unclaimed)} issue(s) carry no claim of any kind, but "
+                f"none is workable: {enhancement_labelled} enhancement-labelled, "
+                f"{stale_beyond_window} older than the {window_days}-day window"
             ),
             data=data,
         )
@@ -743,8 +850,8 @@ def _saturation_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         blocking=False,
         detail=(
             f"{len(unclaimed)} of {len(unassigned)} unassigned issue(s) have no "
-            f"open pull request, median age "
-            f"{data['median_unclaimed_age_days']} day(s)"
+            f"claim of any kind, {len(workable)} of them workable, median "
+            f"workable age {data['median_workable_age_days']} day(s)"
         ),
         data=data,
     )
@@ -841,7 +948,7 @@ def screen_repository(
         _ci_gate(gh, slug),
         _python_gate(gh, slug),
         _policy_gate(gh, slug),
-        _saturation_gate(gh, slug),
+        _saturation_gate(gh, slug, window_days),
         _stars_gate(meta),
     ]
     failed = [

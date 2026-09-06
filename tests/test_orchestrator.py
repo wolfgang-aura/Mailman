@@ -311,6 +311,59 @@ class EmptyCandidateTests(OrchestratorHarness):
         self.assertIn("The workspace is unchanged", prompt)
         self.assertIn("MAILMAN-VERDICT", prompt)
 
+    def test_the_reviewer_prompt_names_the_writable_scratch_directory(self) -> None:
+        # A reviewer that discovers its sandbox by hitting it spends its turns
+        # collecting permission errors. See
+        # https://github.com/wolfgang-aura/Mailman/issues/29.
+        outcome, run_directory, _, reviewer = self.orchestrate(
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
+            reviewer_script=[{"report": APPROVED}],
+        )
+
+        prompt = reviewer.calls[0][1]
+        self.assertIn("Where you can write", prompt)
+        self.assertIn(str(run_directory / "scratch"), prompt)
+        self.assertIs(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+
+    def test_a_reviewer_that_edits_the_workspace_stops_the_run(self) -> None:
+        outcome, _, _, _ = self.orchestrate(
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
+            reviewer_script=[
+                {
+                    "report": "found a typo, fixed it\n"
+                    "MAILMAN-VERIFICATION: RAN\nMAILMAN-VERDICT: APPROVE\n",
+                    "touch": ("reviewer-fix.txt", "edited by the reviewer\n"),
+                }
+            ],
+        )
+
+        self.assertIs(outcome.status, RunStatus.BLOCKED)
+        step = next(
+            step for step in outcome.steps if step.name == "workspace-change:reviewer"
+        )
+        self.assertFalse(step.ok)
+        self.assertIn("reviewer-fix.txt", step.detail)
+        blocked = [step for step in outcome.steps if step.name == "blocked"]
+        self.assertIn("reviewer changed the workspace", blocked[-1].detail)
+
+    def test_the_reviewer_stage_records_no_change_when_only_reading(self) -> None:
+        outcome, _, _, _ = self.orchestrate(
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
+            reviewer_script=[{"report": APPROVED}],
+        )
+
+        step = next(
+            step for step in outcome.steps if step.name == "workspace-change:reviewer"
+        )
+        self.assertTrue(step.ok)
+        self.assertEqual(step.data["changed"], False)
+
     def test_an_approved_empty_candidate_stops_for_a_human(self) -> None:
         outcome, _, _, _ = self.orchestrate(
             primary_script=[{"report": "nothing to change\n"}],

@@ -61,6 +61,16 @@ class AgentRequest:
     verification_command: tuple[str, ...] = ()
     """The command the run verifies with. An agent that cannot run it cannot
     check its own work, so the adapter has to permit it explicitly."""
+    scratch_directory: Path | None = None
+    """A run-owned writable directory outside the workspace, for the reviewer.
+
+    A reviewer under a read-only sandbox could not write a temp file anywhere,
+    so every suite that needs one failed inside the review for reasons that had
+    nothing to do with the candidate. An adapter that honours this points the
+    temporary-directory variables here and makes the directory writable to the
+    agent. The orchestrator pairs the permission with a workspace-change check,
+    so a reviewer that writes into the workspace instead stops the run. See
+    https://github.com/wolfgang-aura/Mailman/issues/29."""
 
     def observe(self, agent: str) -> Callable[[str], None] | None:
         """Turn one line of agent output into events for whoever is watching."""
