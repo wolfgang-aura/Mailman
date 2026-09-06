@@ -92,6 +92,29 @@ class PlanValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "name and an executable"):
             load_plan(path)
 
+    def test_names_the_file_when_the_plan_is_not_valid_json(self) -> None:
+        """A JSON error with an offset but no file name is not diagnosable.
+
+        On run 20260906T104815Z-29582c a plan with a Windows path in it died
+        on `Invalid \\escape` with a character offset and no file name, and
+        the cause was found only by opening the plan. See
+        https://github.com/wolfgang-aura/Mailman/issues/55.
+        """
+        directory = Path(tempfile.mkdtemp())
+        path = directory / "plan.json"
+        path.write_text(
+            '{"schema_version": 1, "steps": [{"name": "install", '
+            '"command": ["C:\\env\\python.exe"]}]}',
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(ValueError) as raised:
+            load_plan(path)
+
+        message = str(raised.exception)
+        self.assertIn(str(path), message)
+        self.assertIn("backslashes", message)
+
 
 class PlanExecutableTests(unittest.TestCase):
     """A plan is drafted from a target's own guide, so its steps are its claims."""

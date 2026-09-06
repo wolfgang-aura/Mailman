@@ -145,6 +145,34 @@ def _write_workspace_record(destination: Path, record: dict[str, object]) -> Non
     temporary.replace(destination)
 
 
+#: Scratch that commands run inside the workspace leave behind without meaning
+#: to. A clone carries only the target's tracked files and no .gitignore of its
+#: own, so a verification command that imported the target's tests wrote
+#: `__pycache__` into the checkout, and the workspace read as dirty afterwards.
+#: The local exclude keeps run-owned scratch out of `git status` and out of the
+#: exported patch without touching a target file. The clone runs with
+#: `init.templateDir` pointed at an empty directory, so `.git/info` does not
+#: exist yet and the entry has to be seeded, not assumed.
+#: See https://github.com/wolfgang-aura/Mailman/issues/55.
+SCRATCH_EXCLUDES = ("__pycache__/", "*.py[cod]", ".pytest_cache/")
+
+
+def seed_local_exclude(workspace: Path) -> list[str]:
+    """Add the run's scratch patterns to the workspace's local exclude."""
+    info = workspace / ".git" / "info"
+    info.mkdir(parents=True, exist_ok=True)
+    exclude = info / "exclude"
+    existing = (
+        exclude.read_text(encoding="utf-8").splitlines() if exclude.exists() else []
+    )
+    added = [entry for entry in SCRATCH_EXCLUDES if entry not in existing]
+    if added:
+        with exclude.open("a", encoding="utf-8") as handle:
+            handle.write("\n# seeded by mailman prepare-workspace\n")
+            handle.write("".join(f"{entry}\n" for entry in added))
+    return added
+
+
 def prepare_workspace(
     *,
     repository: str,
@@ -254,12 +282,15 @@ def prepare_workspace(
     if identity is not None:
         apply_identity(destination, identity)
 
+    seeded_exclude = seed_local_exclude(destination)
+
     state = inspect_workspace(destination)
     record.update(
         {
             "head": state.head,
             "clean": state.clean,
             "changes": list(state.changes),
+            "seeded_exclude": seeded_exclude,
             "success": state.head == base_commit and state.clean,
         }
     )

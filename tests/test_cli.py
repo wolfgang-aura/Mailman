@@ -31,6 +31,9 @@ class CliTests(unittest.TestCase):
             )
             workspace = run_directory / "workspace"
             workspace.mkdir()
+            (run_directory / "environment.json").write_text(
+                json.dumps({"success": True}), encoding="utf-8"
+            )
             for name in ("primary-task.md", "reviewer-task.md"):
                 (run_directory / name).write_text("prompt", encoding="utf-8")
             outcome = SimpleNamespace(
@@ -60,6 +63,45 @@ class CliTests(unittest.TestCase):
                 orchestrated.call_args.kwargs["workspace"].resolve(),
                 workspace.resolve(),
             )
+
+    def test_orchestrate_refuses_a_run_with_no_environment_record(self) -> None:
+        """The verification result needs the provenance of its environment.
+
+        Run 20260906T104815Z-29582c reached human review with no
+        `environment.json` at all, because nothing required it. See
+        https://github.com/wolfgang-aura/Mailman/issues/55.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            (run_directory / "workspace").mkdir()
+            for name in ("primary-task.md", "reviewer-task.md"):
+                (run_directory / name).write_text("prompt", encoding="utf-8")
+            stderr = StringIO()
+            with patch("mailman.cli.orchestrate") as orchestrated:
+                with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                    exit_code = main(
+                        [
+                            "orchestrate",
+                            run.run_id,
+                            "--data-root",
+                            str(data_root),
+                            "--",
+                            "true",
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("no-environment", stderr.getvalue())
+            self.assertIn("prepare-environment", stderr.getvalue())
+            orchestrated.assert_not_called()
 
     def test_orchestrate_says_no_workspace_was_prepared(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

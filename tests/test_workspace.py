@@ -134,6 +134,53 @@ class WorkspacePreparationTests(unittest.TestCase):
                     timeout_seconds=30,
                 )
 
+    def test_seeds_the_local_exclude_with_run_scratch(self) -> None:
+        """Scratch the run writes must not read as target work.
+
+        A clone has no `.gitignore` of its own, and this clone runs with an
+        empty `init.templateDir`, so `.git/info` does not exist either. A
+        verification command that imported the target's tests left
+        `__pycache__` behind and the workspace read as dirty. See
+        https://github.com/wolfgang-aura/Mailman/issues/55.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "source"
+            source.mkdir()
+            git(source, "init", "--initial-branch=main")
+            git(source, "config", "user.name", "Fixture")
+            git(source, "config", "user.email", "fixture@example.invalid")
+            (source / "code.txt").write_text("base\n", encoding="utf-8")
+            git(source, "add", "--", "code.txt")
+            git(source, "commit", "-m", "base")
+            base_commit = git(source, "rev-parse", "HEAD")
+            run_directory = root / "run"
+            run_directory.mkdir()
+
+            record = prepare_workspace(
+                repository=str(source),
+                base_commit=base_commit,
+                run_directory=run_directory,
+                timeout_seconds=30,
+            )
+            workspace = run_directory / "workspace"
+            exclude = workspace / ".git" / "info" / "exclude"
+            self.assertTrue(exclude.is_file())
+            content = exclude.read_text(encoding="utf-8")
+            self.assertIn("__pycache__/", content)
+            self.assertIn(".pytest_cache/", content)
+            self.assertEqual(record["seeded_exclude"], ["__pycache__/", "*.py[cod]", ".pytest_cache/"])
+
+            # A scratch file matching the seeded patterns stays invisible to
+            # the clean checks, while a file the target tracks still counts.
+            cache = workspace / "__pycache__"
+            cache.mkdir()
+            (cache / "clamp.cpython-314.pyc").write_bytes(b"\x00")
+            (workspace / "code.txt").write_text("changed\n", encoding="utf-8")
+            state = inspect_workspace(workspace)
+            self.assertEqual(len(state.changes), 1)
+            self.assertIn("code.txt", state.describe_changes())
+
 
 if __name__ == "__main__":
     unittest.main()
