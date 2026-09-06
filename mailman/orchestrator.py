@@ -78,6 +78,27 @@ An APPROVE is a claim that you checked the candidate, so it requires
 by reading, or say plainly that you cannot judge it.
 """
 
+_EMPTY_CANDIDATE_NOTICE = """
+## The workspace is unchanged
+
+The primary agent finished its stage and left the workspace identical to the
+base commit: no tracked file differs and nothing untracked was added. The
+verification you are asked to run passes here for the same reason it passes on
+the base commit, so it says nothing about this candidate.
+
+Deciding whether changing nothing was right is this review. It is the correct
+answer when the issue's acceptance criteria contradict an existing test, or
+when the behaviour it asks for is already present; it is a failed stage when
+the work was simply not done. Read the primary agent's report against the issue
+and say which of the two happened.
+
+Either way this run stops for a human rather than producing a submission, since
+an empty candidate is nothing to publish. Your verdict decides what the record
+says: APPROVE means changing nothing was correct and the issue needs an answer
+rather than a patch, REVISE means the work is still owed, and the findings you
+list are what the next attempt has to address.
+"""
+
 _REVISION_CONTRACT = """
 ## Reviewer findings to address
 
@@ -235,6 +256,12 @@ class _Orchestration:
         self.commands_run: dict[str, int] = {}
         self.steps: list[OrchestrationStep] = []
         self.revisions_used = 0
+        #: Whether the most recent primary stage changed anything at all.
+        #: A stage that changed nothing passes verification exactly as the
+        #: base commit does, so the flag, not the green check, is what says
+        #: whether there is a candidate. See
+        #: https://github.com/wolfgang-aura/Mailman/issues/10.
+        self.workspace_changed = True
 
     # Recording helpers -------------------------------------------------
 
@@ -392,6 +419,7 @@ class _Orchestration:
         """
         state = inspect_workspace(self.workspace)
         changed = not state.clean
+        self.workspace_changed = changed
         self._step(
             f"workspace-change:{stage}",
             ok=changed,
@@ -410,9 +438,19 @@ class _Orchestration:
         return destination
 
     def _review_prompt(self) -> Path:
+        """Build the reviewer's prompt for the stage it is about to read.
+
+        An empty candidate still reaches the reviewer, because on the run
+        that opened issue #10 the reviewer's diagnosis of why nothing had
+        changed was worth more than a status line. What it gets now is the
+        fact up front, so it spends its turn on that question instead of
+        rediscovering it. The prompt is rebuilt for every review cycle,
+        because a revision stage can leave a different state behind.
+        """
         source = self.reviewer_prompt.read_text(encoding="utf-8").rstrip()
+        notice = "" if self.workspace_changed else _EMPTY_CANDIDATE_NOTICE
         return self._write_derived_prompt(
-            "review-input.md", f"{source}\n{_VERDICT_CONTRACT}"
+            "review-input.md", f"{source}\n{notice}{_VERDICT_CONTRACT}"
         )
 
     def _revision_prompt(self, findings: str) -> Path:
@@ -506,8 +544,8 @@ class _Orchestration:
         if not self._finish_primary_stage(self.primary_prompt, "primary"):
             return self._outcome()
 
-        review_prompt = self._review_prompt()
         while True:
+            review_prompt = self._review_prompt()
             self._transition(RunStatus.REVIEW_PENDING, "reviewer reading the candidate")
             reviewer_ok, review_report = self._run_agent("reviewer", review_prompt)
             self.run.review_cycles += 1
@@ -581,6 +619,15 @@ class _Orchestration:
             revision_prompt = self._revision_prompt(review_report or "")
             if not self._finish_primary_stage(revision_prompt, "revision"):
                 return self._outcome()
+
+        if not self.workspace_changed:
+            self._block(
+                "the reviewer approved a candidate that changes nothing. There "
+                "is no patch to submit, so the run stops here for a human: read "
+                "the review, and answer the issue in its thread if changing "
+                "nothing was the right call."
+            )
+            return self._outcome()
 
         self._transition(
             RunStatus.VERIFICATION_PENDING, "final independent verification"
