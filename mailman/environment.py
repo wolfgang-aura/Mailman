@@ -37,6 +37,18 @@ def _is_python(name: str) -> bool:
     )
 
 
+def program_name(executable: str) -> str:
+    """The comparable program an executable path or name refers to.
+
+    Two spellings of the same interpreter must compare equal when the
+    verification command the prompts quote is checked against the one the
+    gate will run: `python`, `python.exe`, and the `{environment}` token
+    expanded to an absolute path all name the same program.
+    """
+    name = _executable_name(executable)
+    return name[:-4] if name.endswith(".exe") else name
+
+
 def check_executable(command: Sequence[str], *, step: str) -> None:
     """Refuse a step that starts anything but a Python interpreter or git."""
     name = _executable_name(command[0])
@@ -57,7 +69,16 @@ def _substitute(value: str, replacements: dict[str, str]) -> str:
 
 def load_plan(path: Path) -> dict[str, Any]:
     """Read and validate a dependency preparation plan."""
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        # The error carries a character offset and no file name, and the most
+        # common cause on this host is a plan with a Windows path in it: JSON
+        # reads the backslash as an escape.
+        raise ValueError(
+            f"{path} is not valid JSON: {error}. A Windows path inside the "
+            'plan needs doubled backslashes, as in "C:\\\\env\\\\python.exe".'
+        ) from error
     if not isinstance(data, dict) or data.get("schema_version") != 1:
         raise ValueError("environment plan must be an object with schema_version 1")
     steps = data.get("steps")

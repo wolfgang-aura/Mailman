@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Sequence
 
@@ -9,6 +10,31 @@ from mailman.prior_art import load_prior_art_markdown
 
 PRIMARY_TASK_FILENAME = "primary-task.md"
 REVIEWER_TASK_FILENAME = "reviewer-task.md"
+PROMPTS_RECORD_FILENAME = "prompts.json"
+PROMPTS_RECORD_SCHEMA_VERSION = 1
+
+
+def load_recorded_verification(run_directory: Path) -> list[str] | None:
+    """The verification command the built prompts quote, when they quote one.
+
+    `build-prompts` takes free text and turns it into prose for the agents;
+    `orchestrate` takes an argv list and runs it as the gate. Without a record
+    of the first, a run can carry two unlinked claims about what its
+    verification is, written in two formats, and nothing notices when they
+    disagree. See https://github.com/wolfgang-aura/Mailman/issues/58.
+    """
+    path = run_directory / PROMPTS_RECORD_FILENAME
+    if not path.is_file():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        return None
+    command = data.get("verification_command")
+    if not isinstance(command, list) or not all(
+        isinstance(part, str) for part in command
+    ):
+        return None
+    return command
 
 
 def _verification_line(verification_command: Sequence[str] | None) -> str:
@@ -179,5 +205,14 @@ def write_task_prompts(
             prior_art=prior_art,
         ),
         encoding="utf-8",
+    )
+    record = {
+        "schema_version": PROMPTS_RECORD_SCHEMA_VERSION,
+        "verification_command": (
+            list(verification_command) if verification_command else None
+        ),
+    }
+    (run_directory / PROMPTS_RECORD_FILENAME).write_text(
+        json.dumps(record, indent=2) + "\n", encoding="utf-8"
     )
     return primary_path, reviewer_path

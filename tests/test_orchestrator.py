@@ -921,9 +921,81 @@ class VerificationExecutableTests(OrchestratorHarness):
             )
 
 
+class VerificationAgreementTests(OrchestratorHarness):
+    """The prompts and the gate must name the same verification program.
+
+    On run 20260903T194455Z-140c59 the free-text verification passed to
+    `build-prompts` was a parenthetical the agents could not execute as
+    written, and the harness's own gate ran something else again. Three ideas
+    of one command in a single run. See
+    https://github.com/wolfgang-aura/Mailman/issues/58.
+    """
+
+    def _record_prompt_verification(self, run_directory, command: list[str]) -> None:
+        (run_directory / "prompts.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "verification_command": command,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_a_gate_from_another_program_is_refused(self) -> None:
+        run, run_directory = self.make_run()
+        self._record_prompt_verification(run_directory, ["node", "--test"])
+        primary = ScriptedAgent(
+            "codex", [{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}]
+        )
+        reviewer = ScriptedAgent("claude", [{"report": APPROVED}])
+        agents = {"codex": primary, "claude": reviewer}
+
+        with self.assertRaisesRegex(ValueError, "different verification programs"):
+            orchestrate(
+                run=run,
+                run_directory=run_directory,
+                workspace=self.workspace,
+                primary_prompt=self.primary_prompt,
+                reviewer_prompt=self.reviewer_prompt,
+                verification_command=[sys.executable, "-c", PASSING_CHECK],
+                agent_factory=lambda name, model: agents[name],
+            )
+
+    def test_an_equivalent_spelling_of_the_same_program_passes(self) -> None:
+        run, run_directory = self.make_run()
+        # The prompts quote a bare name; the gate carries the resolved
+        # interpreter. Same program, so the run is not refused.
+        self._record_prompt_verification(run_directory, ["python", "-m", "pytest"])
+
+        outcome, run_directory, _, _ = self.orchestrate(
+            primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
+            reviewer_script=[{"report": APPROVED}],
+        )
+
+        self.assertEqual(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+
+    def test_a_run_whose_prompts_record_no_command_is_not_refused(self) -> None:
+        run, run_directory = self.make_run()
+        (run_directory / "prompts.json").write_text(
+            json.dumps({"schema_version": 1, "verification_command": None}),
+            encoding="utf-8",
+        )
+
+        outcome, run_directory, _, _ = self.orchestrate(
+            primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
+            reviewer_script=[{"report": APPROVED}],
+        )
+
+        self.assertEqual(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+
+
 class OrchestrateCliTests(OrchestratorHarness):
     def _invoke(self, agents: dict[str, ScriptedAgent], check: str) -> tuple[int, str]:
-        run, _ = self.make_run()
+        run, run_directory = self.make_run()
+        (run_directory / "environment.json").write_text(
+            json.dumps({"success": True}), encoding="utf-8"
+        )
         stdout = StringIO()
         stderr = StringIO()
         with patch(

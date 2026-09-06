@@ -233,6 +233,9 @@ class ReproduceCliTests(unittest.TestCase):
             data_root=data_root,
         )
         (run_directory / "workspace").mkdir()
+        (run_directory / "environment.json").write_text(
+            json.dumps({"success": True}), encoding="utf-8"
+        )
         return run, run_directory
 
     def _reproduce(self, arguments: list[str]):
@@ -380,6 +383,35 @@ class ReproduceCliTests(unittest.TestCase):
             )
             self.assertEqual(exit_code, 2)
             self.assertIn("prepare-workspace", stderr)
+            self.assertIsNone(load_reproduction(run_directory))
+
+    def test_a_reproduction_without_an_environment_record_is_refused(self) -> None:
+        """A reproduction against an unknown environment proves nothing.
+
+        Run 20260906T104815Z-29582c skipped `prepare-environment`, built a
+        venv by hand, and got a green reproduction that named no interpreter
+        and no dependencies. See
+        https://github.com/wolfgang-aura/Mailman/issues/55.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "runs"
+            run, run_directory = self._run(data_root)
+            (run_directory / "environment.json").unlink()
+            exit_code, _, stderr = self._reproduce(
+                [
+                    "reproduce",
+                    run.run_id,
+                    "--data-root",
+                    str(data_root),
+                    "--",
+                    sys.executable,
+                    "-c",
+                    "pass",
+                ]
+            )
+            self.assertEqual(exit_code, 2)
+            self.assertIn("no-environment", stderr)
+            self.assertIn("prepare-environment", stderr)
             self.assertIsNone(load_reproduction(run_directory))
 
 

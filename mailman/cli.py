@@ -1227,8 +1227,22 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
     command = environment_command(run_directory, arguments.command)
     if not command:
         raise ValueError("a verification command is required after --")
+    workspace = _resolve_workspace(run_directory, arguments.workspace)
     environment = load_environment_record(run_directory)
-    if environment is not None and not environment.get("success"):
+    if environment is None:
+        # The environment is the one input to a verification result with no
+        # required provenance: run 20260906T104815Z-29582c skipped
+        # `prepare-environment` entirely, built a venv by hand, and reached
+        # human review with no record of which interpreter or dependencies
+        # produced the green gate. Refusing here costs one plan file; shipping
+        # a result nobody can reproduce costs a run.
+        # See https://github.com/wolfgang-aura/Mailman/issues/55.
+        raise ValueError(
+            "no-environment: this run has no environment record. Run "
+            "`mailman prepare-environment` first, so the verification result "
+            "names the interpreter and dependencies that produced it."
+        )
+    if not environment.get("success"):
         raise ValueError(
             "environment preparation for this run did not succeed. Fix the plan "
             "and re-run `mailman prepare-environment` before orchestrating."
@@ -1236,7 +1250,7 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
     outcome = orchestrate(
         run=run,
         run_directory=run_directory,
-        workspace=_resolve_workspace(run_directory, arguments.workspace),
+        workspace=workspace,
         primary_prompt=_default_prompt(
             run_directory, arguments.primary_prompt, "primary-task.md"
         ),
@@ -1562,6 +1576,17 @@ def _reproduce(arguments: argparse.Namespace) -> int:
     if not command:
         raise ValueError("a command is required after --")
     working_directory = _resolve_workspace(run_directory, arguments.working_directory)
+    if load_environment_record(run_directory) is None:
+        # A reproduction run against an unknown interpreter proves nothing:
+        # without the environment record there is no way to say afterwards
+        # which dependencies produced the observed behaviour. The same refusal
+        # `orchestrate` makes. See
+        # https://github.com/wolfgang-aura/Mailman/issues/55.
+        raise ValueError(
+            "no-environment: this run has no environment record. Run "
+            "`mailman prepare-environment` first, so the reproduction names "
+            "the interpreter and dependencies that produced it."
+        )
     result = execute(
         command,
         working_directory=working_directory,

@@ -31,6 +31,9 @@ class CliTests(unittest.TestCase):
             )
             workspace = run_directory / "workspace"
             workspace.mkdir()
+            (run_directory / "environment.json").write_text(
+                json.dumps({"success": True}), encoding="utf-8"
+            )
             for name in ("primary-task.md", "reviewer-task.md"):
                 (run_directory / name).write_text("prompt", encoding="utf-8")
             outcome = SimpleNamespace(
@@ -60,6 +63,45 @@ class CliTests(unittest.TestCase):
                 orchestrated.call_args.kwargs["workspace"].resolve(),
                 workspace.resolve(),
             )
+
+    def test_orchestrate_refuses_a_run_with_no_environment_record(self) -> None:
+        """The verification result needs the provenance of its environment.
+
+        Run 20260906T104815Z-29582c reached human review with no
+        `environment.json` at all, because nothing required it. See
+        https://github.com/wolfgang-aura/Mailman/issues/55.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            (run_directory / "workspace").mkdir()
+            for name in ("primary-task.md", "reviewer-task.md"):
+                (run_directory / name).write_text("prompt", encoding="utf-8")
+            stderr = StringIO()
+            with patch("mailman.cli.orchestrate") as orchestrated:
+                with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                    exit_code = main(
+                        [
+                            "orchestrate",
+                            run.run_id,
+                            "--data-root",
+                            str(data_root),
+                            "--",
+                            "true",
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("no-environment", stderr.getvalue())
+            self.assertIn("prepare-environment", stderr.getvalue())
+            orchestrated.assert_not_called()
 
     def test_orchestrate_says_no_workspace_was_prepared(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -455,6 +497,48 @@ class CliTests(unittest.TestCase):
             # An agent reading a literal `{environment}` cannot run anything.
             self.assertNotIn("{environment}", prompt)
             self.assertIn("environment/bin/python -m pytest", prompt.replace("\\", "/"))
+
+    def test_build_prompts_records_the_verification_command(self) -> None:
+        """The prompts and the gate must be checkable against each other.
+
+        `build-prompts` takes free text and `orchestrate` takes an argv list,
+        and nothing tied them together. See
+        https://github.com/wolfgang-aura/Mailman/issues/58.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            (run_directory / "issue.md").write_text("# Issue\n\nBody.\n", encoding="utf-8")
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "build-prompts",
+                        run.run_id,
+                        "--verification",
+                        "{environment}/bin/python -m pytest",
+                        "--data-root",
+                        str(data_root),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0, stderr.getvalue())
+            record = json.loads(
+                (run_directory / "prompts.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(record["schema_version"], 1)
+            command = record["verification_command"]
+            self.assertEqual(len(command), 3)
+            self.assertIn("python", command[0].replace("\\", "/"))
+            self.assertEqual(command[1:], ["-m", "pytest"])
 
     def test_show_renders_a_run_and_lists_them_without_a_run_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
