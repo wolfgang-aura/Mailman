@@ -8,9 +8,11 @@ from typing import Any, Callable, Sequence
 
 from mailman.agents.base import AgentRequest, EngineeringAgent
 from mailman.artifacts import append_agent_execution, append_verification, write_run
+from mailman.environment import program_name
 from mailman.executor import CommandResult, execute
 from mailman.instructions import describe_instruction_sources
 from mailman.models import RunRecord, RunStatus, utc_now
+from mailman.prompts import load_recorded_verification
 from mailman.redaction import redact
 from mailman.targeting import assess_target
 from mailman.toolchain import prepare_agent_prompt, resolve_command
@@ -546,6 +548,7 @@ class _Orchestration:
             raise ValueError("max_revisions cannot be negative")
         if not self.verification_command:
             raise ValueError("a verification command is required")
+        self._check_verification_agreement()
 
         if self.check_target:
             assessment = assess_target(
@@ -601,6 +604,39 @@ class _Orchestration:
             # A started run must never be left claiming it is still in flight.
             self._block(f"orchestration stopped on an unexpected error: {error}")
             return self._outcome()
+
+    def _check_verification_agreement(self) -> None:
+        """Refuse a run whose prompts and its gate name different programs.
+
+        `build-prompts` takes free text and `orchestrate` takes an argv list,
+        so a run can hold two descriptions of its verification with nothing
+        tying them together. On run 20260903T194455Z-140c59 the free-text form
+        was passed a parenthetical: the agents read it in the prompt, could not
+        execute it as written, and worked around the discrepancy on their own.
+        The gate is what Mailman enforces, so the prompts must at least name
+        the same program, the way the reviewer's claimed
+        `MAILMAN-VERIFICATION: RAN` is refused when the transcript shows no
+        command.
+
+        A run whose prompts predate the record, or that was built without a
+        verification command, carries only one claim and is not refused here.
+
+        See https://github.com/wolfgang-aura/Mailman/issues/58.
+        """
+        recorded = load_recorded_verification(self.run_directory)
+        if not recorded:
+            return
+        recorded_program = program_name(recorded[0])
+        gate_program = program_name(self.verification_command[0])
+        if recorded_program == gate_program:
+            return
+        raise ValueError(
+            "the prompts and the gate name different verification programs: "
+            f"the prompts quote `{' '.join(recorded)}` and orchestrate was "
+            f"given `{' '.join(self.verification_command)}`. Re-run "
+            "`mailman build-prompts --verification` with the command the gate "
+            "runs, or pass the command the prompts quote."
+        )
 
     def _loop(self) -> OrchestrationOutcome:
         if not self._finish_primary_stage(self.primary_prompt, "primary"):

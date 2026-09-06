@@ -456,6 +456,48 @@ class CliTests(unittest.TestCase):
             self.assertNotIn("{environment}", prompt)
             self.assertIn("environment/bin/python -m pytest", prompt.replace("\\", "/"))
 
+    def test_build_prompts_records_the_verification_command(self) -> None:
+        """The prompts and the gate must be checkable against each other.
+
+        `build-prompts` takes free text and `orchestrate` takes an argv list,
+        and nothing tied them together. See
+        https://github.com/wolfgang-aura/Mailman/issues/58.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            (run_directory / "issue.md").write_text("# Issue\n\nBody.\n", encoding="utf-8")
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "build-prompts",
+                        run.run_id,
+                        "--verification",
+                        "{environment}/bin/python -m pytest",
+                        "--data-root",
+                        str(data_root),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0, stderr.getvalue())
+            record = json.loads(
+                (run_directory / "prompts.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(record["schema_version"], 1)
+            command = record["verification_command"]
+            self.assertEqual(len(command), 3)
+            self.assertIn("python", command[0].replace("\\", "/"))
+            self.assertEqual(command[1:], ["-m", "pytest"])
+
     def test_show_renders_a_run_and_lists_them_without_a_run_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_root = Path(temporary_directory) / "runs"

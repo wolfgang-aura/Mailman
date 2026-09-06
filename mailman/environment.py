@@ -37,6 +37,18 @@ def _is_python(name: str) -> bool:
     )
 
 
+def program_name(executable: str) -> str:
+    """The comparable program an executable path or name refers to.
+
+    Two spellings of the same interpreter must compare equal when the
+    verification command the prompts quote is checked against the one the
+    gate will run: `python`, `python.exe`, and the `{environment}` token
+    expanded to an absolute path all name the same program.
+    """
+    name = _executable_name(executable)
+    return name[:-4] if name.endswith(".exe") else name
+
+
 def check_executable(command: Sequence[str], *, step: str) -> None:
     """Refuse a step that starts anything but a Python interpreter or git."""
     name = _executable_name(command[0])
