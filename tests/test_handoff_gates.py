@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -20,6 +21,32 @@ from mailman.handoff import (
     preservation_claims,
 )
 from mailman.models import AgentConfig, RunRecord
+
+
+def _fresh_prior_art(directory: Path) -> None:
+    """The prior-art evidence `check_handoff` requires before a pull request."""
+    now = datetime.now(UTC).isoformat()
+    (directory / "duplicate-search.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "searched_at": now,
+                "repository": "pmorissette/ffn",
+                "query": "scalar path",
+                "success": True,
+                "matches": [],
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    (directory / "claims.json").write_text(
+        json.dumps(
+            {"schema_version": 1, "collected_at": now, "success": True, "claims": []}
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
 
 
 def _never_asked(owner: str) -> str | None:
@@ -200,6 +227,7 @@ class BuildHandoffTests(unittest.TestCase):
                 base="master",
                 owner_type_lookup=_organisation,
             )
+            _fresh_prior_art(directory)
             result = check_handoff(directory)
             self.assertTrue(result["ok"])
             self.assertEqual(len(result["preservation_claims"]), 1)

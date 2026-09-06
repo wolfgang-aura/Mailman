@@ -20,10 +20,27 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from mailman.claims import load_claims
+from mailman.submission import load_duplicate_search
+from mailman.target_intel import repository_slug
+
 
 HANDOFF_FILENAME = "handoff.json"
 
 HANDOFF_SCHEMA_VERSION = 1
+
+#: How old prior-art evidence may be when it is handed over for publishing.
+#:
+#: `duplicate-search` runs once, at run time; publishing happens whenever a
+#: human gets to it, which for this project has been a day or more on every run
+#: so far. Run 20260903T052426Z-ad8196 finished clean against
+#: `encode/starlette` and was overtaken by a byte-identical pull request 94
+#: minutes later, and by a second one the same evening. Nothing at run time
+#: could have caught either; only a check at push time can.
+#:
+#: An hour sits under that observed 94 minutes, and re-running the search costs
+#: one command. See https://github.com/wolfgang-aura/Mailman/issues/41.
+EVIDENCE_MAX_AGE_MINUTES = 60
 
 _KINDS = frozenset({"pull-request", "issue-comment"})
 
@@ -392,7 +409,144 @@ def load_handoff(run_directory: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def check_handoff(run_directory: Path) -> dict[str, Any]:
+def _age_minutes(timestamp: object, now: datetime) -> float | None:
+    """Minutes between an ISO 8601 record timestamp and now."""
+    if not isinstance(timestamp, str) or not timestamp.strip():
+        return None
+    try:
+        recorded = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return None
+    if recorded.tzinfo is None:
+        recorded = recorded.replace(tzinfo=UTC)
+    return max(0.0, (now - recorded).total_seconds() / 60)
+
+
+def check_prior_art_freshness(
+    run_directory: Path,
+    *,
+    repository: str | None = None,
+    now: datetime | None = None,
+    max_age_minutes: float = EVIDENCE_MAX_AGE_MINUTES,
+) -> dict[str, Any]:
+    """Say whether the run's prior-art evidence still describes the target.
+
+    A staged submission ages. The duplicate search that cleared it ran once, at
+    run time, and nothing re-reads the target's pull request list before the
+    body is posted. This does not re-run the search itself, because it is a
+    local check that must be able to decide on its own; it refuses stale
+    evidence and names the command that refreshes it.
+    """
+    moment = now or datetime.now(UTC)
+    search = load_duplicate_search(run_directory) or {}
+    claims = load_claims(run_directory) or {}
+    search_age = _age_minutes(search.get("searched_at"), moment)
+    claims_age = _age_minutes(claims.get("collected_at"), moment)
+    evidence = {
+        "max_age_minutes": max_age_minutes,
+        "duplicate_search_age_minutes": (
+            round(search_age, 1) if search_age is not None else None
+        ),
+        "duplicate_search_repository": search.get("repository"),
+        "claims_age_minutes": (
+            round(claims_age, 1) if claims_age is not None else None
+        ),
+        "self_reported": bool(claims.get("self_reported")),
+    }
+    refresh = (
+        "Re-run `mailman duplicate-search` and `mailman claims` for this run, "
+        "then `mailman handoff` again."
+    )
+    if search_age is None:
+        return {
+            "ok": False,
+            "reason": "no-duplicate-search",
+            "detail": (
+                "this run has no readable duplicate search, so nothing has "
+                "checked the target for a pull request that does the same "
+                f"thing. {refresh}"
+            ),
+            "evidence": evidence,
+        }
+    if not search.get("success"):
+        return {
+            "ok": False,
+            "reason": "duplicate-search-failed",
+            "detail": (
+                "the recorded duplicate search did not complete, so it cleared "
+                f"nothing. {refresh}"
+            ),
+            "evidence": evidence,
+        }
+    if repository and search.get("repository"):
+        wanted = repository_slug(repository).lower()
+        searched = repository_slug(str(search["repository"])).lower()
+        if wanted != searched:
+            return {
+                "ok": False,
+                "reason": "duplicate-search-elsewhere",
+                "detail": (
+                    f"the duplicate search covered {searched}, and this handoff "
+                    f"publishes to {wanted}. {refresh}"
+                ),
+                "evidence": evidence,
+            }
+    if search_age > max_age_minutes:
+        return {
+            "ok": False,
+            "reason": "duplicate-search-stale",
+            "detail": (
+                f"the duplicate search is {search_age / 60:.1f} hours old and "
+                f"the limit is {max_age_minutes:g} minutes. An upstream "
+                "duplicate has appeared 94 minutes after a run finished, so "
+                f"evidence this old clears nothing. {refresh}"
+            ),
+            "evidence": evidence,
+        }
+    if not evidence["self_reported"]:
+        if claims_age is None:
+            return {
+                "ok": False,
+                "reason": "no-claims-check",
+                "detail": (
+                    "this run has no readable claims record, so nobody has "
+                    "checked whether someone else took the issue. " + refresh
+                ),
+                "evidence": evidence,
+            }
+        if claims_age > max_age_minutes:
+            return {
+                "ok": False,
+                "reason": "claims-stale",
+                "detail": (
+                    f"the claims check is {claims_age / 60:.1f} hours old and "
+                    f"the limit is {max_age_minutes:g} minutes. Someone may "
+                    f"have claimed the issue since. {refresh}"
+                ),
+                "evidence": evidence,
+            }
+    return {
+        "ok": True,
+        "reason": "fresh",
+        "detail": (
+            f"the duplicate search is {search_age:.0f} minute(s) old and the "
+            "claims check is "
+            + (
+                "not required for a self-reported defect."
+                if evidence["self_reported"]
+                else f"{claims_age:.0f} minute(s) old."
+            )
+        ),
+        "evidence": evidence,
+    }
+
+
+def check_handoff(
+    run_directory: Path,
+    *,
+    now: datetime | None = None,
+    max_age_minutes: float = EVIDENCE_MAX_AGE_MINUTES,
+) -> dict[str, Any]:
     """Say whether the body still matches the text the last handoff showed."""
     record = load_handoff(run_directory)
     if record is None:
@@ -430,7 +584,7 @@ def check_handoff(run_directory: Path) -> dict[str, Any]:
             "expected_digest": record.get("digest"),
             "actual_digest": current,
         }
-    return {
+    unchanged = {
         "ok": True,
         "reason": "unchanged",
         "detail": "the body matches the text the last handoff printed.",
@@ -438,4 +592,25 @@ def check_handoff(run_directory: Path) -> dict[str, Any]:
         "first_person_claims": record.get("first_person_claims") or [],
         "preservation_claims": record.get("preservation_claims") or [],
         "maintainer_edit_warning": record.get("maintainer_edit_warning"),
+    }
+    if record.get("kind") != "pull-request":
+        return unchanged
+    # The body being the text that was read is one question; whether the target
+    # still wants it is another, and it is the one that ages. See
+    # https://github.com/wolfgang-aura/Mailman/issues/41.
+    freshness = check_prior_art_freshness(
+        run_directory,
+        repository=record.get("repository"),
+        now=now,
+        max_age_minutes=max_age_minutes,
+    )
+    unchanged["prior_art"] = freshness
+    if freshness["ok"]:
+        return unchanged
+    return {
+        "ok": False,
+        "reason": freshness["reason"],
+        "detail": freshness["detail"],
+        "digest": current,
+        "prior_art": freshness,
     }

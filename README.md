@@ -513,6 +513,15 @@ that were previewed are the bytes that get posted, and it is prefixed with
 it has changed since the preview. An edit made after the last preview cannot
 reach GitHub without a second read.
 
+`handoff-check` also refuses when the run's prior-art evidence has gone stale.
+`mailman duplicate-search` runs once, at run time; publishing happens whenever a
+human gets to it. Run `20260903T052426Z-ad8196` finished clean against
+`encode/starlette` and was overtaken by a byte-identical pull request 94 minutes
+later, and by a second one that evening. So a duplicate search or claims check
+older than an hour, one that failed, or one that covered a different repository,
+stops the publish and names the commands that refresh it. See
+[issue #41](https://github.com/wolfgang-aura/Mailman/issues/41).
+
 `handoff` also exits non-zero, naming the line, when the body makes a
 first-person claim the poster alone can make true — "I have read, tested, and
 take responsibility for every line of it". Only the person whose name goes on

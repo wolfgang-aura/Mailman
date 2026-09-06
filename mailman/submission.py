@@ -854,6 +854,18 @@ DUPLICATE_SEARCH_FILENAME = "duplicate-search.json"
 DUPLICATE_ACKNOWLEDGEMENT_FILENAME = "duplicate-acknowledgement.json"
 NO_TEST_ACKNOWLEDGEMENT_FILENAME = "no-test-acknowledgement.json"
 
+def load_duplicate_search(run_directory: Path) -> dict[str, Any] | None:
+    """The run's recorded duplicate search, when it has a readable one."""
+    path = run_directory / DUPLICATE_SEARCH_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
 # A row GitHub's own index returned is worth more than a locally matched one.
 # Both `gh search` and `gh <kind> list --search` AND every term server-side, so
 # a hit from either means the whole query matched, not one common word.

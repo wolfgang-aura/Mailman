@@ -4,6 +4,7 @@ import io
 import json
 import unittest
 from contextlib import redirect_stdout
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -13,6 +14,7 @@ from mailman.handoff import (
     body_digest,
     build_handoff,
     check_handoff,
+    check_prior_art_freshness,
     first_person_claims,
     publish_command,
 )
@@ -42,6 +44,50 @@ def _run_directory(root: Path) -> tuple[RunRecord, Path]:
         json.dumps(run.to_dict()), encoding="utf-8", newline="\n"
     )
     return run, directory
+
+
+def _prior_art(
+    directory: Path,
+    *,
+    search_age_minutes: float = 1,
+    claims_age_minutes: float = 1,
+    repository: str = "pmorissette/ffn",
+    success: bool = True,
+    self_reported: bool = False,
+) -> None:
+    """Write the prior-art evidence a publishable run carries."""
+    now = datetime.now(UTC)
+    (directory / "duplicate-search.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "searched_at": (
+                    now - timedelta(minutes=search_age_minutes)
+                ).isoformat(),
+                "repository": repository,
+                "query": "rolling window cache",
+                "success": success,
+                "matches": [],
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    (directory / "claims.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "collected_at": (
+                    now - timedelta(minutes=claims_age_minutes)
+                ).isoformat(),
+                "success": True,
+                "self_reported": self_reported,
+                "claims": [],
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
 
 
 class DigestTests(unittest.TestCase):
@@ -182,6 +228,7 @@ class CheckHandoffTests(unittest.TestCase):
             head="Mailman-Fork:mailman/run-1",
             base="master",
         )
+        _prior_art(directory)
         return directory, body_path
 
     def test_an_unchanged_body_passes(self) -> None:
@@ -246,6 +293,7 @@ class HandoffCliTests(unittest.TestCase):
             run, _ = _run_directory(root)
             body_path = root / "body.md"
             body_path.write_text(BODY, encoding="utf-8", newline="\n")
+            _prior_art(root / run.run_id)
             shared = [
                 run.run_id,
                 "--body",
@@ -273,6 +321,109 @@ class HandoffCliTests(unittest.TestCase):
             )
             self.assertEqual(code, 1)
             self.assertIn("body-changed", output)
+
+
+class PriorArtFreshnessTests(unittest.TestCase):
+    """The push-time half of the duplicate check.
+
+    Run 20260903T052426Z-ad8196 finished clean against `encode/starlette` and
+    was overtaken by a byte-identical pull request 94 minutes later. The search
+    that cleared it was hours old by the time anyone would have published.
+    See https://github.com/wolfgang-aura/Mailman/issues/41.
+    """
+
+    def _prepared(self, root: Path, **evidence: object) -> Path:
+        run, directory = _run_directory(root)
+        body_path = root / "body.md"
+        body_path.write_text(BODY, encoding="utf-8", newline="\n")
+        build_handoff(
+            run_id=run.run_id,
+            run_directory=directory,
+            body_path=body_path,
+            kind="pull-request",
+            repository="pmorissette/ffn",
+            title="Cache the rolling window",
+            head="Mailman-Fork:mailman/run-1",
+            base="master",
+        )
+        if evidence.pop("prior_art", True):
+            _prior_art(directory, **evidence)  # type: ignore[arg-type]
+        return directory
+
+    def test_evidence_from_minutes_ago_publishes(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name))
+            result = check_handoff(directory)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["prior_art"]["reason"], "fresh")
+
+    def test_a_search_from_yesterday_refuses(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name), search_age_minutes=26 * 60)
+            result = check_handoff(directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "duplicate-search-stale")
+            self.assertIn("duplicate-search", result["detail"])
+
+    def test_a_run_that_never_searched_refuses(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name), prior_art=False)
+            result = check_handoff(directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "no-duplicate-search")
+
+    def test_a_search_that_failed_clears_nothing(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name), success=False)
+            self.assertEqual(
+                check_handoff(directory)["reason"], "duplicate-search-failed"
+            )
+
+    def test_a_search_of_another_repository_does_not_count(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name), repository="encode/starlette")
+            result = check_handoff(directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "duplicate-search-elsewhere")
+
+    def test_a_stale_claims_check_refuses_too(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name), claims_age_minutes=26 * 60)
+            self.assertEqual(check_handoff(directory)["reason"], "claims-stale")
+
+    def test_a_self_reported_defect_has_no_thread_to_be_claimed_in(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(
+                Path(name), claims_age_minutes=26 * 60, self_reported=True
+            )
+            self.assertTrue(check_handoff(directory)["ok"])
+
+    def test_an_issue_comment_is_not_a_submission_and_is_not_gated(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            run, directory = _run_directory(root)
+            body_path = root / "body.md"
+            body_path.write_text(BODY, encoding="utf-8", newline="\n")
+            build_handoff(
+                run_id=run.run_id,
+                run_directory=directory,
+                body_path=body_path,
+                kind="issue-comment",
+                repository="pmorissette/ffn",
+                issue_number=327,
+            )
+            self.assertTrue(check_handoff(directory)["ok"])
+
+    def test_the_age_of_the_evidence_is_reported_with_the_refusal(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name), search_age_minutes=180)
+            result = check_prior_art_freshness(
+                directory, repository="pmorissette/ffn"
+            )
+            self.assertAlmostEqual(
+                result["evidence"]["duplicate_search_age_minutes"], 180, delta=1
+            )
+            self.assertEqual(result["evidence"]["max_age_minutes"], 60)
 
 
 if __name__ == "__main__":
