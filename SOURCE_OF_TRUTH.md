@@ -118,6 +118,15 @@ Last verified: 2026-09-04 in `Asia/Singapore`.
   to name the command that showed it. `provenance` writes the run's commits as a patch file
   and records the pull request's state, merge commit and upstream permalink; `contributions`
   lists them; `deletion_is_safe` decides whether a fork can go. 510 unit tests, up from 477.
+- Precondition deployment: commit `ac72921` passed GitHub Actions on Python 3.12 and 3.14 in run
+  `34010191930`. It carries #10, #11, #12 and #41. An empty candidate reaches the reviewer with
+  the fact stated in its prompt and can no longer leave the loop as a submission. `create_run`
+  refuses a data root inside a working tree that is not this repository, `MAILMAN_DATA_ROOT` gives
+  a shell elsewhere somewhere to put runs, and every child process runs with
+  `PYTHONDONTWRITEBYTECODE`. `prepare-workspace` refuses a Windows path budget under 130
+  characters before it clones, and records what is left. `handoff-check` refuses a pull request
+  whose duplicate search or claims check is missing, failed, older than an hour, or covers another
+  repository. 534 unit tests, up from 510.
 
 ### Reproduce gate, live-verified 2026-09-04
 
