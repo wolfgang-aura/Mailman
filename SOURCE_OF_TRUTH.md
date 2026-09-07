@@ -4,16 +4,17 @@ Last verified: 2026-09-07 in `Asia/Singapore`.
 
 ## Current local procedure
 
-The `codex/prhunt-procedure` branch adds the canonical `mailman/procedure.md`,
+PR #61 (`Enforce one unattended PRHunt procedure`) merged into `main` as
+`5fbff826` on 2026-09-07. It adds the canonical `mailman/procedure.md`,
 repository skill and Claude command, persistent hunt quotas, completion gates,
 review recovery and authorship checks. This section supersedes older local
 capability descriptions below. Historical deployment entries remain historical.
 
-The new flow has passed a scripted end-to-end fixture and the local test suite.
-It has not run an unattended live hunt with user-selected models, and has not
-been pushed or deployed. The latest inspected hosted CI run, `34057041023`,
-failed because an adapter test required a Codex executable on Linux. The local
-fixture now explicitly uses the Python executable for its mocked execution.
+The new flow passed a scripted end-to-end fixture and the local test suite.
+The merge commit passed GitHub Actions on Python 3.12 and 3.14 in run
+`34134989101`. It has not run an unattended live hunt with user-selected
+models. The earlier failure in run `34057041023` was fixed by making the
+mocked adapter fixture use the Python executable on Linux.
 
 Mailman is a CLI, with no running service to restart after these edits. Each
 new invocation reads the current installed package. `procedure.md` is included
