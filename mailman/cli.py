@@ -79,6 +79,13 @@ from mailman.toolchain import (
 from mailman.transcript import count_commands, parse_stream
 from mailman.view import render_run, summarize_runs, write_transcript_logs
 from mailman.review_page import write_run_page
+from mailman.review_decision import (
+    DECISION_FILENAME,
+    DecisionError,
+    blank_decision,
+    load_decision,
+)
+from mailman.review_packet import write_packet_page
 from mailman.provenance import (
     collect_contributions,
     deletion_is_safe,
@@ -562,7 +569,46 @@ def _build_parser() -> argparse.ArgumentParser:
     review.add_argument(
         "--no-open", action="store_true", help="write the page without opening it"
     )
+    review.add_argument(
+        "--allow-no-decision",
+        action="store_true",
+        help="write the page and exit 0 even with no valid decision.json",
+    )
     review.add_argument("--data-root", type=Path)
+
+    decision = subparsers.add_parser(
+        "decision",
+        help=f"check or start the {DECISION_FILENAME} a review page is built from",
+    )
+    decision.add_argument("run_id")
+    decision.add_argument(
+        "--init",
+        action="store_true",
+        help="write an empty decision file to fill in; refuses to overwrite",
+    )
+    decision.add_argument(
+        "--force", action="store_true", help="with --init, overwrite an existing file"
+    )
+    decision.add_argument("--data-root", type=Path)
+
+    packet = subparsers.add_parser(
+        "packet",
+        help="render several runs as one page a person can decide the batch from",
+    )
+    packet.add_argument("run_id", nargs="+")
+    packet.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="where to write the packet page, e.g. .mailman/review-packet/index.html",
+    )
+    packet.add_argument(
+        "--title", default="Runs waiting on a decision", help="the page heading"
+    )
+    packet.add_argument(
+        "--no-open", action="store_true", help="write the page without opening it"
+    )
+    packet.add_argument("--data-root", type=Path)
 
     verify = subparsers.add_parser("verify", help="run and record a verification command")
     verify.add_argument("run_id")
@@ -1539,18 +1585,104 @@ def _show(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _open_page(destination: Path) -> None:
+    # A page nobody opens is a file nobody reads. Failing to open one is not
+    # a reason to fail the command, since the path is already printed.
+    try:
+        webbrowser.open(destination.resolve().as_uri())
+    except (OSError, ValueError) as error:
+        print(f"could not open a browser: {error}", file=sys.stderr)
+
+
 def _review(arguments: argparse.Namespace) -> int:
     _, run_directory = load_run(arguments.run_id, arguments.data_root)
     destination = write_run_page(run_directory, arguments.output)
     print(json.dumps({"run_id": arguments.run_id, "page": str(destination)}, indent=2))
     if not arguments.no_open:
-        # A page nobody opens is a file nobody reads. Failing to open one is not
-        # a reason to fail the command, since the path is already printed.
-        try:
-            webbrowser.open(destination.resolve().as_uri())
-        except (OSError, ValueError) as error:
-            print(f"could not open a browser: {error}", file=sys.stderr)
+        _open_page(destination)
+    # The page is always written, and it says so on its face when the decision
+    # is missing. The exit code is what a script or another agent reads, so a
+    # page with no question in it is a failure here even though a file exists.
+    try:
+        load_decision(run_directory)
+    except DecisionError as error:
+        if arguments.allow_no_decision:
+            return 0
+        print(f"error: {error}", file=sys.stderr)
+        return 1
     return 0
+
+
+def _decision(arguments: argparse.Namespace) -> int:
+    """The machine gate on a review page: valid, or a list of what to fix."""
+    _, run_directory = load_run(arguments.run_id, arguments.data_root)
+    path = run_directory / DECISION_FILENAME
+    if arguments.init:
+        if path.exists() and not arguments.force:
+            print(
+                f"error: {path} already exists; pass --force to overwrite it",
+                file=sys.stderr,
+            )
+            return 2
+        path.write_text(
+            json.dumps(blank_decision(), indent=2) + "\n", encoding="utf-8"
+        )
+        print(json.dumps({"run_id": arguments.run_id, "decision": str(path)}, indent=2))
+        print(
+            "written empty. Fill it in, then run `mailman decision "
+            f"{arguments.run_id}` until it passes.",
+            file=sys.stderr,
+        )
+        return 0
+    try:
+        decision = load_decision(run_directory)
+    except DecisionError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(
+        json.dumps(
+            {
+                "run_id": arguments.run_id,
+                "recommendation": decision.recommendation,
+                "questions": len(decision.questions),
+                "blocking": len(decision.blocking_questions),
+                "gaps": len(decision.gaps),
+                "ledger": len(decision.ledger),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _packet(arguments: argparse.Namespace) -> int:
+    """One page for a batch of runs, with each run's own page written beside it."""
+    directories = []
+    incomplete = []
+    for run_id in arguments.run_id:
+        _, run_directory = load_run(run_id, arguments.data_root)
+        write_run_page(run_directory)
+        directories.append(run_directory)
+        try:
+            load_decision(run_directory)
+        except DecisionError:
+            incomplete.append(run_id)
+    destination = write_packet_page(
+        directories, arguments.output, title=arguments.title
+    )
+    print(
+        json.dumps(
+            {
+                "packet": str(destination),
+                "runs": len(directories),
+                "without_decision": incomplete,
+            },
+            indent=2,
+        )
+    )
+    if not arguments.no_open:
+        _open_page(destination)
+    return 1 if incomplete else 0
 
 
 def _reproduce(arguments: argparse.Namespace) -> int:
@@ -1764,6 +1896,10 @@ def main(arguments: list[str] | None = None) -> int:
             return _show(parsed)
         if parsed.subcommand == "review":
             return _review(parsed)
+        if parsed.subcommand == "decision":
+            return _decision(parsed)
+        if parsed.subcommand == "packet":
+            return _packet(parsed)
         if parsed.subcommand == "verify":
             return _verify(parsed)
     except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as error:

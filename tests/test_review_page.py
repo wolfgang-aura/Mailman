@@ -92,6 +92,69 @@ def write_run(root: Path, **overrides: object) -> Path:
     return run_directory
 
 
+def write_decision(run_directory: Path, **overrides: object) -> Path:
+    """A decision file that passes validation, for the pages that need one."""
+    decision: dict[str, object] = {
+        "schema_version": 1,
+        "recommendation": "SEND",
+        "headline": "The patch fixes the reported crash and the target suite is green.",
+        "panels": {
+            "broken": {
+                "claim": "thing() raised on every empty payload.",
+                "detail": "Reproduced against the base commit before any edit.",
+                "evidence": "machine-checked",
+            },
+            "did": {
+                "claim": "The empty case now returns the documented default.",
+                "detail": "One function changed, one regression test added.",
+                "evidence": "machine-checked",
+            },
+            "fixed": {
+                "claim": "The reproduction passes and nothing else moved.",
+                "detail": "Same failures on the base and patched trees, none in the diff.",
+                "evidence": "measured",
+            },
+        },
+        "questions": [
+            {
+                "question": "Send this upstream now, or wait for the maintainer reply?",
+                "blocking": True,
+                "options": [
+                    {
+                        "label": "A",
+                        "text": "Open the pull request today.",
+                        "cost": "None beyond the filing time.",
+                    },
+                    {
+                        "label": "B",
+                        "text": "Wait for the issue thread.",
+                        "cost": "Days, and the issue may be claimed.",
+                    },
+                ],
+                "recommendation": "A - the issue is unassigned and stale.",
+            }
+        ],
+        "gaps": [
+            {
+                "gap": "macOS behaviour was never observed.",
+                "why_open": "No macOS host is available here.",
+                "cost_to_close": "A CI job on a macOS runner.",
+            }
+        ],
+        "ledger": [
+            {
+                "claim": "The target suite passes.",
+                "kind": "machine-checked",
+                "evidence": "commands/0001-pytest.json, exit 0",
+            }
+        ],
+    }
+    decision.update(overrides)
+    path = run_directory / "decision.json"
+    path.write_text(json.dumps(decision), encoding="utf-8")
+    return path
+
+
 class DiffParsingTests(unittest.TestCase):
     def test_a_file_reports_its_own_added_and_removed_counts(self) -> None:
         files = parse_diff(DIFF)
@@ -164,19 +227,40 @@ class ReviewPageTests(unittest.TestCase):
         self.assertNotIn(str(run_directory.resolve()), page)
         self.assertIn("&lt;run&gt;/environment/python.exe", page)
 
-    def test_the_readable_account_comes_before_the_code(self) -> None:
+    def test_the_decision_comes_before_the_evidence(self) -> None:
+        """The fixed order of docs/review-page-standard.md, asserted on the page."""
         with tempfile.TemporaryDirectory() as temporary_directory:
             run_directory = write_run(Path(temporary_directory))
+            write_decision(run_directory)
             (run_directory / "reviewer-report.md").write_text(
                 "No required changes.\n\nMAILMAN-VERDICT: APPROVE\n", encoding="utf-8"
             )
             page = render_run_page(run_directory)
 
-        self.assertLess(page.index("The review"), page.index("The diagnosis"))
-        self.assertLess(page.index("The diagnosis"), page.index("The patch"))
-        self.assertLess(page.index("The patch"), page.index("Timeline"))
+        order = [
+            ">What was broken<",
+            "<h2>What I need from you</h2>",
+            "<h2>What is still open</h2>",
+            "<h2>Claim ledger</h2>",
+            "<h2>The patch</h2>",
+            "<h2>Machine-checked</h2>",
+            "<h2>Agent-claimed</h2>",
+            "<h2>Timeline</h2>",
+            "<h2>Provenance</h2>",
+        ]
+        positions = [page.index(heading) for heading in order]
+        self.assertEqual(positions, sorted(positions), order)
         # the verdict is a pill at the top, so the contract line is not repeated
         self.assertNotIn("MAILMAN-VERDICT: APPROVE</p>", page)
+
+    def test_a_run_without_a_decision_says_so_loudly(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_directory = write_run(Path(temporary_directory))
+            page = render_run_page(run_directory)
+
+        self.assertIn("This page is incomplete", page)
+        self.assertIn("decision.json", page)
+        self.assertNotIn("What I need from you", page)
 
     def test_a_report_is_rendered_as_prose_not_as_raw_markdown(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
