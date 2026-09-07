@@ -45,7 +45,8 @@ class CliTests(unittest.TestCase):
                 record_path=run_directory / "run.json",
             )
             stderr = StringIO()
-            with patch("mailman.cli.orchestrate", return_value=outcome) as orchestrated:
+            with patch("mailman.cli.orchestrate", return_value=outcome) as orchestrated, \
+                patch("mailman.cli._pinned_agent_factory", return_value=object()) as factory:
                 with redirect_stdout(StringIO()), redirect_stderr(stderr):
                     exit_code = main(
                         [
@@ -53,6 +54,8 @@ class CliTests(unittest.TestCase):
                             run.run_id,
                             "--data-root",
                             str(data_root),
+                            "--reasoning-effort",
+                            "max",
                             "--",
                             "true",
                         ]
@@ -63,6 +66,7 @@ class CliTests(unittest.TestCase):
                 orchestrated.call_args.kwargs["workspace"].resolve(),
                 workspace.resolve(),
             )
+            self.assertEqual(factory.call_args.kwargs["reasoning_effort"], "max")
 
     def test_orchestrate_refuses_a_run_with_no_environment_record(self) -> None:
         """The verification result needs the provenance of its environment.

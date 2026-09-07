@@ -1000,7 +1000,7 @@ class OrchestrateCliTests(OrchestratorHarness):
         stderr = StringIO()
         with patch(
             "mailman.cli._make_agent",
-            side_effect=lambda name, *, model, max_turns, executable=None: agents[name],
+            side_effect=lambda name, *, model, max_turns, executable=None, reasoning_effort=None: agents[name],
         ):
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 exit_code = main(

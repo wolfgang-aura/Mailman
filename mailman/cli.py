@@ -468,6 +468,11 @@ def _build_parser() -> argparse.ArgumentParser:
     orchestrate_parser.add_argument("--agent-timeout", type=float, default=3600)
     orchestrate_parser.add_argument("--verification-timeout", type=float, default=900)
     orchestrate_parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
+    orchestrate_parser.add_argument(
+        "--reasoning-effort",
+        choices=REASONING_EFFORTS,
+        help="how hard a Codex model is asked to think, recorded with the run",
+    )
     orchestrate_parser.add_argument("--max-revisions", type=int, default=1)
     orchestrate_parser.add_argument(
         "--acknowledge-prior-attempts",
@@ -1189,7 +1194,9 @@ def _make_agent(
     raise ValueError(f"unsupported engineering agent: {name}")
 
 
-def _pinned_agent_factory(run_directory: Path, max_turns: int):
+def _pinned_agent_factory(
+    run_directory: Path, max_turns: int, *, reasoning_effort: str | None = None
+):
     """Prefer a probed executable for an agent so a run cannot drift mid-flight."""
 
     def factory(name: str, model: str | None) -> EngineeringAgent:
@@ -1198,6 +1205,7 @@ def _pinned_agent_factory(run_directory: Path, max_turns: int):
             model=model,
             max_turns=max_turns,
             executable=toolchain_executable(run_directory, name.strip().lower()),
+            reasoning_effort=reasoning_effort,
         )
 
     return factory
@@ -1382,7 +1390,11 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
             run_directory, arguments.reviewer_prompt, "reviewer-task.md"
         ),
         verification_command=command,
-        agent_factory=_pinned_agent_factory(run_directory, arguments.max_turns),
+        agent_factory=_pinned_agent_factory(
+            run_directory,
+            arguments.max_turns,
+            reasoning_effort=arguments.reasoning_effort,
+        ),
         agent_timeout_seconds=arguments.agent_timeout,
         verification_timeout_seconds=arguments.verification_timeout,
         max_revisions=arguments.max_revisions,
