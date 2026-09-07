@@ -12,7 +12,9 @@ reads the pull-request body, changed files, and maintainer response for the
 prompt, but it is not allowed to be the only copy of the live-state decision.
 
 Weak listing matches still require human acknowledgement, and closed attempts
-remain prior art rather than live duplicates.
+remain prior art rather than live duplicates. A related closed pull request
+still requires `prior-art` and an explicit acknowledgement before the run can
+start; missing context is not the same as a clean target.
 
 ## Evidence
 

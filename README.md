@@ -468,7 +468,8 @@ It does not wait for `prior-art` to be collected before refusing an open or
 merged match, because the search has already answered the only question that
 matters for starting: is somebody else already on this? `prior-art` remains
 the richer context for prompts, not the copy that makes the live-state gate
-work.
+work. A related closed pull request also stops the run until `prior-art` has
+been collected and a person has acknowledged reading it.
 
 This gate was added after it failed. On 2026-09-03 a finished run against
 `encode/starlette` #3458 was cleared for filing while four open pull requests

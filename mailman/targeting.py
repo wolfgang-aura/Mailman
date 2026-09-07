@@ -16,7 +16,11 @@ from typing import Any
 from mailman.claims import CLAIMS_FILENAME
 from mailman.issue import load_issue_record
 from mailman.reproduction import REPRODUCTION_FILENAME, merge_is_in_base
-from mailman.submission import DUPLICATE_SEARCH_FILENAME, partition_duplicates
+from mailman.submission import (
+    DUPLICATE_SEARCH_FILENAME,
+    partition_duplicates,
+    related_duplicates,
+)
 from mailman.target_intel import TARGET_INTEL_FILENAME
 
 PRIOR_ART_FILENAME = "prior-art.json"
@@ -315,8 +319,11 @@ def assess_target(
             if isinstance(reference, dict) and isinstance(reference.get("number"), int)
             else None
         )
-    strong_search, _ = partition_duplicates(
+    related_search = related_duplicates(
         duplicate_search.get("matches"), issue_number=issue_number
+    )
+    strong_search, _ = partition_duplicates(
+        related_search, issue_number=issue_number
     )
     attempts_by_number = {
         attempt.get("number"): attempt
@@ -338,6 +345,15 @@ def assess_target(
             **match,
             "outcome": state,
         }
+    for match in related_search:
+        if str(match.get("state") or "").lower() != "closed":
+            continue
+        if not match.get("pull_request"):
+            continue
+        number = match.get("number")
+        if not isinstance(number, int) or number in attempts_by_number:
+            continue
+        attempts_by_number[number] = {**match, "outcome": "closed unmerged"}
     attempts = list(attempts_by_number.values())
     open_attempts = [
         attempt

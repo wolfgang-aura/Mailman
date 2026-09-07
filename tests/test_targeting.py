@@ -188,6 +188,36 @@ class AssessTargetTests(unittest.TestCase):
         self.assertIn(OPEN_PULL_REQUEST, assessment.blocking)
         self.assertIn("2330", assessment.summary())
 
+    def test_a_closed_search_match_requires_prior_art_without_its_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _record(Path(temporary), attempts=None)
+            (root / "duplicate-search.json").write_text(
+                json.dumps(
+                    {
+                        "success": True,
+                        "complete": True,
+                        "matches": [
+                            {
+                                "number": 13534,
+                                "title": "fix: isolate scheduled maintenance jobs",
+                                "state": "CLOSED",
+                                "url": "https://github.com/example/project/pull/13534",
+                                "pull_request": True,
+                                "matched_by": ["search", "#4775"],
+                                "methods": ["search"],
+                                "references_issue": True,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            assessment = assess_target(root)
+
+        self.assertFalse(assessment.may_start)
+        self.assertIn(UNACKNOWLEDGED_ATTEMPTS, assessment.blocking)
+        self.assertIn("13534", assessment.summary())
+
     def test_an_open_pull_request_refuses_the_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             assessment = assess_target(_record(Path(temporary), attempts=[_OPEN]))
