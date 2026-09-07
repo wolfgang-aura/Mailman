@@ -14,8 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from mailman.claims import CLAIMS_FILENAME
+from mailman.issue import load_issue_record
 from mailman.reproduction import REPRODUCTION_FILENAME, merge_is_in_base
-from mailman.submission import DUPLICATE_SEARCH_FILENAME
+from mailman.submission import (
+    DUPLICATE_SEARCH_FILENAME,
+    partition_duplicates,
+    related_duplicates,
+)
 from mailman.target_intel import TARGET_INTEL_FILENAME
 
 PRIOR_ART_FILENAME = "prior-art.json"
@@ -299,6 +304,57 @@ def assess_target(
 
     attempts = prior_art.get("attempts")
     attempts = attempts if isinstance(attempts, list) else []
+    # `prior-art` is deliberately a separate command because it reads the
+    # bodies and maintainer responses of matched pull requests. It is not,
+    # however, a prerequisite for refusing an already-claimed target. A run
+    # can have a completed duplicate search and no prior-art record at all;
+    # that was enough for qlib #2278 to pass this gate even though the search
+    # already contained open #2330 and #2279. Use the search's strong rows as
+    # an early stop, and let prior-art add the context when it exists.
+    issue_number = duplicate_search.get("issue_number")
+    if not isinstance(issue_number, int):
+        reference = (load_issue_record(run_directory) or {}).get("reference")
+        issue_number = (
+            reference.get("number")
+            if isinstance(reference, dict) and isinstance(reference.get("number"), int)
+            else None
+        )
+    related_search = related_duplicates(
+        duplicate_search.get("matches"), issue_number=issue_number
+    )
+    strong_search, _ = partition_duplicates(
+        related_search, issue_number=issue_number
+    )
+    attempts_by_number = {
+        attempt.get("number"): attempt
+        for attempt in attempts
+        if isinstance(attempt, dict)
+    }
+    for match in strong_search:
+        state = str(match.get("state") or "").lower()
+        if state not in ("open", "merged"):
+            continue
+        number = match.get("number")
+        if not isinstance(number, int):
+            continue
+        # A fresh duplicate search is authoritative for whether the attempt is
+        # open. Replace a stale prior-art outcome rather than allowing an old
+        # closed record to clear a currently open rival.
+        attempts_by_number[number] = {
+            **attempts_by_number.get(number, {}),
+            **match,
+            "outcome": state,
+        }
+    for match in related_search:
+        if str(match.get("state") or "").lower() != "closed":
+            continue
+        if not match.get("pull_request"):
+            continue
+        number = match.get("number")
+        if not isinstance(number, int) or number in attempts_by_number:
+            continue
+        attempts_by_number[number] = {**match, "outcome": "closed unmerged"}
+    attempts = list(attempts_by_number.values())
     open_attempts = [
         attempt
         for attempt in attempts

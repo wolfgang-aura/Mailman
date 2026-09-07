@@ -6,6 +6,29 @@ Mailman can create a private local run record, capture a GitHub issue into that 
 
 Two live models have completed the loop end to end. See [the two-model run record](docs/runs/0003-two-model-fixture.md).
 
+## PRHunt
+
+Start a session in this repository with `/PRHunt 3`. In Codex, `$prhunt 3`
+explicitly invokes the repository skill. Claude also has a `/PRHunt` command.
+The coordinator asks once for primary and reviewer model IDs, records the
+requested count, and follows [the shared procedure](mailman/procedure.md).
+
+Routine failures return to coordinator repair or candidate replacement. Only
+user-controlled dependencies and final filing approval should interrupt you.
+The final output is a generated packet containing the requested number of
+complete PR candidates. Nothing is published by `hunt finish`.
+
+`mailman procedure` prints the contract. `mailman hunt status HUNT_ID` reports
+missing steps and the remaining count. `mailman hunt finish HUNT_ID` refuses
+an incomplete batch. These commands validate persistent evidence; the session's
+coordinator still performs discovery and engineering. Supported execution
+adapters are Codex and Claude. Other adapters need implementation first.
+
+Engineering now ends at `ENGINEERING_COMPLETE`. A valid decision tied to the
+verified candidate is required by `mailman finalize-review RUN_ID` before
+`READY_FOR_HUMAN_REVIEW`. Filing readiness adds submission, authorship, current
+searches, final-body and branch checks.
+
 ## Why this exists
 
 Agent prose is weak evidence. A useful engineering run needs the issue, exact base commit, diff, tests, command results, independent review, unresolved risks, and a human decision. Mailman treats those artifacts as the product.
@@ -462,6 +485,14 @@ This second gate was added after the first one over-corrected. Against
 including the run's own issue and eighteen open issues that shared the word
 "price". None was a duplicate. See
 [issue #31](https://github.com/wolfgang-aura/Mailman/issues/31).
+
+`check-target` also reads the strong rows in `duplicate-search.json` directly.
+It does not wait for `prior-art` to be collected before refusing an open or
+merged match, because the search has already answered the only question that
+matters for starting: is somebody else already on this? `prior-art` remains
+the richer context for prompts, not the copy that makes the live-state gate
+work. A related closed pull request also stops the run until `prior-art` has
+been collected and a person has acknowledged reading it.
 
 This gate was added after it failed. On 2026-09-03 a finished run against
 `encode/starlette` #3458 was cleared for filing while four open pull requests

@@ -19,6 +19,16 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from mailman.markdown_lite import render_markdown
+from mailman.review_decision import (
+    DecisionError,
+    load_decision,
+    recommendation_pill,
+    render_gaps,
+    render_ledger,
+    render_missing,
+    render_panels,
+    render_questions,
+)
 from mailman.transcript import count_commands, parse_stream
 from mailman.view import AgentExecution, agent_executions
 
@@ -121,6 +131,35 @@ table.prose th, table.prose td { border: 1px solid var(--border); padding: 6px 1
 table.prose th { background: var(--gutter); font-weight: 600; }
 .scroller { overflow-x: auto; }
 .byline { color: var(--muted); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; font-weight: 600; margin: 0 0 12px; }
+
+/* The decision layer. Three panels, the questions, the gaps and the ledger.
+   No new colour, size or spacing step: every value below is already in
+   DESIGN.md, so the decision sections and the evidence sections read as one
+   page rather than two documents stapled together. */
+.panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 16px; }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.panel .label { display: block; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+.claim { font-size: 15px; font-weight: 600; line-height: 1.45; margin: 0 0 8px; text-wrap: balance; }
+.detail { color: var(--muted); margin: 0 0 12px; max-width: 60ch; }
+.question { padding: 16px; margin-bottom: 12px; }
+.question > header { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin-bottom: 12px; }
+.question h3 { font-size: 15px; font-weight: 600; margin: 0; flex: 1 1 320px; text-wrap: balance; }
+.qnum { font-family: "Cascadia Mono", Consolas, monospace; font-weight: 600; color: var(--muted); }
+table.options, table.grid { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.options th, table.grid th { text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding: 4px 12px 8px; border-bottom: 1px solid var(--border); }
+table.options td, table.grid td { border-top: 1px solid var(--border); padding: 8px 12px; vertical-align: top; }
+table.options tr:first-child td, table.grid tbody tr:first-child td { border-top: 0; }
+td.optlabel { width: 1%; font-family: "Cascadia Mono", Consolas, monospace; font-weight: 600; white-space: nowrap; }
+td.cost { color: var(--muted); }
+.pick { margin: 12px 0 0; padding-top: 12px; border-top: 1px solid var(--border); }
+.pick .label { display: block; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+.grid td.mono { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12.5px; color: var(--muted); word-break: break-word; }
+.missing { padding: 20px 24px; border-color: var(--stop); }
+.missing .byline { color: var(--stop); }
+.problems { margin: 0 0 12px; padding-left: 22px; color: var(--stop); font-size: 13px; }
+.problems li { margin: 4px 0; }
+.split { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+.split > section { margin-top: 0; }
 @media (max-width: 700px) { .page { padding: 16px 12px 32px; } h1 { font-size: 18px; } }
 """
 
@@ -527,7 +566,14 @@ def render_run_fragment(run_directory: Path) -> str:
 
 
 def render_run_page(run_directory: Path) -> str:
-    """Render one run directory as a complete HTML document."""
+    """Render one run directory as a complete HTML document.
+
+    The order is the order a person decides in, and it is fixed: the three
+    answers, then what he has to choose, then what is still open, then the
+    patch, then machine-checked evidence beside the agents' own account of it,
+    then the ledger, then provenance. Anything that reads as "nobody checked
+    this" belongs in the questions or the gaps, never in a caveat at the end.
+    """
     run = _read_json(run_directory / "run.json")
     orchestration = _read_json(run_directory / "orchestration.json")
     steps = [step for step in orchestration.get("steps", []) if isinstance(step, dict)]
@@ -535,7 +581,7 @@ def render_run_page(run_directory: Path) -> str:
     run_id = str(run.get("run_id", run_directory.name))
     issue = _read_json(run_directory / "issue.json")
     diff_text = _read_text(run_directory / "export" / "changes.diff")
-    decision = run.get("human_decision") or "none recorded"
+    decision_html = _decision_sections(run_directory)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -548,29 +594,73 @@ def render_run_page(run_directory: Path) -> str:
   <p class="sub">Nothing on this page has been sent anywhere. The decision is
   yours: this patch goes upstream, or it does not.</p></div>
 </div>
-{_verdict_strip(run, orchestration, steps)}
-<section><h2>The review</h2>
-<p class="note">Why the reviewer reached that verdict, in its own words.</p>
-{_report(run_directory, "reviewer", "reviewer report")}</section>
-<section><h2>The diagnosis</h2>
-<p class="note">What the engineer says it found, changed, and checked.</p>
-{_report(run_directory, "primary", "primary report")}</section>
+{decision_html}
 <section><h2>The patch</h2>
 {_diff_summary(diff_text)}
 {_diff_section(diff_text)}</section>
-<section><h2>Verification Mailman ran itself</h2>
-<p class="note">Mailman's own gate, not an agent's account of it.</p>
-{_verifications(run_directory)}</section>
+<div class="split">
+<section><h2>Machine-checked</h2>
+<p class="note">Mailman&#39;s own gate, not an agent&#39;s account of it.</p>
+{_verifications(run_directory)}
+{_verdict_strip(run, orchestration, steps)}</section>
+<section><h2>Agent-claimed</h2>
+<p class="note">What the two agents say, in their own words. Nothing here is
+evidence on its own.</p>
+{_report(run_directory, "reviewer", "reviewer report")}
+{_report(run_directory, "primary", "primary report")}</section>
+</div>
 <section><h2>What the agents actually did</h2>
-<p class="note">Every command and edit, as the agent's own stream reported it.
+<p class="note">Every command and edit, as the agent&#39;s own stream reported it.
 Paths are shown relative to the run.</p>
 {_transcripts(executions, run_directory)}</section>
 <section><h2>Timeline</h2>{_timeline(steps)}</section>
-<section><h2>Provenance</h2>{_facts(run, issue, executions)}</section>
-<section><h2>Human decision</h2>
-<p class="note">Recorded in <code>run.json</code>: {_escape(decision)}</p></section>
+<section><h2>Provenance</h2>{_facts(run, issue, executions)}
+<p class="note">Human decision recorded in <code>run.json</code>:
+{_escape(run.get("human_decision") or "none recorded")}</p></section>
 </div></body></html>
 """
+
+
+def _decision_sections(run_directory: Path) -> str:
+    """The decision layer, or a loud banner naming why there is none.
+
+    A review page that quietly drops its question when `decision.json` is
+    missing is exactly the page this format replaced, so the absence is
+    rendered at full size instead of being skipped.
+    """
+    try:
+        decision = load_decision(run_directory)
+    except DecisionError as error:
+        return f'<section>{render_missing(error)}</section>'
+    blocking = len(decision.blocking_questions)
+    total = len(decision.questions)
+    noun = "question" if total == 1 else "questions"
+    if blocking:
+        verb = "blocks" if blocking == 1 else "block"
+        blocked = f"{blocking} of {total} {noun} {verb} this patch"
+    elif total:
+        blocked = f"{total} {noun} to answer, none of them blocking"
+    else:
+        blocked = "nothing is blocked on you"
+    return f"""<div class="verdict">
+<div><span class="label">Recommendation</span>
+<span class="value">{recommendation_pill(decision.recommendation)}</span>
+<p class="note" style="margin:8px 0 0">{_escape(blocked)}</p></div>
+<div style="grid-column: span 2"><span class="label">In one sentence</span>
+<span class="value">{_escape(decision.headline)}</span></div>
+</div>
+{render_panels(decision)}
+<section><h2>What I need from you</h2>
+<p class="note">Answer by number and letter &mdash; &ldquo;1A 2B&rdquo; is a
+complete reply.</p>
+{render_questions(decision)}</section>
+<section><h2>What is still open</h2>
+<p class="note">Every open item carries the reason it is open and what closing
+it would cost. Nothing is listed here that was simply not done.</p>
+{render_gaps(decision)}</section>
+<section><h2>Claim ledger</h2>
+<p class="note">Each claim on this page and the class of evidence behind it.</p>
+{render_ledger(decision)}</section>"""
 
 
 def write_run_page(run_directory: Path, destination: Path | None = None) -> Path:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -493,7 +494,7 @@ def _evidence_findings(
     run: RunRecord, verifications: list[dict[str, Any]]
 ) -> list[Finding]:
     findings: list[Finding] = []
-    if run.status is not RunStatus.READY_FOR_HUMAN_REVIEW:
+    if run.status not in (RunStatus.ENGINEERING_COMPLETE, RunStatus.READY_FOR_HUMAN_REVIEW):
         findings.append(
             Finding(
                 code="run-not-ready",
@@ -800,6 +801,11 @@ def prepare_submission(
         )
     )
     findings.extend(_evidence_findings(run, verifications))
+    from mailman.completion import check_authorship
+    try:
+        check_authorship(run_directory)
+    except (OSError, ValueError) as error:
+        findings.append(Finding(code="author-identity", detail=str(error), blocking=True))
     blocking = [finding for finding in findings if finding.blocking]
 
     destination_path = destination.resolve()
@@ -823,6 +829,7 @@ def prepare_submission(
     )
     record = {
         "schema_version": SUBMISSION_SCHEMA_VERSION,
+        "diff_sha256": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
         "run_id": run.run_id,
         "prepared_at": datetime.now(UTC).isoformat(),
         "target": policy.name,

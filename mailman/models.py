@@ -19,6 +19,7 @@ class RunStatus(StrEnum):
     REVIEW_PENDING = "REVIEW_PENDING"
     REVISION_REQUIRED = "REVISION_REQUIRED"
     VERIFICATION_PENDING = "VERIFICATION_PENDING"
+    ENGINEERING_COMPLETE = "ENGINEERING_COMPLETE"
     READY_FOR_HUMAN_REVIEW = "READY_FOR_HUMAN_REVIEW"
     BLOCKED = "BLOCKED"
     ABANDONED = "ABANDONED"
@@ -51,13 +52,17 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     ),
     RunStatus.VERIFICATION_PENDING: frozenset(
         {
+            RunStatus.ENGINEERING_COMPLETE,
             RunStatus.READY_FOR_HUMAN_REVIEW,
             RunStatus.REVISION_REQUIRED,
             RunStatus.BLOCKED,
             RunStatus.ABANDONED,
         }
     ),
-    RunStatus.READY_FOR_HUMAN_REVIEW: frozenset(),
+    RunStatus.ENGINEERING_COMPLETE: frozenset(
+        {RunStatus.READY_FOR_HUMAN_REVIEW, RunStatus.BLOCKED, RunStatus.ABANDONED}
+    ),
+    RunStatus.READY_FOR_HUMAN_REVIEW: frozenset({RunStatus.BLOCKED}),
     RunStatus.BLOCKED: frozenset(
         {RunStatus.PRIMARY_RUNNING, RunStatus.REVIEW_PENDING, RunStatus.ABANDONED}
     ),

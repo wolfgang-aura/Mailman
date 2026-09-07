@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import unittest
+from unittest.mock import patch
 from contextlib import redirect_stdout
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -152,6 +153,12 @@ class PublishCommandTests(unittest.TestCase):
 
 
 class BuildHandoffTests(unittest.TestCase):
+
+    def setUp(self):
+        authors = patch("mailman.handoff.check_authorship", return_value={"ok": True, "head": "fixture"})
+        authors.start()
+        self.addCleanup(authors.stop)
+
     def test_the_body_and_the_command_arrive_in_one_block(self) -> None:
         with TemporaryDirectory() as name:
             root = Path(name)
@@ -214,6 +221,12 @@ class BuildHandoffTests(unittest.TestCase):
 
 
 class CheckHandoffTests(unittest.TestCase):
+
+    def setUp(self):
+        authors = patch("mailman.handoff.check_authorship", return_value={"ok": True, "head": "fixture"})
+        authors.start()
+        self.addCleanup(authors.stop)
+
     def _prepared(self, root: Path, body: str) -> tuple[Path, Path]:
         run, directory = _run_directory(root)
         body_path = root / "body.md"
@@ -253,6 +266,12 @@ class CheckHandoffTests(unittest.TestCase):
 
 
 class HandoffCliTests(unittest.TestCase):
+
+    def setUp(self):
+        authors = patch("mailman.handoff.check_authorship", return_value={"ok": True, "head": "fixture"})
+        authors.start()
+        self.addCleanup(authors.stop)
+
     def _invoke(self, arguments: list[str]) -> tuple[int, str]:
         stream = io.StringIO()
         with redirect_stdout(stream):
@@ -324,6 +343,12 @@ class HandoffCliTests(unittest.TestCase):
 
 
 class PriorArtFreshnessTests(unittest.TestCase):
+
+    def setUp(self):
+        authors = patch("mailman.handoff.check_authorship", return_value={"ok": True, "head": "fixture"})
+        authors.start()
+        self.addCleanup(authors.stop)
+
     """The push-time half of the duplicate check.
 
     Run 20260903T052426Z-ad8196 finished clean against `encode/starlette` and

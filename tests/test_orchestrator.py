@@ -325,7 +325,7 @@ class EmptyCandidateTests(OrchestratorHarness):
         prompt = reviewer.calls[0][1]
         self.assertIn("Where you can write", prompt)
         self.assertIn(str(run_directory / "scratch"), prompt)
-        self.assertIs(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        self.assertIs(outcome.status, RunStatus.ENGINEERING_COMPLETE)
 
     def test_a_reviewer_that_edits_the_workspace_stops_the_run(self) -> None:
         outcome, _, _, _ = self.orchestrate(
@@ -389,7 +389,7 @@ class EmptyCandidateTests(OrchestratorHarness):
 
         self.assertIn("The workspace is unchanged", reviewer.calls[0][1])
         self.assertNotIn("The workspace is unchanged", reviewer.calls[1][1])
-        self.assertIs(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        self.assertIs(outcome.status, RunStatus.ENGINEERING_COMPLETE)
 
     def test_a_candidate_with_work_is_never_told_it_is_empty(self) -> None:
         _, _, _, reviewer = self.orchestrate(
@@ -441,7 +441,7 @@ class OrchestrationTests(OrchestratorHarness):
             reviewer_script=[{"report": APPROVED}],
         )
 
-        self.assertIs(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        self.assertIs(outcome.status, RunStatus.ENGINEERING_COMPLETE)
 
     def test_a_reviewer_that_says_it_could_not_verify_cannot_approve(self) -> None:
         # The real shape of run 20260902T144544Z-5dbf69. Three commands ran:
@@ -518,7 +518,7 @@ class OrchestrationTests(OrchestratorHarness):
             ],
         )
 
-        self.assertIs(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        self.assertIs(outcome.status, RunStatus.ENGINEERING_COMPLETE)
         self.assertEqual(outcome.revisions_used, 1)
         self.assertEqual(len(primary.calls), 2)
 
@@ -549,7 +549,7 @@ class OrchestrationTests(OrchestratorHarness):
             ],
         )
 
-        self.assertIs(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        self.assertIs(outcome.status, RunStatus.ENGINEERING_COMPLETE)
         self.assertEqual(outcome.revisions_used, 1)
         self.assertEqual(len(primary.calls), 2)
 
@@ -575,8 +575,8 @@ class OrchestrationTests(OrchestratorHarness):
             reviewer_script=[{"report": APPROVED}],
         )
 
-        self.assertEqual(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
-        self.assertTrue(outcome.ready)
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
+        self.assertFalse(outcome.ready)
         self.assertEqual(outcome.revisions_used, 0)
         self.assertEqual(outcome.review_cycles, 1)
         self.assertEqual(primary.calls[0][0], "primary")
@@ -584,12 +584,12 @@ class OrchestrationTests(OrchestratorHarness):
         self.assertIn("MAILMAN-VERDICT", reviewer.calls[0][1])
 
         stored, _ = load_run(outcome.run_id, self.data_root)
-        self.assertEqual(stored.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        self.assertEqual(stored.status, RunStatus.ENGINEERING_COMPLETE)
         record = json.loads(
             (run_directory / "orchestration.json").read_text(encoding="utf-8")
         )
-        self.assertTrue(record["ready_for_human_review"])
-        self.assertEqual(record["final_status"], "READY_FOR_HUMAN_REVIEW")
+        self.assertFalse(record["ready_for_human_review"])
+        self.assertEqual(record["final_status"], "ENGINEERING_COMPLETE")
         verifications = json.loads(
             (run_directory / "verification.json").read_text(encoding="utf-8")
         )
@@ -607,7 +607,7 @@ class OrchestrationTests(OrchestratorHarness):
             ],
         )
 
-        self.assertEqual(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
         self.assertTrue((self.workspace / "fix.txt").is_file())
         self.assertEqual(outcome.revisions_used, 1)
         self.assertEqual(outcome.review_cycles, 2)
@@ -680,7 +680,7 @@ class OrchestrationTests(OrchestratorHarness):
             check=REPAIRABLE_CHECK,
         )
 
-        self.assertEqual(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
         self.assertEqual(len(primary.calls), 2)
         self.assertEqual(len(reviewer.calls), 1)
         self.assertEqual(outcome.revisions_used, 1)
@@ -874,8 +874,8 @@ class OrchestrationTests(OrchestratorHarness):
             verification_command=[sys.executable, "-c", PASSING_CHECK],
             agent_factory=lambda name, model: agents[name],
         )
-        self.assertEqual(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
-        self.assertTrue(outcome.ready)
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
+        self.assertFalse(outcome.ready)
 
 
 class VerificationExecutableTests(OrchestratorHarness):
@@ -911,7 +911,7 @@ class VerificationExecutableTests(OrchestratorHarness):
             agent_factory=lambda name, model: agents[name],
         )
 
-        self.assertEqual(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
         verifications = json.loads(
             (run_directory / "verification.json").read_text(encoding="utf-8")
         )
@@ -973,7 +973,7 @@ class VerificationAgreementTests(OrchestratorHarness):
             reviewer_script=[{"report": APPROVED}],
         )
 
-        self.assertEqual(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
 
     def test_a_run_whose_prompts_record_no_command_is_not_refused(self) -> None:
         run, run_directory = self.make_run()
@@ -987,7 +987,7 @@ class VerificationAgreementTests(OrchestratorHarness):
             reviewer_script=[{"report": APPROVED}],
         )
 
-        self.assertEqual(outcome.status, RunStatus.READY_FOR_HUMAN_REVIEW)
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
 
 
 class OrchestrateCliTests(OrchestratorHarness):
@@ -1034,8 +1034,8 @@ class OrchestrateCliTests(OrchestratorHarness):
         exit_code, output = self._invoke(agents, PASSING_CHECK)
 
         self.assertEqual(exit_code, 0, output)
-        self.assertIn('"final_status": "READY_FOR_HUMAN_REVIEW"', output)
-        self.assertIn('"ready_for_human_review": true', output)
+        self.assertIn('"final_status": "ENGINEERING_COMPLETE"', output)
+        self.assertIn('"ready_for_human_review": false', output)
 
     def test_cli_reports_a_blocked_run_with_exit_code_one(self) -> None:
         agents = {

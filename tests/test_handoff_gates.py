@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest.mock import patch
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -125,6 +126,12 @@ class PreservationClaimTests(unittest.TestCase):
 
 
 class BuildHandoffTests(unittest.TestCase):
+
+    def setUp(self):
+        authors = patch("mailman.handoff.check_authorship", return_value={"ok": True, "head": "fixture"})
+        authors.start()
+        self.addCleanup(authors.stop)
+
     def _run(self, root: Path):
         run = RunRecord(
             run_id="20260906T000000Z-bbbbbb",

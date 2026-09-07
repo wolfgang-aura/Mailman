@@ -23,3 +23,6 @@ mailman = "mailman.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["mailman*"]
+
+[tool.setuptools.package-data]
+mailman = ["procedure.md"]

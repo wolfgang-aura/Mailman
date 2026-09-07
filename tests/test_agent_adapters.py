@@ -159,7 +159,7 @@ class AgentAdapterTests(unittest.TestCase):
             with patch(
                 "mailman.agents.codex_cli.execute", return_value=process
             ) as fake_execute:
-                CodexCliAgent(windows_sandbox=None).run(request)
+                CodexCliAgent(windows_sandbox=None, executable=sys.executable).run(request)
 
         environment = fake_execute.call_args.kwargs["environment"]
         resolved = str(scratch.resolve())
