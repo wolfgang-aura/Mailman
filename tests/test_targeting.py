@@ -9,8 +9,8 @@ from pathlib import Path
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
     BUG_NOT_REPRODUCED,
-    MERGED_FIX_ALREADY_IN_BASE,
     ISSUE_ASSIGNED,
+    MERGED_FIX_ALREADY_IN_BASE,
     NO_CLAIM_CHECK,
     NO_DUPLICATE_SEARCH,
     OPEN_PULL_REQUEST,
@@ -154,6 +154,39 @@ class AssessTargetTests(unittest.TestCase):
             assessment = assess_target(_record(Path(temporary)))
 
         self.assertTrue(assessment.may_start)
+
+    def test_a_strong_open_search_match_refuses_without_prior_art(self) -> None:
+        # The duplicate search can already prove that a live rival exists. A
+        # missing `prior-art.json` must not turn that proof into permission to
+        # start two agents and an environment build.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _record(Path(temporary), attempts=None)
+            (root / "duplicate-search.json").write_text(
+                json.dumps(
+                    {
+                        "success": True,
+                        "complete": True,
+                        "matches": [
+                            {
+                                "number": 2330,
+                                "title": "fix(backtest): handle IndexError at right calendar boundary",
+                                "state": "OPEN",
+                                "url": "https://github.com/microsoft/qlib/pull/2330",
+                                "pull_request": True,
+                                "matched_by": ["search", "#2278"],
+                                "methods": ["search"],
+                                "references_issue": True,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            assessment = assess_target(root)
+
+        self.assertFalse(assessment.may_start)
+        self.assertIn(OPEN_PULL_REQUEST, assessment.blocking)
+        self.assertIn("2330", assessment.summary())
 
     def test_an_open_pull_request_refuses_the_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
