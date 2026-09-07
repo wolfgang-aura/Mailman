@@ -62,7 +62,7 @@ from mailman.knowledge.retrospective import RETROSPECTIVE_SECTIONS
 from mailman.models import RunStatus
 from mailman.orchestrator import orchestrate
 from mailman.prior_art import collect_prior_art
-from mailman.prompts import write_task_prompts
+from mailman.prompts import load_recorded_verification, write_task_prompts
 from mailman.reproduction import (
     PURPOSE_KEY,
     REPRODUCTION_PURPOSE,
@@ -112,6 +112,27 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
     subparsers.add_parser("doctor", help="check required and optional local tools")
+    subparsers.add_parser("procedure", help="print the shared PRHunt procedure")
+    draft = subparsers.add_parser("draft-environment", help="derive an editable plan from pyproject.toml")
+    draft.add_argument("run_id")
+    draft.add_argument("--python", default=sys.executable)
+    draft.add_argument("--data-root", type=Path)
+    hunt = subparsers.add_parser("hunt", help="manage a persistent PRHunt session")
+    hunt.add_argument("action", choices=("init", "add", "drop", "status", "finish", "list", "escalate", "refresh-procedure"))
+    hunt.add_argument("hunt_id", nargs="?")
+    hunt.add_argument("run_id", nargs="?")
+    for role in ("primary", "reviewer"):
+        hunt.add_argument(f"--{role}")
+        hunt.add_argument(f"--{role}-model")
+    hunt.add_argument("--reason")
+    hunt.add_argument("--evidence")
+    hunt.add_argument("--attempted")
+    hunt.add_argument("--why-user")
+    hunt.add_argument("--user-action")
+    hunt.add_argument("--data-root", type=Path)
+    finalize = subparsers.add_parser("finalize-review", help="validate the decision against the verified candidate")
+    finalize.add_argument("run_id")
+    finalize.add_argument("--data-root", type=Path)
 
     init_run = subparsers.add_parser("init-run", help="create a private local run record")
     init_run.add_argument("--repository", required=True)
@@ -433,6 +454,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     orchestrate_parser = subparsers.add_parser(
         "orchestrate",
+        aliases=["resume-review"],
         help="run the bounded primary, reviewer, and verification loop for a run",
     )
     orchestrate_parser.add_argument("run_id")
@@ -618,6 +640,58 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _hunt(arguments: argparse.Namespace) -> int:
+    from mailman import hunt
+    root = (arguments.data_root or default_data_root()).resolve()
+    if arguments.action == "list":
+        rows = [hunt.read_object(path) for path in sorted((root.parent / "hunts").glob("*/hunt.json"))]
+        print(json.dumps([{k: row.get(k) for k in ("hunt_id", "status", "requested", "updated_at")} for row in rows], indent=2))
+        return 0
+    if not arguments.hunt_id:
+        raise ValueError("provide a hunt ID, or a count for hunt init")
+    if arguments.action == "init":
+        if not all((arguments.primary, arguments.primary_model, arguments.reviewer, arguments.reviewer_model)):
+            raise ValueError("ask for primary and reviewer model IDs, then pass all four model flags")
+        record = hunt.create_hunt(root, int(arguments.hunt_id), primary=arguments.primary,
+                                  primary_model=arguments.primary_model, reviewer=arguments.reviewer,
+                                  reviewer_model=arguments.reviewer_model)
+        print(json.dumps(record, indent=2))
+        return 0
+    if arguments.action == "refresh-procedure":
+        import hashlib
+        path = hunt.hunt_path(root, arguments.hunt_id)
+        record = hunt.read_object(path)
+        if not record:
+            raise ValueError("hunt not found")
+        record["procedure_sha256"] = hashlib.sha256(hunt.PROCEDURE.read_bytes()).hexdigest()
+        hunt.save(path, record)
+    record = hunt.load_hunt(root, arguments.hunt_id)
+    if arguments.action == "add":
+        if not arguments.run_id:
+            raise ValueError("provide the run ID to add")
+        hunt.add_run(root, record, arguments.run_id)
+    if arguments.action == "drop":
+        if not arguments.reason or not arguments.evidence:
+            raise ValueError("a dropped candidate needs --reason and --evidence")
+        row = next((row for row in record["runs"] if row["run_id"] == arguments.run_id), None)
+        if row is None:
+            raise ValueError("run is not in this hunt")
+        row.update(dropped=True, reason=arguments.reason, evidence=arguments.evidence)
+        hunt.save(hunt.hunt_path(root, record["hunt_id"]), record)
+    if arguments.action == "escalate":
+        if arguments.reason not in hunt.HUMAN_REASONS:
+            raise ValueError("routine failures are coordinator work; reason must be " + ", ".join(hunt.HUMAN_REASONS))
+        if not all((arguments.evidence, arguments.attempted, arguments.why_user, arguments.user_action)):
+            raise ValueError("escalation needs --evidence, --attempted, --why-user and --user-action")
+        record["escalations"].append({"reason": arguments.reason, "evidence": arguments.evidence,
+                                      "attempted": arguments.attempted, "why_user": arguments.why_user,
+                                      "user_action": arguments.user_action})
+        hunt.save(hunt.hunt_path(root, record["hunt_id"]), record)
+    result = hunt.finish(root, record) if arguments.action == "finish" else hunt.status(root, record)
+    print(json.dumps(result, indent=2))
+    return 1 if arguments.action == "finish" and not result["complete"] else 0
+
+
 def _doctor() -> int:
     checks = run_checks()
     for check in checks:
@@ -686,9 +760,9 @@ def _build_prompts(arguments: argparse.Namespace) -> int:
     verification = (
         resolve_command(
             run_directory,
-            environment_command(run_directory, arguments.verification.split()),
+            environment_command(run_directory, arguments.command or arguments.verification.split()),
         )
-        if arguments.verification
+        if arguments.command or arguments.verification
         else None
     )
     primary_path, reviewer_path = write_task_prompts(
@@ -1085,6 +1159,8 @@ def _export_patch(arguments: argparse.Namespace) -> int:
 
 def _transition(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    if RunStatus(arguments.target) is RunStatus.READY_FOR_HUMAN_REVIEW:
+        raise ValueError("use `mailman finalize-review` to validate the decision and evidence")
     run.transition(RunStatus(arguments.target), arguments.reason)
     write_run(run, run_directory)
     print(json.dumps({"run_id": run.run_id, "status": str(run.status)}, indent=2))
@@ -1270,7 +1346,9 @@ def _default_prompt(run_directory: Path, given: Path | None, name: str) -> Path:
 
 def _orchestrate(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
-    command = environment_command(run_directory, arguments.command)
+    command = environment_command(
+        run_directory, arguments.command or load_recorded_verification(run_directory) or []
+    )
     if not command:
         raise ValueError("a verification command is required after --")
     workspace = _resolve_workspace(run_directory, arguments.workspace)
@@ -1311,6 +1389,7 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
         announce=_emit,
         acknowledge_prior_attempts=arguments.acknowledge_prior_attempts,
         acknowledge_claims=arguments.acknowledge_claims,
+        resume_review=arguments.subcommand == "resume-review",
     )
     summary = {
         "run_id": outcome.run_id,
@@ -1321,7 +1400,7 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
         "record": str(outcome.record_path),
     }
     print(json.dumps(summary, indent=2))
-    return 0 if outcome.ready else 1
+    return 0 if outcome.status is RunStatus.ENGINEERING_COMPLETE or outcome.ready else 1
 
 
 def _probe_tool(arguments: argparse.Namespace) -> int:
@@ -1825,7 +1904,7 @@ def _tail(text: str, lines: int = 20) -> str:
 def main(arguments: list[str] | None = None) -> int:
     raw_arguments = list(arguments if arguments is not None else sys.argv[1:])
     verification_command: list[str] | None = None
-    passthrough = (["verify"], ["orchestrate"], ["reproduce"])
+    passthrough = (["verify"], ["orchestrate"], ["resume-review"], ["reproduce"], ["build-prompts"])
     if raw_arguments[:1] in passthrough and "--" in raw_arguments:
         delimiter = raw_arguments.index("--")
         verification_command = raw_arguments[delimiter + 1 :]
@@ -1833,11 +1912,29 @@ def main(arguments: list[str] | None = None) -> int:
 
     parser = _build_parser()
     parsed = parser.parse_args(raw_arguments)
-    if parsed.subcommand in ("verify", "orchestrate", "reproduce"):
+    if parsed.subcommand in ("verify", "orchestrate", "resume-review", "reproduce", "build-prompts"):
         parsed.command = verification_command or []
     try:
         if parsed.subcommand == "doctor":
             return _doctor()
+        if parsed.subcommand == "procedure":
+            from mailman.hunt import PROCEDURE
+            _emit(PROCEDURE.read_text(encoding="utf-8"))
+            return 0
+        if parsed.subcommand == "hunt":
+            return _hunt(parsed)
+        if parsed.subcommand == "draft-environment":
+            from mailman.environment_plan import draft_plan
+            _, directory = load_run(parsed.run_id, parsed.data_root)
+            destination = directory / "environment-plan.json"
+            draft_plan(directory / "workspace", destination, python=parsed.python)
+            print(json.dumps({"plan": str(destination), "executed": False}, indent=2))
+            return 0
+        if parsed.subcommand == "finalize-review":
+            from mailman.completion import finalize_review
+            _, directory = load_run(parsed.run_id, parsed.data_root)
+            print(json.dumps(finalize_review(directory), indent=2))
+            return 0
         if parsed.subcommand == "init-run":
             return _init_run(parsed)
         if parsed.subcommand == "fetch-issue":
@@ -1872,7 +1969,7 @@ def main(arguments: list[str] | None = None) -> int:
             return _transition(parsed)
         if parsed.subcommand == "run-agent":
             return _run_agent(parsed)
-        if parsed.subcommand == "orchestrate":
+        if parsed.subcommand in ("orchestrate", "resume-review"):
             return _orchestrate(parsed)
         if parsed.subcommand == "probe-tool":
             return _probe_tool(parsed)

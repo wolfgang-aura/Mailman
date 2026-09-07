@@ -1,6 +1,30 @@
 # Source of truth
 
-Last verified: 2026-09-04 in `Asia/Singapore`.
+Last verified: 2026-09-07 in `Asia/Singapore`.
+
+## Current local procedure
+
+The `codex/prhunt-procedure` branch adds the canonical `mailman/procedure.md`,
+repository skill and Claude command, persistent hunt quotas, completion gates,
+review recovery and authorship checks. This section supersedes older local
+capability descriptions below. Historical deployment entries remain historical.
+
+The new flow has passed a scripted end-to-end fixture and the local test suite.
+It has not run an unattended live hunt with user-selected models, and has not
+been pushed or deployed. The latest inspected hosted CI run, `34057041023`,
+failed because an adapter test required a Codex executable on Linux. The local
+fixture now explicitly uses the Python executable for its mocked execution.
+
+Mailman is a CLI, with no running service to restart after these edits. Each
+new invocation reads the current installed package. `procedure.md` is included
+as package data. Models receive the same procedure in prepared prompts; hunt
+records pin its digest and exact model choices. A changed procedure requires
+an explicit coordinator refresh. Routine run failures are coordinator work.
+Final PR and issue filings require the user's approval for this workflow.
+
+The existing review renderer is unchanged. Browser security policy blocked
+opening the local packet URL during this session; visual state is unverified.
+
 
 ## Repository
 

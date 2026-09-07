@@ -8,7 +8,8 @@ from typing import Any, Callable, Sequence
 
 from mailman.agents.base import AgentRequest, EngineeringAgent
 from mailman.artifacts import append_agent_execution, append_verification, write_run
-from mailman.environment import program_name
+from mailman.completion import candidate_digest, git_bytes
+from mailman.environment import environment_command
 from mailman.executor import CommandResult, execute
 from mailman.instructions import describe_instruction_sources
 from mailman.models import RunRecord, RunStatus, utc_now
@@ -408,6 +409,7 @@ class _Orchestration:
         return ok, report_text
 
     def _verify(self, stage: str) -> tuple[bool, CommandResult]:
+        before = candidate_digest(self.workspace, self.run.base_commit) if stage == "final" else None
         self.announce(
             f"run  verification ({stage}): {' '.join(self.verification_command)}"
         )
@@ -418,6 +420,9 @@ class _Orchestration:
         )
         command_number = append_verification(self.run_directory, result.to_dict())
         ok = not result.timed_out and result.exit_code == 0
+        after = candidate_digest(self.workspace, self.run.base_commit) if stage == "final" else None
+        if before != after:
+            ok = False
         detail = (
             "verification timed out"
             if result.timed_out
@@ -431,6 +436,9 @@ class _Orchestration:
                 "record": command_number,
                 "exit_code": result.exit_code,
                 "timed_out": result.timed_out,
+                "candidate_digest": after,
+                "workspace": str(self.workspace),
+                "candidate_unchanged": before == after,
             },
         )
         return ok, result
@@ -444,7 +452,8 @@ class _Orchestration:
         instead of leaving a reader to infer progress from a green check.
         """
         state = inspect_workspace(self.workspace)
-        changed = not state.clean
+        changed = bool(git_bytes(self.workspace, "diff", self.run.base_commit, "--name-only").strip()
+                       or git_bytes(self.workspace, "ls-files", "--others", "--exclude-standard").strip())
         self.workspace_changed = changed
         self._step(
             f"workspace-change:{stage}",
@@ -458,25 +467,20 @@ class _Orchestration:
         )
         return changed
 
-    def _record_reviewer_change(self, before: tuple[str, ...]) -> bool:
+    def _record_reviewer_change(self, before: tuple[str, ...], before_digest: str) -> bool:
         """Record whether the reviewer changed the workspace it was only reading.
 
-        The reviewer now runs with a writable temp directory, because a
-        read-only sandbox could not run any suite that needs one (#29). The
-        permission reaches as far as the workspace, so a reviewer that edits
-        code would otherwise ship its edit inside the submission. The compare
-        is against the status the primary stage left behind - that dirt is the
-        candidate - so only paths the reviewer introduced count as a finding,
-        and any finding stops the run for a human.
+        Compare candidate content, including paths already changed by the primary.
+        A reviewer edit returns the run to coordinator repair.
         """
         state = inspect_workspace(self.workspace)
         introduced = tuple(line for line in state.changes if line not in before)
-        changed = bool(introduced)
+        changed = candidate_digest(self.workspace, self.run.base_commit) != before_digest
         self._step(
             "workspace-change:reviewer",
             ok=not changed,
             detail=(
-                f"the reviewer introduced {len(introduced)} path(s): "
+                f"the reviewer changed candidate bytes; {len(introduced)} new status path(s): "
                 + ", ".join(introduced[:10])
                 if changed
                 else "the reviewer left the workspace as the primary stage left it"
@@ -531,7 +535,7 @@ class _Orchestration:
 
     # Entry point -------------------------------------------------------
 
-    def execute(self) -> OrchestrationOutcome:
+    def execute(self, *, resume_review: bool = False) -> OrchestrationOutcome:
         # BLOCKED is resumable because the target gate below is what blocks a
         # run before the primary ever starts, and its preconditions are
         # satisfied by commands the operator runs afterwards. Refusing to
@@ -539,6 +543,22 @@ class _Orchestration:
         # clone. The gate runs again a few lines down, so a precondition that
         # is still unsatisfied blocks the run a second time rather than
         # slipping past.
+        if resume_review:
+            if self.run.status not in (RunStatus.BLOCKED, RunStatus.ENGINEERING_COMPLETE, RunStatus.READY_FOR_HUMAN_REVIEW):
+                raise ValueError("resume-review requires a blocked or completed engineering run")
+            previous = self.run_directory / "orchestration.json"
+            if not previous.is_file():
+                raise ValueError("no prior orchestration to resume")
+            old = json.loads(previous.read_text(encoding="utf-8"))
+            if not any(step.get("name") == "agent:primary" for step in old.get("steps", [])):
+                raise ValueError("primary never ran; use orchestrate after fixing preconditions")
+            self.revisions_used = int(old.get("revisions_used", 0))
+            self.steps = [OrchestrationStep(**step) for step in old.get("steps", [])]
+            archive = self.run_directory / "orchestration-history"
+            archive.mkdir(exist_ok=True)
+            (archive / f"{len(list(archive.glob('*.json'))) + 1:04d}.json").write_bytes(previous.read_bytes())
+            if self.run.status is not RunStatus.BLOCKED:
+                self._block("candidate requires a fresh independent review")
         if self.run.status not in (RunStatus.INITIALIZED, RunStatus.BLOCKED):
             raise ValueError(
                 "orchestration requires an INITIALIZED or BLOCKED run, "
@@ -579,12 +599,12 @@ class _Orchestration:
             )
 
         state = inspect_workspace(self.workspace)
-        if state.head != self.run.base_commit:
+        if not resume_review and state.head != self.run.base_commit:
             raise ValueError(
                 f"workspace HEAD {state.head} does not match base commit "
                 f"{self.run.base_commit}"
             )
-        if not state.clean:
+        if not resume_review and not state.clean:
             raise ValueError(
                 "primary workspace must be clean before orchestration: "
                 f"{state.describe_changes()}"
@@ -597,62 +617,58 @@ class _Orchestration:
             data={"path": str(state.path), "head": state.head},
         )
 
-        self._transition(RunStatus.PRIMARY_RUNNING, "primary agent starting")
+        if resume_review:
+            from mailman.workspace import commit_is_ancestor
+            if not commit_is_ancestor(self.workspace, self.run.base_commit):
+                raise ValueError("candidate does not descend from the run base")
+            self._record_workspace_change("resume")
+        else:
+            self._transition(RunStatus.PRIMARY_RUNNING, "primary agent starting")
         try:
-            return self._loop()
+            return self._loop(start_primary=not resume_review)
         except (OSError, ValueError) as error:
             # A started run must never be left claiming it is still in flight.
             self._block(f"orchestration stopped on an unexpected error: {error}")
             return self._outcome()
 
     def _check_verification_agreement(self) -> None:
-        """Refuse a run whose prompts and its gate name different programs.
+        """Require identical resolved verification executables and arguments.
 
-        `build-prompts` takes free text and `orchestrate` takes an argv list,
-        so a run can hold two descriptions of its verification with nothing
-        tying them together. On run 20260903T194455Z-140c59 the free-text form
-        was passed a parenthetical: the agents read it in the prompt, could not
-        execute it as written, and worked around the discrepancy on their own.
-        The gate is what Mailman enforces, so the prompts must at least name
-        the same program, the way the reviewer's claimed
-        `MAILMAN-VERIFICATION: RAN` is refused when the transcript shows no
-        command.
-
-        A run whose prompts predate the record, or that was built without a
-        verification command, carries only one claim and is not refused here.
-
-        See https://github.com/wolfgang-aura/Mailman/issues/58.
+        Legacy prompts without a recorded command retain their existing behavior.
+        New PRHunt runs require a recorded argv before engineering starts.
         """
         recorded = load_recorded_verification(self.run_directory)
         if not recorded:
             return
-        recorded_program = program_name(recorded[0])
-        gate_program = program_name(self.verification_command[0])
-        if recorded_program == gate_program:
+        recorded = resolve_command(
+            self.run_directory, environment_command(self.run_directory, recorded)
+        )
+        if recorded == list(self.verification_command):
             return
         raise ValueError(
-            "the prompts and the gate name different verification programs: "
+            "the prompts and the gate name different verification programs or arguments: "
             f"the prompts quote `{' '.join(recorded)}` and orchestrate was "
             f"given `{' '.join(self.verification_command)}`. Re-run "
             "`mailman build-prompts --verification` with the command the gate "
             "runs, or pass the command the prompts quote."
         )
 
-    def _loop(self) -> OrchestrationOutcome:
-        if not self._finish_primary_stage(self.primary_prompt, "primary"):
+    def _loop(self, *, start_primary: bool = True) -> OrchestrationOutcome:
+        if start_primary and not self._finish_primary_stage(self.primary_prompt, "primary"):
             return self._outcome()
 
         while True:
             review_prompt = self._review_prompt()
             self._transition(RunStatus.REVIEW_PENDING, "reviewer reading the candidate")
             reviewer_before = inspect_workspace(self.workspace).changes
+            reviewer_digest = candidate_digest(self.workspace, self.run.base_commit)
             reviewer_ok, review_report = self._run_agent("reviewer", review_prompt)
             self.run.review_cycles += 1
             write_run(self.run, self.run_directory)
             if not reviewer_ok:
                 self._block("reviewer did not complete a readable review")
                 return self._outcome()
-            if self._record_reviewer_change(reviewer_before):
+            if self._record_reviewer_change(reviewer_before, reviewer_digest):
                 self._block(
                     "the reviewer changed the workspace it was only supposed "
                     "to read. The workspace diff is the candidate, so a "
@@ -745,7 +761,7 @@ class _Orchestration:
             self._block("final independent verification failed")
             return self._outcome()
         self._transition(
-            RunStatus.READY_FOR_HUMAN_REVIEW,
+            RunStatus.ENGINEERING_COMPLETE,
             "approved by the reviewer and verified independently",
         )
         return self._outcome()
@@ -821,6 +837,7 @@ def orchestrate(
     check_target: bool = True,
     acknowledge_prior_attempts: bool = False,
     acknowledge_claims: bool = False,
+    resume_review: bool = False,
 ) -> OrchestrationOutcome:
     """Run one bounded primary, reviewer, and verification loop for a run."""
     return _Orchestration(
@@ -838,4 +855,4 @@ def orchestrate(
         check_target=check_target,
         acknowledge_prior_attempts=acknowledge_prior_attempts,
         acknowledge_claims=acknowledge_claims,
-    ).execute()
+    ).execute(resume_review=resume_review)

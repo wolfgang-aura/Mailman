@@ -1,0 +1,4 @@
+interface:
+  display_name: "PRHunt"
+  short_description: "Prepare PR candidates for one filing approval"
+  default_prompt: "Use $prhunt to prepare 3 PR candidates and ask which models to use."

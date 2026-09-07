@@ -3,6 +3,20 @@
 Applies to every model working in this repo — Claude, Codex, and anything added
 later.
 
+## PRHunt sessions
+
+Treat `/PRHunt N`, `$prhunt N`, and requests to prepare N PRs as the same
+workflow. Read [mailman/procedure.md](mailman/procedure.md) before acting.
+Ask for primary and reviewer adapter/model IDs once if missing. Resume the
+persistent hunt, finish every required stage, and run `mailman hunt finish`.
+Its exit code, not an agent's summary, decides whether the quota is ready.
+
+An individual run marked BLOCKED does not mean the operator is blocked.
+Diagnose and repair routine failures, or drop and replace unsuitable targets.
+Escalate only the dependencies allowed by the shared procedure, with evidence.
+Keep new issue drafts and all upstream writes for final filing approval unless
+the user has separately authorized them. Do not count issue drafts as PRs.
+
 ## Review pages for a human
 
 Anything a person is asked to decide from is generated, never composed.

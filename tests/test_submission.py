@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -349,6 +350,9 @@ class LocalMatchTests(unittest.TestCase):
 
 class PrepareSubmissionTests(unittest.TestCase):
     def setUp(self) -> None:
+        authors = patch("mailman.completion.check_authorship", return_value={"ok": True})
+        authors.start()
+        self.addCleanup(authors.stop)
         self._temporary = TemporaryDirectory()
         self.run_directory = Path(self._temporary.name)
         (self.run_directory / "verification.json").write_text(

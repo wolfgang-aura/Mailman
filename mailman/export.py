@@ -220,7 +220,9 @@ def export_patch(
     require_ready: bool = True,
 ) -> dict[str, Any]:
     """Write a reviewable patch package from a finished run's workspace."""
-    if require_ready and run.status is not RunStatus.READY_FOR_HUMAN_REVIEW:
+    if require_ready and run.status not in (
+        RunStatus.ENGINEERING_COMPLETE, RunStatus.READY_FOR_HUMAN_REVIEW
+    ):
         raise ValueError(
             f"run {run.run_id} is {run.status}, not READY_FOR_HUMAN_REVIEW. Pass "
             "--allow-unfinished to export a patch from an unfinished run anyway."
@@ -294,8 +296,10 @@ def export_patch(
         _pull_request_markdown(run, issue_record=issue_record, branch=branch),
         encoding="utf-8",
     )
+    from mailman.completion import candidate_digest
     record = {
         "schema_version": 1,
+        "candidate_digest": candidate_digest(workspace_path, run.base_commit),
         "run_id": run.run_id,
         "exported_at": datetime.now(UTC).isoformat(),
         "status_at_export": str(run.status),

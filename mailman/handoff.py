@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from mailman.claims import load_claims
+from mailman.completion import check_authorship
 from mailman.submission import load_duplicate_search
 from mailman.target_intel import repository_slug
 
@@ -359,6 +360,7 @@ def build_handoff(
         ) from error
     if not body.strip():
         raise ValueError(f"the body at {resolved} is empty")
+    authorship = check_authorship(run_directory, head=head) if kind == "pull-request" else None
     command = publish_command(
         kind=kind,
         body_path=resolved,
@@ -392,6 +394,7 @@ def build_handoff(
         "maintainer_edit_warning": maintainer_edit_warning(owner, owner_type),
         "command": command,
         "verify_command": verify,
+        "authorship": authorship,
     }
     path = run_directory / HANDOFF_FILENAME
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n")
@@ -584,6 +587,8 @@ def check_handoff(
             "expected_digest": record.get("digest"),
             "actual_digest": current,
         }
+    if first_person_claims(body_path.read_text(encoding="utf-8")):
+        return {"ok": False, "reason": "first-person-claims", "detail": "remove claims only the human can make true"}
     unchanged = {
         "ok": True,
         "reason": "unchanged",
@@ -595,6 +600,12 @@ def check_handoff(
     }
     if record.get("kind") != "pull-request":
         return unchanged
+    try:
+        authorship = check_authorship(run_directory, head=record.get("head"))
+    except (OSError, ValueError) as error:
+        return {"ok": False, "reason": "author-identity", "detail": str(error)}
+    if authorship != record.get("authorship"):
+        return {"ok": False, "reason": "branch-changed", "detail": "the filing branch changed; regenerate the handoff"}
     # The body being the text that was read is one question; whether the target
     # still wants it is another, and it is the one that ages. See
     # https://github.com/wolfgang-aura/Mailman/issues/41.
