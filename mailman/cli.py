@@ -122,7 +122,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "action",
         choices=(
             "init", "add", "drop", "restore", "status", "finish", "list",
-            "escalate", "refresh-procedure", "lease", "release",
+            "escalate", "refresh-procedure", "lease", "release", "refresh",
         ),
     )
     hunt.add_argument("hunt_id", nargs="?")
@@ -714,7 +714,7 @@ def _hunt(arguments: argparse.Namespace) -> int:
         hunt.release_lease(root, record, owner=arguments.owner)
         print(json.dumps({"hunt_id": record["hunt_id"], "lease": None}, indent=2))
         return 0
-    if arguments.action in ("add", "drop", "restore", "escalate", "finish"):
+    if arguments.action in ("add", "drop", "restore", "escalate", "finish", "refresh"):
         hunt.require_lease(record, arguments.owner)
     if arguments.action == "add":
         if not arguments.run_id:
@@ -742,7 +742,12 @@ def _hunt(arguments: argparse.Namespace) -> int:
                                       "attempted": arguments.attempted, "why_user": arguments.why_user,
                                       "user_action": arguments.user_action})
         hunt.save(hunt.hunt_path(root, record["hunt_id"]), record)
-    result = hunt.finish(root, record) if arguments.action == "finish" else hunt.status(root, record)
+    if arguments.action == "refresh":
+        result = hunt.refresh(root, record)
+    elif arguments.action == "finish":
+        result = hunt.finish(root, record)
+    else:
+        result = hunt.status(root, record)
     print(json.dumps(result, indent=2))
     return 1 if arguments.action == "finish" and not result["complete"] else 0
 
@@ -1966,6 +1971,36 @@ def _tail(text: str, lines: int = 20) -> str:
     return "\n".join(text.strip().splitlines()[-lines:])
 
 
+#: Options only Mailman defines. One of these after `--` is always a mistake:
+#: it reaches the test runner, which fails collection, and the failure reads
+#: like a broken candidate. https://github.com/wolfgang-aura/Mailman/issues/70
+_MAILMAN_ONLY_OPTIONS = frozenset({
+    "--data-root", "--max-revisions", "--max-review-cycles", "--reasoning-effort",
+    "--max-turns", "--agent-timeout", "--verification-timeout", "--owner",
+    "--acknowledge-prior-attempts", "--acknowledge-claims", "--verification",
+})
+
+
+def check_verification_command(command: list[str]) -> None:
+    """Refuse a passthrough that cannot be what the operator meant."""
+    if not command:
+        return
+    if command[0].startswith("-"):
+        raise ValueError(
+            f"the verification command starts with {command[0]!r}. Everything "
+            "after `--` is run as a program, so the first token must be an "
+            "executable, not an option."
+        )
+    for token in command:
+        name = token.split("=", 1)[0]
+        if name in _MAILMAN_ONLY_OPTIONS:
+            raise ValueError(
+                f"{name} is a Mailman option, but it appears after `--`, so the "
+                "test runner would receive it and fail collection. Move it "
+                "before the `--` separator."
+            )
+
+
 def main(arguments: list[str] | None = None) -> int:
     raw_arguments = list(arguments if arguments is not None else sys.argv[1:])
     verification_command: list[str] | None = None
@@ -1980,6 +2015,8 @@ def main(arguments: list[str] | None = None) -> int:
     if parsed.subcommand in ("verify", "orchestrate", "resume-review", "reproduce", "build-prompts"):
         parsed.command = verification_command or []
     try:
+        if parsed.subcommand in ("verify", "orchestrate", "resume-review", "reproduce", "build-prompts"):
+            check_verification_command(parsed.command)
         if parsed.subcommand == "doctor":
             return _doctor()
         if parsed.subcommand == "procedure":

@@ -1,4 +1,4 @@
-# PRHunt procedure, version 1
+# PRHunt procedure, version 2
 
 This is the procedure for every Mailman coordinator, regardless of model.
 Read it on `/PRHunt N`, `$prhunt N`, or a request to hunt for N pull requests.
@@ -16,10 +16,23 @@ Claude CLI adapters. Confirm each selected CLI is installed and authenticated
 with a harmless local fixture before spending a target run.
 
 Create the hunt with `mailman hunt init N --primary ADAPTER --primary-model ID
---reviewer ADAPTER --reviewer-model ID`. `mailman hunt status HUNT_ID` gives the
-next missing step and last-check timestamp. Update it after each run. Its
-records survive a new conversation. The coordinator performs the actions;
-the command does not spawn a background agent or discover targets itself.
+--reviewer ADAPTER --reviewer-model ID`. It prints a lease with an `owner`
+token. Keep that token: every action that changes the hunt takes `--owner
+TOKEN`. `mailman hunt status HUNT_ID` gives the next missing step and last-check
+timestamp. Update it after each run. Its records survive a new conversation.
+The coordinator performs the actions; the command does not spawn a background
+agent or discover targets itself.
+
+One hunt has one coordinator. If `hunt status` shows a live lease you do not
+hold, you are the second task on someone else's hunt. Do not poll it and do not
+work around it. Either take a separate hunt of your own, or, when the other
+coordinator is genuinely gone, take over with `mailman hunt lease HUNT_ID
+--owner YOUR_TOKEN --takeover --reason "..."`, which records what you took and
+why. Waiting on another coordinator is not progress; it costs the same model
+allowance and produces nothing.
+
+Renew the lease with `mailman hunt lease` during long stages. Release it with
+`mailman hunt release --owner TOKEN` when you stop.
 
 ## Find and screen
 
@@ -27,9 +40,11 @@ the command does not spawn a background agent or discover targets itself.
    `mailman screen-target OWNER/REPO --refresh`. Reject a failed screen.
    Human-only authorship declarations, assignment requirements and bans on
    generated descriptions are reasons to pick another target for this flow.
-2. Search open and closed PRs by exact affected symbol, behaviour and issue
-   number, using more than one query where needed. Read overlapping patches
-   and maintainer responses. A broad empty search is not sufficient evidence.
+2. Search narrow first. Give `duplicate-search` the issue number and the
+   symbols the change touches with `--symbol`; the broad listing runs after.
+   A record whose `decided_by` is `narrow` already found a duplicate and the
+   candidate is finished. Read overlapping patches and maintainer responses. A
+   broad empty search is not sufficient evidence, and neither is a narrow one.
 3. Initialize a run at an exact current upstream commit with the hunt's model
    configuration. Add it with `mailman hunt add HUNT_ID RUN_ID`.
 4. Run `fetch-issue`, `duplicate-search`, `prior-art`, `target-intel` and
@@ -48,9 +63,11 @@ the command does not spawn a background agent or discover targets itself.
    missing dependencies from the reported defect. Run `reproduce`, then
    `check-target`. A bug that no longer reproduces means replace the candidate.
 8. Use `build-prompts RUN_ID -- EXECUTABLE ARG ...` to record verification argv.
-   `orchestrate RUN_ID` reads that same command. Do not supply custom prompts
-   or call `run-agent` to bypass this sequence. Both model roles must use the
-   same recorded procedure and the independent verification gate.
+   Everything after `--` is run as a program, so it starts with an executable
+   and carries no Mailman option; the CLI refuses the common mistakes but not
+   all of them. `orchestrate RUN_ID` reads that same command. Do not supply
+   custom prompts or call `run-agent` to bypass this sequence. Both model roles
+   must use the same recorded procedure and the independent verification gate.
 
 ## Repair without escalating routine work
 
@@ -61,6 +78,16 @@ the command does not spawn a background agent or discover targets itself.
     before another edit. Never retry an identical command indefinitely.
     For an unusable review, preserve the patch, repair the environment, then
     run `resume-review`. Do not restart a dirty primary workspace.
+    Reviewer passes are budgeted per run, not per command: `--max-review-cycles`
+    counts across every `orchestrate` and `resume-review`. When a run blocks on
+    a spent budget, replace the candidate or raise the budget deliberately and
+    say why. Do not resume repeatedly to buy more passes.
+    A run whose `hunt status` carries a `health` state stopped for a reason
+    outside the candidate. `USAGE_LIMIT` means the account, not the code, and
+    the record holds the stage and the exact resume command; retrying the
+    candidate spends the same allowance again. `INFRASTRUCTURE` means the host,
+    such as an unwritable temporary directory. Neither is a candidate defect and
+    neither is a reason to drop a target.
 11. Drop duplicate, assigned, prohibited, unreproducible or unsuitable targets.
     Record why and continue searching until N candidates pass. A dropped run
     costs no user decision. A failed candidate may be replaced after bounded
@@ -85,10 +112,19 @@ the command does not spawn a background agent or discover targets itself.
     exact local branch and final body. Run `handoff-check`. Keep all filings
     and upstream writes pending. For a self-sourced defect, prepare any required
     issue text alongside the PR and ask for approval of the ordered filings.
-15. `mailman hunt finish HUNT_ID` must exit 0. It counts only SEND decisions
+15. Refresh the aging evidence for every ready candidate together with
+    `mailman hunt refresh HUNT_ID --owner TOKEN` immediately before finishing.
+    Duplicate searches and claim reads expire in an hour, and refreshing them
+    one at a time is how a hunt with two ready candidates reported zero.
+16. `mailman hunt finish HUNT_ID --owner TOKEN` must exit 0. It counts only SEND decisions
     with passing filing checks and generates the existing packet format.
     Inspect that generated packet visually. Never hand-write review HTML.
     Present the packet and ask for approval of the exact filings once.
+
+Do not hold finished work back until the quota is met. `hunt status` writes a
+checkpoint page as soon as any candidate is ready. Show it. A candidate that is
+ready and invisible is indistinguishable to the user from no candidate at all,
+and that is what fifteen hours of silence looked like.
 
 ## What reaches the user
 

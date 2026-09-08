@@ -218,3 +218,45 @@ class NarrowFirstDuplicateSearchTests(unittest.TestCase):
         )
         self.assertEqual(record["decided_by"], "broad")
         self.assertNotIn("narrow", record["methods"]["pr"])
+
+
+class VerificationPassthroughTests(unittest.TestCase):
+    """https://github.com/wolfgang-aura/Mailman/issues/70"""
+
+    def test_a_mailman_option_after_the_separator_is_refused(self):
+        from mailman.cli import check_verification_command
+
+        for command in (
+            ["pytest", "-q", "--data-root", "runs"],
+            ["pytest", "--max-review-cycles=2"],
+            ["python", "-m", "pytest", "--reasoning-effort", "max"],
+        ):
+            with self.subTest(command=command):
+                with self.assertRaisesRegex(ValueError, "Mailman option"):
+                    check_verification_command(command)
+
+    def test_a_command_that_starts_with_an_option_is_refused(self):
+        from mailman.cli import check_verification_command
+
+        with self.assertRaisesRegex(ValueError, "must be an executable"):
+            check_verification_command(["-q", "tests"])
+
+    def test_a_real_verification_command_passes(self):
+        from mailman.cli import check_verification_command
+
+        check_verification_command(
+            ["python", "-m", "pytest", "tests/test_show.py", "-q", "-p", "no:cacheprovider"]
+        )
+        check_verification_command([])
+
+    def test_the_cli_reports_it_rather_than_running_the_runner(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+
+        from mailman.cli import main
+
+        stderr = StringIO()
+        with redirect_stderr(stderr):
+            code = main(["build-prompts", "RUN", "--", "pytest", "--data-root", "x"])
+        self.assertNotEqual(code, 0)
+        self.assertIn("Mailman option", stderr.getvalue())

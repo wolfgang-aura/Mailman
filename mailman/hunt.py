@@ -338,6 +338,60 @@ def write_checkpoint(root: Path, record: dict, result: dict) -> Path | None:
     return destination
 
 
+def refresh(root: Path, record: dict) -> dict:
+    """Re-run the aging evidence for every ready candidate, as one batch.
+
+    Duplicate searches and claim reads expire in an hour. Two finished
+    candidates were withheld while a third was still in review, aged out one at
+    a time, and the visible ready count fell from two to zero. Refreshing them
+    together is what the coordinator was doing by hand.
+
+    This does not weaken the filing gate. `hunt finish` still re-checks every
+    candidate and still refuses stale evidence; this only makes getting them
+    fresh together a single command.
+    See https://github.com/wolfgang-aura/Mailman/issues/69.
+    """
+    from mailman.claims import read_claims
+    from mailman.submission import record_duplicate_search
+
+    before = status(root, record)
+    refreshed: list[dict] = []
+    for row in before["runs"]:
+        if row.get("dropped"):
+            continue
+        run, directory = load_run(row["run_id"], root)
+        # A candidate that is ready needs no refresh, and one that never
+        # reached a handoff has an earlier problem than aging. The runs this is
+        # for are the finished ones whose evidence expired while another
+        # candidate was still in review: complete packages reading as failures.
+        if row["ready"] or load_handoff(directory) is None:
+            continue
+        outcome = {"run_id": run.run_id}
+        search = read_object(directory / "duplicate-search.json")
+        if not search.get("query"):
+            outcome["duplicate_search"] = "no recorded query; run duplicate-search first"
+        else:
+            fresh = record_duplicate_search(
+                directory,
+                repository=run.repository,
+                query=search["query"],
+                issue_number=search.get("issue_number"),
+                symbols=search.get("symbols") or (),
+            )
+            outcome["duplicate_search"] = {
+                "success": fresh["success"], "complete": fresh["complete"],
+                "matches": fresh.get("match_count", 0),
+                "decided_by": fresh.get("decided_by"),
+            }
+        claims = read_claims(directory)
+        outcome["claims"] = {"success": claims.get("success"),
+                             "assignees": claims.get("assignees")}
+        refreshed.append(outcome)
+    after = status(root, record)
+    return {**after, "refreshed": refreshed,
+            "ready_before_refresh": before["ready"]}
+
+
 def finish(root: Path, record: dict) -> dict:
     from mailman.review_packet import write_packet_page
     from mailman.review_page import write_run_page

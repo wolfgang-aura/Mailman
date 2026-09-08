@@ -19,6 +19,7 @@ from mailman.hunt import (
     finish,
     load_hunt,
     next_action,
+    refresh,
     restore_run,
     status,
 )
@@ -121,6 +122,77 @@ class HuntTests(OrchestratorHarness):
         write_run(run, self.data_root / run.run_id)
         add_run(self.data_root, hunt, run.run_id)
         self.assertNotIn("checkpoint", status(self.data_root, hunt))
+
+    def test_refresh_renews_every_ready_candidate_in_one_batch(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/69
+
+        Aging evidence is what turned two ready candidates into a reported
+        zero. `hunt refresh` renews them together; `hunt finish` still decides.
+        """
+        from datetime import timedelta
+
+        import mailman.hunt as hunt_module
+
+        hunt = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, hunt, directory.name)
+        self.assertEqual(status(self.data_root, hunt)["ready"], 1)
+
+        stale = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+        for name in ("duplicate-search.json", "claims.json"):
+            payload = json.loads((directory / name).read_text(encoding="utf-8"))
+            payload["searched_at" if "duplicate" in name else "collected_at"] = stale
+            if "duplicate" in name:
+                payload["query"] = "fixture defect"
+            (directory / name).write_text(json.dumps(payload), encoding="utf-8")
+        self.assertEqual(status(self.data_root, hunt)["ready"], 0)
+        self.assertFalse(finish(self.data_root, hunt)["complete"])
+
+        now = datetime.now(UTC).isoformat()
+        calls = []
+
+        def fake_duplicate_search(run_directory, *, repository, query, issue_number=None,
+                                  symbols=(), **_):
+            calls.append(("duplicate-search", query))
+            record = {"success": True, "complete": True, "searched_at": now,
+                      "repository": "example/project", "query": query, "matches": [],
+                      "match_count": 0, "decided_by": "broad", "symbols": list(symbols)}
+            (run_directory / "duplicate-search.json").write_text(
+                json.dumps(record), encoding="utf-8")
+            return record
+
+        def fake_read_claims(run_directory, **_):
+            calls.append(("claims", run_directory.name))
+            record = json.loads((run_directory / "claims.json").read_text(encoding="utf-8"))
+            record.update(collected_at=now, success=True)
+            (run_directory / "claims.json").write_text(json.dumps(record), encoding="utf-8")
+            return record
+
+        import mailman.claims
+        import mailman.submission
+        original_search = mailman.submission.record_duplicate_search
+        original_claims = mailman.claims.read_claims
+        mailman.submission.record_duplicate_search = fake_duplicate_search
+        mailman.claims.read_claims = fake_read_claims
+        try:
+            result = refresh(self.data_root, hunt)
+        finally:
+            mailman.submission.record_duplicate_search = original_search
+            mailman.claims.read_claims = original_claims
+
+        self.assertEqual(result["ready_before_refresh"], 0)
+        self.assertEqual(result["ready"], 1)
+        self.assertEqual(len(result["refreshed"]), 1)
+        self.assertEqual([kind for kind, _ in calls], ["duplicate-search", "claims"])
+        self.assertTrue(finish(self.data_root, hunt)["complete"])
+
+    def test_refresh_leaves_a_ready_candidate_alone(self):
+        hunt = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, hunt, directory.name)
+        result = refresh(self.data_root, hunt)
+        self.assertEqual(result["ready"], 1)
+        self.assertEqual(result["refreshed"], [])
 
     def test_a_second_coordinator_cannot_change_a_leased_hunt(self):
         """https://github.com/wolfgang-aura/Mailman/issues/63"""
