@@ -10,7 +10,14 @@ from mailman.cli import main
 from mailman.completion import finalize_review
 from mailman.export import export_patch
 from mailman.handoff import build_handoff
-from mailman.hunt import add_run, create_hunt, finish, load_hunt, next_action
+from mailman.hunt import (
+    add_run,
+    create_hunt,
+    finish,
+    load_hunt,
+    next_action,
+    restore_run,
+)
 from mailman.identity import Identity, save_identity
 from mailman.models import AgentConfig
 from mailman.screen import screen_path
@@ -99,6 +106,25 @@ class HuntTests(OrchestratorHarness):
         run, _ = self.make_run()
         with self.assertRaisesRegex(ValueError, "model"):
             add_run(self.data_root, hunt, run.run_id)
+
+    def test_a_dropped_run_can_be_restored_with_audit_evidence(self):
+        hunt = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, hunt, directory.name)
+        hunt["runs"][0].update(dropped=True, reason="review gap", evidence="old evidence")
+
+        restore_run(
+            self.data_root,
+            hunt,
+            directory.name,
+            reason="review gap repaired",
+            evidence="fresh reviewer approval and verification",
+        )
+
+        row = load_hunt(self.data_root, hunt["hunt_id"])["runs"][0]
+        self.assertNotIn("dropped", row)
+        self.assertEqual(row["restored"]["reason"], "review gap repaired")
+        self.assertIn("fresh reviewer approval", row["restored"]["evidence"])
 
     def test_a_body_edit_invalidates_completion(self):
         directory = self.ready_run()

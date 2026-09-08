@@ -118,7 +118,13 @@ def _build_parser() -> argparse.ArgumentParser:
     draft.add_argument("--python", default=sys.executable)
     draft.add_argument("--data-root", type=Path)
     hunt = subparsers.add_parser("hunt", help="manage a persistent PRHunt session")
-    hunt.add_argument("action", choices=("init", "add", "drop", "status", "finish", "list", "escalate", "refresh-procedure"))
+    hunt.add_argument(
+        "action",
+        choices=(
+            "init", "add", "drop", "restore", "status", "finish", "list",
+            "escalate", "refresh-procedure",
+        ),
+    )
     hunt.add_argument("hunt_id", nargs="?")
     hunt.add_argument("run_id", nargs="?")
     for role in ("primary", "reviewer"):
@@ -683,6 +689,11 @@ def _hunt(arguments: argparse.Namespace) -> int:
             raise ValueError("run is not in this hunt")
         row.update(dropped=True, reason=arguments.reason, evidence=arguments.evidence)
         hunt.save(hunt.hunt_path(root, record["hunt_id"]), record)
+    if arguments.action == "restore":
+        if not arguments.reason or not arguments.evidence:
+            raise ValueError("a restored candidate needs --reason and --evidence")
+        hunt.restore_run(root, record, arguments.run_id, reason=arguments.reason,
+                         evidence=arguments.evidence)
     if arguments.action == "escalate":
         if arguments.reason not in hunt.HUMAN_REASONS:
             raise ValueError("routine failures are coordinator work; reason must be " + ", ".join(hunt.HUMAN_REASONS))

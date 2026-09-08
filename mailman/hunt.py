@@ -77,6 +77,22 @@ def add_run(root: Path, record: dict, run_id: str) -> None:
     save(hunt_path(root, record["hunt_id"]), record)
 
 
+def restore_run(
+    root: Path, record: dict, run_id: str, *, reason: str, evidence: str
+) -> None:
+    """Restore a dropped run after new evidence resolves its recorded blocker."""
+    row = next((row for row in record["runs"] if row["run_id"] == run_id), None)
+    if row is None:
+        raise ValueError("run is not in this hunt")
+    if not row.get("dropped"):
+        raise ValueError("run is not dropped")
+    row.pop("dropped", None)
+    row.pop("reason", None)
+    row.pop("evidence", None)
+    row["restored"] = {"reason": reason, "evidence": evidence, "at": utc_now()}
+    save(hunt_path(root, record["hunt_id"]), record)
+
+
 def next_action(directory: Path) -> dict:
     run, _ = load_run(directory.name, directory.parent)
 
