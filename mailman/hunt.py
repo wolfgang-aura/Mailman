@@ -30,6 +30,19 @@ DROP_CODES = {
     "issue-assigned", "work-handed-over", "open-pull-request",
     "already-fixed-upstream", "bug-not-reproduced", "fails-freshness-bar",
 }
+#: A hunt in one of these states is history. Its record answers "what did we
+#: file, and on what evidence", and nothing may rewrite that answer.
+TERMINAL_STATUSES = ("FILED",)
+#: How many readiness checks a hunt keeps. Enough to see the run of checks
+#: around a filing; short enough that the record stays readable.
+CHECK_HISTORY = 20
+PULL_REQUEST_URL = re.compile(
+    r"^https://github\.com/(?P<repository>[\w.-]+/[\w.-]+)/pull/(?P<number>\d+)/?$"
+)
+
+
+def is_terminal(record: dict) -> bool:
+    return record.get("status") in TERMINAL_STATUSES
 
 
 def save(path: Path, record: dict) -> None:
@@ -69,12 +82,15 @@ def load_hunt(root: Path, hunt_id: str) -> dict:
     record = read_object(hunt_path(root, hunt_id))
     if not record or record.get("data_root") != str(root.resolve()):
         raise ValueError("hunt missing or belongs to another data root")
-    if record.get("procedure_sha256") != hashlib.sha256(PROCEDURE.read_bytes()).hexdigest():
+    if (not is_terminal(record)
+            and record.get("procedure_sha256") != hashlib.sha256(PROCEDURE.read_bytes()).hexdigest()):
         raise ValueError("procedure changed: read `mailman procedure`, then use `hunt refresh-procedure`")
     return record
 
 
 def add_run(root: Path, record: dict, run_id: str) -> None:
+    if is_terminal(record):
+        raise ValueError(f"hunt {record['hunt_id']} is {record['status']}; start a new hunt")
     run, _ = load_run(run_id, root)
     for role in ("primary", "reviewer"):
         config = getattr(run, role)
@@ -82,6 +98,27 @@ def add_run(root: Path, record: dict, run_id: str) -> None:
             raise ValueError(f"{role} differs from the hunt's selected model; do not substitute models")
     if any(row["run_id"] == run_id for row in record["runs"]):
         return
+    filing = find_filing(root, run_id=run_id)
+    if filing:
+        raise ValueError(
+            f"run {run_id} was already filed as {filing['filed']['pr_url']} by hunt "
+            f"{filing['hunt_id']}. A filed candidate is not a candidate."
+        )
+    key = target_key(run)
+    if key:
+        filing = find_filing(root, target=key)
+        if filing:
+            raise ValueError(
+                f"{key} was already filed as {filing['filed']['pr_url']} by hunt "
+                f"{filing['hunt_id']}. Find a different target."
+            )
+        holder = holding_hunt(root, key, exclude=record["hunt_id"])
+        if holder:
+            raise ValueError(
+                f"{key} is held by live hunt {holder['hunt_id']} (owner "
+                f"{holder['owner']}, until {holder['expires_at']}). Two hunts in one "
+                "data root must not work the same target. Run `mailman hunt targets`."
+            )
     record["runs"].append({"run_id": run_id})
     save(hunt_path(root, record["hunt_id"]), record)
 
@@ -100,6 +137,140 @@ def restore_run(
     row.pop("evidence", None)
     row["restored"] = {"reason": reason, "evidence": evidence, "at": utc_now()}
     save(hunt_path(root, record["hunt_id"]), record)
+
+
+# --- Filing record --------------------------------------------------------
+#
+# Hunt 20260907T164341Z-1ca91a produced three candidates that went upstream as
+# PDM #3884, PDM #3883 and Poetry #11052. The record knew nothing about it: the
+# status still read AWAITING_FILING_APPROVAL and no run carried a PR. A later
+# session read that as three ready, unfiled candidates and moved to hand them
+# to the operator a second time. https://github.com/wolfgang-aura/Mailman/issues/71
+
+
+def target_key(run) -> str | None:
+    """The `owner/repo#issue` a run works on, or None for a defect report."""
+    if not run.issue:
+        return None
+    number = str(run.issue).strip().lstrip("#").rsplit("/", 1)[-1]
+    return f"{repository_slug(run.repository)}#{number}"
+
+
+def iter_hunts(root: Path):
+    for path in sorted((root.parent / "hunts").glob("*/hunt.json")):
+        record = read_object(path)
+        if record:
+            yield record
+
+
+def record_filing(root: Path, record: dict, run_id: str, *, pr_url: str,
+                  commit: str | None = None) -> dict:
+    """Write the pull request a candidate became, and close the hunt when done.
+
+    This is the only thing that makes a filing visible to the next session. It
+    runs after the operator approves and after the PR exists, so it takes the
+    URL rather than creating anything.
+    """
+    match = PULL_REQUEST_URL.match(pr_url.strip())
+    if not match:
+        raise ValueError("--pr-url must be https://github.com/OWNER/REPO/pull/NUMBER")
+    row = next((row for row in record["runs"] if row["run_id"] == run_id), None)
+    if row is None:
+        raise ValueError("run is not in this hunt")
+    if row.get("dropped"):
+        raise ValueError("a dropped candidate was not filed; restore it first")
+    if row.get("filed"):
+        raise ValueError(f"already recorded as {row['filed']['pr_url']}")
+    run, _ = load_run(run_id, root)
+    if repository_slug(match["repository"]) != repository_slug(run.repository):
+        raise ValueError(
+            f"that pull request is on {match['repository']}, the run targets "
+            f"{run.repository}"
+        )
+    row["filed"] = {"pr_url": pr_url.strip(), "pr_number": int(match["number"]),
+                    "repository": match["repository"], "target": target_key(run),
+                    "commit": commit, "filed_at": utc_now()}
+    filed = [row for row in record["runs"] if row.get("filed")]
+    if len(filed) >= record["requested"]:
+        record["status"] = "FILED"
+        record["filed_at"] = utc_now()
+    save(hunt_path(root, record["hunt_id"]), record)
+    return row["filed"]
+
+
+def find_filing(root: Path, *, run_id: str | None = None,
+                target: str | None = None) -> dict | None:
+    """Find the hunt that already filed this run or this `owner/repo#issue`."""
+    for record in iter_hunts(root):
+        for row in record["runs"]:
+            filed = row.get("filed")
+            if not filed:
+                continue
+            if run_id and row["run_id"] == run_id:
+                return {"hunt_id": record["hunt_id"], "filed": filed}
+            if target and filed.get("target") == target:
+                return {"hunt_id": record["hunt_id"], "filed": filed}
+    return None
+
+
+# --- Cross-hunt target claims ---------------------------------------------
+#
+# The lease in #63 stops two coordinators sharing one hunt. It does nothing
+# about two hunts sharing a candidate pool, which is what happened on
+# 2026-09-09: two live hunts three minutes apart in one data root, each blind
+# to the other. One of them guessed at a sibling by reading directory
+# timestamps and dropped two good candidates over a 24-hour-dead root.
+#
+# A claim is derived from the hunts themselves rather than stored separately,
+# so there is no second file to go stale.
+# https://github.com/wolfgang-aura/Mailman/issues/73
+
+
+def effective_status(record: dict) -> str:
+    """What this hunt really is, not what it last wrote down.
+
+    A `RUNNING` hunt whose lease has expired has no coordinator. Reading it as
+    running is how a session concludes a target is taken when nobody is there.
+    """
+    status_name = record.get("status", "UNKNOWN")
+    if status_name != "RUNNING":
+        return status_name
+    lease = record.get("lease")
+    if not lease or _expired(lease):
+        return "ABANDONED"
+    return "RUNNING"
+
+
+def target_claims(root: Path) -> list[dict]:
+    """Every `owner/repo#issue` a live hunt in this data root is working on."""
+    claims: list[dict] = []
+    for record in iter_hunts(root):
+        live = effective_status(record) == "RUNNING"
+        lease = record.get("lease") or {}
+        for row in record["runs"]:
+            if row.get("dropped"):
+                continue
+            try:
+                run, _ = load_run(row["run_id"], root)
+            except (OSError, ValueError, KeyError):
+                continue
+            key = target_key(run)
+            if not key:
+                continue
+            claims.append({
+                "target": key, "run_id": row["run_id"], "hunt_id": record["hunt_id"],
+                "hunt_status": effective_status(record), "live": live,
+                "filed": (row.get("filed") or {}).get("pr_url"),
+                "owner": lease.get("owner"), "expires_at": lease.get("expires_at"),
+            })
+    return claims
+
+
+def holding_hunt(root: Path, target: str, *, exclude: str | None = None) -> dict | None:
+    for claim in target_claims(root):
+        if claim["target"] == target and claim["live"] and claim["hunt_id"] != exclude:
+            return claim
+    return None
 
 
 # --- Coordinator ownership ------------------------------------------------
@@ -268,6 +439,41 @@ def next_action(directory: Path) -> dict:
             "action": "Include in the final approval packet."}
 
 
+#: Longest evidence or detail string the printed view keeps per row.
+VIEW_TEXT = 200
+
+
+def compact(result: dict) -> dict:
+    """The part of a readiness check a coordinator acts on.
+
+    A coordinator is a chat session, so every command it runs stays in its
+    context and is re-sent on every later turn. `hunt status` on hunt
+    20260907T164341Z-1ca91a printed 12,910 bytes, and 7,037 of them were the
+    drop reasons and evidence for 21 candidates that were already dead. That
+    share grows for the whole hunt, so checking progress gets more expensive
+    the longer the hunt runs, which is the wrong direction.
+
+    The record keeps all of it. This is what gets printed.
+    """
+    live, dropped = [], []
+    for row in result.get("runs", []):
+        (dropped if row.get("disposition") == "REPLACED" else live).append(row)
+    view = {key: value for key, value in result.items() if key != "runs"}
+    view["runs"] = [
+        {key: (value[:VIEW_TEXT] + "..." if isinstance(value, str) and len(value) > VIEW_TEXT else value)
+         for key, value in row.items()}
+        for row in live
+    ]
+    if dropped:
+        codes: dict[str, int] = {}
+        for row in dropped:
+            codes[row.get("reason") or "unrecorded"] = codes.get(row.get("reason") or "unrecorded", 0) + 1
+        view["replaced"] = {"count": len(dropped),
+                            "reasons": dict(sorted(codes.items(), key=lambda item: -item[1])),
+                            "detail": "in the hunt record; pass --full to print it"}
+    return view
+
+
 def status(root: Path, record: dict) -> dict:
     rows = []
     targets = set()
@@ -297,7 +503,27 @@ def status(root: Path, record: dict) -> dict:
     health_states = {row["health"] for row in rows if row.get("health")}
     if health_states:
         result["health"] = sorted(health_states)
+    for row in record["runs"]:
+        filed = row.get("filed")
+        if filed:
+            match = next((r for r in rows if r.get("run_id") == row["run_id"]), None)
+            if match is not None:
+                match["filed"] = filed["pr_url"]
+    result["filed"] = sum(1 for row in record["runs"] if row.get("filed"))
+    result["status"] = effective_status(record)
+    if is_terminal(record):
+        # A filed hunt's record is the provenance for live pull requests. The
+        # gate result that authorized the filing was overwritten once by a
+        # later recheck, and there was no way back to it. Reading a finished
+        # hunt is free; writing to one is not allowed.
+        # https://github.com/wolfgang-aura/Mailman/issues/72
+        result["persisted"] = False
+        return result
     record["last_check"] = result
+    record["checks"] = [*record.get("checks", []), {
+        "requested": result["requested"], "ready": result["ready"],
+        "remaining": result["remaining"], "checked_at": result["checked_at"],
+    }][-CHECK_HISTORY:]
     checkpoint = write_checkpoint(root, record, result)
     if checkpoint:
         result["checkpoint"] = str(checkpoint)
@@ -395,6 +621,11 @@ def refresh(root: Path, record: dict) -> dict:
 def finish(root: Path, record: dict) -> dict:
     from mailman.review_packet import write_packet_page
     from mailman.review_page import write_run_page
+    if is_terminal(record):
+        raise ValueError(
+            f"hunt {record['hunt_id']} is {record['status']}; its packet and gate "
+            "result are the record for pull requests that are already open"
+        )
     result = status(root, record)
     if result["remaining"]:
         return {**result, "complete": False}

@@ -34,6 +34,20 @@ allowance and produces nothing.
 Renew the lease with `mailman hunt lease` during long stages. Release it with
 `mailman hunt release --owner TOKEN` when you stop.
 
+The lease covers one hunt. Two hunts in one data root still compete for the
+same issues, so before you attach a candidate run `mailman hunt targets`. It
+lists every `owner/repo#issue` any hunt in this root holds, which of them are
+live, and which are already filed. Read that, not directory timestamps: a hunt
+that says `RUNNING` with a dead lease has no coordinator, and `hunt list`
+reports it as `ABANDONED` in `effective_status`. `hunt add` refuses a target
+another live hunt holds, and refuses one that any hunt already filed.
+
+Keep what you print small. A coordinator is a conversation, so every command's
+output stays in context and is re-sent on every later turn. `hunt status` omits
+the reasons and evidence for replaced candidates by default; the record keeps
+them, and `--full` prints them when you actually need one. Do not poll: a
+status check you did not act on is pure cost.
+
 ## Find and screen
 
 1. Read the target's contributor instructions and AI policy. Run
@@ -149,6 +163,14 @@ publish only if the checks still pass. If material bytes or destination change,
 regenerate the packet and obtain approval for that change. Use body files for
 GitHub commands. Record filing URLs and provenance. Keep issues open until the
 change is deployed and live-verified. No automatic upstream messages.
+
+Record each filing in the hunt as it happens: `mailman hunt file HUNT_ID RUN_ID
+--owner TOKEN --pr-url https://github.com/OWNER/REPO/pull/N --commit SHA`. The
+hunt becomes `FILED` once every requested candidate carries a pull request, and
+a `FILED` hunt is read-only: `finish`, `refresh-procedure` and further checks
+cannot rewrite the gate result and procedure digest that its open pull requests
+rest on. Without this the record still reads `AWAITING_FILING_APPROVAL`, and the
+next session offers the operator work he has already filed.
 
 For Mailman defects discovered during a hunt, search existing GitHub issues.
 Update local evidence for existing issues. Draft new issues privately and

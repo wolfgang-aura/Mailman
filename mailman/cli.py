@@ -123,7 +123,20 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=(
             "init", "add", "drop", "restore", "status", "finish", "list",
             "escalate", "refresh-procedure", "lease", "release", "refresh",
+            "file", "targets",
         ),
+    )
+    hunt.add_argument(
+        "--pr-url",
+        help="the pull request a candidate became, for hunt file. Recording it "
+        "is what stops a later session offering a filed candidate again",
+    )
+    hunt.add_argument("--commit", help="the filed head commit, for hunt file")
+    hunt.add_argument(
+        "--full",
+        action="store_true",
+        help="print every replaced candidate's reason and evidence too. The "
+        "default view omits them; the hunt record keeps them either way",
     )
     hunt.add_argument("hunt_id", nargs="?")
     hunt.add_argument("run_id", nargs="?")
@@ -680,8 +693,21 @@ def _hunt(arguments: argparse.Namespace) -> int:
     from mailman import hunt
     root = (arguments.data_root or default_data_root()).resolve()
     if arguments.action == "list":
-        rows = [hunt.read_object(path) for path in sorted((root.parent / "hunts").glob("*/hunt.json"))]
-        print(json.dumps([{k: row.get(k) for k in ("hunt_id", "status", "requested", "updated_at")} for row in rows], indent=2))
+        print(json.dumps([{
+            **{k: row.get(k) for k in ("hunt_id", "status", "requested", "updated_at")},
+            # A hunt that says RUNNING with a dead lease has no coordinator.
+            # Reporting the stored word is how a session decides a target is
+            # taken when nobody is there.
+            "effective_status": hunt.effective_status(row),
+            "filed": sum(1 for entry in row.get("runs", []) if entry.get("filed")),
+        } for row in hunt.iter_hunts(root)], indent=2))
+        return 0
+    if arguments.action == "targets":
+        claims = hunt.target_claims(root)
+        print(json.dumps({"data_root": str(root), "claims": claims,
+                          "live": sorted({c["target"] for c in claims if c["live"]}),
+                          "filed": sorted({c["target"] for c in claims if c["filed"]})},
+                         indent=2))
         return 0
     if not arguments.hunt_id:
         raise ValueError("provide a hunt ID, or a count for hunt init")
@@ -700,6 +726,11 @@ def _hunt(arguments: argparse.Namespace) -> int:
         record = hunt.read_object(path)
         if not record:
             raise ValueError("hunt not found")
+        if hunt.is_terminal(record):
+            raise ValueError(
+                f"hunt {record['hunt_id']} is {record['status']}; its recorded "
+                "procedure is which version the filed work was prepared under"
+            )
         record["procedure_sha256"] = hashlib.sha256(hunt.PROCEDURE.read_bytes()).hexdigest()
         hunt.save(path, record)
     record = hunt.load_hunt(root, arguments.hunt_id)
@@ -714,8 +745,16 @@ def _hunt(arguments: argparse.Namespace) -> int:
         hunt.release_lease(root, record, owner=arguments.owner)
         print(json.dumps({"hunt_id": record["hunt_id"], "lease": None}, indent=2))
         return 0
-    if arguments.action in ("add", "drop", "restore", "escalate", "finish", "refresh"):
+    if arguments.action in ("add", "drop", "restore", "escalate", "finish", "refresh", "file"):
         hunt.require_lease(record, arguments.owner)
+    if arguments.action == "file":
+        if not arguments.run_id or not arguments.pr_url:
+            raise ValueError("provide the run ID and --pr-url")
+        filed = hunt.record_filing(root, record, arguments.run_id,
+                                   pr_url=arguments.pr_url, commit=arguments.commit)
+        print(json.dumps({"hunt_id": record["hunt_id"], "run_id": arguments.run_id,
+                          "status": record["status"], "filed": filed}, indent=2))
+        return 0
     if arguments.action == "add":
         if not arguments.run_id:
             raise ValueError("provide the run ID to add")
@@ -748,7 +787,7 @@ def _hunt(arguments: argparse.Namespace) -> int:
         result = hunt.finish(root, record)
     else:
         result = hunt.status(root, record)
-    print(json.dumps(result, indent=2))
+    print(json.dumps(result if arguments.full else hunt.compact(result), indent=2))
     return 1 if arguments.action == "finish" and not result["complete"] else 0
 
 

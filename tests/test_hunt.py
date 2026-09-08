@@ -15,13 +15,20 @@ from mailman.hunt import (
     add_run,
     acquire_lease,
     require_lease,
+    compact,
     create_hunt,
+    effective_status,
     finish,
+    holding_hunt,
+    hunt_path,
     load_hunt,
     next_action,
+    record_filing,
     refresh,
     restore_run,
+    save,
     status,
+    target_claims,
 )
 from mailman.identity import Identity, save_identity
 from mailman.models import AgentConfig
@@ -274,3 +281,142 @@ class HuntTests(OrchestratorHarness):
                          "--data-root", str(self.data_root)])
         self.assertEqual(code, 2)
         self.assertEqual(load_hunt(self.data_root, hunt["hunt_id"])["escalations"], [])
+
+
+class FilingRecordTests(HuntTests):
+    """A filed hunt has to say so, or the next session offers it again.
+
+    https://github.com/wolfgang-aura/Mailman/issues/71
+    """
+
+    def file_one(self, count=1, url="https://github.com/example/project/pull/42"):
+        record = self.new_hunt(count)
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        filed = record_filing(self.data_root, record, directory.name, pr_url=url)
+        return record, directory, filed
+
+    def test_recording_a_filing_closes_the_hunt_and_keeps_the_pull_request(self):
+        record, directory, filed = self.file_one()
+        self.assertEqual(filed["pr_number"], 42)
+        self.assertEqual(filed["target"], "example/project#1")
+        self.assertEqual(record["status"], "FILED")
+        stored = json.loads(hunt_path(self.data_root, record["hunt_id"]).read_text(encoding="utf-8"))
+        self.assertEqual(stored["runs"][0]["filed"]["pr_url"], filed["pr_url"])
+
+    def test_a_partly_filed_hunt_is_not_terminal(self):
+        record = self.new_hunt(2)
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        record_filing(self.data_root, record, directory.name,
+                      pr_url="https://github.com/example/project/pull/7")
+        self.assertEqual(record["status"], "RUNNING")
+
+    def test_a_pull_request_on_another_repository_is_refused(self):
+        record = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        with self.assertRaises(ValueError) as caught:
+            record_filing(self.data_root, record, directory.name,
+                          pr_url="https://github.com/other/thing/pull/42")
+        self.assertIn("the run targets", str(caught.exception))
+
+    def test_a_filed_target_cannot_join_a_new_hunt(self):
+        _, directory, _ = self.file_one()
+        second = self.new_hunt()
+        with self.assertRaises(ValueError) as caught:
+            add_run(self.data_root, second, directory.name)
+        self.assertIn("already filed", str(caught.exception))
+
+    def test_status_reports_the_filing_and_leaves_the_record_alone(self):
+        record, directory, filed = self.file_one()
+        stored = json.loads(hunt_path(self.data_root, record["hunt_id"]).read_text(encoding="utf-8"))
+        result = status(self.data_root, record)
+        self.assertEqual(result["filed"], 1)
+        self.assertIs(result["persisted"], False)
+        after = json.loads(hunt_path(self.data_root, record["hunt_id"]).read_text(encoding="utf-8"))
+        self.assertEqual(stored, after)
+
+    def test_finish_refuses_to_rewrite_a_filed_hunt(self):
+        record, _, _ = self.file_one()
+        with self.assertRaises(ValueError) as caught:
+            finish(self.data_root, record)
+        self.assertIn("already open", str(caught.exception))
+
+    def test_readiness_checks_accumulate_instead_of_replacing_each_other(self):
+        record = self.new_hunt()
+        status(self.data_root, record)
+        status(self.data_root, record)
+        stored = json.loads(hunt_path(self.data_root, record["hunt_id"]).read_text(encoding="utf-8"))
+        self.assertEqual(len(stored["checks"]), 2)
+        self.assertEqual(stored["last_check"]["checked_at"], stored["checks"][-1]["checked_at"])
+
+
+class TargetClaimTests(HuntTests):
+    """One data root, two hunts, one candidate pool.
+
+    https://github.com/wolfgang-aura/Mailman/issues/73
+    """
+
+    def test_a_live_hunt_holds_its_target_against_a_sibling(self):
+        first = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, first, directory.name)
+        second = self.new_hunt()
+        with self.assertRaises(ValueError) as caught:
+            add_run(self.data_root, second, directory.name)
+        self.assertIn(first["hunt_id"], str(caught.exception))
+
+    def test_targets_lists_what_every_hunt_in_the_root_is_working_on(self):
+        record = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        claims = target_claims(self.data_root)
+        self.assertEqual([claim["target"] for claim in claims], ["example/project#1"])
+        self.assertTrue(claims[0]["live"])
+
+    def test_an_expired_lease_does_not_read_as_running(self):
+        record = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        acquire_lease(self.data_root, record, owner=record["lease"]["owner"], minutes=-1)
+        self.assertEqual(effective_status(record), "ABANDONED")
+        self.assertIsNone(holding_hunt(self.data_root, "example/project#1"))
+
+    def test_a_dropped_target_is_released(self):
+        record = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        record["runs"][0].update(dropped=True, reason="issue-assigned", evidence="assignee")
+        save(hunt_path(self.data_root, record["hunt_id"]), record)
+        self.assertIsNone(holding_hunt(self.data_root, "example/project#1"))
+
+
+class CompactViewTests(HuntTests):
+    """What a coordinator reads, it re-sends on every later turn."""
+
+    def test_replaced_candidates_collapse_to_a_count(self):
+        record = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        record["runs"][0].update(dropped=True, reason="issue-assigned",
+                                 evidence="x" * 4000)
+        save(hunt_path(self.data_root, record["hunt_id"]), record)
+        result = status(self.data_root, record)
+        view = compact(result)
+        self.assertEqual(view["replaced"], {
+            "count": 1, "reasons": {"issue-assigned": 1},
+            "detail": "in the hunt record; pass --full to print it"})
+        self.assertEqual(view["runs"], [])
+        self.assertLess(len(json.dumps(view)), len(json.dumps(result)) / 4)
+        self.assertIn("x" * 4000, json.dumps(result))
+
+    def test_a_live_row_keeps_its_action_and_truncates_long_detail(self):
+        record = self.new_hunt()
+        result = {"runs": [{"run_id": "r", "ready": False, "stage": "screen",
+                            "action": "mailman screen-target a/b",
+                            "detail": "y" * 500, "disposition": "REPAIR"}]}
+        row = compact(result)["runs"][0]
+        self.assertEqual(row["action"], "mailman screen-target a/b")
+        self.assertTrue(row["detail"].endswith("..."))
+        self.assertEqual(len(row["detail"]), 203)
