@@ -12,6 +12,8 @@ from mailman.completion import candidate_digest, git_bytes
 from mailman.environment import environment_command
 from mailman.executor import CommandResult, execute
 from mailman.instructions import describe_instruction_sources
+from mailman import health
+from mailman.limits import offload, truncate_stream
 from mailman.models import RunRecord, RunStatus, utc_now
 from mailman.prompts import load_recorded_verification
 from mailman.redaction import redact
@@ -217,6 +219,7 @@ class OrchestrationOutcome:
     steps: list[OrchestrationStep]
     revisions_used: int
     review_cycles: int
+    max_review_cycles: int
     record_path: Path
 
     @property
@@ -231,6 +234,7 @@ class OrchestrationOutcome:
             "ready_for_human_review": self.ready,
             "revisions_used": self.revisions_used,
             "review_cycles": self.review_cycles,
+            "max_review_cycles": self.max_review_cycles,
             "steps": [step.to_dict() for step in self.steps],
         }
 
@@ -249,6 +253,7 @@ class _Orchestration:
         agent_timeout_seconds: float,
         verification_timeout_seconds: float,
         max_revisions: int,
+        max_review_cycles: int,
         announce: Callable[[str], None],
         check_target: bool = True,
         acknowledge_prior_attempts: bool = False,
@@ -264,6 +269,7 @@ class _Orchestration:
         self.agent_timeout_seconds = agent_timeout_seconds
         self.verification_timeout_seconds = verification_timeout_seconds
         self.max_revisions = max_revisions
+        self.max_review_cycles = max_review_cycles
         self.announce = announce
         self.check_target = check_target
         self.acknowledge_prior_attempts = acknowledge_prior_attempts
@@ -292,14 +298,38 @@ class _Orchestration:
             )
         )
 
+    def _target_data(self, assessment: Any) -> dict[str, Any]:
+        """Keep the target verdict inline and the intel in its own file.
+
+        A full assessment reached 21,606,896 bytes, and `resume-review` copies
+        every prior step forward, so four resumes carried four copies. See
+        https://github.com/wolfgang-aura/Mailman/issues/66.
+        """
+        return offload(
+            assessment.to_dict(),
+            self.run_directory / "target-assessment.json",
+            keep=("searched", "open_attempts", "merged_attempts", "superseded_attempts"),
+        )
+
     def _transition(self, target: RunStatus, reason: str) -> None:
         self.run.transition(target, reason)
         write_run(self.run, self.run_directory)
         self._step("transition", ok=True, detail=f"{target}: {reason}")
 
     def _block(self, reason: str) -> None:
-        self.run.transition(RunStatus.BLOCKED, reason)
-        write_run(self.run, self.run_directory)
+        # A resume blocks the run before the loop starts, so a budget refusal
+        # inside the loop would otherwise be a BLOCKED -> BLOCKED transition.
+        # The reason is what a reader needs either way; record it and keep the
+        # run where it already is.
+        if self.run.status is not RunStatus.BLOCKED:
+            self.run.transition(RunStatus.BLOCKED, reason)
+            write_run(self.run, self.run_directory)
+        else:
+            self.run.history.append(
+                {"at": utc_now(), "from": str(RunStatus.BLOCKED),
+                 "to": str(RunStatus.BLOCKED), "reason": reason}
+            )
+            write_run(self.run, self.run_directory)
         self._step("blocked", ok=False, detail=reason)
 
     # Bounded stages ----------------------------------------------------
@@ -380,6 +410,23 @@ class _Orchestration:
         )
         ok = not result.timed_out and result.exit_code == 0 and result.report_present
         stop_reason = _describe_stop(result.stop_reason, agent.turn_budget)
+        if not ok:
+            state = health.classify(
+                result.stop_reason,
+                stop_reason,
+                result.command_result.stderr,
+                result.command_result.stdout[-20_000:],
+            )
+            if state:
+                health.record(
+                    self.run_directory,
+                    state=state,
+                    stage=f"agent:{role}",
+                    resume_command=f"mailman resume-review {self.run.run_id}",
+                    detail=f"{agent.name} stopped for a {state} reason, not a candidate defect",
+                )
+        else:
+            health.clear(self.run_directory)
         if result.timed_out:
             detail = f"{agent.name} timed out"
         elif not result.report_present:
@@ -566,6 +613,8 @@ class _Orchestration:
             )
         if self.max_revisions < 0:
             raise ValueError("max_revisions cannot be negative")
+        if self.max_review_cycles < 1:
+            raise ValueError("max_review_cycles must be at least 1")
         if not self.verification_command:
             raise ValueError("a verification command is required")
         self._check_verification_agreement()
@@ -582,7 +631,7 @@ class _Orchestration:
                     "target",
                     ok=False,
                     detail="; ".join(assessment.blocking),
-                    data=assessment.to_dict(),
+                    data=self._target_data(assessment),
                 )
                 self._block(
                     "refused to start: " + "; ".join(assessment.blocking)
@@ -595,7 +644,7 @@ class _Orchestration:
                     f"{len(assessment.closed_attempts)} closed attempt(s), "
                     "no open or merged pull request"
                 ),
-                data=assessment.to_dict(),
+                data=self._target_data(assessment),
             )
 
         state = inspect_workspace(self.workspace)
@@ -658,6 +707,19 @@ class _Orchestration:
             return self._outcome()
 
         while True:
+            # `review_cycles` lives on the run record, so it survives every
+            # `resume-review`. A per-call limit does not: one recovered run
+            # reached five reviewer passes against a one-revision budget, each
+            # a full reviewer stage on the shared model allowance. See
+            # https://github.com/wolfgang-aura/Mailman/issues/65.
+            if self.run.review_cycles >= self.max_review_cycles:
+                self._block(
+                    f"review budget spent: {self.run.review_cycles} of "
+                    f"{self.max_review_cycles} cycles used across this run. "
+                    "Raise --max-review-cycles deliberately, or replace the "
+                    "candidate."
+                )
+                return self._outcome()
             review_prompt = self._review_prompt()
             self._transition(RunStatus.REVIEW_PENDING, "reviewer reading the candidate")
             reviewer_before = inspect_workspace(self.workspace).changes
@@ -809,6 +871,7 @@ class _Orchestration:
             status=self.run.status,
             steps=self.steps,
             revisions_used=self.revisions_used,
+            max_review_cycles=self.max_review_cycles,
             review_cycles=self.run.review_cycles,
             record_path=self.run_directory / "orchestration.json",
         )
@@ -833,6 +896,7 @@ def orchestrate(
     agent_timeout_seconds: float = 3600,
     verification_timeout_seconds: float = 900,
     max_revisions: int = 1,
+    max_review_cycles: int = 3,
     announce: Callable[[str], None] = lambda message: None,
     check_target: bool = True,
     acknowledge_prior_attempts: bool = False,
@@ -851,6 +915,7 @@ def orchestrate(
         agent_timeout_seconds=agent_timeout_seconds,
         verification_timeout_seconds=verification_timeout_seconds,
         max_revisions=max_revisions,
+        max_review_cycles=max_review_cycles,
         announce=announce,
         check_target=check_target,
         acknowledge_prior_attempts=acknowledge_prior_attempts,

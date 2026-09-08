@@ -4,8 +4,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import secrets
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from mailman import health
 from mailman.agents import normalize_agent_name
 from mailman.artifacts import load_run, new_run_id
 from mailman.completion import finalize_review, read_object
@@ -17,6 +20,11 @@ from mailman.target_intel import repository_slug
 from mailman.targeting import assess_target
 
 PROCEDURE = Path(__file__).with_name("procedure.md")
+#: How long one coordinator owns a hunt before another may take it over
+#: without an argument. Long enough to cover a reviewer stage, short enough
+#: that an abandoned hunt is not stuck for a day.
+LEASE_MINUTES = 90
+
 HUMAN_REASONS = ("authentication", "budget", "scope", "conflicting-instructions")
 DROP_CODES = {
     "issue-assigned", "work-handed-over", "open-pull-request",
@@ -39,7 +47,7 @@ def hunt_path(root: Path, hunt_id: str) -> Path:
 
 
 def create_hunt(root: Path, count: int, *, primary: str, primary_model: str,
-                reviewer: str, reviewer_model: str) -> dict:
+                reviewer: str, reviewer_model: str, owner: str | None = None) -> dict:
     if count < 1 or isinstance(count, bool):
         raise ValueError("the PR count must be positive")
     if not primary_model.strip() or not reviewer_model.strip():
@@ -53,6 +61,7 @@ def create_hunt(root: Path, count: int, *, primary: str, primary_model: str,
         "runs": [], "escalations": [], "status": "RUNNING",
     }
     save(hunt_path(root, record["hunt_id"]), record)
+    acquire_lease(root, record, owner=owner)
     return record
 
 
@@ -93,6 +102,93 @@ def restore_run(
     save(hunt_path(root, record["hunt_id"]), record)
 
 
+# --- Coordinator ownership ------------------------------------------------
+#
+# Two agent tasks attached to hunt 20260907T164341Z-1ca91a. Only one owned
+# candidates; the other polled `hunt status` for hours and added coordination
+# cost instead of throughput. A hunt now has one owner at a time, and a second
+# coordinator has to say out loud that it is taking over.
+# See https://github.com/wolfgang-aura/Mailman/issues/63.
+
+
+def new_owner_token() -> str:
+    return secrets.token_hex(8)
+
+
+def _expired(lease: dict) -> bool:
+    try:
+        return datetime.fromisoformat(lease["expires_at"]) <= datetime.now(UTC)
+    except (KeyError, TypeError, ValueError):
+        return True
+
+
+def lease_state(record: dict) -> dict:
+    lease = record.get("lease")
+    if not lease:
+        return {"held": False, "reason": "this hunt predates coordinator leases"}
+    return {"held": not _expired(lease), "owner": lease["owner"],
+            "expires_at": lease["expires_at"],
+            "takeovers": len(lease.get("takeovers", []))}
+
+
+def acquire_lease(root: Path, record: dict, *, owner: str | None = None,
+                  takeover_reason: str | None = None,
+                  minutes: int = LEASE_MINUTES) -> dict:
+    """Take or renew ownership of this hunt.
+
+    Renewing your own live lease is free. Taking a live lease from someone else
+    needs a reason, and the reason is kept: an unexplained takeover is exactly
+    the situation this is here to make visible.
+    """
+    existing = record.get("lease")
+    owner = owner or new_owner_token()
+    if existing and not _expired(existing) and existing["owner"] != owner:
+        if not takeover_reason:
+            raise ValueError(
+                f"hunt {record['hunt_id']} is owned by {existing['owner']} until "
+                f"{existing['expires_at']}. Do not run a second coordinator on one "
+                "hunt. Pass --takeover with --reason if that owner is genuinely gone."
+            )
+    takeovers = list(existing.get("takeovers", [])) if existing else []
+    if existing and existing["owner"] != owner:
+        takeovers.append({"previous_owner": existing["owner"], "at": utc_now(),
+                          "reason": takeover_reason or "expired lease",
+                          "was_live": not _expired(existing)})
+    record["lease"] = {
+        "owner": owner, "acquired_at": utc_now(),
+        "expires_at": (datetime.now(UTC) + timedelta(minutes=minutes)).isoformat(),
+        "takeovers": takeovers,
+    }
+    save(hunt_path(root, record["hunt_id"]), record)
+    return record["lease"]
+
+
+def release_lease(root: Path, record: dict, *, owner: str) -> None:
+    lease = record.get("lease")
+    if lease and lease["owner"] != owner and not _expired(lease):
+        raise ValueError("only the current owner can release this lease")
+    record.pop("lease", None)
+    save(hunt_path(root, record["hunt_id"]), record)
+
+
+def require_lease(record: dict, owner: str | None) -> None:
+    """Refuse a state change from anyone but the current owner.
+
+    A hunt created before leases existed has no owner recorded, so it stays
+    usable. Every hunt created since carries one.
+    """
+    lease = record.get("lease")
+    if not lease or _expired(lease):
+        return
+    if owner != lease["owner"]:
+        raise ValueError(
+            f"hunt {record['hunt_id']} is owned by {lease['owner']} until "
+            f"{lease['expires_at']}. Pass --owner with that token, or take the "
+            "hunt over with `hunt lease --takeover --reason ...`. Two "
+            "coordinators on one hunt produce less than one."
+        )
+
+
 def next_action(directory: Path) -> dict:
     run, _ = load_run(directory.name, directory.parent)
 
@@ -122,6 +218,13 @@ def next_action(directory: Path) -> dict:
     if not read_object(directory / "prompts.json").get("verification_command"):
         return action("prompts", f"mailman build-prompts {run.run_id} -- EXECUTABLE ARG ...")
     if run.status not in (RunStatus.ENGINEERING_COMPLETE, RunStatus.READY_FOR_HUMAN_REVIEW):
+        state = health.load(directory)
+        if state and run.status is RunStatus.BLOCKED:
+            # The account, or the host, stopped this stage. Retrying the
+            # candidate is the wrong repair and burns the same allowance
+            # again. https://github.com/wolfgang-aura/Mailman/issues/67
+            return {**action(state["stage"], state["resume_command"], state["detail"]),
+                    "health": state["state"]}
         history = read_object(directory / "orchestration.json")
         has_primary = any(step.get("name") == "agent:primary" for step in history.get("steps", []))
         command = "resume-review" if run.status is RunStatus.BLOCKED and has_primary else "orchestrate"
@@ -190,9 +293,49 @@ def status(root: Path, record: dict) -> dict:
               "checked_at": utc_now(), "runs": rows,
               "next": "Prepare the approval packet." if ready >= record["requested"] else "Complete the next action or find a replacement candidate.",
               "escalations": record["escalations"]}
+    result["lease"] = lease_state(record)
+    health_states = {row["health"] for row in rows if row.get("health")}
+    if health_states:
+        result["health"] = sorted(health_states)
     record["last_check"] = result
+    checkpoint = write_checkpoint(root, record, result)
+    if checkpoint:
+        result["checkpoint"] = str(checkpoint)
     save(hunt_path(root, record["hunt_id"]), record)
     return result
+
+
+def write_checkpoint(root: Path, record: dict, result: dict) -> Path | None:
+    """Publish the candidates that are ready now, without waiting for the quota.
+
+    Two PDM candidates were finished hours before filing, but the packet is
+    only written when the whole quota is ready, so the operator saw nothing.
+    Their readiness evidence then aged out and the visible count fell from two
+    to zero. A checkpoint is a generated page, not a promise: `hunt finish`
+    still re-checks freshness for every candidate immediately before filing.
+    See https://github.com/wolfgang-aura/Mailman/issues/64.
+    """
+    from mailman.review_packet import write_packet_page
+    from mailman.review_page import write_run_page
+
+    ready = [row["run_id"] for row in result["runs"] if row["ready"]]
+    if not ready:
+        return None
+    if record.get("checkpoint_runs") == ready:
+        return Path(record["checkpoint"])
+    directories = [root / run_id for run_id in ready]
+    for directory in directories:
+        write_run_page(directory)
+    destination = hunt_path(root, record["hunt_id"]).parent / "checkpoint.html"
+    write_packet_page(
+        directories,
+        destination,
+        title=f"{len(ready)} of {record['requested']} candidates ready so far",
+    )
+    record["checkpoint"] = str(destination)
+    record["checkpoint_runs"] = ready
+    record["checkpoint_at"] = utc_now()
+    return destination
 
 
 def finish(root: Path, record: dict) -> dict:

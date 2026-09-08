@@ -97,6 +97,45 @@ class CompletionTests(OrchestratorHarness):
         self.assertFalse(result["ok"])
         self.assertEqual(result["reason"], "author-identity")
 
+    def test_review_budget_is_spent_across_resume_calls(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/65
+
+        The first orchestration already spent one review cycle. A resume that
+        carries its own `--max-review-cycles 1` must not buy a second one: the
+        budget belongs to the run, which is how a one-revision run reached five
+        reviewer passes on the shared allowance.
+        """
+        directory = self.completed()
+        run, _ = load_run(directory.name, directory.parent)
+        self.assertEqual(run.review_cycles, 1)
+        result = orchestrate(
+            run=run, run_directory=directory, workspace=self.workspace,
+            primary_prompt=self.primary_prompt, reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: self.fail(f"{name} ran on a spent budget"),
+            max_review_cycles=1,
+            resume_review=True,
+        )
+        self.assertEqual(str(result.status), "BLOCKED")
+        self.assertEqual(result.review_cycles, 1)
+        blocked = [step for step in result.steps if not step.ok][-1]
+        self.assertIn("review budget spent", blocked.detail)
+
+    def test_a_raised_review_budget_lets_one_more_cycle_run(self):
+        directory = self.completed()
+        run, _ = load_run(directory.name, directory.parent)
+        reviewer = ScriptedAgent("claude", [{"report": APPROVED}])
+        result = orchestrate(
+            run=run, run_directory=directory, workspace=self.workspace,
+            primary_prompt=self.primary_prompt, reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: reviewer,
+            max_review_cycles=2,
+            resume_review=True,
+        )
+        self.assertEqual(str(result.status), "ENGINEERING_COMPLETE")
+        self.assertEqual(result.review_cycles, 2)
+
     def test_resume_review_preserves_candidate_and_primary_evidence(self):
         directory = self.completed()
         run, _ = load_run(directory.name, directory.parent)

@@ -216,6 +216,7 @@ class OrchestratorHarness(unittest.TestCase):
         reviewer_script: list[dict[str, object]],
         check: str = PASSING_CHECK,
         max_revisions: int = 1,
+        max_review_cycles: int = 3,
         primary_turn_budget: int | None = None,
     ):
         run, run_directory = self.make_run()
@@ -231,6 +232,7 @@ class OrchestratorHarness(unittest.TestCase):
             verification_command=[sys.executable, "-c", check],
             agent_factory=lambda name, model: agents[name],
             max_revisions=max_revisions,
+            max_review_cycles=max_review_cycles,
         )
         return outcome, run_directory, primary, reviewer
 

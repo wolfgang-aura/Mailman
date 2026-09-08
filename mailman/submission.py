@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1128,6 +1129,7 @@ def record_duplicate_search(
     timeout_seconds: float = 60,
     limit: int = 30,
     listing_limit: int = 100,
+    symbols: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Search a target's pull requests and issues, and record what came back.
 
@@ -1151,6 +1153,8 @@ def record_duplicate_search(
         "issue_number": issue_number,
         "success": False,
         "complete": False,
+        "symbols": list(symbols),
+        "decided_by": None,
         "matches": [],
         "methods": {},
         "failed_methods": [],
@@ -1160,7 +1164,40 @@ def record_duplicate_search(
         # Two searches disagree in useful ways. The global index finds a pull
         # request whose body says "Fixes #14324"; the repo-scoped list works on
         # repositories the global index refuses, as it does for encode/starlette.
+        # Narrow first. The cheapest query that can settle this is the issue
+        # number and the symbols the change touches; the hundred-item listing
+        # is the expensive one. Ordering them this way is what stops discovery
+        # paying full price on a target it is about to reject.
+        # https://github.com/wolfgang-aura/Mailman/issues/68
+        narrow_terms = [
+            *([f"#{issue_number}"] if issue_number is not None else []),
+            *[symbol for symbol in symbols if symbol.strip()],
+        ]
         attempts = [
+            *(
+                [
+                    (
+                        "narrow",
+                        [
+                            command_executable,
+                            kind,
+                            "list",
+                            "--repo",
+                            slug,
+                            "--search",
+                            " ".join(narrow_terms),
+                            "--state",
+                            "all",
+                            "--limit",
+                            str(limit),
+                            "--json",
+                            _SEARCH_FIELDS,
+                        ],
+                    )
+                ]
+                if narrow_terms
+                else []
+            ),
             (
                 "search",
                 [
@@ -1253,6 +1290,18 @@ def record_duplicate_search(
                     # might be, which is how encode/starlette's four were found.
                     minimum_terms=1 if kind == "pr" else 2,
                 )
+            elif method == "narrow":
+                # The narrow query is the issue number and the symbols the
+                # change touches, so a hit here already references the issue.
+                rows = _match_rows(
+                    payload,
+                    pull_request=kind == "pr",
+                    method="narrow",
+                    reasons=["narrow"],
+                    matched_terms=list(narrow_terms),
+                    term_count=len(narrow_terms),
+                    references_issue=issue_number is not None,
+                )
             else:
                 rows = _match_rows(
                     payload, pull_request=kind == "pr", method=method
@@ -1292,6 +1341,27 @@ def record_duplicate_search(
                     existing.get("references_issue") or row.get("references_issue")
                 )
             succeeded.append(method)
+            if method == "narrow" and kind == "pr":
+                definite = [
+                    row
+                    for row in record["matches"]
+                    if row["pull_request"] and row.get("references_issue")
+                ]
+                if definite:
+                    # A confirmed duplicate is a final answer, so the broad
+                    # methods cannot change it. `complete` exists to say an
+                    # *empty* result can be trusted; this result is not empty.
+                    record["methods"][kind] = succeeded
+                    record["success"] = True
+                    record["complete"] = True
+                    record["decided_by"] = "narrow"
+                    record["detail"] = (
+                        f"{len(definite)} open or closed pull request(s) already "
+                        f"reference issue {issue_number}"
+                    )
+                    record["match_count"] = len(record["matches"])
+                    _write_json(run_directory / DUPLICATE_SEARCH_FILENAME, record)
+                    return record
         record["methods"][kind] = succeeded
         if not succeeded:
             record["detail"] = f"every {kind} search failed"
@@ -1312,6 +1382,7 @@ def record_duplicate_search(
     record["complete"] = all(
         "listing" in methods for methods in record["methods"].values()
     )
+    record["decided_by"] = "broad"
     record["match_count"] = len(record["matches"])
     _write_json(run_directory / DUPLICATE_SEARCH_FILENAME, record)
     return record

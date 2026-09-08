@@ -122,7 +122,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "action",
         choices=(
             "init", "add", "drop", "restore", "status", "finish", "list",
-            "escalate", "refresh-procedure",
+            "escalate", "refresh-procedure", "lease", "release",
         ),
     )
     hunt.add_argument("hunt_id", nargs="?")
@@ -132,6 +132,16 @@ def _build_parser() -> argparse.ArgumentParser:
         hunt.add_argument(f"--{role}-model")
     hunt.add_argument("--reason")
     hunt.add_argument("--evidence")
+    hunt.add_argument(
+        "--owner",
+        help="this coordinator's lease token, printed by hunt init. One hunt "
+        "has one owner; a second coordinator must take it over explicitly",
+    )
+    hunt.add_argument(
+        "--takeover",
+        action="store_true",
+        help="take a live lease from another coordinator; needs --reason",
+    )
     hunt.add_argument("--attempted")
     hunt.add_argument("--why-user")
     hunt.add_argument("--user-action")
@@ -288,6 +298,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     duplicate.add_argument("run_id")
     duplicate.add_argument("--query", required=True)
+    duplicate.add_argument(
+        "--symbol",
+        action="append",
+        dest="symbols",
+        default=[],
+        help="a function, class or file the change touches, repeatable. "
+        "Searched with the issue number before the broad listing",
+    )
     duplicate.add_argument("--limit", type=int, default=30)
     duplicate.add_argument("--executable")
     duplicate.add_argument("--timeout", type=float, default=60)
@@ -481,6 +499,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     orchestrate_parser.add_argument("--max-revisions", type=int, default=1)
     orchestrate_parser.add_argument(
+        "--max-review-cycles",
+        type=int,
+        default=3,
+        help="reviewer passes this run may spend in total, counted across "
+        "every orchestrate and resume-review call",
+    )
+    orchestrate_parser.add_argument(
         "--acknowledge-prior-attempts",
         action="store_true",
         help="start even though closed pull requests already attempted this "
@@ -665,7 +690,8 @@ def _hunt(arguments: argparse.Namespace) -> int:
             raise ValueError("ask for primary and reviewer model IDs, then pass all four model flags")
         record = hunt.create_hunt(root, int(arguments.hunt_id), primary=arguments.primary,
                                   primary_model=arguments.primary_model, reviewer=arguments.reviewer,
-                                  reviewer_model=arguments.reviewer_model)
+                                  reviewer_model=arguments.reviewer_model,
+                                  owner=arguments.owner)
         print(json.dumps(record, indent=2))
         return 0
     if arguments.action == "refresh-procedure":
@@ -677,6 +703,19 @@ def _hunt(arguments: argparse.Namespace) -> int:
         record["procedure_sha256"] = hashlib.sha256(hunt.PROCEDURE.read_bytes()).hexdigest()
         hunt.save(path, record)
     record = hunt.load_hunt(root, arguments.hunt_id)
+    if arguments.action == "lease":
+        lease = hunt.acquire_lease(
+            root, record, owner=arguments.owner,
+            takeover_reason=arguments.reason if arguments.takeover else None,
+        )
+        print(json.dumps(lease, indent=2))
+        return 0
+    if arguments.action == "release":
+        hunt.release_lease(root, record, owner=arguments.owner)
+        print(json.dumps({"hunt_id": record["hunt_id"], "lease": None}, indent=2))
+        return 0
+    if arguments.action in ("add", "drop", "restore", "escalate", "finish"):
+        hunt.require_lease(record, arguments.owner)
     if arguments.action == "add":
         if not arguments.run_id:
             raise ValueError("provide the run ID to add")
@@ -901,12 +940,14 @@ def _duplicate_search(arguments: argparse.Namespace) -> int:
         executable=arguments.executable,
         timeout_seconds=arguments.timeout,
         limit=arguments.limit,
+        symbols=arguments.symbols,
     )
     print(
         json.dumps(
             {
                 "run_id": run.run_id,
                 "repository": record["repository"],
+                "decided_by": record.get("decided_by"),
                 "query": record["query"],
                 "success": record["success"],
                 "complete": record["complete"],
@@ -1409,6 +1450,7 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
         agent_timeout_seconds=arguments.agent_timeout,
         verification_timeout_seconds=arguments.verification_timeout,
         max_revisions=arguments.max_revisions,
+        max_review_cycles=arguments.max_review_cycles,
         announce=_emit,
         acknowledge_prior_attempts=arguments.acknowledge_prior_attempts,
         acknowledge_claims=arguments.acknowledge_claims,

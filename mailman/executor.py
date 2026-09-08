@@ -27,7 +27,19 @@ class CommandResult:
     environment: dict[str, str]
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        """The recorded form of this result, with captured streams capped.
+
+        `to_dict` is only ever written to an evidence file; every reader that
+        needs the whole stream reads `stdout` or `stderr` directly. Capping
+        here stops one agent transcript from making a record unreadable. See
+        https://github.com/wolfgang-aura/Mailman/issues/66.
+        """
+        from mailman.limits import truncate_stream
+
+        record = asdict(self)
+        for key in ("stdout", "stderr"):
+            record[key] = truncate_stream(record[key])
+        return record
 
 
 def _environment_metadata() -> dict[str, str]:

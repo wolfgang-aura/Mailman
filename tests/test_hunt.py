@@ -4,6 +4,7 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, datetime
 from io import StringIO
+from pathlib import Path
 
 from mailman.artifacts import load_run, write_run
 from mailman.cli import main
@@ -12,11 +13,14 @@ from mailman.export import export_patch
 from mailman.handoff import build_handoff
 from mailman.hunt import (
     add_run,
+    acquire_lease,
+    require_lease,
     create_hunt,
     finish,
     load_hunt,
     next_action,
     restore_run,
+    status,
 )
 from mailman.identity import Identity, save_identity
 from mailman.models import AgentConfig
@@ -90,6 +94,46 @@ class HuntTests(OrchestratorHarness):
         self.assertTrue(result["complete"], result)
         self.assertFalse(result["published"])
         self.assertEqual(load_hunt(self.data_root, hunt["hunt_id"])["status"], "AWAITING_FILING_APPROVAL")
+
+    def test_a_ready_candidate_is_published_before_the_quota_is_met(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/64
+
+        Two finished candidates stayed invisible for hours because the packet
+        waits for the whole quota. A checkpoint page shows what is ready now;
+        `hunt finish` still holds the freshness gate.
+        """
+        hunt = self.new_hunt(3)
+        directory = self.ready_run()
+        add_run(self.data_root, hunt, directory.name)
+        result = status(self.data_root, hunt)
+        self.assertEqual(result["ready"], 1)
+        self.assertEqual(result["remaining"], 2)
+        checkpoint = Path(result["checkpoint"])
+        self.assertTrue(checkpoint.is_file())
+        self.assertIn("1 of 3 candidates ready", checkpoint.read_text(encoding="utf-8"))
+        self.assertFalse(finish(self.data_root, hunt)["complete"])
+
+    def test_no_checkpoint_is_written_when_nothing_is_ready(self):
+        hunt = self.new_hunt(2)
+        run, _ = self.make_run()
+        run.primary = AgentConfig("codex", "fixture-primary")
+        run.reviewer = AgentConfig("claude", "fixture-reviewer")
+        write_run(run, self.data_root / run.run_id)
+        add_run(self.data_root, hunt, run.run_id)
+        self.assertNotIn("checkpoint", status(self.data_root, hunt))
+
+    def test_a_second_coordinator_cannot_change_a_leased_hunt(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/63"""
+        hunt = self.new_hunt()
+        owner = hunt["lease"]["owner"]
+        with self.assertRaisesRegex(ValueError, "owned by"):
+            require_lease(hunt, "another-coordinator")
+        require_lease(hunt, owner)
+        acquire_lease(self.data_root, hunt, owner="another-coordinator",
+                      takeover_reason="first coordinator hit its usage limit")
+        require_lease(hunt, "another-coordinator")
+        self.assertEqual(load_hunt(self.data_root, hunt["hunt_id"])["lease"]["owner"],
+                         "another-coordinator")
 
     def test_requested_three_does_not_count_one_as_completion(self):
         hunt = self.new_hunt(3)
