@@ -15,6 +15,14 @@ requested changes on a filed pull request through the new
 any hunt record pinned to an earlier digest needs `hunt refresh-procedure`
 before it resumes.
 
+`e6fd34d` on `main`, 2026-09-09, passed GitHub Actions run `34333042954`.
+`mailman contributions` now prints when each filed pull request's state was
+read and marks a reading over a day old as stale; `contributions --refresh`
+re-reads every one of them from GitHub and rewrites the stored state, merge
+commit and `checked_at`. A lookup that fails keeps the state already on disk,
+names the run on stderr and exits 1. Nothing in `procedure.md` changed, so no
+hunt needs `hunt refresh-procedure`.
+
 PR #61 (`Enforce one unattended PRHunt procedure`) merged into `main` as
 `5fbff826` on 2026-09-07. It adds the canonical `mailman/procedure.md`,
 repository skill and Claude command, persistent hunt quotas, completion gates,
