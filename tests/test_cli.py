@@ -17,6 +17,53 @@ from mailman.artifacts import create_run
 from mailman.cli import _emit, main
 
 
+class ContributionsCliTests(unittest.TestCase):
+    """https://github.com/wolfgang-aura/Mailman/issues/78."""
+
+    def test_refresh_re_reads_every_recorded_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            data_root.mkdir()
+            with patch(
+                "mailman.cli.refresh_contributions", return_value=([], [])
+            ) as refreshed:
+                out = StringIO()
+                with redirect_stdout(out):
+                    code = main(
+                        ["contributions", "--refresh", "--data-root", str(data_root)]
+                    )
+            self.assertEqual(code, 0)
+            refreshed.assert_called_once_with(data_root.resolve())
+
+    def test_a_refresh_that_could_not_read_github_exits_non_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            data_root.mkdir()
+            failure = "pdm-project/pdm#3884: gh is not installed"
+            with patch(
+                "mailman.cli.refresh_contributions", return_value=([], [failure])
+            ):
+                out, err = StringIO(), StringIO()
+                with redirect_stdout(out), redirect_stderr(err):
+                    code = main(
+                        ["contributions", "--refresh", "--data-root", str(data_root)]
+                    )
+            self.assertEqual(code, 1)
+            self.assertIn(failure, err.getvalue())
+            self.assertIn("not fresh readings", err.getvalue())
+
+    def test_without_refresh_nothing_calls_github(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            data_root.mkdir()
+            with patch("mailman.cli.refresh_contributions") as refreshed:
+                out = StringIO()
+                with redirect_stdout(out):
+                    code = main(["contributions", "--data-root", str(data_root)])
+            self.assertEqual(code, 0)
+            refreshed.assert_not_called()
+
+
 class CliTests(unittest.TestCase):
     def test_orchestrate_defaults_to_the_prepared_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

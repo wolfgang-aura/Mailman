@@ -91,6 +91,7 @@ from mailman.provenance import (
     deletion_is_safe,
     load_provenance,
     record_provenance,
+    refresh_contributions,
     render_contributions,
 )
 from mailman.identity import (
@@ -528,6 +529,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="list every run's upstream commit, its state, and its permalink",
     )
     contributions_parser.add_argument("--json", action="store_true")
+    contributions_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="re-read every recorded pull request state from GitHub first",
+    )
     contributions_parser.add_argument("--data-root", type=Path)
 
     identity_parser = subparsers.add_parser(
@@ -1740,11 +1746,23 @@ def _provenance(arguments: argparse.Namespace) -> int:
 
 def _contributions(arguments: argparse.Namespace) -> int:
     data_root = (arguments.data_root or default_data_root()).resolve()
-    found = collect_contributions(data_root)
+    failures: list[str] = []
+    if arguments.refresh:
+        found, failures = refresh_contributions(data_root)
+    else:
+        found = collect_contributions(data_root)
     if arguments.json:
         print(json.dumps([entry.to_dict() for entry in found], indent=2))
     else:
         print(render_contributions(found))
+    if failures:
+        for failure in failures:
+            print(f"could not re-read {failure}", file=sys.stderr)
+        print(
+            "the states above are the ones already on disk, not fresh readings",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

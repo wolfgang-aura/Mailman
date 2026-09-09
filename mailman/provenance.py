@@ -20,7 +20,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,9 @@ PATCH_FILENAME = "contribution.patch"
 SUBMISSION_DIRECTORY = "submission"
 
 PROVENANCE_SCHEMA_VERSION = 1
+
+# How old a stored pull request state may be before the listing says so.
+STALE_AFTER = timedelta(days=1)
 
 _SLUG = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
@@ -264,6 +267,87 @@ def contribution_from_record(record: dict[str, Any]) -> Contribution:
     )
 
 
+def _read_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip().replace("Z", "+00:00")
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def state_is_stale(checked_at: str | None, *, now: datetime | None = None) -> bool:
+    """Whether a stored state is old enough that it may already be wrong.
+
+    A pull request closes, merges or gets superseded without telling us. The
+    only honest thing a record can say about an old reading is how old it is.
+    """
+    moment = _read_timestamp(checked_at)
+    if moment is None:
+        return True
+    return (now or datetime.now(UTC)) - moment > STALE_AFTER
+
+
+def refresh_state(
+    run_directory: Path,
+    *,
+    state_lookup: Any = pull_request_state,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Re-read one run's pull request state from GitHub and store the answer.
+
+    Unlike `record_provenance` this reads neither the workspace nor the patch,
+    so it still works after the clone is gone. A lookup that fails leaves every
+    stored field alone and returns why: a state written on filing day beats one
+    invented now.
+    """
+    record = load_provenance(run_directory)
+    if record is None:
+        return None, None
+    number = record.get("pull_request")
+    if not number:
+        return record, None
+    slug = str(record.get("repository") or "")
+    lookup = state_lookup(slug, int(number))
+    if not lookup.get("available"):
+        detail = lookup.get("detail") or "gh gave no reason"
+        return record, f"{slug}#{number}: {detail}"
+    record["lookup"] = lookup
+    record["checked_at"] = (now or datetime.now(UTC)).isoformat()
+    record["state"] = lookup.get("state")
+    record["merge_commit"] = lookup.get("merge_commit")
+    if lookup.get("url"):
+        record["url"] = lookup.get("url")
+    path = provenance_path(run_directory)
+    path.write_text(
+        json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
+    return record, None
+
+
+def refresh_contributions(
+    data_root: Path,
+    *,
+    state_lookup: Any = pull_request_state,
+    now: datetime | None = None,
+) -> tuple[list[Contribution], list[str]]:
+    """Every recorded run, re-read from GitHub, with whatever could not be."""
+    found: list[Contribution] = []
+    failures: list[str] = []
+    if not data_root.is_dir():
+        return found, failures
+    for directory in sorted(path for path in data_root.glob("*") if path.is_dir()):
+        record, failure = refresh_state(directory, state_lookup=state_lookup, now=now)
+        if record is None:
+            continue
+        if failure:
+            failures.append(failure)
+        found.append(contribution_from_record(record))
+    return found, failures
+
+
 def collect_contributions(data_root: Path) -> list[Contribution]:
     """Every run that recorded provenance, oldest run id first."""
     found: list[Contribution] = []
@@ -277,8 +361,14 @@ def collect_contributions(data_root: Path) -> list[Contribution]:
     return found
 
 
-def render_contributions(contributions: list[Contribution]) -> str:
-    """A table to hand someone, with the permalink that outlives the fork."""
+def render_contributions(
+    contributions: list[Contribution], *, now: datetime | None = None
+) -> str:
+    """A table to hand someone, with the permalink that outlives the fork.
+
+    Every state carries the moment it was read. Without that, a state stored on
+    filing day reads exactly like one read a minute ago.
+    """
     if not contributions:
         return "no run has recorded provenance yet"
     lines = []
@@ -286,6 +376,8 @@ def render_contributions(contributions: list[Contribution]) -> str:
         state = entry.state or "unrecorded"
         pull_request = f"#{entry.pull_request}" if entry.pull_request else "unsubmitted"
         lines.append(f"{entry.run_id}  {entry.repository}  {pull_request}  {state}")
+        if entry.pull_request:
+            lines.append(f"    {_reading_age(entry, now=now)}")
         for link in entry.permalinks():
             lines.append(f"    {link}")
         if entry.merge_commit:
@@ -296,6 +388,17 @@ def render_contributions(contributions: list[Contribution]) -> str:
         if entry.patch_path:
             lines.append(f"    patch {entry.patch_path}")
     return "\n".join(lines)
+
+
+def _reading_age(entry: Contribution, *, now: datetime | None = None) -> str:
+    if not entry.checked_at:
+        return "state never read from GitHub -- run `mailman contributions --refresh`"
+    if state_is_stale(entry.checked_at, now=now):
+        return (
+            f"state read {entry.checked_at}, stale -- "
+            "run `mailman contributions --refresh`"
+        )
+    return f"state read {entry.checked_at}"
 
 
 def deletion_is_safe(record: dict[str, Any]) -> tuple[bool, str]:

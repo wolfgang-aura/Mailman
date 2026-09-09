@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -15,8 +16,11 @@ from mailman.provenance import (
     deletion_is_safe,
     load_provenance,
     record_provenance,
+    refresh_contributions,
+    refresh_state,
     render_contributions,
     repository_slug,
+    state_is_stale,
     write_patch,
 )
 
@@ -53,6 +57,17 @@ def _merged(repository: str, number: int) -> dict[str, object]:
         "state": "MERGED",
         "merged_at": "2026-09-06T00:00:00Z",
         "merge_commit": "b" * 40,
+        "url": f"https://github.com/{repository}/pull/{number}",
+        "title": "Align the value",
+    }
+
+
+def _open(repository: str, number: int) -> dict[str, object]:
+    return {
+        "available": True,
+        "state": "OPEN",
+        "merged_at": None,
+        "merge_commit": None,
         "url": f"https://github.com/{repository}/pull/{number}",
         "title": "Align the value",
     }
@@ -284,3 +299,124 @@ class ListingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _unavailable(repository: str, number: int) -> dict[str, object]:
+    return {"available": False, "detail": "gh is not installed"}
+
+
+def _filed_run(data_root: Path, run_id: str, number: int) -> Path:
+    """A run that filed a pull request and has not re-read it since."""
+    run_directory = data_root / run_id
+    workspace, base = _repository(run_directory)
+    record_provenance(
+        run_id=run_id,
+        run_directory=run_directory,
+        repository="pdm-project/pdm",
+        base_commit=base,
+        workspace=workspace,
+        pull_request=number,
+        state_lookup=_open,
+    )
+    return run_directory
+
+
+class RefreshTests(unittest.TestCase):
+    """https://github.com/wolfgang-aura/Mailman/issues/78."""
+
+    def test_a_closed_pull_request_stops_reading_open(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            run_directory = _filed_run(data_root, "20260907T173348Z-003915", 3884)
+            self.assertEqual(load_provenance(run_directory)["state"], "OPEN")
+
+            now = datetime(2026, 9, 9, 8, 44, tzinfo=UTC)
+            record, failure = refresh_state(
+                run_directory, state_lookup=_closed, now=now
+            )
+
+            self.assertIsNone(failure)
+            self.assertEqual(record["state"], "CLOSED")
+            self.assertEqual(record["checked_at"], now.isoformat())
+            self.assertEqual(load_provenance(run_directory)["state"], "CLOSED")
+
+    def test_a_lookup_that_fails_keeps_the_state_it_had(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            run_directory = _filed_run(data_root, "20260907T173348Z-003915", 3884)
+            before = load_provenance(run_directory)
+
+            record, failure = refresh_state(run_directory, state_lookup=_unavailable)
+
+            self.assertIn("pdm-project/pdm#3884", failure)
+            self.assertIn("gh is not installed", failure)
+            self.assertEqual(record["state"], "OPEN")
+            self.assertEqual(load_provenance(run_directory), before)
+
+    def test_refreshing_reports_every_run_it_could_not_read(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            _filed_run(data_root, "20260907T173348Z-003915", 3884)
+            _filed_run(data_root, "20260907T223142Z-91e3e8", 3883)
+
+            found, failures = refresh_contributions(
+                data_root, state_lookup=_unavailable
+            )
+
+            self.assertEqual(len(found), 2)
+            self.assertEqual(len(failures), 2)
+            self.assertTrue(all(entry.state == "OPEN" for entry in found))
+
+    def test_a_run_that_filed_nothing_is_left_alone(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            run_directory = data_root / "20260906T000000Z-cccccc"
+            workspace, base = _repository(run_directory)
+            record_provenance(
+                run_id="20260906T000000Z-cccccc",
+                run_directory=run_directory,
+                repository="pdm-project/pdm",
+                base_commit=base,
+                workspace=workspace,
+            )
+
+            record, failure = refresh_state(run_directory, state_lookup=_unavailable)
+
+            self.assertIsNone(failure)
+            self.assertIsNone(record["state"])
+
+
+class ReadingAgeTests(unittest.TestCase):
+    def test_a_state_never_read_is_stale(self) -> None:
+        self.assertTrue(state_is_stale(None))
+        self.assertTrue(state_is_stale("not a timestamp"))
+
+    def test_a_day_old_reading_is_stale_and_a_minute_old_one_is_not(self) -> None:
+        now = datetime(2026, 9, 9, 8, 44, tzinfo=UTC)
+        self.assertTrue(state_is_stale("2026-09-08T07:00:00+00:00", now=now))
+        self.assertFalse(state_is_stale("2026-09-09T08:43:00+00:00", now=now))
+
+    def test_the_listing_says_when_each_state_was_read(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            _filed_run(data_root, "20260907T173348Z-003915", 3884)
+            found = collect_contributions(data_root)
+
+            fresh = render_contributions(
+                found, now=datetime.now(UTC) + timedelta(minutes=1)
+            )
+            self.assertIn("state read", fresh)
+            self.assertNotIn("stale", fresh)
+
+            later = render_contributions(
+                found, now=datetime.now(UTC) + timedelta(days=2)
+            )
+            self.assertIn("stale", later)
+            self.assertIn("--refresh", later)
+
+    def test_a_run_with_no_pull_request_gets_no_reading_line(self) -> None:
+        rendered = render_contributions(
+            [contribution_from_record({"run_id": "r", "repository": "pdm-project/pdm"})]
+        )
+        self.assertNotIn("state read", rendered)
+        self.assertNotIn("stale", rendered)
