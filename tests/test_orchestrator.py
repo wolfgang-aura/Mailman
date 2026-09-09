@@ -49,6 +49,7 @@ class ScriptedAgent(EngineeringAgent):
         self.script = script
         self._turn_budget = turn_budget
         self.calls: list[tuple[str, str]] = []
+        self.session_ids: list[str | None] = []
 
     @property
     def name(self) -> str:
@@ -65,6 +66,7 @@ class ScriptedAgent(EngineeringAgent):
         self.calls.append(
             (request.role, request.prompt_path.read_text(encoding="utf-8"))
         )
+        self.session_ids.append(request.session_id)
         report = step.get("report")
         touch = step.get("touch")
         if isinstance(touch, tuple):
@@ -93,6 +95,7 @@ class ScriptedAgent(EngineeringAgent):
             report_present=isinstance(report, str) and bool(report.strip()),
             command_result=command_result,
             stop_reason=step.get("stop_reason"),  # type: ignore[arg-type]
+            session_id=step.get("session_id"),  # type: ignore[arg-type]
         )
 
 
@@ -275,6 +278,18 @@ class WorkspaceChangeRecordingTests(OrchestratorHarness):
         self.assertFalse(recorded.ok)
         self.assertFalse(recorded.data["changed"])
         self.assertIn("identical to the base commit", recorded.detail)
+
+    def test_a_large_candidate_stops_before_review(self) -> None:
+        outcome, _, _, reviewer = self.orchestrate(
+            primary_script=[
+                {"report": "broad rewrite", "touch": ("fix.txt", "line\n" * 501)}
+            ],
+            reviewer_script=[],
+        )
+        self.assertEqual(str(outcome.status), "BLOCKED")
+        self.assertEqual(reviewer.calls, [])
+        blocked = [step for step in outcome.steps if not step.ok][-1]
+        self.assertIn("small-patch budget", blocked.detail)
 
     def test_a_changed_workspace_names_the_paths(self) -> None:
         outcome, _, _, _ = self.orchestrate(
@@ -1002,7 +1017,8 @@ class OrchestrateCliTests(OrchestratorHarness):
         stderr = StringIO()
         with patch(
             "mailman.cli._make_agent",
-            side_effect=lambda name, *, model, max_turns, executable=None, reasoning_effort=None: agents[name],
+            side_effect=lambda name, *, model, max_turns, executable=None,
+            reasoning_effort=None, token_budget=2_000_000: agents[name],
         ):
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 exit_code = main(

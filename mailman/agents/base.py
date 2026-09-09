@@ -71,6 +71,8 @@ class AgentRequest:
     agent. The orchestrator pairs the permission with a workspace-change check,
     so a reviewer that writes into the workspace instead stops the run. See
     https://github.com/wolfgang-aura/Mailman/issues/29."""
+    session_id: str | None = None
+    """A prior session for the same run and role, when the adapter can resume it."""
 
     def observe(self, agent: str) -> Callable[[str], None] | None:
         """Turn one line of agent output into events for whoever is watching."""
@@ -98,6 +100,8 @@ class AgentResult:
     observed_model: str | None = None
     """The model the CLI reported using, which is not always the one requested.
     ``None`` when the vendor's stream never names one."""
+    session_id: str | None = None
+    """The reusable session identifier returned by the agent CLI."""
 
 
 class EngineeringAgent(ABC):
@@ -116,6 +120,11 @@ class EngineeringAgent(ABC):
         be read against the limit it was given. ``None`` when the CLI has no
         such bound.
         """
+        return None
+
+    @property
+    def token_budget(self) -> int | None:
+        """The per-turn token budget, when the adapter enforces one."""
         return None
 
     @abstractmethod

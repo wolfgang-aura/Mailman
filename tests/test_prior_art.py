@@ -171,6 +171,15 @@ class PromptIntegrationTests(unittest.TestCase):
         primary = build_primary_prompt(_run(), "the issue", verification_command=None)
         self.assertNotIn("Earlier attempts", primary)
 
+    def test_prompts_bound_context_and_candidate_scope(self) -> None:
+        primary = build_primary_prompt(_run(), "the issue", verification_command=None)
+        reviewer = build_reviewer_prompt(_run(), "the issue", verification_command=None)
+        for prompt in (primary, reviewer):
+            self.assertIn("Time and context discipline", prompt)
+            self.assertIn("8 files", prompt)
+            self.assertIn("500 changed lines", prompt)
+            self.assertIn("Do not print whole large files", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

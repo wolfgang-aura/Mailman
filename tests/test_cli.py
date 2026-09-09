@@ -89,6 +89,8 @@ class CliTests(unittest.TestCase):
                 ready=True,
                 revisions_used=0,
                 review_cycles=1,
+                time_budget_seconds=7200,
+                deadline_at="2026-09-09T02:00:00+00:00",
                 record_path=run_directory / "run.json",
             )
             stderr = StringIO()

@@ -165,6 +165,7 @@ class ClaudeCliAgent(EngineeringAgent):
             command_result=result,
             stop_reason=stop_reason,
             observed_model=observed_model(result.stdout, CLAUDE),
+            session_id=request.session_id,
         )
 
 

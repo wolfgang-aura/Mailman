@@ -6,7 +6,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from mailman.agents.codex_cli import REASONING_EFFORTS
+from mailman.agents.codex_cli import DEFAULT_TOKEN_BUDGET, REASONING_EFFORTS
 from mailman.agents import (
     DEFAULT_MAX_TURNS,
     ClaudeCliAgent,
@@ -60,7 +60,12 @@ from mailman.submission import (
 from mailman.knowledge.collect import collect_retrospective, write_retrospective
 from mailman.knowledge.retrospective import RETROSPECTIVE_SECTIONS
 from mailman.models import RunStatus
-from mailman.orchestrator import orchestrate
+from mailman.orchestrator import (
+    DEFAULT_MAX_CHANGED_FILES,
+    DEFAULT_MAX_CHANGED_LINES,
+    DEFAULT_RUN_TIME_BUDGET_SECONDS,
+    orchestrate,
+)
 from mailman.prior_art import collect_prior_art
 from mailman.prompts import load_recorded_verification, write_task_prompts
 from mailman.reproduction import (
@@ -566,6 +571,25 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     orchestrate_parser.add_argument("--agent-timeout", type=float, default=3600)
     orchestrate_parser.add_argument("--verification-timeout", type=float, default=900)
+    orchestrate_parser.add_argument(
+        "--run-time-budget",
+        type=float,
+        default=DEFAULT_RUN_TIME_BUDGET_SECONDS,
+        help="total seconds from run creation; defaults to two hours",
+    )
+    orchestrate_parser.add_argument(
+        "--time-budget-override-reason",
+        help="record why this run may exceed its previous or two-hour budget",
+    )
+    orchestrate_parser.add_argument(
+        "--agent-token-budget", type=int, default=DEFAULT_TOKEN_BUDGET
+    )
+    orchestrate_parser.add_argument(
+        "--max-changed-files", type=int, default=DEFAULT_MAX_CHANGED_FILES
+    )
+    orchestrate_parser.add_argument(
+        "--max-changed-lines", type=int, default=DEFAULT_MAX_CHANGED_LINES
+    )
     orchestrate_parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
     orchestrate_parser.add_argument(
         "--reasoning-effort",
@@ -1417,6 +1441,7 @@ def _make_agent(
     max_turns: int,
     executable: str | None = None,
     reasoning_effort: str | None = None,
+    token_budget: int = DEFAULT_TOKEN_BUDGET,
 ) -> EngineeringAgent:
     normalized = normalize_agent_name(name)
     if normalized == "codex":
@@ -1424,6 +1449,7 @@ def _make_agent(
             model=model,
             executable=executable or "codex",
             reasoning_effort=reasoning_effort,
+            token_budget_limit=token_budget,
         )
     if normalized == "claude":
         return ClaudeCliAgent(
@@ -1433,7 +1459,11 @@ def _make_agent(
 
 
 def _pinned_agent_factory(
-    run_directory: Path, max_turns: int, *, reasoning_effort: str | None = None
+    run_directory: Path,
+    max_turns: int,
+    *,
+    reasoning_effort: str | None = None,
+    token_budget: int = DEFAULT_TOKEN_BUDGET,
 ):
     """Prefer a probed executable for an agent so a run cannot drift mid-flight."""
 
@@ -1444,6 +1474,7 @@ def _pinned_agent_factory(
             max_turns=max_turns,
             executable=toolchain_executable(run_directory, name.strip().lower()),
             reasoning_effort=reasoning_effort,
+            token_budget=token_budget,
         )
 
     return factory
@@ -1632,11 +1663,16 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
             run_directory,
             arguments.max_turns,
             reasoning_effort=arguments.reasoning_effort,
+            token_budget=arguments.agent_token_budget,
         ),
         agent_timeout_seconds=arguments.agent_timeout,
         verification_timeout_seconds=arguments.verification_timeout,
         max_revisions=arguments.max_revisions,
         max_review_cycles=arguments.max_review_cycles,
+        run_time_budget_seconds=arguments.run_time_budget,
+        budget_override_reason=arguments.time_budget_override_reason,
+        max_changed_files=arguments.max_changed_files,
+        max_changed_lines=arguments.max_changed_lines,
         announce=_emit,
         acknowledge_prior_attempts=arguments.acknowledge_prior_attempts,
         acknowledge_claims=arguments.acknowledge_claims,
@@ -1648,6 +1684,8 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
         "ready_for_human_review": outcome.ready,
         "revisions_used": outcome.revisions_used,
         "review_cycles": outcome.review_cycles,
+        "time_budget_seconds": outcome.time_budget_seconds,
+        "deadline_at": outcome.deadline_at,
         "record": str(outcome.record_path),
     }
     print(json.dumps(summary, indent=2))
@@ -2170,6 +2208,8 @@ def _tail(text: str, lines: int = 20) -> str:
 _MAILMAN_ONLY_OPTIONS = frozenset({
     "--data-root", "--max-revisions", "--max-review-cycles", "--reasoning-effort",
     "--max-turns", "--agent-timeout", "--verification-timeout", "--owner",
+    "--run-time-budget", "--time-budget-override-reason", "--agent-token-budget",
+    "--max-changed-files", "--max-changed-lines",
     "--acknowledge-prior-attempts", "--acknowledge-claims", "--verification",
 })
 

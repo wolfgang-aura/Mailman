@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import platform
 from dataclasses import dataclass
 
@@ -17,6 +18,19 @@ from mailman.transcript import CODEX, observed_model
 # The CLI's own catalog for the 5.6 family. `ultra` is not offered on every
 # model, so an unsupported pairing has to fail here rather than mid-run.
 REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
+DEFAULT_TOKEN_BUDGET = 2_000_000
+DEFAULT_TOOL_OUTPUT_TOKEN_LIMIT = 20_000
+
+
+def _thread_id(stdout: str) -> str | None:
+    for line in stdout.splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("type") == "thread.started" and payload.get("thread_id"):
+            return str(payload["thread_id"])
+    return None
 
 
 @dataclass(frozen=True)
@@ -29,10 +43,16 @@ class CodexCliAgent(EngineeringAgent):
     windows_sandbox: str | None = (
         "elevated" if platform.system() == "Windows" else None
     )
+    token_budget_limit: int = DEFAULT_TOKEN_BUDGET
+    tool_output_token_limit: int = DEFAULT_TOOL_OUTPUT_TOKEN_LIMIT
 
     @property
     def name(self) -> str:
         return "codex"
+
+    @property
+    def token_budget(self) -> int | None:
+        return self.token_budget_limit
 
     def build_command(self, request: AgentRequest) -> list[str]:
         if self.windows_sandbox not in {None, "elevated", "unelevated"}:
@@ -44,6 +64,10 @@ class CodexCliAgent(EngineeringAgent):
                 f"unsupported reasoning effort: {self.reasoning_effort!r}. "
                 f"Supported: {', '.join(REASONING_EFFORTS)}."
             )
+        if self.token_budget_limit <= 0:
+            raise ValueError("Codex token budget must be positive")
+        if self.tool_output_token_limit <= 0:
+            raise ValueError("Codex tool output token limit must be positive")
         sandbox_mode = "workspace-write" if request.role == "primary" else "read-only"
         if request.role == "reviewer" and request.scratch_directory is not None:
             # A read-only sandbox blocks temp writes everywhere, so a suite
@@ -55,12 +79,10 @@ class CodexCliAgent(EngineeringAgent):
             # orchestrator's workspace-change:reviewer step, so an edit ships
             # nowhere. See https://github.com/wolfgang-aura/Mailman/issues/29.
             sandbox_mode = "workspace-write"
-        command = [
-            self.executable,
-            "exec",
-            "--ephemeral",
-            "--ignore-user-config",
-        ]
+        command = [self.executable, "exec"]
+        if request.session_id:
+            command.append("resume")
+        command.append("--ignore-user-config")
         if self.windows_sandbox:
             command.extend(
                 ["--config", f"windows.sandbox='{self.windows_sandbox}'"]
@@ -72,25 +94,36 @@ class CodexCliAgent(EngineeringAgent):
             command.extend(
                 ["--config", f"sandbox_workspace_write.writable_roots=['{scratch}']"]
             )
-        command.extend(
-            [
-                "--color",
-                "never",
-                "--json",
-                "--sandbox",
-                sandbox_mode,
-                "--cd",
-                str(request.workspace.resolve()),
-                "--output-last-message",
-                str(request.report_path.resolve()),
-            ]
-        )
+        command.extend(["--json", "--output-last-message", str(request.report_path.resolve())])
+        if not request.session_id:
+            command.extend(
+                [
+                    "--color",
+                    "never",
+                    "--sandbox",
+                    sandbox_mode,
+                    "--cd",
+                    str(request.workspace.resolve()),
+                ]
+            )
         if self.model:
             command.extend(["--model", self.model])
         if self.reasoning_effort:
             command.extend(
                 ["--config", f"model_reasoning_effort={self.reasoning_effort!r}"]
             )
+        command.extend(
+            [
+                "--enable",
+                "token_budget",
+                "--config",
+                f"token_budget.limit_tokens={self.token_budget_limit}",
+                "--config",
+                f"tool_output_token_limit={self.tool_output_token_limit}",
+            ]
+        )
+        if request.session_id:
+            command.append(request.session_id)
         command.append("-")
         return command
 
@@ -150,4 +183,5 @@ class CodexCliAgent(EngineeringAgent):
             report_present=report_present,
             command_result=result,
             observed_model=observed_model(result.stdout, CODEX),
+            session_id=_thread_id(result.stdout),
         )

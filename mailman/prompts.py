@@ -15,6 +15,20 @@ PROMPTS_RECORD_FILENAME = "prompts.json"
 PROMPTS_RECORD_SCHEMA_VERSION = 1
 
 
+_EXECUTION_DISCIPLINE = """
+## Time and context discipline
+
+This run is optimized for a small upstream patch. Keep shell output narrow:
+
+- Do not print whole large files or an unrestricted repository-wide search.
+- Cap searches and file slices to the lines needed for the current decision.
+- Read each instruction file once per session. Do not reopen it unless it changed.
+- Prefer the recorded focused verification over a full suite.
+- Stop and report that the issue is too broad if the fix grows past 8 files or
+  about 500 changed lines. Do not turn one issue into a subsystem redesign.
+"""
+
+
 def load_recorded_verification(run_directory: Path) -> list[str] | None:
     """The verification command the built prompts quote, when they quote one.
 
@@ -149,6 +163,7 @@ instructions before editing, and follow its existing conventions.
 
 {_verification_line(verification_command)}
 {_permitted_command_note(verification_command)}
+{_EXECUTION_DISCIPLINE}
 ## Required behavior
 
 - Keep the change focused on this issue. No drive-by refactors.
@@ -183,6 +198,7 @@ Read the change with `git diff {run.base_commit}` and read the surrounding code
 it touches.
 
 {_verification_line(verification_command)}
+{_EXECUTION_DISCIPLINE}
 
 ## Judge
 

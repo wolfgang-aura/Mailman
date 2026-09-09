@@ -1,8 +1,10 @@
 import copy
 import json
 import sys
+from datetime import UTC, datetime, timedelta
 
 from mailman.artifacts import load_run
+from mailman.artifacts import write_run
 from mailman.completion import candidate_digest, finalize_review
 from mailman.handoff import build_handoff, check_handoff
 from mailman.identity import Identity, save_identity
@@ -136,6 +138,34 @@ class CompletionTests(OrchestratorHarness):
         self.assertEqual(str(result.status), "ENGINEERING_COMPLETE")
         self.assertEqual(result.review_cycles, 2)
 
+    def test_an_expired_run_budget_blocks_before_another_agent_runs(self):
+        directory = self.completed()
+        run, _ = load_run(directory.name, directory.parent)
+        run.created_at = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+        write_run(run, directory)
+        result = orchestrate(
+            run=run, run_directory=directory, workspace=self.workspace,
+            primary_prompt=self.primary_prompt, reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: self.fail(f"{name} ran after the deadline"),
+            resume_review=True,
+        )
+        self.assertEqual(str(result.status), "BLOCKED")
+        self.assertEqual(result.time_budget_seconds, 7200)
+        blocked = [step for step in result.steps if not step.ok][-1]
+        self.assertIn("run time budget spent", blocked.detail)
+
+    def test_a_run_budget_above_two_hours_requires_a_recorded_reason(self):
+        run, directory = self.make_run()
+        with self.assertRaisesRegex(ValueError, "override reason"):
+            orchestrate(
+                run=run, run_directory=directory, workspace=self.workspace,
+                primary_prompt=self.primary_prompt, reviewer_prompt=self.reviewer_prompt,
+                verification_command=[sys.executable, "-c", PASSING_CHECK],
+                agent_factory=lambda name, model: self.fail("agent should not run"),
+                run_time_budget_seconds=7201,
+            )
+
     def test_resume_review_preserves_candidate_and_primary_evidence(self):
         directory = self.completed()
         run, _ = load_run(directory.name, directory.parent)
@@ -150,3 +180,18 @@ class CompletionTests(OrchestratorHarness):
         self.assertEqual(str(result.status), "ENGINEERING_COMPLETE")
         self.assertTrue(list((directory / "orchestration-history").glob("*.json")))
         self.assertEqual((self.workspace / "fix.txt").read_text(encoding="utf-8"), "fixed\n")
+
+    def test_each_role_resumes_its_own_codex_session(self):
+        outcome, _, primary, reviewer = self.orchestrate(
+            primary_script=[
+                {"report": "first", "touch": ("fix.txt", "first\n"), "session_id": "p-1"},
+                {"report": "revised", "touch": ("fix.txt", "revised\n"), "session_id": "p-1"},
+            ],
+            reviewer_script=[
+                {"report": "fix it\nMAILMAN-VERDICT: REVISE\n", "session_id": "r-1"},
+                {"report": APPROVED, "session_id": "r-1"},
+            ],
+        )
+        self.assertEqual(str(outcome.status), "ENGINEERING_COMPLETE")
+        self.assertEqual(primary.session_ids, [None, "p-1"])
+        self.assertEqual(reviewer.session_ids, [None, "r-1"])

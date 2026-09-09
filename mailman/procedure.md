@@ -96,7 +96,13 @@ status check you did not act on is pure cost.
 ## Repair without escalating routine work
 
 10. Run `orchestrate`. An `ENGINEERING_COMPLETE` outcome means finish the
-   package. A `BLOCKED` run is a local stop, not a request for the user.
+    package. A `BLOCKED` run is a local stop, not a request for the user.
+    Every run has a cumulative two-hour deadline from `init-run`, not a fresh
+    timeout per agent call. Codex turns also have a two-million-token budget,
+    and later turns resume the same per-role session so they do not rediscover
+    the repository. The first primary stage and every revision stop before
+    review if the candidate exceeds 8 files or 500 changed lines. Treat that as
+    evidence that the issue is too broad for this hunt and replace it.
 11. On a failure, read the exact failed command, stage, exit code and output.
     Fix the evidenced cause. After one failed fix, reproduce and instrument
     before another edit. Never retry an identical command indefinitely.
@@ -104,8 +110,11 @@ status check you did not act on is pure cost.
     run `resume-review`. Do not restart a dirty primary workspace.
     Reviewer passes are budgeted per run, not per command: `--max-review-cycles`
     counts across every `orchestrate` and `resume-review`. When a run blocks on
-    a spent budget, replace the candidate or raise the budget deliberately and
-    say why. Do not resume repeatedly to buy more passes.
+    a spent budget, replace the candidate. Extending the two-hour deadline is
+    exceptional and requires `--time-budget-override-reason`, which enters the
+    run record. Do not resume repeatedly to buy more passes. Keep agent shell
+    output narrow: never print a whole large file or an unrestricted
+    repository-wide search when a bounded slice answers the question.
     A run whose `hunt status` carries a `health` state stopped for a reason
     outside the candidate. `USAGE_LIMIT` means the account, not the code, and
     the record holds the stage and the exact resume command; retrying the

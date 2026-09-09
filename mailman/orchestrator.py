@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -25,6 +26,13 @@ from mailman.workspace import inspect_workspace
 
 VERDICT_APPROVE = "APPROVE"
 VERDICT_REVISE = "REVISE"
+DEFAULT_RUN_TIME_BUDGET_SECONDS = 7200
+DEFAULT_MAX_CHANGED_FILES = 8
+DEFAULT_MAX_CHANGED_LINES = 500
+
+
+class RunTimeBudgetExpired(RuntimeError):
+    pass
 
 _STOP_REASONS = {
     "error_max_turns": "it ran out of turns, so the work was cut off mid-task",
@@ -220,6 +228,9 @@ class OrchestrationOutcome:
     revisions_used: int
     review_cycles: int
     max_review_cycles: int
+    time_budget_seconds: float
+    deadline_at: str
+    budget_override_reason: str | None
     record_path: Path
 
     @property
@@ -235,6 +246,9 @@ class OrchestrationOutcome:
             "revisions_used": self.revisions_used,
             "review_cycles": self.review_cycles,
             "max_review_cycles": self.max_review_cycles,
+            "time_budget_seconds": self.time_budget_seconds,
+            "deadline_at": self.deadline_at,
+            "budget_override_reason": self.budget_override_reason,
             "steps": [step.to_dict() for step in self.steps],
         }
 
@@ -254,6 +268,10 @@ class _Orchestration:
         verification_timeout_seconds: float,
         max_revisions: int,
         max_review_cycles: int,
+        run_time_budget_seconds: float,
+        budget_override_reason: str | None,
+        max_changed_files: int,
+        max_changed_lines: int,
         announce: Callable[[str], None],
         check_target: bool = True,
         acknowledge_prior_attempts: bool = False,
@@ -270,6 +288,14 @@ class _Orchestration:
         self.verification_timeout_seconds = verification_timeout_seconds
         self.max_revisions = max_revisions
         self.max_review_cycles = max_review_cycles
+        self.run_time_budget_seconds = run_time_budget_seconds
+        self.budget_override_reason = budget_override_reason.strip() if budget_override_reason else None
+        created = datetime.fromisoformat(run.created_at)
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        self.deadline = created + timedelta(seconds=run_time_budget_seconds)
+        self.max_changed_files = max_changed_files
+        self.max_changed_lines = max_changed_lines
         self.announce = announce
         self.check_target = check_target
         self.acknowledge_prior_attempts = acknowledge_prior_attempts
@@ -334,6 +360,28 @@ class _Orchestration:
 
     # Bounded stages ----------------------------------------------------
 
+    def _remaining_timeout(self, requested: float, stage: str) -> float:
+        remaining = (self.deadline - datetime.now(UTC)).total_seconds()
+        if remaining <= 0:
+            raise RunTimeBudgetExpired(
+                f"run time budget spent before {stage}: "
+                f"{self.run_time_budget_seconds:g} seconds from run creation"
+            )
+        return min(requested, remaining)
+
+    def _previous_session(self, role: str) -> str | None:
+        directory = self.run_directory / "agent-executions"
+        if not directory.is_dir():
+            return None
+        for path in reversed(sorted(directory.glob("*.json"))):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if record.get("role") == role and record.get("session_id"):
+                return str(record["session_id"])
+        return None
+
     def _run_agent(self, role: str, source_prompt: Path) -> tuple[bool, str | None]:
         configured = self.run.primary if role == "primary" else self.run.reviewer
         agent = self.agent_factory(configured.agent, configured.model)
@@ -350,9 +398,12 @@ class _Orchestration:
         if role == "reviewer":
             scratch_directory = self.run_directory / "scratch"
             scratch_directory.mkdir(parents=True, exist_ok=True)
+        timeout = self._remaining_timeout(self.agent_timeout_seconds, f"agent:{role}")
+        session_id = self._previous_session(role)
         self.announce(
             f"run  {role}: {agent.name} with a "
-            f"{self.agent_timeout_seconds:g} second timeout."
+            f"{timeout:g} second timeout"
+            + (f", resuming session {session_id}." if session_id else ".")
         )
         log_path = self.run_directory / "agent-executions" / f"{role}-live.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -371,10 +422,11 @@ class _Orchestration:
                     prompt_path=prompt_path,
                     workspace=self.workspace,
                     report_path=report_path,
-                    timeout_seconds=self.agent_timeout_seconds,
+                    timeout_seconds=timeout,
                     on_event=watch,
                     verification_command=tuple(self.verification_command),
                     scratch_directory=scratch_directory,
+                    session_id=session_id,
                 )
             )
         report_text = (
@@ -400,6 +452,8 @@ class _Orchestration:
                 "report": report_text,
                 "prompt_path": str(prompt_path),
                 "turn_budget": agent.turn_budget,
+                "token_budget": agent.token_budget,
+                "session_id": result.session_id,
                 "commands_run": tally["commands"],
                 "commands_refused_or_failed": tally["refused_or_failed"],
                 "model_reported_by_cli": result.observed_model or "not reported",
@@ -463,7 +517,9 @@ class _Orchestration:
         result = execute(
             self.verification_command,
             working_directory=self.workspace,
-            timeout_seconds=self.verification_timeout_seconds,
+            timeout_seconds=self._remaining_timeout(
+                self.verification_timeout_seconds, f"verification:{stage}"
+            ),
         )
         command_number = append_verification(self.run_directory, result.to_dict())
         ok = not result.timed_out and result.exit_code == 0
@@ -513,6 +569,52 @@ class _Orchestration:
             data={"changed": changed, "changes": list(state.changes)},
         )
         return changed
+
+    def _candidate_size(self) -> tuple[int, int]:
+        numstat = git_bytes(
+            self.workspace, "diff", "--numstat", self.run.base_commit, "--"
+        ).decode("utf-8", errors="replace")
+        paths: set[str] = set()
+        changed_lines = 0
+        for line in numstat.splitlines():
+            parts = line.split("\t", 2)
+            if len(parts) != 3:
+                continue
+            added, removed, path = parts
+            paths.add(path)
+            if added.isdigit():
+                changed_lines += int(added)
+            if removed.isdigit():
+                changed_lines += int(removed)
+        untracked = git_bytes(
+            self.workspace, "ls-files", "--others", "--exclude-standard"
+        ).decode("utf-8", errors="replace")
+        for path in filter(None, untracked.splitlines()):
+            paths.add(path)
+            try:
+                changed_lines += len((self.workspace / path).read_bytes().splitlines())
+            except OSError:
+                changed_lines += self.max_changed_lines + 1
+        return len(paths), changed_lines
+
+    def _check_candidate_scope(self, stage: str) -> bool:
+        files, lines = self._candidate_size()
+        ok = files <= self.max_changed_files and lines <= self.max_changed_lines
+        self._step(
+            f"candidate-scope:{stage}",
+            ok=ok,
+            detail=(
+                f"{files} changed file(s), {lines} changed line(s); limits are "
+                f"{self.max_changed_files} files and {self.max_changed_lines} lines"
+            ),
+            data={"changed_files": files, "changed_lines": lines},
+        )
+        if not ok:
+            self._block(
+                "candidate exceeded the small-patch budget; replace it instead "
+                "of spending more agent cycles"
+            )
+        return ok
 
     def _record_reviewer_change(self, before: tuple[str, ...], before_digest: str) -> bool:
         """Record whether the reviewer changed the workspace it was only reading.
@@ -599,6 +701,13 @@ class _Orchestration:
             if not previous.is_file():
                 raise ValueError("no prior orchestration to resume")
             old = json.loads(previous.read_text(encoding="utf-8"))
+            previous_budget = float(
+                old.get("time_budget_seconds", DEFAULT_RUN_TIME_BUDGET_SECONDS)
+            )
+            if self.run_time_budget_seconds > previous_budget and not self.budget_override_reason:
+                raise ValueError(
+                    "increasing a run time budget requires --time-budget-override-reason"
+                )
             if not any(step.get("name") == "agent:primary" for step in old.get("steps", [])):
                 raise ValueError("primary never ran; use orchestrate after fixing preconditions")
             self.revisions_used = int(old.get("revisions_used", 0))
@@ -617,9 +726,34 @@ class _Orchestration:
             raise ValueError("max_revisions cannot be negative")
         if self.max_review_cycles < 1:
             raise ValueError("max_review_cycles must be at least 1")
+        if self.run_time_budget_seconds <= 0:
+            raise ValueError("run_time_budget_seconds must be positive")
+        if (
+            self.run_time_budget_seconds > DEFAULT_RUN_TIME_BUDGET_SECONDS
+            and not self.budget_override_reason
+        ):
+            raise ValueError(
+                "a run time budget above two hours requires an override reason"
+            )
+        if self.max_changed_files < 1 or self.max_changed_lines < 1:
+            raise ValueError("candidate scope limits must be positive")
         if not self.verification_command:
             raise ValueError("a verification command is required")
         self._check_verification_agreement()
+
+        try:
+            self._remaining_timeout(1, "target checks")
+        except RunTimeBudgetExpired as error:
+            self._block(str(error))
+            return self._outcome()
+
+        if self.budget_override_reason:
+            self._step(
+                "time-budget-override",
+                ok=True,
+                detail=self.budget_override_reason,
+                data={"time_budget_seconds": self.run_time_budget_seconds},
+            )
 
         if self.check_target:
             assessment = assess_target(
@@ -677,6 +811,9 @@ class _Orchestration:
             self._transition(RunStatus.PRIMARY_RUNNING, "primary agent starting")
         try:
             return self._loop(start_primary=not resume_review)
+        except RunTimeBudgetExpired as error:
+            self._block(str(error))
+            return self._outcome()
         except (OSError, ValueError) as error:
             # A started run must never be left claiming it is still in flight.
             self._block(f"orchestration stopped on an unexpected error: {error}")
@@ -836,6 +973,8 @@ class _Orchestration:
             self._block(f"primary agent did not complete the {stage} stage")
             return False
         self._record_workspace_change(stage)
+        if not self._check_candidate_scope(stage):
+            return False
         verified, result = self._verify(stage)
         if verified:
             return True
@@ -874,6 +1013,9 @@ class _Orchestration:
             steps=self.steps,
             revisions_used=self.revisions_used,
             max_review_cycles=self.max_review_cycles,
+            time_budget_seconds=self.run_time_budget_seconds,
+            deadline_at=self.deadline.isoformat(),
+            budget_override_reason=self.budget_override_reason,
             review_cycles=self.run.review_cycles,
             record_path=self.run_directory / "orchestration.json",
         )
@@ -899,6 +1041,10 @@ def orchestrate(
     verification_timeout_seconds: float = 900,
     max_revisions: int = 1,
     max_review_cycles: int = 3,
+    run_time_budget_seconds: float = DEFAULT_RUN_TIME_BUDGET_SECONDS,
+    budget_override_reason: str | None = None,
+    max_changed_files: int = DEFAULT_MAX_CHANGED_FILES,
+    max_changed_lines: int = DEFAULT_MAX_CHANGED_LINES,
     announce: Callable[[str], None] = lambda message: None,
     check_target: bool = True,
     acknowledge_prior_attempts: bool = False,
@@ -918,6 +1064,10 @@ def orchestrate(
         verification_timeout_seconds=verification_timeout_seconds,
         max_revisions=max_revisions,
         max_review_cycles=max_review_cycles,
+        run_time_budget_seconds=run_time_budget_seconds,
+        budget_override_reason=budget_override_reason,
+        max_changed_files=max_changed_files,
+        max_changed_lines=max_changed_lines,
         announce=announce,
         check_target=check_target,
         acknowledge_prior_attempts=acknowledge_prior_attempts,

@@ -65,7 +65,7 @@ class AgentAdapterTests(unittest.TestCase):
             with self.assertRaisesRegex(FileNotFoundError, "does not exist"):
                 resolve_executable(str(missing))
 
-    def test_codex_command_is_ephemeral_and_sandboxed(self) -> None:
+    def test_codex_command_is_persistent_bounded_and_sandboxed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             prompt = root / "prompt.md"
@@ -83,13 +83,34 @@ class AgentAdapterTests(unittest.TestCase):
             ).build_command(request)
 
         self.assertEqual(command[:2], ["codex", "exec"])
-        self.assertIn("--ephemeral", command)
+        self.assertNotIn("--ephemeral", command)
         self.assertIn("workspace-write", command)
         self.assertIn("--output-last-message", command)
         self.assertIn("windows.sandbox='elevated'", command)
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", command)
         self.assertNotIn("sensitive issue text", command)
+        self.assertIn("token_budget", command)
+        self.assertIn("token_budget.limit_tokens=2000000", command)
+        self.assertIn("tool_output_token_limit=20000", command)
         self.assertEqual(command[-1], "-")
+
+    def test_codex_resumes_the_same_role_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            request = AgentRequest(
+                run_id="run-1",
+                role="reviewer",
+                prompt_path=root / "prompt.md",
+                workspace=root,
+                report_path=root / "review-report.md",
+                session_id="thread-123",
+            )
+            command = CodexCliAgent(windows_sandbox=None).build_command(request)
+
+        self.assertEqual(command[:3], ["codex", "exec", "resume"])
+        self.assertIn("thread-123", command)
+        self.assertNotIn("--cd", command)
+        self.assertNotIn("--sandbox", command)
 
     def test_codex_reviewer_is_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -150,7 +171,7 @@ class AgentAdapterTests(unittest.TestCase):
                 started_at="2026-09-02T00:00:00+00:00",
                 duration_seconds=0.1,
                 exit_code=0,
-                stdout="",
+                stdout=json.dumps({"type": "thread.started", "thread_id": "t-1"}),
                 stderr="",
                 timed_out=False,
                 timeout_seconds=60,
@@ -159,7 +180,7 @@ class AgentAdapterTests(unittest.TestCase):
             with patch(
                 "mailman.agents.codex_cli.execute", return_value=process
             ) as fake_execute:
-                CodexCliAgent(windows_sandbox=None, executable=sys.executable).run(request)
+                result = CodexCliAgent(windows_sandbox=None, executable=sys.executable).run(request)
 
         environment = fake_execute.call_args.kwargs["environment"]
         resolved = str(scratch.resolve())
@@ -169,6 +190,7 @@ class AgentAdapterTests(unittest.TestCase):
         # pytest's cache would write into the workspace root on the reviewer's
         # run and dirty the candidate the primary stage left behind.
         self.assertEqual(environment["PYTEST_ADDOPTS"], "-p no:cacheprovider")
+        self.assertEqual(result.session_id, "t-1")
 
     def test_codex_rejects_unknown_windows_sandbox_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
