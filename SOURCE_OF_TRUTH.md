@@ -304,6 +304,28 @@ search mandatory; `pydantic/pydantic` welcomes them. `modelcontextprotocol/pytho
 permits disclosed assistance but closes any outside pull request whose issue a
 maintainer has not assigned.
 
+A permitted policy is not an accepted premise, and a well-formed third-party
+issue is not one either. On 2026-09-09 `pytest-dev/pytest`
+[#14993](https://github.com/pytest-dev/pytest/pull/14993) was filed against
+issue #14992 and closed unmerged the same day, with no comment on the pull
+request and no review. The maintainer's reasoning sits on the issue: the
+reported ordering is only observable through a `pytest_generate_tests` hook that
+reorders `metafunc.fixturenames`, which they called unsupported and undocumented
+use of pytest internals, so on that reading there is no guarantee to restore.
+Every mechanical gate had passed first — fresh, precise, unclaimed, reproduced,
+no competing pull request. None of them can see whether the project agrees the
+behaviour is a guarantee. Where an issue's repro depends on private or
+undocumented internals, or on a third-party plugin reaching into them, ask on
+the issue before spending a run.
+
+The same close led with "It's hard to understand the use case with all of the AI
+verbosity. Please, use human-speak." The pull request body carried host-OS
+notes, unrelated Windows cache-permission failures, an alternative-not-taken
+section, adapter and model IDs, and the sentence "Human review and filing remain
+pending" left in after filing. A submission body is written for the reviewer
+deciding, not as a run report. See
+`docs/runs/0010-pytest-14992-closed-unmerged.md`.
+
 ## Authority and artifact boundaries
 
 - The target repository checkout and machine-observed command results outrank agent self-reports.

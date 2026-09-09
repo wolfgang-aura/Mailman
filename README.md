@@ -569,7 +569,7 @@ Mailman may eventually prepare branches, patches, and pull request text. It must
 
 ## Project status
 
-The loop has run end to end against a repository this project does not own: [the first external issue](docs/runs/0004-first-external-issue.md), from an issue URL to an exported patch with no hand-written prompt. The first patch a maintainer merged upstream is [the ffn merge record](docs/runs/0009-ffn-330-first-merge.md). The revision cycle and a `BLOCKED` ending have live evidence too, in [the revision and blocking record](docs/runs/0005-revision-and-blocking-paths.md). Every run record keeps what went wrong, including the runs that failed. See [SOURCE_OF_TRUTH.md](SOURCE_OF_TRUTH.md) for verified environment facts and [ROADMAP.md](ROADMAP.md) for the next thin slice.
+The loop has run end to end against a repository this project does not own: [the first external issue](docs/runs/0004-first-external-issue.md), from an issue URL to an exported patch with no hand-written prompt. The first patch a maintainer merged upstream is [the ffn merge record](docs/runs/0009-ffn-330-first-merge.md), and the first one a maintainer closed unmerged is [the pytest #14992 record](docs/runs/0010-pytest-14992-closed-unmerged.md). The revision cycle and a `BLOCKED` ending have live evidence too, in [the revision and blocking record](docs/runs/0005-revision-and-blocking-paths.md). Every run record keeps what went wrong, including the runs that failed. See [SOURCE_OF_TRUTH.md](SOURCE_OF_TRUTH.md) for verified environment facts and [ROADMAP.md](ROADMAP.md) for the next thin slice.
 
 ## License
 
