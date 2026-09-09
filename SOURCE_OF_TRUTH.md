@@ -393,6 +393,35 @@ agent hit its turn limit and wrote no report. That last one is the first live
 evidence for the missing-report blocking cause. See
 `docs/runs/0006-pytest-14324-three-blocked-runs.md`.
 
+## PRHunt performance controls
+
+Verified on 2026-09-09 after two Luna Max hunts took 5h13m and 7h27m. The
+engineering work was not inherently that slow: LangGraph run
+`20260909T030115Z-1b980a` reached `ENGINEERING_COMPLETE` in 10.6 minutes. The
+long PydanticAI run expanded to 13 files and 772 changed lines, spent five
+review cycles and two revisions, and then hit the account usage limit. Agent
+records show individual turns consuming millions of input tokens because each
+ephemeral turn reread the repository and broad command output was repeatedly
+fed back into context.
+
+Local checkpoint `28b5efc` adds a cumulative two-hour run deadline, an explicit
+reason for any extension, persistent per-role Codex sessions, a default
+two-million-token turn budget, a 20,000-token tool-output limit, narrower prompt
+discipline, and a pre-review scope gate of 8 files or 500 changed lines. A live
+adapter probe resumed Luna session
+`01a085eb-e321-7f33-8424-bf0048f4308d` successfully. The installed Codex CLI is
+0.152.0 and accepts `token_budget.limit_tokens`; the older `rollout_budget`
+configuration does not exist in that build.
+
+Repository screening now verifies the exact `<!-- require-issue-link -->` bot
+marker in closed pull-request comments and rejects targets that require an
+assignment before outside work can be filed. Live checks rejected
+`langchain-ai/langgraph` from markers on five sampled PRs and allowed
+`openai/openai-agents-python` despite three loose search matches that contained
+no marker. This prevents completed but unfileable patches such as LangGraph
+issue #8850. The regression suite passes: 756 tests and 54 subtests. Tracking
+issue: https://github.com/wolfgang-aura/Mailman/issues/81.
+
 ## Knowledge flywheel
 
 `mailman retrospective RUN_ID` drafts `retrospective.json` and

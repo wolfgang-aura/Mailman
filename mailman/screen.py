@@ -25,9 +25,11 @@ import json
 import re
 import statistics
 from collections import Counter
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+from urllib.parse import quote
 
 from mailman.claims import classify_comment
 from mailman.executor import CommandResult, execute
@@ -35,6 +37,7 @@ from mailman.target_intel import (
     _Gh,
     _is_bot,
     classify_claims,
+    enforcement_markers,
     is_outside_human,
     repository_slug,
 )
@@ -690,6 +693,68 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     )
 
 
+def _assignment_gate(gh: _Gh, slug: str) -> dict[str, Any]:
+    """Reject repositories whose bot closes unassigned outside pull requests.
+
+    GitHub issue search indexes comments as well as the pull request body. The
+    search is only a shortlist: the gate reads those comments and requires the
+    exact marker from a bot, avoiding GitHub's loose token matches.
+    """
+    query = quote(f'repo:{slug} is:pr is:closed "require-issue-link"')
+    result = gh.json(f"search/issues?q={query}&per_page=5")
+    candidates = result.get("items") if isinstance(result, dict) else None
+    comments: list[dict[str, Any]] = []
+    if isinstance(candidates, list):
+        for pull in candidates[:5]:
+            number = pull.get("number") if isinstance(pull, dict) else None
+            if not isinstance(number, int):
+                continue
+            rows = gh.json(f"repos/{slug}/issues/{number}/comments")
+            if isinstance(rows, list):
+                for row in rows:
+                    row["_pull_request"] = number
+                comments.extend(rows)
+    markers = enforcement_markers(comments)
+    enforcement = next(
+        (row for row in markers if row["marker"] == "require-issue-link"), None
+    )
+    data = {
+        "marker": "require-issue-link",
+        "search_matches": (
+            result.get("total_count") if isinstance(result, dict) else None
+        ),
+        "verified_occurrences": enforcement["count"] if enforcement else 0,
+        "seen_on": enforcement["seen_on"] if enforcement else [],
+    }
+    if enforcement:
+        return _gate(
+            "assignment",
+            passed=False,
+            blocking=True,
+            detail=(
+                "the require-issue-link bot marker was verified on closed pull "
+                f"request(s) {', '.join('#' + str(n) for n in enforcement['seen_on'])}; "
+                "external contributors must be assigned before opening a pull request"
+            ),
+            data=data,
+        )
+    if result is None:
+        return _gate(
+            "assignment",
+            passed=False,
+            blocking=True,
+            detail="assignment enforcement search was unavailable",
+            data=data,
+        )
+    return _gate(
+        "assignment",
+        passed=True,
+        blocking=True,
+        detail="no require-issue-link bot marker found in the search samples",
+        data=data,
+    )
+
+
 #: Label spellings that mark an issue as a request rather than a defect. A
 #: tracker can carry forty unclaimed enhancement requests and still have no
 #: work a bug run could take.
@@ -948,6 +1013,7 @@ def screen_repository(
         _ci_gate(gh, slug),
         _python_gate(gh, slug),
         _policy_gate(gh, slug),
+        _assignment_gate(gh, slug),
         _saturation_gate(gh, slug, window_days),
         _stars_gate(meta),
     ]

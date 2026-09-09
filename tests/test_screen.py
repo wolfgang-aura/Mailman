@@ -95,6 +95,8 @@ class FakeGitHub:
         )
         self.root = overrides.pop("root", [{"name": "pyproject.toml"}])
         self.policies = overrides.pop("policies", {})
+        self.assignment_matches = overrides.pop("assignment_matches", 0)
+        self.assignment_pulls = overrides.pop("assignment_pulls", [])
         self.meta = overrides.pop(
             "meta",
             {
@@ -117,6 +119,11 @@ class FakeGitHub:
 
     def _payload(self, path: str):
         base = path.split("?", 1)[0]
+        if base == "search/issues":
+            return {
+                "total_count": self.assignment_matches,
+                "items": self.assignment_pulls,
+            }
         if base.endswith("/languages"):
             return self.languages
         if "/contents/.github/workflows/" in base:
@@ -172,6 +179,43 @@ class ScreenTests(unittest.TestCase):
             self.assertEqual(record["failed_gates"], [])
             self.assertEqual(load_screen(root, "example/project"), record)
         self.assertIn("worth a run", render_screen(record))
+
+    def test_repeated_assignment_bot_closures_reject_the_repository(self) -> None:
+        marker = {
+            "user": {"login": "policy[bot]", "type": "Bot"},
+            "body": "<!-- require-issue-link --> Closed because you are not assigned.",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    assignment_matches=637,
+                    assignment_pulls=[{"number": 91}],
+                    issue_comments={91: [marker]},
+                ),
+            )
+
+        self.assertEqual(record["verdict"], "fail")
+        self.assertIn("assignment", record["failed_gates"])
+        gate = _named(record, "assignment")
+        self.assertEqual(gate["data"]["marker"], "require-issue-link")
+        self.assertEqual(gate["data"]["verified_occurrences"], 1)
+        self.assertIn("#91", gate["detail"])
+
+    def test_loose_search_hits_without_the_exact_marker_do_not_reject(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    assignment_matches=3,
+                    assignment_pulls=[{"number": 91}],
+                    issue_comments={
+                        91: [{"user": {"type": "Bot"}, "body": "issue link"}]
+                    },
+                ),
+            )
+
+        self.assertNotIn("assignment", record["failed_gates"])
 
     def test_a_repository_with_no_recent_outside_merge_fails_first(self) -> None:
         # OpenBB-finance/OpenBB: 72.6k stars, last outside merge six weeks back.
