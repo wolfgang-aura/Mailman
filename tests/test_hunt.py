@@ -12,6 +12,7 @@ from mailman.completion import finalize_review
 from mailman.export import export_patch
 from mailman.handoff import build_handoff
 from mailman.hunt import (
+    abandon,
     add_run,
     acquire_lease,
     require_lease,
@@ -382,6 +383,79 @@ class TargetClaimTests(HuntTests):
         acquire_lease(self.data_root, record, owner=record["lease"]["owner"], minutes=-1)
         self.assertEqual(effective_status(record), "ABANDONED")
         self.assertIsNone(holding_hunt(self.data_root, "example/project#1"))
+
+    def test_an_expired_lease_is_not_free_to_adopt(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/76
+
+        An abandoned hunt used to be picked up silently, which made continuing
+        somebody else's candidates the default and left the operator as the
+        only gate on whether that was the right hunt at all.
+        """
+        record = self.new_hunt()
+        first = record["lease"]["owner"]
+        acquire_lease(self.data_root, record, owner=first, minutes=-1)
+        self.assertEqual(effective_status(record), "ABANDONED")
+        with self.assertRaisesRegex(ValueError, "decision, not a default"):
+            acquire_lease(self.data_root, record, owner="second-coordinator")
+        with self.assertRaisesRegex(ValueError, "was abandoned by"):
+            require_lease(record, "second-coordinator")
+        # The coordinator that owns it may still resume its own hunt.
+        acquire_lease(self.data_root, record, owner=first)
+        require_lease(record, first)
+        # Anyone else has to say out loud that they are adopting it.
+        acquire_lease(self.data_root, record, owner=first, minutes=-1)
+        acquire_lease(self.data_root, record, owner="second-coordinator",
+                      takeover_reason="its coordinator was asked for other targets")
+        self.assertEqual(load_hunt(self.data_root, record["hunt_id"])["lease"]["owner"],
+                         "second-coordinator")
+
+    def test_an_abandoned_hunt_closes_and_stays_closed(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/77
+
+        A hunt that is over and was never filed stored RUNNING for ever, so
+        `hunt list` only grew and every later session re-judged the same
+        wreckage.
+        """
+        record = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        with self.assertRaisesRegex(ValueError, "--reason"):
+            abandon(self.data_root, record, reason="")
+        # A live hunt is somebody's work in progress.
+        with self.assertRaisesRegex(ValueError, "owned by"):
+            abandon(self.data_root, record, reason="not mine", owner="second-coordinator")
+        closed = abandon(self.data_root, record, reason="its targets were not finance",
+                         owner=record["lease"]["owner"])
+        self.assertEqual(closed["reason"], "its targets were not finance")
+        stored = load_hunt(self.data_root, record["hunt_id"])
+        self.assertEqual(stored["status"], "ABANDONED")
+        self.assertEqual(effective_status(stored), "ABANDONED")
+        self.assertNotIn("lease", stored)
+        # Its targets go back to the pool, and its record stops accepting work.
+        self.assertIsNone(holding_hunt(self.data_root, "example/project#1"))
+        with self.assertRaisesRegex(ValueError, "ABANDONED"):
+            add_run(self.data_root, stored, directory.name)
+        with self.assertRaisesRegex(ValueError, "ABANDONED"):
+            finish(self.data_root, stored)
+        with self.assertRaisesRegex(ValueError, "ABANDONED"):
+            record_filing(self.data_root, stored, directory.name,
+                          pr_url="https://github.com/example/project/pull/1")
+
+    def test_a_hunt_pinned_to_an_old_procedure_can_still_be_closed(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/77
+
+        The hunts most in need of closing are the oldest, and those are the
+        ones pinned to a superseded procedure. Demanding a refresh before they
+        could be closed is how the wreckage stayed in `hunt list`.
+        """
+        record = self.new_hunt()
+        record["procedure_sha256"] = "0" * 64
+        save(hunt_path(self.data_root, record["hunt_id"]), record)
+        with self.assertRaisesRegex(ValueError, "procedure changed"):
+            load_hunt(self.data_root, record["hunt_id"])
+        stale = load_hunt(self.data_root, record["hunt_id"], require_procedure=False)
+        abandon(self.data_root, stale, reason="superseded", owner=stale["lease"]["owner"])
+        self.assertEqual(load_hunt(self.data_root, record["hunt_id"])["status"], "ABANDONED")
 
     def test_a_dropped_target_is_released(self):
         record = self.new_hunt()

@@ -50,13 +50,41 @@ class LeaseTests(unittest.TestCase):
         self.assertIn("usage limit", takeover["reason"])
         hunt.require_lease(self.record, "second")
 
-    def test_an_expired_lease_is_free_to_take(self):
+    def test_an_expired_lease_is_adopted_deliberately_or_not_at_all(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/76
+
+        An expired lease used to be free to take, so continuing somebody's
+        abandoned hunt was the default and the operator was the only gate on
+        whether it was the right hunt to continue at all.
+        """
         self.record["lease"]["expires_at"] = (
             datetime.now(UTC) - timedelta(minutes=1)
         ).isoformat()
-        hunt.require_lease(self.record, "second")
-        hunt.acquire_lease(self.root, self.record, owner="second")
+        with self.assertRaisesRegex(ValueError, "abandoned by first"):
+            hunt.require_lease(self.record, "second")
+        with self.assertRaisesRegex(ValueError, "decision, not a default"):
+            hunt.acquire_lease(self.root, self.record, owner="second")
+        hunt.acquire_lease(self.root, self.record, owner="second",
+                           takeover_reason="first task never came back")
         self.assertFalse(self.record["lease"]["takeovers"][-1]["was_live"])
+
+    def test_the_owner_may_resume_its_own_abandoned_hunt(self):
+        self.record["lease"]["expires_at"] = (
+            datetime.now(UTC) - timedelta(minutes=1)
+        ).isoformat()
+        hunt.require_lease(self.record, "first")
+        hunt.acquire_lease(self.root, self.record, owner="first")
+        self.assertEqual(self.record["lease"]["takeovers"], [])
+
+    def test_an_abandoned_hunt_can_be_closed_without_adopting_it(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/77"""
+        self.record["lease"]["expires_at"] = (
+            datetime.now(UTC) - timedelta(minutes=1)
+        ).isoformat()
+        hunt.abandon(self.root, self.record, reason="its targets were not mine",
+                     owner="second")
+        self.assertEqual(self.record["status"], "ABANDONED")
+        self.assertTrue(hunt.is_terminal(self.record))
 
     def test_a_hunt_recorded_before_leases_existed_still_works(self):
         self.record.pop("lease")

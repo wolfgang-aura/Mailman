@@ -122,8 +122,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "action",
         choices=(
             "init", "add", "drop", "restore", "status", "finish", "list",
-            "escalate", "refresh-procedure", "lease", "release", "refresh",
-            "file", "targets",
+            "escalate", "refresh-procedure", "lease", "release", "abandon",
+            "refresh", "file", "targets",
         ),
     )
     hunt.add_argument(
@@ -150,7 +150,12 @@ def _build_parser() -> argparse.ArgumentParser:
     for role in ("primary", "reviewer"):
         hunt.add_argument(f"--{role}")
         hunt.add_argument(f"--{role}-model")
-    hunt.add_argument("--reason")
+    hunt.add_argument(
+        "--reason",
+        help="why, for hunt drop, restore, escalate, lease --takeover and "
+             "abandon. A hunt that is over needs one to close; without it the "
+             "record says RUNNING for ever and the next session re-judges it",
+    )
     hunt.add_argument("--evidence")
     hunt.add_argument(
         "--owner",
@@ -779,18 +784,29 @@ def _hunt(arguments: argparse.Namespace) -> int:
             raise ValueError("hunt not found")
         if hunt.is_terminal(record):
             raise ValueError(
-                f"hunt {record['hunt_id']} is {record['status']}; its recorded "
-                "procedure is which version the filed work was prepared under"
+                f"hunt {record['hunt_id']} is {record['status']}; a closed hunt "
+                "keeps the procedure version its work was prepared under"
             )
         record["procedure_sha256"] = hashlib.sha256(hunt.PROCEDURE.read_bytes()).hexdigest()
         hunt.save(path, record)
-    record = hunt.load_hunt(root, arguments.hunt_id)
+    record = hunt.load_hunt(root, arguments.hunt_id,
+                            require_procedure=arguments.action != "abandon")
     if arguments.action == "lease":
         lease = hunt.acquire_lease(
             root, record, owner=arguments.owner,
             takeover_reason=arguments.reason if arguments.takeover else None,
         )
         print(json.dumps(lease, indent=2))
+        return 0
+    if arguments.action == "abandon":
+        # A hunt that is over and was never filed had no way to end, so it
+        # stored RUNNING for ever and every later session re-judged it.
+        # https://github.com/wolfgang-aura/Mailman/issues/77
+        if hunt.is_terminal(record):
+            raise ValueError(f"hunt {record['hunt_id']} is already {record['status']}")
+        closed = hunt.abandon(root, record, reason=arguments.reason, owner=arguments.owner)
+        print(json.dumps({"hunt_id": record["hunt_id"], "status": record["status"],
+                          "abandoned": closed}, indent=2))
         return 0
     if arguments.action == "release":
         hunt.release_lease(root, record, owner=arguments.owner)

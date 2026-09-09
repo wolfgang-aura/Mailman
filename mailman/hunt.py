@@ -32,7 +32,7 @@ DROP_CODES = {
 }
 #: A hunt in one of these states is history. Its record answers "what did we
 #: file, and on what evidence", and nothing may rewrite that answer.
-TERMINAL_STATUSES = ("FILED",)
+TERMINAL_STATUSES = ("FILED", "ABANDONED")
 #: How many readiness checks a hunt keeps. Enough to see the run of checks
 #: around a filing; short enough that the record stays readable.
 CHECK_HISTORY = 20
@@ -43,6 +43,30 @@ PULL_REQUEST_URL = re.compile(
 
 def is_terminal(record: dict) -> bool:
     return record.get("status") in TERMINAL_STATUSES
+
+
+def abandon(root: Path, record: dict, *, reason: str, owner: str | None = None) -> dict:
+    """Close a hunt that is over and was never filed.
+
+    Without this a finished-with failure stores `RUNNING` for ever and only
+    `effective_status` calls it abandoned, so `hunt list` grows and every later
+    session re-judges the same wreckage.
+    https://github.com/wolfgang-aura/Mailman/issues/77
+    """
+    if not reason:
+        raise ValueError("say why this hunt is over: --reason")
+    lease = record.get("lease")
+    if lease and not _expired(lease) and lease["owner"] != owner:
+        raise ValueError(
+            f"hunt {record['hunt_id']} is owned by {lease['owner']} until "
+            f"{lease['expires_at']}. A live hunt is somebody's work in "
+            "progress; closing one needs its --owner token."
+        )
+    record["status"] = "ABANDONED"
+    record["abandoned"] = {"reason": reason, "at": utc_now()}
+    record.pop("lease", None)
+    save(hunt_path(root, record["hunt_id"]), record)
+    return record["abandoned"]
 
 
 def save(path: Path, record: dict) -> None:
@@ -78,11 +102,19 @@ def create_hunt(root: Path, count: int, *, primary: str, primary_model: str,
     return record
 
 
-def load_hunt(root: Path, hunt_id: str) -> dict:
+def load_hunt(root: Path, hunt_id: str, *, require_procedure: bool = True) -> dict:
+    """Read a hunt, refusing one prepared under a procedure that has changed.
+
+    `require_procedure=False` is for closing a hunt rather than continuing it.
+    The hunts most in need of closing are the oldest, and they are exactly the
+    ones pinned to a superseded procedure, so demanding a refresh first is how
+    the wreckage stayed in `hunt list`.
+    https://github.com/wolfgang-aura/Mailman/issues/77
+    """
     record = read_object(hunt_path(root, hunt_id))
     if not record or record.get("data_root") != str(root.resolve()):
         raise ValueError("hunt missing or belongs to another data root")
-    if (not is_terminal(record)
+    if (require_procedure and not is_terminal(record)
             and record.get("procedure_sha256") != hashlib.sha256(PROCEDURE.read_bytes()).hexdigest()):
         raise ValueError("procedure changed: read `mailman procedure`, then use `hunt refresh-procedure`")
     return record
@@ -171,6 +203,8 @@ def record_filing(root: Path, record: dict, run_id: str, *, pr_url: str,
     runs after the operator approves and after the PR exists, so it takes the
     URL rather than creating anything.
     """
+    if is_terminal(record):
+        raise ValueError(f"hunt {record['hunt_id']} is {record['status']}; start a new hunt")
     match = PULL_REQUEST_URL.match(pr_url.strip())
     if not match:
         raise ValueError("--pr-url must be https://github.com/OWNER/REPO/pull/NUMBER")
@@ -313,13 +347,24 @@ def acquire_lease(root: Path, record: dict, *, owner: str | None = None,
     """
     existing = record.get("lease")
     owner = owner or new_owner_token()
-    if existing and not _expired(existing) and existing["owner"] != owner:
-        if not takeover_reason:
+    if existing and existing["owner"] != owner and not takeover_reason:
+        if not _expired(existing):
             raise ValueError(
                 f"hunt {record['hunt_id']} is owned by {existing['owner']} until "
                 f"{existing['expires_at']}. Do not run a second coordinator on one "
                 "hunt. Pass --takeover with --reason if that owner is genuinely gone."
             )
+        # An expired lease used to be free to pick up, which made adopting
+        # somebody's abandoned hunt the default and left the operator as the
+        # only gate on whether that was the right hunt to continue.
+        # https://github.com/wolfgang-aura/Mailman/issues/76
+        raise ValueError(
+            f"hunt {record['hunt_id']} was abandoned by {existing['owner']} at "
+            f"{existing['expires_at']}. Continuing someone else's hunt is a "
+            "decision, not a default: its candidates were chosen for their "
+            "request, not yours. Pass --takeover with --reason to adopt it, or "
+            "close it with `hunt abandon --reason ...` and open your own."
+        )
     takeovers = list(existing.get("takeovers", [])) if existing else []
     if existing and existing["owner"] != owner:
         takeovers.append({"previous_owner": existing["owner"], "at": utc_now(),
@@ -349,8 +394,16 @@ def require_lease(record: dict, owner: str | None) -> None:
     usable. Every hunt created since carries one.
     """
     lease = record.get("lease")
-    if not lease or _expired(lease):
+    if not lease:
         return
+    if _expired(lease):
+        if owner == lease["owner"]:
+            return
+        raise ValueError(
+            f"hunt {record['hunt_id']} was abandoned by {lease['owner']} at "
+            f"{lease['expires_at']}. Adopt it with `hunt lease --takeover "
+            "--reason ...`, or close it with `hunt abandon --reason ...`."
+        )
     if owner != lease["owner"]:
         raise ValueError(
             f"hunt {record['hunt_id']} is owned by {lease['owner']} until "
@@ -627,6 +680,11 @@ def finish(root: Path, record: dict) -> dict:
     from mailman.review_packet import write_packet_page
     from mailman.review_page import write_run_page
     if is_terminal(record):
+        if record["status"] == "ABANDONED":
+            raise ValueError(
+                f"hunt {record['hunt_id']} is ABANDONED; it was closed rather "
+                "than filed, and nothing is left to gate"
+            )
         raise ValueError(
             f"hunt {record['hunt_id']} is {record['status']}; its packet and gate "
             "result are the record for pull requests that are already open"
