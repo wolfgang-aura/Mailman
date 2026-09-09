@@ -3,6 +3,8 @@
 https://github.com/wolfgang-aura/Mailman/issues/75
 """
 import json
+import stat
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -28,7 +30,6 @@ from mailman.targeting import (
     OPEN_PULL_REQUEST,
     assess_target,
 )
-from tests.test_issue import write_stub_github_cli
 
 
 class IssueReferenceTests(unittest.TestCase):
@@ -51,10 +52,42 @@ class PrescreenTests(unittest.TestCase):
         self.root = Path(self.temporary.name) / "runs"
         self.root.mkdir(parents=True)
 
-    def stub(self, payload: str) -> str:
+    def stub(self, payload: str, issue_payload: dict | None = None) -> str:
         directory = Path(self.temporary.name) / "bin"
         directory.mkdir(exist_ok=True)
-        return str(write_stub_github_cli(directory, payload))
+        (directory / "payload.json").write_text(payload, encoding="utf-8")
+        issue = issue_payload or {
+            "number": 7,
+            "title": "Crash on empty input",
+            "body": "The command crashes on empty input.",
+            "state": "OPEN",
+            "url": "https://github.com/example/project/issues/7",
+            "author": {"login": "reporter"},
+            "labels": [],
+            "createdAt": "2026-09-01T00:00:00Z",
+            "updatedAt": "2026-09-01T00:00:00Z",
+        }
+        (directory / "issue-payload.json").write_text(
+            json.dumps(issue), encoding="utf-8"
+        )
+        if sys.platform == "win32":
+            stub = directory / "gh.cmd"
+            stub.write_text(
+                '@echo off\r\nif "%1"=="issue" if "%2"=="view" ('
+                'type "%~dp0issue-payload.json" & exit /b 0)\r\n'
+                'type "%~dp0payload.json"\r\n',
+                encoding="utf-8",
+            )
+            return str(stub)
+        stub = directory / "gh.sh"
+        stub.write_text(
+            '#!/bin/sh\nif [ "$1" = issue ] && [ "$2" = view ]; then '
+            'cat "$(dirname "$0")/issue-payload.json"; else '
+            'cat "$(dirname "$0")/payload.json"; fi\n',
+            encoding="utf-8",
+        )
+        stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        return str(stub)
 
     def test_a_clean_issue_passes_and_records_where_it_looked(self) -> None:
         record = prescreen_issue(self.root, "example/project#7", executable=self.stub("[]"))
@@ -63,6 +96,32 @@ class PrescreenTests(unittest.TestCase):
         self.assertTrue(record["duplicate_search"]["success"])
         self.assertIn("init-run", record["next"])
         self.assertEqual(load_prescreen(self.root, "example/project", 7), record)
+        self.assertEqual(record["issue"]["title"], "Crash on empty input")
+
+    def test_a_feature_request_is_rejected_before_a_run_exists(self) -> None:
+        issue = {
+            "number": 7,
+            "title": "Choose and add a new transport",
+            "body": "Several routing designs are possible.",
+            "state": "OPEN",
+            "url": "https://github.com/example/project/issues/7",
+            "author": {"login": "reporter"},
+            "labels": [{"name": "feature"}],
+            "createdAt": "2026-09-01T00:00:00Z",
+            "updatedAt": "2026-09-01T00:00:00Z",
+        }
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub("[]", issue),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertIn("issue-not-bounded-fix", record["blocking"])
+        self.assertNotIn("duplicate_search", record)
+        self.assertEqual(
+            record["stages_skipped"], ["duplicate-search", "prior-art", "claims"]
+        )
 
     def test_the_verdict_lands_beside_the_repository_screens(self) -> None:
         prescreen_issue(self.root, "example/project#7", executable=self.stub("[]"))
@@ -123,6 +182,17 @@ class PrescreenTests(unittest.TestCase):
         _, refusal = check(self.root, "example/project#7")
         self.assertIn("older than", refusal)
 
+    def test_check_refuses_a_pre_classification_schema(self) -> None:
+        prescreen_issue(self.root, "example/project#7", executable=self.stub("[]"))
+        path = prescreen_path(self.root, "example/project", 7)
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        stored["schema_version"] = 1
+        path.write_text(json.dumps(stored), encoding="utf-8")
+
+        _, refusal = check(self.root, "example/project#7")
+
+        self.assertIn("predates issue classification", refusal)
+
     def test_check_clears_a_fresh_pass(self) -> None:
         prescreen_issue(self.root, "example/project#7", executable=self.stub("[]"))
         record, refusal = check(self.root, "example/project#7")
@@ -154,6 +224,8 @@ class InitRunGateTests(PrescreenTests):
         code, output = self.init_run()
         self.assertEqual(code, 0)
         self.assertIn("run_id", output)
+        run_id = json.loads(output)["run_id"]
+        self.assertTrue((self.root / run_id / "prescreen.json").is_file())
 
     def test_skipping_the_pre_screen_records_the_reason(self) -> None:
         code, output = self.init_run("--no-prescreen", "operator asked for this one")

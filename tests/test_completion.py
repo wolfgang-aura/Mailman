@@ -195,3 +195,5 @@ class CompletionTests(OrchestratorHarness):
         self.assertEqual(str(outcome.status), "ENGINEERING_COMPLETE")
         self.assertEqual(primary.session_ids, [None, "p-1"])
         self.assertEqual(reviewer.session_ids, [None, "r-1"])
+        self.assertIn("Continued primary task", primary.calls[1][1])
+        self.assertNotIn("fix the fixture", primary.calls[1][1])

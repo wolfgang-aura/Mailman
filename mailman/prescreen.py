@@ -13,11 +13,13 @@ the repository screens. https://github.com/wolfgang-aura/Mailman/issues/75
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from mailman.claims import read_claims
+from mailman.issue import capture_issue_from_github
 from mailman.prior_art import collect_prior_art
 from mailman.submission import (
     partition_duplicates,
@@ -35,13 +37,28 @@ from mailman.targeting import (
     assess_target,
 )
 
-PRESCREEN_SCHEMA_VERSION = 1
+PRESCREEN_SCHEMA_VERSION = 2
 ISSUE_SCREENS = "issue-screens"
 #: A pre-screen filters a shortlist; it is not the filing gate. The run stage
 #: still re-runs the duplicate search under its own one-hour limit, and
 #: `hunt finish` still refuses stale evidence. A day is long enough to screen a
 #: shortlist in the morning and work it in the afternoon.
 PRESCREEN_HOURS = 24
+ISSUE_UNREADABLE = "issue-unreadable"
+ISSUE_NOT_OPEN = "issue-not-open"
+ISSUE_NOT_BOUNDED_FIX = "issue-not-bounded-fix"
+_NON_FIX_LABELS = frozenset(
+    {
+        "enhancement",
+        "feature",
+        "feature request",
+        "feature-request",
+        "meta",
+        "project",
+        "question",
+        "tracking",
+    }
+)
 #: What this stage can decide with public GitHub state and a few API calls.
 #: Reproduction needs a clone, and target intel comes from `screen-target`.
 DECIDABLE = (
@@ -95,6 +112,26 @@ def load_prescreen(data_root: Path, slug: str, number: int) -> dict[str, Any] | 
     return loaded if isinstance(loaded, dict) else None
 
 
+def _store_prescreen(data_root: Path, slug: str, number: int, record: dict[str, Any]) -> None:
+    path = prescreen_path(data_root, slug, number)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _issue_blocking(captured: dict[str, Any]) -> list[str]:
+    blocking: list[str] = []
+    if captured.get("success") is not True:
+        blocking.append(ISSUE_UNREADABLE)
+    elif str(captured.get("state") or "").upper() != "OPEN":
+        blocking.append(ISSUE_NOT_OPEN)
+    labels = {str(label).strip().lower() for label in captured.get("labels") or []}
+    if labels & _NON_FIX_LABELS:
+        blocking.append(ISSUE_NOT_BOUNDED_FIX)
+    return blocking
+
+
 def is_fresh(record: dict[str, Any], *, hours: int = PRESCREEN_HOURS) -> bool:
     try:
         screened = datetime.fromisoformat(record["screened_at"])
@@ -112,25 +149,16 @@ def prescreen_issue(
     executable: str | None = None,
     timeout_seconds: float = 60,
 ) -> dict[str, Any]:
-    """Run the duplicate search, prior art and claim check for one issue."""
+    """Read the issue and reject duplicates or unbounded work before a run."""
     slug, number = issue_reference(issue)
     directory = prescreen_directory(data_root, slug, number)
     directory.mkdir(parents=True, exist_ok=True)
-    # `read_claims` and `assess_target` both read the run's captured issue. A
-    # pre-screen has not fetched one and should not pretend it has: this is the
-    # reference only, which is all either of them needs here.
-    owner, _, name = slug.partition("/")
-    (directory / "issue.json").write_text(
-        json.dumps(
-            {
-                "success": True,
-                "source": "prescreen-reference",
-                "reference": {"owner": owner, "repository": name, "number": number},
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+    issue_url = f"https://github.com/{slug}/issues/{number}"
+    captured = capture_issue_from_github(
+        directory,
+        issue_url=issue_url,
+        executable=executable,
+        timeout_seconds=timeout_seconds,
     )
     record: dict[str, Any] = {
         "schema_version": PRESCREEN_SCHEMA_VERSION,
@@ -139,7 +167,28 @@ def prescreen_issue(
         "issue_number": number,
         "symbols": [symbol for symbol in symbols if symbol.strip()],
         "workspace": str(directory),
+        "issue": {
+            "success": captured.get("success"),
+            "state": captured.get("state"),
+            "title": captured.get("title"),
+            "labels": captured.get("labels", []),
+            "body_characters": captured.get("body_characters"),
+        },
     }
+    issue_blocking = _issue_blocking(captured)
+    if issue_blocking:
+        record.update(
+            {
+                "blocking": issue_blocking,
+                "warnings": [],
+                "verdict": "reject",
+                "stages_skipped": ["duplicate-search", "prior-art", "claims"],
+                "next": f"Do not open a run on {slug}#{number}: "
+                + "; ".join(issue_blocking),
+            }
+        )
+        _store_prescreen(data_root, slug, number, record)
+        return record
     search = record_duplicate_search(
         directory,
         repository=slug,
@@ -208,11 +257,7 @@ def prescreen_issue(
             f"mailman init-run --repository https://github.com/{slug}.git "
             f"--issue https://github.com/{slug}/issues/{number} ..."
         )
-    path = prescreen_path(data_root, slug, number)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    _store_prescreen(data_root, slug, number, record)
     return record
 
 
@@ -225,6 +270,11 @@ def check(data_root: Path, issue: str) -> tuple[dict[str, Any] | None, str | Non
             f"no pre-screen for {slug}#{number}. Run `mailman prescreen "
             f"{slug}#{number}` first: most targets fail it, and failing it "
             "before a run exists is the whole point"
+        )
+    if record.get("schema_version") != PRESCREEN_SCHEMA_VERSION:
+        return record, (
+            f"the pre-screen for {slug}#{number} predates issue classification; "
+            f"run `mailman prescreen {slug}#{number}` again"
         )
     if record.get("verdict") != "pass":
         return record, (

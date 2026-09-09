@@ -65,23 +65,61 @@ def _verification_line(verification_command: Sequence[str] | None) -> str:
     )
 
 
-def _permitted_command_note(verification_command: Sequence[str] | None) -> str:
-    """Say which command is pre-approved, so no turn is spent discovering it.
-
-    An agent that has to guess the permitted spelling learns it only from
-    refusals, and a refusal costs a turn out of the same budget the work needs.
-    """
+def _focused_check_note(verification_command: Sequence[str] | None) -> str:
+    """Keep the agent's checks focused; the harness owns the full gate."""
     if not verification_command:
         return ""
     printable = " ".join(verification_command)
     return (
         f"""
-Run it yourself as `{printable}`. That command is pre-approved, as are the
-equivalent spellings of the same interpreter path. A compound command, anything
-joined with `&&` or `;`, is refused whatever it contains, so run one command at
-a time.
+The full gate is `{printable}`. Mailman runs it after your stage, so do not run
+it merely to duplicate the harness. Run the smallest focused test that guides
+your work. If the harness gate later fails, you will receive its exact failure
+in the same session.
 """
     )
+
+
+def _read_json(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _known_scope_section(run_directory: Path) -> str:
+    prescreen = _read_json(run_directory / "prescreen.json")
+    symbols = [str(item) for item in prescreen.get("symbols") or [] if str(item)]
+    if not symbols:
+        return ""
+    return (
+        "\n## Pre-screened scope\n\n"
+        "Start with these issue symbols; do not begin with a repository-wide "
+        f"search: {', '.join(f'`{item}`' for item in symbols)}.\n"
+    )
+
+
+def _reproduction_section(run_directory: Path) -> str:
+    reproduction = _read_json(run_directory / "reproduction.json")
+    if reproduction.get("success") is not True:
+        return ""
+    command = " ".join(str(item) for item in reproduction.get("command") or [])
+    if reproduction.get("reproduced") is True:
+        outcome = (
+            "timed out"
+            if reproduction.get("timed_out")
+            else f"exited {reproduction.get('exit_code')}"
+        )
+        return (
+            "\n## Baseline already proved by Mailman\n\n"
+            f"At the recorded base commit, `{command}` {outcome} and satisfied "
+            "the reproduction contract. Do not spend time recreating or rerunning "
+            "that baseline. Use it as the observed before-state.\n"
+        )
+    return ""
 
 
 def _prior_art_section(prior_art: str | None, *, audience: str) -> str:
@@ -151,6 +189,8 @@ def build_primary_prompt(
     verification_command: Sequence[str] | None,
     prior_art: str | None = None,
     maintainer_review: str | None = None,
+    scope: str = "",
+    reproduction: str = "",
 ) -> str:
     return f"""# Primary engineering task
 
@@ -162,12 +202,13 @@ evidence report. Read the repository's own contribution and testing
 instructions before editing, and follow its existing conventions.
 
 {_verification_line(verification_command)}
-{_permitted_command_note(verification_command)}
+{_focused_check_note(verification_command)}
 {_EXECUTION_DISCIPLINE}
+{scope}{reproduction}
 ## Required behavior
 
 - Keep the change focused on this issue. No drive-by refactors.
-- Reproduce the reported behavior before changing it when the environment allows.
+- Use the recorded baseline. Do not repeat coordinator discovery or reproduction.
 - Inspect the existing tests before designing regression coverage.
 - Do not push, open a pull request, comment on the issue, or otherwise contact
   the upstream repository. Stop at a change in this workspace.
@@ -187,6 +228,8 @@ def build_reviewer_prompt(
     verification_command: Sequence[str] | None,
     prior_art: str | None = None,
     maintainer_review: str | None = None,
+    scope: str = "",
+    reproduction: str = "",
 ) -> str:
     return f"""# Reviewer task
 
@@ -199,6 +242,7 @@ it touches.
 
 {_verification_line(verification_command)}
 {_EXECUTION_DISCIPLINE}
+{scope}{reproduction}
 
 ## Judge
 
@@ -237,6 +281,8 @@ def write_task_prompts(
         )
     prior_art = load_prior_art_markdown(run_directory)
     maintainer_review = load_review_markdown(run_directory)
+    scope = _known_scope_section(run_directory)
+    reproduction = _reproduction_section(run_directory)
     primary_path = run_directory / PRIMARY_TASK_FILENAME
     reviewer_path = run_directory / REVIEWER_TASK_FILENAME
     primary_path.write_text(
@@ -246,6 +292,8 @@ def write_task_prompts(
             verification_command=verification_command,
             prior_art=prior_art,
             maintainer_review=maintainer_review,
+            scope=scope,
+            reproduction=reproduction,
         ),
         encoding="utf-8",
     )
@@ -256,6 +304,8 @@ def write_task_prompts(
             verification_command=verification_command,
             prior_art=prior_art,
             maintainer_review=maintainer_review,
+            scope=scope,
+            reproduction=reproduction,
         ),
         encoding="utf-8",
     )

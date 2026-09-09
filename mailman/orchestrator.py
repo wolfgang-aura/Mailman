@@ -66,16 +66,12 @@ _VERIFICATION_PATTERN = re.compile(
 )
 
 _VERDICT_CONTRACT = """
-## Required verification claim
+## Review boundary
 
-Before the verdict line, write exactly one line of the form
-`MAILMAN-VERIFICATION: RAN` or `MAILMAN-VERIFICATION: BLOCKED`.
-
-Write RAN only if you ran this run's verification command yourself and saw it
-finish. Write BLOCKED if anything stopped you: a sandbox that refused to start
-the interpreter, a missing dependency, a command that never completed. BLOCKED
-is not a failure on your part and carries no penalty. Claiming RAN when you did
-not is the one answer that makes the whole run worthless.
+Mailman ran the recorded verification after the primary stage and will run it
+again after your review. Do not rerun that full gate merely to duplicate the
+harness. Your job is to inspect the candidate's logic, scope, tests, and risks.
+Run a smaller focused check only when it resolves a review question.
 
 ## Required verdict
 
@@ -86,9 +82,8 @@ Choose REVISE when the candidate needs a change, and list every required change
 above the verdict line. Choose APPROVE only when no change is required. A
 missing, repeated, or contradictory verdict stops the run for a human.
 
-An APPROVE is a claim that you checked the candidate, so it requires
-`MAILMAN-VERIFICATION: RAN`. If you could not verify, REVISE with what you found
-by reading, or say plainly that you cannot judge it.
+An APPROVE means no code-review change is required. The final independent
+verification, not your process, decides whether the candidate advances.
 """
 
 _EMPTY_CANDIDATE_NOTICE = """
@@ -653,17 +648,52 @@ class _Orchestration:
         rediscovering it. The prompt is rebuilt for every review cycle,
         because a revision stage can leave a different state behind.
         """
-        source = self.reviewer_prompt.read_text(encoding="utf-8").rstrip()
+        resumed = (
+            self.run.reviewer.agent == "codex"
+            and self._previous_session("reviewer") is not None
+        )
+        source = (
+            "# Continued review\n\nThe primary changed the candidate in the "
+            "workspace. Review the new diff against the same issue and base commit."
+            if resumed
+            else self.reviewer_prompt.read_text(encoding="utf-8").rstrip()
+        )
         notice = "" if self.workspace_changed else _EMPTY_CANDIDATE_NOTICE
         sandbox = _REVIEWER_SANDBOX_NOTICE.format(
             scratch=self.run_directory / "scratch"
         )
+        changes = inspect_workspace(self.workspace).changes
+        stat = git_bytes(
+            self.workspace, "diff", "--stat", self.run.base_commit, "--"
+        ).decode("utf-8", errors="replace").strip()
+        primary_report = self.run_directory / "primary-report.md"
+        report = (
+            primary_report.read_text(encoding="utf-8", errors="replace")[-4_000:]
+            if primary_report.is_file()
+            else "No primary report was recorded."
+        )
+        candidate = (
+            "\n\n## Candidate briefing\n\n"
+            f"Changed paths: {', '.join(changes) or 'none'}\n\n"
+            f"Diff stat:\n```text\n{stat or 'empty'}\n```\n\n"
+            f"Primary report (tail):\n\n{report.strip()}\n"
+        )
         return self._write_derived_prompt(
-            "review-input.md", f"{source}\n{notice}{sandbox}{_VERDICT_CONTRACT}"
+            "review-input.md",
+            f"{source}{candidate}\n{notice}{sandbox}{_VERDICT_CONTRACT}",
         )
 
     def _revision_prompt(self, findings: str) -> Path:
-        source = self.primary_prompt.read_text(encoding="utf-8").rstrip()
+        resumed = (
+            self.run.primary.agent == "codex"
+            and self._previous_session("primary") is not None
+        )
+        source = (
+            "# Continued primary task\n\nContinue in the same workspace and "
+            "session. Do not repeat repository discovery or the baseline."
+            if resumed
+            else self.primary_prompt.read_text(encoding="utf-8").rstrip()
+        )
         return self._write_derived_prompt(
             "revision-input.md",
             f"{source}\n{_REVISION_CONTRACT}{findings.strip()}\n",
@@ -675,7 +705,16 @@ class _Orchestration:
         A failing gate is a more objective finding than a reviewer opinion, so
         it earns the same one revision. The agent never saw this output before.
         """
-        source = self.primary_prompt.read_text(encoding="utf-8").rstrip()
+        resumed = (
+            self.run.primary.agent == "codex"
+            and self._previous_session("primary") is not None
+        )
+        source = (
+            "# Continued primary task\n\nThe harness checked your current "
+            "workspace. Fix only the failure below; do not repeat discovery."
+            if resumed
+            else self.primary_prompt.read_text(encoding="utf-8").rstrip()
+        )
         body = _describe_failure(result)
         return self._write_derived_prompt(
             "repair-input.md",
@@ -890,48 +929,20 @@ class _Orchestration:
                 self._block("reviewer verdict was missing or contradictory")
                 return self._outcome()
             if verdict == VERDICT_APPROVE:
-                # An APPROVE asserts a check, so the loop must not report a
-                # two-agent check it did not get. REVISE is unaffected: a
-                # finding from a reviewer that only read the code is still worth
-                # acting on. See
-                # https://github.com/wolfgang-aura/Mailman/issues/20.
                 claim = parse_verification_claim(review_report)
                 reviewer_commands = self.commands_run.get("reviewer", 0)
-                verified = claim == VERIFICATION_RAN and reviewer_commands > 0
                 self._step(
                     "reviewer-execution",
-                    ok=verified,
+                    ok=True,
                     detail=(
-                        f"reviewer claimed {claim or 'nothing'} and ran "
-                        f"{reviewer_commands} command(s)"
+                        f"reviewer completed the code review and ran "
+                        f"{reviewer_commands} optional command(s)"
                     ),
                     data={
                         "verification_claim": claim,
                         "commands_run": reviewer_commands,
                     },
                 )
-                if claim is None:
-                    self._block(
-                        "the reviewer approved the candidate but did not say "
-                        "whether it ran the verification. A missing or repeated "
-                        "MAILMAN-VERIFICATION line stops the run for a human."
-                    )
-                    return self._outcome()
-                if claim == VERIFICATION_BLOCKED:
-                    self._block(
-                        "the reviewer approved the candidate without running "
-                        "the verification, so the review is a code read rather "
-                        "than a check. Re-review with an agent that can run the "
-                        "verification command."
-                    )
-                    return self._outcome()
-                if reviewer_commands == 0:
-                    self._block(
-                        "the reviewer claimed it ran the verification but "
-                        "executed nothing at all, which is a contradiction. "
-                        "Treat this review as unusable."
-                    )
-                    return self._outcome()
                 break
             if self.revisions_used >= self.max_revisions:
                 self._block("reviewer requested changes beyond the revision budget")

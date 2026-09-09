@@ -117,9 +117,8 @@ RAN_ONE_COMMAND = json.dumps(
     }
 )
 
-#: The report a reviewer writes when it actually ran the gate and found
-#: nothing. Both lines are required before an APPROVE counts.
-APPROVED = "no findings\nMAILMAN-VERIFICATION: RAN\nMAILMAN-VERDICT: APPROVE\n"
+#: Reviewers judge the code. Mailman, not the reviewer, owns the repeated gate.
+APPROVED = "no findings\nMAILMAN-VERDICT: APPROVE\n"
 
 PASSING_CHECK = "import sys; sys.exit(0)"
 FAILING_CHECK = "import sys; sys.exit(1)"
@@ -420,11 +419,7 @@ class EmptyCandidateTests(OrchestratorHarness):
 
 
 class OrchestrationTests(OrchestratorHarness):
-    def test_a_reviewer_that_executed_nothing_cannot_clear_a_run(self) -> None:
-        # Run 20260902T144544Z-5dbf69: Codex could not start the interpreter in
-        # its sandbox, said so, and returned APPROVE anyway. The run reached
-        # READY_FOR_HUMAN_REVIEW with only one agent having run the tests. See
-        # https://github.com/wolfgang-aura/Mailman/issues/20.
+    def test_a_read_only_review_can_approve_before_the_harness_gate(self) -> None:
         outcome, run_directory, _, _ = self.orchestrate(
             primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
             reviewer_script=[
@@ -440,15 +435,14 @@ class OrchestrationTests(OrchestratorHarness):
             ],
         )
 
-        self.assertIs(outcome.status, RunStatus.BLOCKED)
-        self.assertFalse(outcome.ready)
+        self.assertIs(outcome.status, RunStatus.ENGINEERING_COMPLETE)
         record = json.loads(
             (run_directory / "orchestration.json").read_text(encoding="utf-8")
         )
         execution = [
             step for step in record["steps"] if step["name"] == "reviewer-execution"
         ]
-        self.assertFalse(execution[-1]["ok"])
+        self.assertTrue(execution[-1]["ok"])
         self.assertEqual(execution[-1]["data"]["commands_run"], 0)
         self.assertEqual(execution[-1]["data"]["verification_claim"], "BLOCKED")
 
@@ -460,11 +454,8 @@ class OrchestrationTests(OrchestratorHarness):
 
         self.assertIs(outcome.status, RunStatus.ENGINEERING_COMPLETE)
 
-    def test_a_reviewer_that_says_it_could_not_verify_cannot_approve(self) -> None:
-        # The real shape of run 20260902T144544Z-5dbf69. Three commands ran:
-        # two file reads that succeeded and one pytest that exited 1. Counting
-        # commands does not catch that, and the reviewer said so in prose.
-        outcome, run_directory, _, _ = self.orchestrate(
+    def test_a_legacy_blocked_verification_claim_does_not_replace_final_gate(self) -> None:
+        outcome, _, _, _ = self.orchestrate(
             primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
             reviewer_script=[
                 {
@@ -477,43 +468,25 @@ class OrchestrationTests(OrchestratorHarness):
                 }
             ],
         )
-        record = json.loads(
-            (run_directory / "orchestration.json").read_text(encoding="utf-8")
-        )
-        blocked = [step for step in record["steps"] if step["name"] == "blocked"]
+        self.assertIs(outcome.status, RunStatus.ENGINEERING_COMPLETE)
 
-        self.assertIs(outcome.status, RunStatus.BLOCKED)
-        self.assertIn("without running the verification", blocked[-1]["detail"])
-
-    def test_a_reviewer_that_says_nothing_about_verifying_cannot_approve(self) -> None:
-        outcome, run_directory, _, _ = self.orchestrate(
+    def test_a_reviewer_needs_only_a_clear_verdict(self) -> None:
+        outcome, _, _, _ = self.orchestrate(
             primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
             reviewer_script=[
                 {"report": "read it, looks fine\nMAILMAN-VERDICT: APPROVE\n"}
             ],
         )
-        record = json.loads(
-            (run_directory / "orchestration.json").read_text(encoding="utf-8")
-        )
-        blocked = [step for step in record["steps"] if step["name"] == "blocked"]
+        self.assertIs(outcome.status, RunStatus.ENGINEERING_COMPLETE)
 
-        self.assertIs(outcome.status, RunStatus.BLOCKED)
-        self.assertIn("did not say", blocked[-1]["detail"])
-
-    def test_a_claim_to_have_verified_with_no_command_at_all_is_a_contradiction(
+    def test_a_reviewer_does_not_need_to_duplicate_the_harness_command(
         self,
     ) -> None:
-        outcome, run_directory, _, _ = self.orchestrate(
+        outcome, _, _, _ = self.orchestrate(
             primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
             reviewer_script=[{"report": APPROVED, "stdout": ""}],
         )
-        record = json.loads(
-            (run_directory / "orchestration.json").read_text(encoding="utf-8")
-        )
-        blocked = [step for step in record["steps"] if step["name"] == "blocked"]
-
-        self.assertIs(outcome.status, RunStatus.BLOCKED)
-        self.assertIn("executed nothing", blocked[-1]["detail"])
+        self.assertIs(outcome.status, RunStatus.ENGINEERING_COMPLETE)
 
     def test_a_blocked_verification_still_allows_a_revision(self) -> None:
         # A reviewer that could not run the gate can still read the code and
@@ -539,13 +512,30 @@ class OrchestrationTests(OrchestratorHarness):
         self.assertEqual(outcome.revisions_used, 1)
         self.assertEqual(len(primary.calls), 2)
 
-    def test_the_reviewer_prompt_states_the_verification_contract(self) -> None:
+    def test_the_reviewer_prompt_assigns_review_not_reverification(self) -> None:
         _, _, _, reviewer = self.orchestrate(
             primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
             reviewer_script=[{"report": APPROVED}],
         )
 
-        self.assertIn("MAILMAN-VERIFICATION", reviewer.calls[0][1])
+        self.assertIn("Review boundary", reviewer.calls[0][1])
+        self.assertIn("Do not rerun that full gate", reviewer.calls[0][1])
+
+    def test_the_reviewer_receives_changed_paths_and_the_primary_report(self) -> None:
+        _, _, _, reviewer = self.orchestrate(
+            primary_script=[
+                {
+                    "report": "changed the parser after a focused check\n",
+                    "touch": ("fix.txt", "fixed\n"),
+                }
+            ],
+            reviewer_script=[{"report": APPROVED}],
+        )
+
+        prompt = reviewer.calls[0][1]
+        self.assertIn("Candidate briefing", prompt)
+        self.assertIn("fix.txt", prompt)
+        self.assertIn("changed the parser", prompt)
 
     def test_a_reviewer_that_executed_nothing_may_still_ask_for_a_revision(
         self,

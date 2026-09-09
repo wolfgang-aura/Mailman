@@ -955,9 +955,10 @@ def _prescreen(arguments: argparse.Namespace) -> int:
 
 def _init_run(arguments: argparse.Namespace) -> int:
     from mailman import prescreen
+    prescreen_record = None
     if arguments.issue:
         root = (arguments.data_root or default_data_root()).resolve()
-        _, refusal = prescreen.check(root, arguments.issue)
+        prescreen_record, refusal = prescreen.check(root, arguments.issue)
         if refusal and not arguments.no_prescreen:
             raise ValueError(refusal)
     elif arguments.no_prescreen:
@@ -978,6 +979,10 @@ def _init_run(arguments: argparse.Namespace) -> int:
             json.dumps({"reason": arguments.no_prescreen, "issue": arguments.issue},
                        indent=2),
             encoding="utf-8")
+    elif prescreen_record is not None:
+        (run_directory / "prescreen.json").write_text(
+            json.dumps(prescreen_record, indent=2) + "\n", encoding="utf-8"
+        )
     print(json.dumps({"run_id": run.run_id, "path": str(run_directory)}, indent=2))
     return 0
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,13 +34,9 @@ class TaskPromptTests(unittest.TestCase):
             )
 
             primary = primary_path.read_text(encoding="utf-8")
-            self.assertIn("Run it yourself as `python -m pytest`", primary)
-            self.assertIn("pre-approved", primary)
-            self.assertIn("compound command", primary)
-            # The reviewer has no such allowance, so it is not told it has one.
-            self.assertNotIn(
-                "pre-approved", reviewer_path.read_text(encoding="utf-8")
-            )
+            self.assertIn("Mailman runs it after your stage", primary)
+            self.assertIn("smallest focused test", primary)
+            self.assertNotIn("Run it yourself", primary)
 
     def test_refuses_to_build_prompts_from_the_issue_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -68,6 +65,39 @@ class TaskPromptTests(unittest.TestCase):
             self.assertIn("Do not push, open a pull request", primary)
             self.assertIn("Do not edit any", reviewer)
             self.assertIn(f"git diff {run.base_commit}", reviewer)
+
+    def test_prompts_include_precomputed_scope_and_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, run_directory = make_run(Path(temporary_directory) / "runs")
+            (run_directory / "issue.md").write_text("# Issue\n\nCrash.\n", encoding="utf-8")
+            (run_directory / "prescreen.json").write_text(
+                '{"symbols": ["Parser.parse", "tests/test_parser.py"]}',
+                encoding="utf-8",
+            )
+            (run_directory / "reproduction.json").write_text(
+                json.dumps(
+                    {
+                        "success": True,
+                        "reproduced": True,
+                        "command": ["python", "repro.py"],
+                        "exit_code": 1,
+                        "timed_out": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            primary_path, reviewer_path = write_task_prompts(
+                run, run_directory, verification_command=["python", "-m", "pytest"]
+            )
+
+            for path in (primary_path, reviewer_path):
+                prompt = path.read_text(encoding="utf-8")
+                self.assertIn("Pre-screened scope", prompt)
+                self.assertIn("Parser.parse", prompt)
+                self.assertIn("Baseline already proved", prompt)
+                self.assertIn("python repro.py", prompt)
+                self.assertIn("Do not spend time", prompt)
 
     def test_prompts_state_the_evidence_rule_without_a_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

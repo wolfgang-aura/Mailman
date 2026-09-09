@@ -56,11 +56,14 @@ status check you did not act on is pure cost.
    generated descriptions are reasons to pick another target for this flow.
 2. Pre-screen every issue on the shortlist before opening a run on any of
    them: `mailman prescreen OWNER/REPO#N --symbols NAME NAME`. It runs the same
-   narrow duplicate search, prior-art read and claim check the run stage runs,
-   writes the verdict beside the repository screens, and exits non-zero on a
-   reject. Most targets fail here. One hunt opened 24 runs to file 3, and 14 of
-   the 21 drops were "someone already fixed this": a question this answers for
-   the price of one query instead of a whole run.
+   issue read, narrow duplicate search, prior-art read and claim check the run
+   stage runs, writes the verdict beside the repository screens, and exits
+   non-zero on a reject. Closed issues and issues labelled as features,
+   enhancements, questions, projects or tracking work stop after the issue
+   read; do not spend search or agent work on them. Most targets fail here. One
+   hunt opened 24 runs to file 3, and 14 of the 21 drops were "someone already
+   fixed this": a question this answers for the price of one query instead of
+   a whole run.
    `init-run` refuses an issue with no fresh passing pre-screen. Override with
    `--no-prescreen REASON` only when you mean it; the reason is recorded.
 3. Search narrow first inside the run too. Give `duplicate-search` the issue
@@ -92,6 +95,9 @@ status check you did not act on is pure cost.
    all of them. `orchestrate RUN_ID` reads that same command. Do not supply
    custom prompts or call `run-agent` to bypass this sequence. Both model roles
    must use the same recorded procedure and the independent verification gate.
+   The generated task carries the pre-screened symbols and the recorded
+   baseline. The primary starts there, runs only focused checks needed to guide
+   the edit, and does not redo discovery, reproduction or the full gate.
 
 ## Repair without escalating routine work
 
@@ -100,7 +106,12 @@ status check you did not act on is pure cost.
     Every run has a cumulative two-hour deadline from `init-run`, not a fresh
     timeout per agent call. Codex turns also have a two-million-token budget,
     and later turns resume the same per-role session so they do not rediscover
-    the repository. The first primary stage and every revision stop before
+    the repository. Revision prompts carry only the new failure or review
+    findings. Reviewer prompts carry the changed paths, diff stat and primary
+    report tail; the reviewer inspects logic, scope, tests and risk instead of
+    duplicating the full verification command. Mailman owns that command and
+    runs it after the primary and again after approval. The first primary stage
+    and every revision stop before
     review if the candidate exceeds 8 files or 500 changed lines. Treat that as
     evidence that the issue is too broad for this hunt and replace it.
 11. On a failure, read the exact failed command, stage, exit code and output.

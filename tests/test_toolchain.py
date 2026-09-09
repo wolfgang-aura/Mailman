@@ -97,6 +97,9 @@ class ToolchainTests(unittest.TestCase):
             self.assertEqual(manifest["tools"]["python"]["sha256"], expected_hash)
             prompt = prepared.read_text(encoding="utf-8")
             self.assertIn("Mailman verified toolchain", prompt)
+            self.assertIn("Mailman role boundary", prompt)
+            self.assertIn("Mailman already owns", prompt)
+            self.assertNotIn("## Find and screen", prompt)
             self.assertIn(executable, prompt)
             self.assertIn(expected_hash, prompt)
 

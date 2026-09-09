@@ -147,14 +147,14 @@ def prepare_agent_prompt(
 ) -> Path:
     prompt = source_prompt.read_text(encoding="utf-8")
     procedure = Path(__file__).with_name("procedure.md")
-    contract = procedure.read_text(encoding="utf-8")
     prompt += (
-        "\n\n## Shared Mailman procedure\n\n"
+        "\n\n## Mailman role boundary\n\n"
         f"Procedure SHA-256: {sha256(procedure.read_bytes()).hexdigest()}\n\n"
-        f"You are assigned only the {role} engineering role. The coordinator owns "
-        "screening, packaging and user approval. Follow your role instructions; "
-        "do not launch another hunt or publish. The complete procedure is included "
-        "so the evidence contract is identical across models.\n\n" + contract
+        f"You are assigned only the {role} engineering role. Mailman already owns "
+        "target screening, duplicate and claim checks, baseline reproduction, "
+        "independent verification, packaging, and user approval. Do not repeat "
+        "those coordinator stages, launch another hunt, or publish. Work only from "
+        "the evidence and scope in this prompt.\n"
     )
     manifest = load_toolchain(run_directory)
     tools = manifest["tools"]

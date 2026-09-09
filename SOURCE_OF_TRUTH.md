@@ -422,6 +422,17 @@ no marker. This prevents completed but unfileable patches such as LangGraph
 issue #8850. The regression suite passes: 756 tests and 54 subtests. Tracking
 issue: https://github.com/wolfgang-aura/Mailman/issues/81.
 
+The structural workflow now assigns each expensive operation once. Pre-screen
+reads the actual GitHub issue and immediately rejects closed or non-bounded
+feature, enhancement, question, project and tracking work before duplicate
+searches or a run. Its known symbols are copied into the run prompt, together
+with Mailman's recorded baseline. The primary performs the edit and focused
+checks; Mailman performs both full verification gates; the reviewer inspects
+the candidate rather than repeating that gate. Codex revision and repair turns
+resume the same role session with only the new findings, and prepared prompts
+carry a short role boundary instead of the complete coordinator procedure. See
+`docs/decisions/0013-separate-agent-and-harness-work.md`.
+
 ## Knowledge flywheel
 
 `mailman retrospective RUN_ID` drafts `retrospective.json` and
