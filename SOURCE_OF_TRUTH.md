@@ -1,8 +1,19 @@
 # Source of truth
 
-Last verified: 2026-09-07 in `Asia/Singapore`.
+Last verified: 2026-09-10 in `Asia/Singapore`.
 
 ## Current local procedure
+
+Code checkpoint `54bf8ed` on local `main` now starts one
+fixed two-hour deadline at `hunt init`. Every attached orchestration reads that
+deadline, and neither a replacement candidate nor
+`--time-budget-override-reason` can reset it. `hunt add` refuses an expired
+hunt and any target already used by that hunt, including a dropped run.
+Agent work now requires a machine-checked reproduction. Before the primary
+starts, Mailman runs the exact verification argv recorded by `build-prompts`
+on the clean base tree and blocks if it fails or changes candidate bytes.
+Local verification passed 781 tests and 54 subtests. The change is not pushed,
+deployed, or live-verified. Issues #81, #82 and #83 track the failures.
 
 `520ab2a` on `main`, 2026-09-09, passed GitHub Actions run `34298470558`. It
 adds three commands and one run status on top of the procedure below:
