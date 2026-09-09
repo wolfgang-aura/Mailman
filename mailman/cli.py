@@ -575,7 +575,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--run-time-budget",
         type=float,
         default=DEFAULT_RUN_TIME_BUDGET_SECONDS,
-        help="total seconds from run creation; defaults to two hours",
+        help="total seconds from run creation for a standalone run. A run "
+        "attached to PRHunt uses the hunt's fixed deadline instead",
     )
     orchestrate_parser.add_argument(
         "--time-budget-override-reason",
@@ -667,7 +668,8 @@ def _build_parser() -> argparse.ArgumentParser:
     reproduce.add_argument(
         "--not-machine-reproducible",
         action="store_true",
-        help="record that a person read the bug and no command can check it",
+        help="record that a person read the bug and no command can check it. "
+        "This preserves evidence but does not authorize agent work",
     )
     reproduce.add_argument(
         "--note",
@@ -1628,6 +1630,36 @@ def _default_prompt(run_directory: Path, given: Path | None, name: str) -> Path:
 
 def _orchestrate(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    from mailman import hunt
+    data_root = (arguments.data_root or default_data_root()).resolve()
+    owning_hunt = hunt.hunt_for_run(data_root, run.run_id)
+    deadline_at = None
+    time_budget_name = "run"
+    time_budget_seconds = arguments.run_time_budget
+    if owning_hunt:
+        if hunt.effective_status(owning_hunt) != "RUNNING":
+            raise ValueError(
+                f"hunt {owning_hunt['hunt_id']} is {hunt.effective_status(owning_hunt)}; "
+                "do not restart one of its candidate runs"
+            )
+        row = next(
+            entry for entry in owning_hunt["runs"] if entry["run_id"] == run.run_id
+        )
+        if row.get("dropped"):
+            raise ValueError(
+                f"run {run.run_id} was dropped from hunt {owning_hunt['hunt_id']}; "
+                "restore that run with evidence before resuming it"
+            )
+        if arguments.time_budget_override_reason:
+            raise ValueError(
+                "an attached run cannot extend the hunt-wide deadline with "
+                "--time-budget-override-reason"
+            )
+        deadline_at = hunt.deadline(owning_hunt).isoformat()
+        time_budget_name = "hunt"
+        time_budget_seconds = float(
+            owning_hunt.get("time_budget_seconds", hunt.HUNT_TIME_BUDGET_SECONDS)
+        )
     command = environment_command(
         run_directory, arguments.command or load_recorded_verification(run_directory) or []
     )
@@ -1674,7 +1706,9 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
         verification_timeout_seconds=arguments.verification_timeout,
         max_revisions=arguments.max_revisions,
         max_review_cycles=arguments.max_review_cycles,
-        run_time_budget_seconds=arguments.run_time_budget,
+        run_time_budget_seconds=time_budget_seconds,
+        deadline_at=deadline_at,
+        time_budget_name=time_budget_name,
         budget_override_reason=arguments.time_budget_override_reason,
         max_changed_files=arguments.max_changed_files,
         max_changed_lines=arguments.max_changed_lines,

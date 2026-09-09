@@ -264,6 +264,8 @@ class _Orchestration:
         max_revisions: int,
         max_review_cycles: int,
         run_time_budget_seconds: float,
+        deadline_at: str | None,
+        time_budget_name: str,
         budget_override_reason: str | None,
         max_changed_files: int,
         max_changed_lines: int,
@@ -284,11 +286,17 @@ class _Orchestration:
         self.max_revisions = max_revisions
         self.max_review_cycles = max_review_cycles
         self.run_time_budget_seconds = run_time_budget_seconds
+        self.time_budget_name = time_budget_name
         self.budget_override_reason = budget_override_reason.strip() if budget_override_reason else None
         created = datetime.fromisoformat(run.created_at)
         if created.tzinfo is None:
             created = created.replace(tzinfo=UTC)
-        self.deadline = created + timedelta(seconds=run_time_budget_seconds)
+        if deadline_at:
+            self.deadline = datetime.fromisoformat(deadline_at)
+            if self.deadline.tzinfo is None:
+                self.deadline = self.deadline.replace(tzinfo=UTC)
+        else:
+            self.deadline = created + timedelta(seconds=run_time_budget_seconds)
         self.max_changed_files = max_changed_files
         self.max_changed_lines = max_changed_lines
         self.announce = announce
@@ -359,8 +367,8 @@ class _Orchestration:
         remaining = (self.deadline - datetime.now(UTC)).total_seconds()
         if remaining <= 0:
             raise RunTimeBudgetExpired(
-                f"run time budget spent before {stage}: "
-                f"{self.run_time_budget_seconds:g} seconds from run creation"
+                f"{self.time_budget_name} time budget spent before {stage}: "
+                f"deadline {self.deadline.isoformat()}"
             )
         return min(requested, remaining)
 
@@ -505,7 +513,8 @@ class _Orchestration:
         return ok, report_text
 
     def _verify(self, stage: str) -> tuple[bool, CommandResult]:
-        before = candidate_digest(self.workspace, self.run.base_commit) if stage == "final" else None
+        guard_workspace = stage in ("baseline", "final")
+        before = candidate_digest(self.workspace, self.run.base_commit) if guard_workspace else None
         self.announce(
             f"run  verification ({stage}): {' '.join(self.verification_command)}"
         )
@@ -518,8 +527,8 @@ class _Orchestration:
         )
         command_number = append_verification(self.run_directory, result.to_dict())
         ok = not result.timed_out and result.exit_code == 0
-        after = candidate_digest(self.workspace, self.run.base_commit) if stage == "final" else None
-        if before != after:
+        after = candidate_digest(self.workspace, self.run.base_commit) if guard_workspace else None
+        if guard_workspace and before != after:
             ok = False
         detail = (
             "verification timed out"
@@ -847,6 +856,12 @@ class _Orchestration:
                 raise ValueError("candidate does not descend from the run base")
             self._record_workspace_change("resume")
         else:
+            baseline_ok, _ = self._verify("baseline")
+            if not baseline_ok:
+                self._block(
+                    "baseline verification failed before the primary agent started"
+                )
+                return self._outcome()
             self._transition(RunStatus.PRIMARY_RUNNING, "primary agent starting")
         try:
             return self._loop(start_primary=not resume_review)
@@ -1053,6 +1068,8 @@ def orchestrate(
     max_revisions: int = 1,
     max_review_cycles: int = 3,
     run_time_budget_seconds: float = DEFAULT_RUN_TIME_BUDGET_SECONDS,
+    deadline_at: str | None = None,
+    time_budget_name: str = "run",
     budget_override_reason: str | None = None,
     max_changed_files: int = DEFAULT_MAX_CHANGED_FILES,
     max_changed_lines: int = DEFAULT_MAX_CHANGED_LINES,
@@ -1076,6 +1093,8 @@ def orchestrate(
         max_revisions=max_revisions,
         max_review_cycles=max_review_cycles,
         run_time_budget_seconds=run_time_budget_seconds,
+        deadline_at=deadline_at,
+        time_budget_name=time_budget_name,
         budget_override_reason=budget_override_reason,
         max_changed_files=max_changed_files,
         max_changed_lines=max_changed_lines,

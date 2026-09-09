@@ -114,13 +114,14 @@ class TargetAssessment:
             return [
                 "Nothing is recorded about whether the reported bug still "
                 "happens at the base commit. Run `mailman reproduce RUN_ID -- "
-                "<command>` after `prepare-environment`, or record a human "
-                "reading with `--not-machine-reproducible --note ...`."
+                "<command>` after `prepare-environment`. A human reading may "
+                "be recorded, but it does not authorize agent work."
             ]
         if self.reproduction.get("machine_checked") is not True:
             note = self.reproduction.get("note", "")
             return [
-                "reproduce  read by a human, not checked by machine: " + note
+                "reproduce  BLOCKED: read by a human, not checked by machine: "
+                + note
             ]
         if self.reproduction.get("reproduced") is True:
             return [
@@ -400,7 +401,11 @@ def assess_target(
         # https://github.com/wolfgang-aura/Mailman/issues/37.
         blocking.append(NO_REPRODUCTION)
     elif reproduction.get("machine_checked") is not True:
-        warnings.append(UNVERIFIED_REPRODUCTION)
+        # A human reading may be useful evidence, but it cannot tell an agent
+        # whether its patch changes the reported behaviour. Hunt
+        # 20260909T132008Z-054119 spent 55 minutes on a proxy for a remote UI
+        # symptom and produced a deterministic hang. See issue #82.
+        blocking.append(UNVERIFIED_REPRODUCTION)
     elif reproduction.get("reproduced") is not True:
         # Not overridable, and deliberately so: the right response to a bug
         # that no longer happens is to abandon the run, not to acknowledge it.

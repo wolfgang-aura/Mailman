@@ -212,13 +212,13 @@ class ReproductionGateTests(unittest.TestCase):
         self.assertEqual(assessment.blocking, [])
         self.assertIn("still happens at the base commit", assessment.summary())
 
-    def test_a_human_reading_warns_rather_than_blocks(self) -> None:
+    def test_a_human_reading_blocks_agent_work(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = self._searched(Path(temporary))
             record_human_reproduction(root, note="no runnable reproducer given")
             assessment = assess_target(root)
-        self.assertEqual(assessment.blocking, [])
-        self.assertIn(UNVERIFIED_REPRODUCTION, assessment.warnings)
+        self.assertIn(UNVERIFIED_REPRODUCTION, assessment.blocking)
+        self.assertNotIn(UNVERIFIED_REPRODUCTION, assessment.warnings)
         self.assertIn("no runnable reproducer given", assessment.summary())
 
 

@@ -2,7 +2,7 @@ import copy
 import json
 import sys
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 
@@ -224,6 +224,48 @@ class HuntTests(OrchestratorHarness):
         self.assertFalse(result["complete"])
         self.assertEqual(result["remaining"], 2)
         self.assertEqual(len(hunt["runs"]), 1)
+
+    def test_a_hunt_records_one_deadline_for_every_candidate(self):
+        hunt = self.new_hunt()
+        created = datetime.fromisoformat(hunt["created_at"])
+        deadline = datetime.fromisoformat(hunt["deadline_at"])
+
+        self.assertEqual(hunt["time_budget_seconds"], 7200)
+        self.assertEqual(deadline - created, timedelta(hours=2))
+
+    def test_an_expired_hunt_refuses_a_new_candidate(self):
+        hunt = self.new_hunt()
+        hunt["deadline_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+        save(hunt_path(self.data_root, hunt["hunt_id"]), hunt)
+        run, directory = self.make_run()
+        run.primary = AgentConfig("codex", "fixture-primary")
+        run.reviewer = AgentConfig("claude", "fixture-reviewer")
+        write_run(run, directory)
+
+        with self.assertRaisesRegex(ValueError, "fixed deadline"):
+            add_run(self.data_root, hunt, run.run_id)
+
+    def test_a_dropped_target_cannot_return_as_a_fresh_run(self):
+        hunt = self.new_hunt()
+        first, first_directory = self.make_run()
+        first.primary = AgentConfig("codex", "fixture-primary")
+        first.reviewer = AgentConfig("claude", "fixture-reviewer")
+        write_run(first, first_directory)
+        add_run(self.data_root, hunt, first.run_id)
+        hunt["runs"][0].update(
+            dropped=True,
+            reason="verification failed",
+            evidence="the recorded command exited 1",
+        )
+        save(hunt_path(self.data_root, hunt["hunt_id"]), hunt)
+
+        second, second_directory = self.make_run()
+        second.primary = AgentConfig("codex", "fixture-primary")
+        second.reviewer = AgentConfig("claude", "fixture-reviewer")
+        write_run(second, second_directory)
+
+        with self.assertRaisesRegex(ValueError, "already used target"):
+            add_run(self.data_root, hunt, second.run_id)
 
     def test_model_substitution_is_refused(self):
         hunt = self.new_hunt()

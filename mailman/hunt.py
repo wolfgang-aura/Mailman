@@ -24,11 +24,13 @@ PROCEDURE = Path(__file__).with_name("procedure.md")
 #: without an argument. Long enough to cover a reviewer stage, short enough
 #: that an abandoned hunt is not stuck for a day.
 LEASE_MINUTES = 90
+HUNT_TIME_BUDGET_SECONDS = 2 * 60 * 60
 
 HUMAN_REASONS = ("authentication", "budget", "scope", "conflicting-instructions")
 DROP_CODES = {
     "issue-assigned", "work-handed-over", "open-pull-request",
     "already-fixed-upstream", "bug-not-reproduced", "fails-freshness-bar",
+    "reproduction-not-machine-checked",
 }
 #: A hunt in one of these states is history. Its record answers "what did we
 #: file, and on what evidence", and nothing may rewrite that answer.
@@ -43,6 +45,28 @@ PULL_REQUEST_URL = re.compile(
 
 def is_terminal(record: dict) -> bool:
     return record.get("status") in TERMINAL_STATUSES
+
+
+def deadline(record: dict) -> datetime:
+    """Return the hunt's fixed deadline, including for older records."""
+    value = record.get("deadline_at")
+    if value:
+        parsed = datetime.fromisoformat(value)
+    else:
+        parsed = datetime.fromisoformat(record["created_at"]) + timedelta(
+            seconds=float(record.get("time_budget_seconds", HUNT_TIME_BUDGET_SECONDS))
+        )
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def require_time_remaining(record: dict, action: str) -> None:
+    expires = deadline(record)
+    if datetime.now(UTC) >= expires:
+        raise ValueError(
+            f"hunt {record['hunt_id']} reached its fixed deadline {expires.isoformat()} "
+            f"before {action}. Abandon it or finish preserved ready work; a new "
+            "candidate does not get a new clock."
+        )
 
 
 def abandon(root: Path, record: dict, *, reason: str, owner: str | None = None) -> dict:
@@ -89,9 +113,15 @@ def create_hunt(root: Path, count: int, *, primary: str, primary_model: str,
         raise ValueError("the PR count must be positive")
     if not primary_model.strip() or not reviewer_model.strip():
         raise ValueError("ask for both model IDs before starting the hunt")
+    created_at = utc_now()
+    created = datetime.fromisoformat(created_at)
     record = {
         "schema_version": 1, "hunt_id": new_run_id(), "requested": count,
-        "data_root": str(root.resolve()), "created_at": utc_now(),
+        "data_root": str(root.resolve()), "created_at": created_at,
+        "time_budget_seconds": HUNT_TIME_BUDGET_SECONDS,
+        "deadline_at": (
+            created + timedelta(seconds=HUNT_TIME_BUDGET_SECONDS)
+        ).isoformat(),
         "primary": {"agent": normalize_agent_name(primary), "model": primary_model},
         "reviewer": {"agent": normalize_agent_name(reviewer), "model": reviewer_model},
         "procedure_sha256": hashlib.sha256(PROCEDURE.read_bytes()).hexdigest(),
@@ -130,6 +160,7 @@ def add_run(root: Path, record: dict, run_id: str) -> None:
             raise ValueError(f"{role} differs from the hunt's selected model; do not substitute models")
     if any(row["run_id"] == run_id for row in record["runs"]):
         return
+    require_time_remaining(record, "adding another candidate")
     filing = find_filing(root, run_id=run_id)
     if filing:
         raise ValueError(
@@ -138,6 +169,20 @@ def add_run(root: Path, record: dict, run_id: str) -> None:
         )
     key = target_key(run)
     if key:
+        for previous in record["runs"]:
+            earlier_key = previous.get("target")
+            if not earlier_key:
+                try:
+                    earlier, _ = load_run(previous["run_id"], root)
+                    earlier_key = target_key(earlier)
+                except (OSError, ValueError, KeyError):
+                    earlier_key = None
+            if earlier_key == key:
+                raise ValueError(
+                    f"hunt {record['hunt_id']} already used target {key} in run "
+                    f"{previous['run_id']}. Resume that preserved run or choose "
+                    "a different target; dropping it does not reset hunt time."
+                )
         filing = find_filing(root, target=key)
         if filing:
             raise ValueError(
@@ -151,7 +196,7 @@ def add_run(root: Path, record: dict, run_id: str) -> None:
                 f"{holder['owner']}, until {holder['expires_at']}). Two hunts in one "
                 "data root must not work the same target. Run `mailman hunt targets`."
             )
-    record["runs"].append({"run_id": run_id})
+    record["runs"].append({"run_id": run_id, "target": key})
     save(hunt_path(root, record["hunt_id"]), record)
 
 
@@ -193,6 +238,16 @@ def iter_hunts(root: Path):
         record = read_object(path)
         if record:
             yield record
+
+
+def hunt_for_run(root: Path, run_id: str) -> dict | None:
+    """Return the nonterminal hunt that owns a run, if there is one."""
+    for record in iter_hunts(root):
+        if is_terminal(record):
+            continue
+        if any(row.get("run_id") == run_id for row in record.get("runs", [])):
+            return record
+    return None
 
 
 def record_filing(root: Path, record: dict, run_id: str, *, pr_url: str,
@@ -552,6 +607,14 @@ def status(root: Path, record: dict) -> dict:
               "checked_at": utc_now(), "runs": rows,
               "next": "Prepare the approval packet." if ready >= record["requested"] else "Complete the next action or find a replacement candidate.",
               "escalations": record["escalations"]}
+    expires = deadline(record)
+    result["deadline_at"] = expires.isoformat()
+    result["deadline_expired"] = datetime.now(UTC) >= expires
+    if result["deadline_expired"] and result["remaining"]:
+        result["next"] = (
+            "The hunt deadline expired. Preserve its records and abandon the "
+            "hunt; do not add or start another candidate."
+        )
     result["lease"] = lease_state(record)
     health_states = {row["health"] for row in rows if row.get("health")}
     if health_states:

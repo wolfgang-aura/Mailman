@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -122,10 +123,17 @@ APPROVED = "no findings\nMAILMAN-VERDICT: APPROVE\n"
 
 PASSING_CHECK = "import sys; sys.exit(0)"
 FAILING_CHECK = "import sys; sys.exit(1)"
-# Fails until the agent leaves a marker in the workspace, which is the closest
-# a scripted agent gets to actually fixing what the gate complained about.
+# Passes on the clean base tree, then fails after the scripted primary creates
+# its candidate. This distinguishes a broken candidate from a broken baseline.
+POST_EDIT_FAILING_CHECK = (
+    "import pathlib, sys; sys.exit(1 if pathlib.Path('fix.txt').exists() else 0)"
+)
+# Passes on the clean base tree, fails on the first candidate, and passes once
+# the agent leaves a repair marker.
 REPAIRABLE_CHECK = (
-    "import pathlib, sys; sys.exit(0 if pathlib.Path('repaired.txt').exists() else 1)"
+    "import pathlib, sys; "
+    "sys.exit(0 if not pathlib.Path('fix.txt').exists() or "
+    "pathlib.Path('repaired.txt').exists() else 1)"
 )
 
 
@@ -419,6 +427,61 @@ class EmptyCandidateTests(OrchestratorHarness):
 
 
 class OrchestrationTests(OrchestratorHarness):
+    def test_failing_baseline_verification_stops_before_primary(self) -> None:
+        run, directory = self.make_run()
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", "raise SystemExit(1)"],
+            agent_factory=lambda name, model: self.fail("agent started"),
+        )
+
+        self.assertEqual(str(outcome.status), "BLOCKED")
+        self.assertFalse(any(step.name == "agent:primary" for step in outcome.steps))
+        self.assertIn("baseline verification failed", outcome.steps[-1].detail)
+
+    def test_baseline_verification_may_not_dirty_the_workspace(self) -> None:
+        run, directory = self.make_run()
+        command = (
+            "from pathlib import Path; Path('generated.txt').write_text('x')"
+        )
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", command],
+            agent_factory=lambda name, model: self.fail("agent started"),
+        )
+
+        self.assertEqual(str(outcome.status), "BLOCKED")
+        baseline = next(step for step in outcome.steps if step.name == "verification:baseline")
+        self.assertFalse(baseline.ok)
+        self.assertFalse(baseline.data["candidate_unchanged"])
+
+    def test_a_hunt_deadline_stops_before_primary(self) -> None:
+        run, directory = self.make_run()
+        expired = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: self.fail("agent started"),
+            deadline_at=expired,
+            time_budget_name="hunt",
+        )
+
+        self.assertEqual(str(outcome.status), "BLOCKED")
+        self.assertFalse(any(step.name == "agent:primary" for step in outcome.steps))
+        self.assertIn("hunt time budget spent", outcome.steps[-1].detail)
+
     def test_a_read_only_review_can_approve_before_the_harness_gate(self) -> None:
         outcome, run_directory, _, _ = self.orchestrate(
             primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
@@ -600,7 +663,7 @@ class OrchestrationTests(OrchestratorHarness):
         verifications = json.loads(
             (run_directory / "verification.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(len(verifications), 2)
+        self.assertEqual(len(verifications), 3)
 
     def test_one_revision_is_applied_and_then_approved(self) -> None:
         outcome, _, primary, reviewer = self.orchestrate(
@@ -662,7 +725,7 @@ class OrchestrationTests(OrchestratorHarness):
                 {"report": "second attempt\n"},
             ],
             reviewer_script=[],
-            check=FAILING_CHECK,
+            check=POST_EDIT_FAILING_CHECK,
         )
 
         self.assertEqual(outcome.status, RunStatus.BLOCKED)
@@ -696,7 +759,7 @@ class OrchestrationTests(OrchestratorHarness):
         outcome, _, primary, reviewer = self.orchestrate(
             primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
             reviewer_script=[],
-            check=FAILING_CHECK,
+            check=POST_EDIT_FAILING_CHECK,
             max_revisions=0,
         )
 
@@ -998,6 +1061,55 @@ class VerificationAgreementTests(OrchestratorHarness):
 
 
 class OrchestrateCliTests(OrchestratorHarness):
+    def test_cli_uses_the_attached_hunt_deadline(self) -> None:
+        from mailman.artifacts import write_run
+        from mailman.hunt import add_run, create_hunt, hunt_path, save
+        from mailman.models import AgentConfig
+
+        run, run_directory = self.make_run()
+        run.primary = AgentConfig("codex", "fixture-primary")
+        run.reviewer = AgentConfig("claude", "fixture-reviewer")
+        write_run(run, run_directory)
+        (run_directory / "environment.json").write_text(
+            json.dumps({"success": True}), encoding="utf-8"
+        )
+        hunt = create_hunt(
+            self.data_root,
+            1,
+            primary="codex",
+            primary_model="fixture-primary",
+            reviewer="claude",
+            reviewer_model="fixture-reviewer",
+        )
+        add_run(self.data_root, hunt, run.run_id)
+        hunt["deadline_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+        save(hunt_path(self.data_root, hunt["hunt_id"]), hunt)
+        stdout = StringIO()
+        stderr = StringIO()
+        with patch("mailman.cli._make_agent", side_effect=AssertionError("agent started")):
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "orchestrate",
+                        run.run_id,
+                        "--primary-prompt",
+                        str(self.primary_prompt),
+                        "--reviewer-prompt",
+                        str(self.reviewer_prompt),
+                        "--workspace",
+                        str(self.workspace),
+                        "--data-root",
+                        str(self.data_root),
+                        "--",
+                        sys.executable,
+                        "-c",
+                        PASSING_CHECK,
+                    ]
+                )
+
+        self.assertEqual(exit_code, 1, stderr.getvalue())
+        self.assertIn("hunt time budget spent", stdout.getvalue())
+
     def _invoke(self, agents: dict[str, ScriptedAgent], check: str) -> tuple[int, str]:
         run, run_directory = self.make_run()
         (run_directory / "environment.json").write_text(

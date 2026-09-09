@@ -21,7 +21,9 @@ token. Keep that token: every action that changes the hunt takes `--owner
 TOKEN`. `mailman hunt status HUNT_ID` gives the next missing step and last-check
 timestamp. Update it after each run. Its records survive a new conversation.
 The coordinator performs the actions; the command does not spawn a background
-agent or discover targets itself.
+agent or discover targets itself. The hunt records one fixed two-hour deadline
+at creation. Screening, setup, every candidate, review, repair and replacement
+all spend that same clock.
 
 One hunt has one coordinator. If `hunt status` shows a live lease you do not
 hold, you are the second task on someone else's hunt. Do not poll it and do not
@@ -73,7 +75,9 @@ status check you did not act on is pure cost.
    maintainer responses. A broad empty search is not sufficient evidence, and
    neither is a narrow one.
 4. Initialize a run at an exact current upstream commit with the hunt's model
-   configuration. Add it with `mailman hunt add HUNT_ID RUN_ID`.
+   configuration. Add it with `mailman hunt add HUNT_ID RUN_ID`. A target may
+   appear only once in a hunt, including after its run was dropped. Resume the
+   preserved run or choose a different target.
 5. Run `fetch-issue`, `duplicate-search`, `prior-art`, `target-intel` and
    `claims`. Record evidence for every acknowledgement. Never acknowledge an
    overlap just to clear a gate. Choose another candidate when uncertain.
@@ -88,13 +92,18 @@ status check you did not act on is pure cost.
    install compilers or weaken the target screen to rescue a candidate.
 8. Capture a baseline and a focused reproducer at the base commit. Separate
    missing dependencies from the reported defect. Run `reproduce`, then
-   `check-target`. A bug that no longer reproduces means replace the candidate.
+   `check-target`. The reproduction must check the reported behavior by
+   machine. A human reading or locally convenient proxy may be kept as
+   evidence, but it does not authorize agent work. A bug that no longer
+   reproduces means replace the candidate.
 9. Use `build-prompts RUN_ID -- EXECUTABLE ARG ...` to record verification argv.
    Everything after `--` is run as a program, so it starts with an executable
    and carries no Mailman option; the CLI refuses the common mistakes but not
    all of them. `orchestrate RUN_ID` reads that same command. Do not supply
    custom prompts or call `run-agent` to bypass this sequence. Both model roles
    must use the same recorded procedure and the independent verification gate.
+   Before the primary starts, Mailman runs that exact argv on the clean base
+   tree. It refuses a failing command or one that changes candidate bytes.
    The generated task carries the pre-screened symbols and the recorded
    baseline. The primary starts there, runs only focused checks needed to guide
    the edit, and does not redo discovery, reproduction or the full gate.
@@ -103,8 +112,9 @@ status check you did not act on is pure cost.
 
 10. Run `orchestrate`. An `ENGINEERING_COMPLETE` outcome means finish the
     package. A `BLOCKED` run is a local stop, not a request for the user.
-    Every run has a cumulative two-hour deadline from `init-run`, not a fresh
-    timeout per agent call. Codex turns also have a two-million-token budget,
+    Every run uses the hunt's cumulative two-hour deadline from `hunt init`,
+    not a fresh deadline per candidate or agent call. Codex turns also have a
+    two-million-token budget,
     and later turns resume the same per-role session so they do not rediscover
     the repository. Revision prompts carry only the new failure or review
     findings. Reviewer prompts carry the changed paths, diff stat and primary
@@ -121,9 +131,10 @@ status check you did not act on is pure cost.
     run `resume-review`. Do not restart a dirty primary workspace.
     Reviewer passes are budgeted per run, not per command: `--max-review-cycles`
     counts across every `orchestrate` and `resume-review`. When a run blocks on
-    a spent budget, replace the candidate. Extending the two-hour deadline is
-    exceptional and requires `--time-budget-override-reason`, which enters the
-    run record. Do not resume repeatedly to buy more passes. Keep agent shell
+    a spent budget, replace the candidate only if the hunt deadline still has
+    time. An attached run cannot extend that deadline with
+    `--time-budget-override-reason`. Do not resume repeatedly to buy more
+    passes. Keep agent shell
     output narrow: never print a whole large file or an unrestricted
     repository-wide search when a bounded slice answers the question.
     A run whose `hunt status` carries a `health` state stopped for a reason
