@@ -2,6 +2,7 @@
 
 https://github.com/wolfgang-aura/Mailman/issues/75
 """
+
 import json
 import stat
 import sys
@@ -13,6 +14,7 @@ from io import StringIO
 from pathlib import Path
 
 from mailman.cli import main
+from mailman.hunt import create_hunt, hunt_path, save
 from mailman.prescreen import (
     DECIDABLE,
     PRESCREEN_HOURS,
@@ -34,7 +36,9 @@ from mailman.targeting import (
 
 class IssueReferenceTests(unittest.TestCase):
     def test_reads_short_form_and_url(self) -> None:
-        self.assertEqual(issue_reference("pdm-project/pdm#3877"), ("pdm-project/pdm", 3877))
+        self.assertEqual(
+            issue_reference("pdm-project/pdm#3877"), ("pdm-project/pdm", 3877)
+        )
         self.assertEqual(
             issue_reference("https://github.com/pdm-project/pdm/issues/3877"),
             ("pdm-project/pdm", 3877),
@@ -90,13 +94,42 @@ class PrescreenTests(unittest.TestCase):
         return str(stub)
 
     def test_a_clean_issue_passes_and_records_where_it_looked(self) -> None:
-        record = prescreen_issue(self.root, "example/project#7", executable=self.stub("[]"))
+        record = prescreen_issue(
+            self.root, "example/project#7", executable=self.stub("[]")
+        )
         self.assertEqual(record["verdict"], "pass")
         self.assertEqual(record["blocking"], [])
         self.assertTrue(record["duplicate_search"]["success"])
         self.assertIn("init-run", record["next"])
         self.assertEqual(load_prescreen(self.root, "example/project", 7), record)
         self.assertEqual(record["issue"]["title"], "Crash on empty input")
+
+    def test_cli_binds_pre_run_screening_to_the_single_live_hunt(self) -> None:
+        hunt = create_hunt(
+            self.root,
+            1,
+            primary="codex",
+            primary_model="fixture-primary",
+            reviewer="claude",
+            reviewer_model="fixture-reviewer",
+        )
+        hunt["deadline_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+        save(hunt_path(self.root, hunt["hunt_id"]), hunt)
+        stderr = StringIO()
+        with redirect_stdout(StringIO()), redirect_stderr(stderr):
+            code = main(
+                [
+                    "prescreen",
+                    "example/project#7",
+                    "--executable",
+                    self.stub("[]"),
+                    "--data-root",
+                    str(self.root),
+                ]
+            )
+
+        self.assertEqual(code, 2)
+        self.assertIn("deadline expired", stderr.getvalue())
 
     def test_a_feature_request_is_rejected_before_a_run_exists(self) -> None:
         issue = {
@@ -137,18 +170,30 @@ class PrescreenTests(unittest.TestCase):
     def test_an_open_rival_rejects_the_issue_before_a_run_exists(self) -> None:
         prescreen_issue(self.root, "example/project#7", executable=self.stub("[]"))
         directory = prescreen_directory(self.root, "example/project", 7)
-        search = json.loads((directory / "duplicate-search.json").read_text(encoding="utf-8"))
-        search["matches"] = [{
-            "number": 99, "title": "Fix the thing", "state": "open",
-            "pull_request": True, "references_issue": True, "matched_by": ["#7"],
-        }]
-        (directory / "duplicate-search.json").write_text(json.dumps(search), encoding="utf-8")
+        search = json.loads(
+            (directory / "duplicate-search.json").read_text(encoding="utf-8")
+        )
+        search["matches"] = [
+            {
+                "number": 99,
+                "title": "Fix the thing",
+                "state": "open",
+                "pull_request": True,
+                "references_issue": True,
+                "matched_by": ["#7"],
+            }
+        ]
+        (directory / "duplicate-search.json").write_text(
+            json.dumps(search), encoding="utf-8"
+        )
         assessment = assess_target(directory)
         self.assertIn(OPEN_PULL_REQUEST, assessment.blocking)
         self.assertIn(OPEN_PULL_REQUEST, DECIDABLE)
 
     def test_a_verdict_never_rests_on_something_this_stage_cannot_know(self) -> None:
-        record = prescreen_issue(self.root, "example/project#7", executable=self.stub("[]"))
+        record = prescreen_issue(
+            self.root, "example/project#7", executable=self.stub("[]")
+        )
         # There is no clone here, so `assess_target` always wants a
         # reproduction and target intel. Neither is this stage's question.
         directory = prescreen_directory(self.root, "example/project", 7)
@@ -204,11 +249,24 @@ class InitRunGateTests(PrescreenTests):
     def init_run(self, *extra: str) -> tuple[int, str]:
         out, err = StringIO(), StringIO()
         arguments = [
-            "init-run", "--repository", "https://github.com/example/project.git",
-            "--issue", "https://github.com/example/project/issues/7",
-            "--base-commit", "a" * 40, "--primary", "codex", "--reviewer", "claude",
-            "--primary-model", "m", "--reviewer-model", "m",
-            "--data-root", str(self.root), *extra,
+            "init-run",
+            "--repository",
+            "https://github.com/example/project.git",
+            "--issue",
+            "https://github.com/example/project/issues/7",
+            "--base-commit",
+            "a" * 40,
+            "--primary",
+            "codex",
+            "--reviewer",
+            "claude",
+            "--primary-model",
+            "m",
+            "--reviewer-model",
+            "m",
+            "--data-root",
+            str(self.root),
+            *extra,
         ]
         with redirect_stdout(out), redirect_stderr(err):
             code = main(arguments)

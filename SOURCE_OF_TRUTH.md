@@ -4,7 +4,7 @@ Last verified: 2026-09-10 in `Asia/Singapore`.
 
 ## Current local procedure
 
-Code checkpoint `54bf8ed` on local `main` now starts one
+Code checkpoint `54bf8ed` on `main` starts one
 fixed two-hour deadline at `hunt init`. Every attached orchestration reads that
 deadline, and neither a replacement candidate nor
 `--time-budget-override-reason` can reset it. `hunt add` refuses an expired
@@ -12,14 +12,18 @@ hunt and any target already used by that hunt, including a dropped run.
 Agent work now requires a machine-checked reproduction. Before the primary
 starts, Mailman runs the exact verification argv recorded by `build-prompts`
 on the clean base tree and blocks if it fails or changes candidate bytes.
-Local verification passed 781 tests and 54 subtests. Commit `5b18da8` is on
-`origin/main`; GitHub Actions run `34388619436` passed on Python 3.12 and 3.14.
-The change is not ready for another live hunt. Screening, environment and
-packaging commands do not yet clamp their timeouts to the hunt deadline, so an
-in-flight command can cross two hours. The Codex `token_budget` setting also
-did not cap cumulative input in live run `20260909T132347Z-ddf1ac`, which
-reported 9,753,232 input tokens against a configured 2,000,000. Issue #81
-tracks both remaining limits; issues #82 and #83 track the gates now shipped.
+Local verification passed 781 tests and 54 subtests. Documentation commit
+`29a8469` is on `origin/main`; GitHub Actions runs `34388619436` and
+`34388871841` passed. The next local checkpoint binds screening, environment,
+agent, verification and packaging subprocesses to the hunt's remaining wall
+time. It also records Codex input and cached-input usage per execution, totals
+input per role, blocks an over-budget or unaccounted turn, and refuses later
+resumes. Codex reports usage only when a turn completes, so the wall deadline,
+not the token setting, remains the hard in-flight stop. Live run
+`20260909T132347Z-ddf1ac` is the evidence for this rule: its first primary turn
+reported 9,753,232 input tokens, including 9,515,520 cached tokens, against a
+configured 2,000,000. Issue #81 tracks these limits; issues #82 and #83 track
+the earlier gates.
 
 `520ab2a` on `main`, 2026-09-09, passed GitHub Actions run `34298470558`. It
 adds three commands and one run status on top of the procedure below:

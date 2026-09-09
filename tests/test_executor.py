@@ -4,12 +4,46 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from mailman.executor import execute
+from mailman.executor import execute, reset_deadline, set_deadline
 
 
 class ExecutorTests(unittest.TestCase):
+    def test_active_hunt_deadline_clamps_a_command_timeout(self) -> None:
+        token = set_deadline(
+            datetime.now(UTC) + timedelta(seconds=0.1), label="hunt fixture"
+        )
+        try:
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                result = execute(
+                    [sys.executable, "-c", "import time; time.sleep(2)"],
+                    working_directory=Path(temporary_directory),
+                    timeout_seconds=5,
+                )
+        finally:
+            reset_deadline(token)
+
+        self.assertTrue(result.timed_out)
+        self.assertLess(result.timeout_seconds, 0.5)
+
+    def test_expired_hunt_deadline_refuses_to_launch_a_command(self) -> None:
+        token = set_deadline(
+            datetime.now(UTC) - timedelta(seconds=1), label="hunt fixture"
+        )
+        try:
+            with (
+                tempfile.TemporaryDirectory() as temporary_directory,
+                self.assertRaisesRegex(ValueError, "hunt fixture deadline expired"),
+            ):
+                execute(
+                    [sys.executable, "-c", "print('must not run')"],
+                    working_directory=Path(temporary_directory),
+                )
+        finally:
+            reset_deadline(token)
+
     def test_passes_input_without_putting_it_in_the_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             result = execute(

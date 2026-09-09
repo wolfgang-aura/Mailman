@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from mailman.executor import clamp_timeout_seconds
 
 IDENTITY_FILENAME = "identity.json"
 
@@ -120,7 +121,7 @@ def machine_identity() -> dict[str, str | None]:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=15,
+            timeout=clamp_timeout_seconds(15),
             check=False,
             shell=False,
         )
@@ -138,7 +139,7 @@ def apply_identity(workspace: Path, identity: Identity) -> None:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,
+            timeout=clamp_timeout_seconds(30),
             check=False,
             shell=False,
         )
@@ -163,7 +164,7 @@ def branch_commits(workspace: Path, base_commit: str) -> list[dict[str, str]]:
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=30,
+        timeout=clamp_timeout_seconds(30),
         check=False,
         shell=False,
     )

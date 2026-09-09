@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -65,6 +66,59 @@ class ContributionsCliTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_attached_run_command_refuses_an_expired_hunt(self) -> None:
+        from mailman.artifacts import write_run
+        from mailman.hunt import add_run, create_hunt, hunt_path, save
+        from mailman.models import AgentConfig
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            data_root = root / "runs"
+            run, _ = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            run.primary = AgentConfig("codex", "fixture-primary")
+            run.reviewer = AgentConfig("claude", "fixture-reviewer")
+            write_run(run, data_root / run.run_id)
+            hunt = create_hunt(
+                data_root,
+                1,
+                primary="codex",
+                primary_model="fixture-primary",
+                reviewer="claude",
+                reviewer_model="fixture-reviewer",
+            )
+            add_run(data_root, hunt, run.run_id)
+            hunt["deadline_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+            save(hunt_path(data_root, hunt["hunt_id"]), hunt)
+            marker = root / "ran.txt"
+            stderr = StringIO()
+            with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                code = main(
+                    [
+                        "verify",
+                        run.run_id,
+                        "--data-root",
+                        str(data_root),
+                        "--working-directory",
+                        str(root),
+                        "--",
+                        sys.executable,
+                        "-c",
+                        f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+                    ]
+                )
+            marker_ran = marker.exists()
+
+        self.assertEqual(code, 2)
+        self.assertIn("deadline expired", stderr.getvalue())
+        self.assertFalse(marker_ran)
+
     def test_orchestrate_defaults_to_the_prepared_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_root = Path(temporary_directory) / "runs"
@@ -94,8 +148,12 @@ class CliTests(unittest.TestCase):
                 record_path=run_directory / "run.json",
             )
             stderr = StringIO()
-            with patch("mailman.cli.orchestrate", return_value=outcome) as orchestrated, \
-                patch("mailman.cli._pinned_agent_factory", return_value=object()) as factory:
+            with (
+                patch("mailman.cli.orchestrate", return_value=outcome) as orchestrated,
+                patch(
+                    "mailman.cli._pinned_agent_factory", return_value=object()
+                ) as factory,
+            ):
                 with redirect_stdout(StringIO()), redirect_stderr(stderr):
                     exit_code = main(
                         [
@@ -532,7 +590,9 @@ class CliTests(unittest.TestCase):
                 reviewer="claude",
                 data_root=data_root,
             )
-            (run_directory / "issue.md").write_text("# Issue\n\nBody.\n", encoding="utf-8")
+            (run_directory / "issue.md").write_text(
+                "# Issue\n\nBody.\n", encoding="utf-8"
+            )
             stdout = StringIO()
             stderr = StringIO()
             with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -570,7 +630,9 @@ class CliTests(unittest.TestCase):
                 reviewer="claude",
                 data_root=data_root,
             )
-            (run_directory / "issue.md").write_text("# Issue\n\nBody.\n", encoding="utf-8")
+            (run_directory / "issue.md").write_text(
+                "# Issue\n\nBody.\n", encoding="utf-8"
+            )
             stdout = StringIO()
             stderr = StringIO()
             with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -665,9 +727,7 @@ class CliTests(unittest.TestCase):
             data_root.mkdir(parents=True)
             stderr = StringIO()
             with redirect_stderr(stderr):
-                exit_code = main(
-                    ["show", "../secrets", "--data-root", str(data_root)]
-                )
+                exit_code = main(["show", "../secrets", "--data-root", str(data_root)])
 
         self.assertEqual(exit_code, 2)
         self.assertIn("invalid run ID", stderr.getvalue())

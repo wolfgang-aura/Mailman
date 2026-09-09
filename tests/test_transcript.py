@@ -11,6 +11,7 @@ from mailman.transcript import (
     parse_line,
     parse_stream,
     render,
+    token_usage,
     unwrap_shell,
 )
 
@@ -34,6 +35,32 @@ class UnwrapShellTests(unittest.TestCase):
 
 
 class CodexStreamTests(unittest.TestCase):
+    def test_extracts_accountable_codex_usage(self) -> None:
+        stdout = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {
+                            "input_tokens": 9_753_232,
+                            "cached_input_tokens": 9_515_520,
+                            "output_tokens": 48_313,
+                        },
+                    }
+                ),
+                "not json",
+            ]
+        )
+
+        self.assertEqual(
+            token_usage(stdout, "codex"),
+            {
+                "input_tokens": 9_753_232,
+                "cached_input_tokens": 9_515_520,
+                "output_tokens": 48_313,
+            },
+        )
+
     def test_reports_a_command_and_its_outcome(self) -> None:
         started = json.dumps(
             {

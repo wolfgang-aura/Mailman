@@ -5,12 +5,47 @@ import platform
 import subprocess
 import threading
 import time
+from collections.abc import Callable, Mapping, Sequence
+from contextvars import ContextVar, Token
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
 
 from mailman.redaction import redact
+
+
+@dataclass(frozen=True)
+class ExecutionDeadline:
+    at: datetime
+    label: str
+
+
+_DEADLINE: ContextVar[ExecutionDeadline | None] = ContextVar(
+    "mailman_execution_deadline", default=None
+)
+
+
+def set_deadline(at: datetime, *, label: str) -> Token:
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    return _DEADLINE.set(ExecutionDeadline(at=at, label=label))
+
+
+def reset_deadline(token: Token) -> None:
+    _DEADLINE.reset(token)
+
+
+def clamp_timeout_seconds(requested: float) -> float:
+    """Clamp a subprocess to the active hunt's remaining wall time."""
+    if requested <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    active = _DEADLINE.get()
+    if active is None:
+        return requested
+    remaining = (active.at - datetime.now(UTC)).total_seconds()
+    if remaining <= 0:
+        raise ValueError(f"{active.label} deadline expired at {active.at.isoformat()}")
+    return min(requested, remaining)
 
 
 @dataclass(frozen=True)
@@ -65,7 +100,7 @@ def _stream(
     An agent can work for an hour. Buffering its output until it exits means
     nobody can see what it is doing, or tell a slow run from a stuck one.
     """
-    process = subprocess.Popen(  # noqa: S603 - the command is a list, no shell
+    process = subprocess.Popen(
         list(command),
         cwd=cwd,
         env=process_environment,
@@ -121,7 +156,7 @@ def _stream(
                 try:
                     on_stdout_line(line.rstrip("\r\n"))
                 except Exception:  # noqa: BLE001 - a broken console must not
-                    pass          # cost the run its evidence
+                    pass  # cost the run its evidence
         exit_code = process.wait()
     finally:
         watchdog.cancel()
@@ -145,8 +180,7 @@ def execute(
     """Run a command without a shell and return a redacted evidence record."""
     if not command:
         raise ValueError("command cannot be empty")
-    if timeout_seconds <= 0:
-        raise ValueError("timeout_seconds must be positive")
+    timeout_seconds = clamp_timeout_seconds(timeout_seconds)
 
     cwd = working_directory.resolve(strict=True)
     started = datetime.now(UTC).isoformat()

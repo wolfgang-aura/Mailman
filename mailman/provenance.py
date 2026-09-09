@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from mailman.executor import clamp_timeout_seconds
 
 PROVENANCE_FILENAME = "provenance.json"
 PATCH_FILENAME = "contribution.patch"
@@ -82,8 +83,7 @@ def repository_slug(repository: str) -> str:
         return value
     trimmed = re.sub(r"^(?:https://|ssh://|git@)", "", value)
     trimmed = trimmed.replace("github.com:", "github.com/")
-    if trimmed.startswith("github.com/"):
-        trimmed = trimmed[len("github.com/") :]
+    trimmed = trimmed.removeprefix("github.com/")
     trimmed = trimmed.removesuffix(".git").strip("/")
     if not _SLUG.match(trimmed):
         raise ProvenanceError(f"cannot read an owner/name out of {repository!r}")
@@ -97,7 +97,7 @@ def _git(workspace: Path, arguments: list[str], *, timeout: float = 60) -> str:
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=timeout,
+        timeout=clamp_timeout_seconds(timeout),
         check=False,
         shell=False,
     )
@@ -146,7 +146,7 @@ def pull_request_state(repository: str, number: int) -> dict[str, Any]:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,
+            timeout=clamp_timeout_seconds(30),
             check=False,
             shell=False,
         )
@@ -164,7 +164,9 @@ def pull_request_state(repository: str, number: int) -> dict[str, Any]:
         "available": True,
         "state": payload.get("state"),
         "merged_at": payload.get("mergedAt"),
-        "merge_commit": merge_commit.get("oid") if isinstance(merge_commit, dict) else None,
+        "merge_commit": merge_commit.get("oid")
+        if isinstance(merge_commit, dict)
+        else None,
         "url": payload.get("url"),
         "title": payload.get("title"),
     }
@@ -219,7 +221,9 @@ def record_provenance(
             if line.strip()
         ]
         if commits:
-            patch_path = str(write_patch(clone, base_commit, directory / PATCH_FILENAME))
+            patch_path = str(
+                write_patch(clone, base_commit, directory / PATCH_FILENAME)
+            )
 
     record: dict[str, Any] = {
         "schema_version": PROVENANCE_SCHEMA_VERSION,
@@ -321,9 +325,7 @@ def refresh_state(
     if lookup.get("url"):
         record["url"] = lookup.get("url")
     path = provenance_path(run_directory)
-    path.write_text(
-        json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n"
-    )
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n")
     return record, None
 
 

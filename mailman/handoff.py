@@ -16,15 +16,16 @@ import json
 import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from mailman.claims import load_claims
 from mailman.completion import check_authorship
+from mailman.executor import clamp_timeout_seconds
 from mailman.submission import load_duplicate_search
 from mailman.target_intel import repository_slug
-
 
 HANDOFF_FILENAME = "handoff.json"
 
@@ -123,7 +124,7 @@ def head_owner(head: str | None) -> str | None:
 
 
 def github_owner_type(owner: str) -> str | None:
-    """"User", "Organization", or None when GitHub could not be asked.
+    """ "User", "Organization", or None when GitHub could not be asked.
 
     None is not a pass. The caller turns it into a warning that says the
     question went unanswered, because an unanswered question here is what the
@@ -138,7 +139,7 @@ def github_owner_type(owner: str) -> str | None:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=15,
+            timeout=clamp_timeout_seconds(15),
             check=False,
             shell=False,
         )
@@ -360,7 +361,9 @@ def build_handoff(
         ) from error
     if not body.strip():
         raise ValueError(f"the body at {resolved} is empty")
-    authorship = check_authorship(run_directory, head=head) if kind == "pull-request" else None
+    authorship = (
+        check_authorship(run_directory, head=head) if kind == "pull-request" else None
+    )
     command = publish_command(
         kind=kind,
         body_path=resolved,
@@ -588,7 +591,11 @@ def check_handoff(
             "actual_digest": current,
         }
     if first_person_claims(body_path.read_text(encoding="utf-8")):
-        return {"ok": False, "reason": "first-person-claims", "detail": "remove claims only the human can make true"}
+        return {
+            "ok": False,
+            "reason": "first-person-claims",
+            "detail": "remove claims only the human can make true",
+        }
     unchanged = {
         "ok": True,
         "reason": "unchanged",
@@ -605,7 +612,11 @@ def check_handoff(
     except (OSError, ValueError) as error:
         return {"ok": False, "reason": "author-identity", "detail": str(error)}
     if authorship != record.get("authorship"):
-        return {"ok": False, "reason": "branch-changed", "detail": "the filing branch changed; regenerate the handoff"}
+        return {
+            "ok": False,
+            "reason": "branch-changed",
+            "detail": "the filing branch changed; regenerate the handoff",
+        }
     # The body being the text that was read is one question; whether the target
     # still wants it is another, and it is the one that ages. See
     # https://github.com/wolfgang-aura/Mailman/issues/41.

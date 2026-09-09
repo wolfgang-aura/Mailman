@@ -53,11 +53,13 @@ status check you did not act on is pure cost.
 ## Find and screen
 
 1. Read the target's contributor instructions and AI policy. Run
-   `mailman screen-target OWNER/REPO --refresh`. Reject a failed screen.
+   `mailman screen-target OWNER/REPO --refresh --hunt HUNT_ID --owner TOKEN`.
+   Reject a failed screen.
    Human-only authorship declarations, assignment requirements and bans on
    generated descriptions are reasons to pick another target for this flow.
 2. Pre-screen every issue on the shortlist before opening a run on any of
-   them: `mailman prescreen OWNER/REPO#N --symbols NAME NAME`. It runs the same
+   them: `mailman prescreen OWNER/REPO#N --symbols NAME NAME --hunt HUNT_ID
+   --owner TOKEN`. It runs the same
    issue read, narrow duplicate search, prior-art read and claim check the run
    stage runs, writes the verdict beside the repository screens, and exits
    non-zero on a reject. Closed issues and issues labelled as features,
@@ -75,7 +77,8 @@ status check you did not act on is pure cost.
    maintainer responses. A broad empty search is not sufficient evidence, and
    neither is a narrow one.
 4. Initialize a run at an exact current upstream commit with the hunt's model
-   configuration. Add it with `mailman hunt add HUNT_ID RUN_ID`. A target may
+   configuration, passing `--hunt HUNT_ID --owner TOKEN`. Add it with `mailman
+   hunt add HUNT_ID RUN_ID`. A target may
    appear only once in a hunt, including after its run was dropped. Resume the
    preserved run or choose a different target.
 5. Run `fetch-issue`, `duplicate-search`, `prior-art`, `target-intel` and
@@ -113,11 +116,17 @@ status check you did not act on is pure cost.
 10. Run `orchestrate`. An `ENGINEERING_COMPLETE` outcome means finish the
     package. A `BLOCKED` run is a local stop, not a request for the user.
     Every run uses the hunt's cumulative two-hour deadline from `hunt init`,
-    not a fresh deadline per candidate or agent call. Codex turns also have a
-    two-million-token budget,
-    and later turns resume the same per-role session so they do not rediscover
-    the repository. Revision prompts carry only the new failure or review
-    findings. Reviewer prompts carry the changed paths, diff stat and primary
+    not a fresh deadline per candidate or agent call. Mailman binds all
+    candidate commands to that deadline and clamps each subprocess to the
+    remaining time when it starts. Pre-run commands require `--hunt` when the
+    data root has more than one live hunt. Codex reports usage only when a turn
+    completes. Mailman records input and cached-input tokens separately,
+    totals input per role across resumed turns, blocks a turn that crosses the
+    configured limit, and refuses later resumes. The wall deadline remains the
+    in-flight limit because Mailman cannot stop a Codex turn at an unreported
+    token boundary. Later turns resume the same per-role session so they do not
+    rediscover the repository. Revision prompts carry only the new failure or
+    review findings. Reviewer prompts carry the changed paths, diff stat and primary
     report tail; the reviewer inspects logic, scope, tests and risk instead of
     duplicating the full verification command. Mailman owns that command and
     runs it after the primary and again after approval. The first primary stage

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from mailman.executor import clamp_timeout_seconds
 from mailman.issue import load_issue_record
 from mailman.models import RunRecord, RunStatus
 from mailman.redaction import redact
@@ -33,7 +34,7 @@ def _git(
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout_seconds,
+            timeout=clamp_timeout_seconds(timeout_seconds),
             check=False,
             shell=False,
         )
@@ -205,9 +206,7 @@ def _pull_request_markdown(
             "There is no upstream issue for this. The defect and how to "
             "reproduce it are described below."
         )
-    return _PULL_REQUEST_TEMPLATE.format(
-        branch=branch, heading=heading, closes=closes
-    )
+    return _PULL_REQUEST_TEMPLATE.format(branch=branch, heading=heading, closes=closes)
 
 
 def export_patch(
@@ -221,7 +220,8 @@ def export_patch(
 ) -> dict[str, Any]:
     """Write a reviewable patch package from a finished run's workspace."""
     if require_ready and run.status not in (
-        RunStatus.ENGINEERING_COMPLETE, RunStatus.READY_FOR_HUMAN_REVIEW
+        RunStatus.ENGINEERING_COMPLETE,
+        RunStatus.READY_FOR_HUMAN_REVIEW,
     ):
         raise ValueError(
             f"run {run.run_id} is {run.status}, not READY_FOR_HUMAN_REVIEW. Pass "
@@ -278,9 +278,7 @@ def export_patch(
     branch = _branch_name(run, issue_record)
     destination_path = destination.resolve()
     destination_path.mkdir(parents=True, exist_ok=True)
-    (destination_path / "changes.diff").write_text(
-        diff, encoding="utf-8", newline="\n"
-    )
+    (destination_path / "changes.diff").write_text(diff, encoding="utf-8", newline="\n")
     (destination_path / "summary.md").write_text(
         _summary_markdown(
             run,
@@ -297,6 +295,7 @@ def export_patch(
         encoding="utf-8",
     )
     from mailman.completion import candidate_digest
+
     record = {
         "schema_version": 1,
         "candidate_digest": candidate_digest(workspace_path, run.base_commit),

@@ -6,7 +6,6 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from mailman.agents.codex_cli import DEFAULT_TOKEN_BUDGET, REASONING_EFFORTS
 from mailman.agents import (
     DEFAULT_MAX_TURNS,
     ClaudeCliAgent,
@@ -15,6 +14,7 @@ from mailman.agents import (
     normalize_agent_name,
 )
 from mailman.agents.base import AgentRequest
+from mailman.agents.codex_cli import DEFAULT_TOKEN_BUDGET, REASONING_EFFORTS
 from mailman.artifacts import (
     append_agent_execution,
     append_verification,
@@ -23,6 +23,7 @@ from mailman.artifacts import (
     load_run,
     write_run,
 )
+from mailman.claims import read_claims, render_claims
 from mailman.doctor import run_checks
 from mailman.environment import (
     environment_command,
@@ -30,32 +31,29 @@ from mailman.environment import (
     load_plan,
     prepare_environment,
 )
-from mailman.executor import CommandResult, execute
+from mailman.executor import (
+    CommandResult,
+    clamp_timeout_seconds,
+    execute,
+    reset_deadline,
+    set_deadline,
+)
 from mailman.export import export_patch
+from mailman.handoff import build_handoff, check_handoff
+from mailman.identity import (
+    Identity,
+    author_violations,
+    branch_commits,
+    machine_identity,
+    resolve_identity,
+    save_identity,
+)
 from mailman.instructions import describe_instruction_sources
 from mailman.issue import (
     capture_defect_report,
     capture_issue_from_file,
     capture_issue_from_github,
     load_issue_record,
-)
-from mailman.claims import read_claims, render_claims
-from mailman.handoff import build_handoff, check_handoff
-from mailman.screen import load_screen, render_screen, screen_repository
-from mailman.target_intel import (
-    collect_target_intel,
-    render_target_intel,
-    repository_slug,
-)
-from mailman.targeting import assess_target
-from mailman.submission import (
-    TargetPolicy,
-    partition_duplicates,
-    prepare_submission,
-    related_duplicates,
-    record_duplicate_acknowledgement,
-    record_no_test_acknowledgement,
-    record_duplicate_search,
 )
 from mailman.knowledge.collect import collect_retrospective, write_retrospective
 from mailman.knowledge.retrospective import RETROSPECTIVE_SECTIONS
@@ -68,6 +66,13 @@ from mailman.orchestrator import (
 )
 from mailman.prior_art import collect_prior_art
 from mailman.prompts import load_recorded_verification, write_task_prompts
+from mailman.provenance import (
+    collect_contributions,
+    deletion_is_safe,
+    record_provenance,
+    refresh_contributions,
+    render_contributions,
+)
 from mailman.reproduction import (
     PURPOSE_KEY,
     REPRODUCTION_PURPOSE,
@@ -75,6 +80,30 @@ from mailman.reproduction import (
     record_command_reproduction,
     record_human_reproduction,
 )
+from mailman.review_decision import (
+    DECISION_FILENAME,
+    DecisionError,
+    blank_decision,
+    load_decision,
+)
+from mailman.review_packet import write_packet_page
+from mailman.review_page import write_run_page
+from mailman.screen import load_screen, render_screen, screen_repository
+from mailman.submission import (
+    TargetPolicy,
+    partition_duplicates,
+    prepare_submission,
+    record_duplicate_acknowledgement,
+    record_duplicate_search,
+    record_no_test_acknowledgement,
+    related_duplicates,
+)
+from mailman.target_intel import (
+    collect_target_intel,
+    render_target_intel,
+    repository_slug,
+)
+from mailman.targeting import assess_target
 from mailman.toolchain import (
     prepare_agent_prompt,
     probe_tool,
@@ -83,30 +112,6 @@ from mailman.toolchain import (
 )
 from mailman.transcript import count_commands, parse_stream
 from mailman.view import render_run, summarize_runs, write_transcript_logs
-from mailman.review_page import write_run_page
-from mailman.review_decision import (
-    DECISION_FILENAME,
-    DecisionError,
-    blank_decision,
-    load_decision,
-)
-from mailman.review_packet import write_packet_page
-from mailman.provenance import (
-    collect_contributions,
-    deletion_is_safe,
-    load_provenance,
-    record_provenance,
-    refresh_contributions,
-    render_contributions,
-)
-from mailman.identity import (
-    Identity,
-    author_violations,
-    branch_commits,
-    machine_identity,
-    resolve_identity,
-    save_identity,
-)
 from mailman.workspace import commit_is_ancestor, inspect_workspace, prepare_workspace
 
 
@@ -119,7 +124,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("doctor", help="check required and optional local tools")
     subparsers.add_parser("procedure", help="print the shared PRHunt procedure")
-    draft = subparsers.add_parser("draft-environment", help="derive an editable plan from pyproject.toml")
+    draft = subparsers.add_parser(
+        "draft-environment", help="derive an editable plan from pyproject.toml"
+    )
     draft.add_argument("run_id")
     draft.add_argument("--python", default=sys.executable)
     draft.add_argument("--data-root", type=Path)
@@ -127,9 +134,21 @@ def _build_parser() -> argparse.ArgumentParser:
     hunt.add_argument(
         "action",
         choices=(
-            "init", "add", "drop", "restore", "status", "finish", "list",
-            "escalate", "refresh-procedure", "lease", "release", "abandon",
-            "refresh", "file", "targets",
+            "init",
+            "add",
+            "drop",
+            "restore",
+            "status",
+            "finish",
+            "list",
+            "escalate",
+            "refresh-procedure",
+            "lease",
+            "release",
+            "abandon",
+            "refresh",
+            "file",
+            "targets",
         ),
     )
     hunt.add_argument(
@@ -159,8 +178,8 @@ def _build_parser() -> argparse.ArgumentParser:
     hunt.add_argument(
         "--reason",
         help="why, for hunt drop, restore, escalate, lease --takeover and "
-             "abandon. A hunt that is over needs one to close; without it the "
-             "record says RUNNING for ever and the next session re-judges it",
+        "abandon. A hunt that is over needs one to close; without it the "
+        "record says RUNNING for ever and the next session re-judges it",
     )
     hunt.add_argument("--evidence")
     hunt.add_argument(
@@ -177,7 +196,9 @@ def _build_parser() -> argparse.ArgumentParser:
     hunt.add_argument("--why-user")
     hunt.add_argument("--user-action")
     hunt.add_argument("--data-root", type=Path)
-    finalize = subparsers.add_parser("finalize-review", help="validate the decision against the verified candidate")
+    finalize = subparsers.add_parser(
+        "finalize-review", help="validate the decision against the verified candidate"
+    )
     finalize.add_argument("run_id")
     finalize.add_argument("--data-root", type=Path)
 
@@ -186,8 +207,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="read a maintainer's review of a filed pull request into the run",
     )
     fetch_review.add_argument("run_id")
-    fetch_review.add_argument("--pr", required=True, dest="pull_request",
-                              help="https://github.com/OWNER/REPO/pull/NUMBER")
+    fetch_review.add_argument(
+        "--pr",
+        required=True,
+        dest="pull_request",
+        help="https://github.com/OWNER/REPO/pull/NUMBER",
+    )
     fetch_review.add_argument("--executable")
     fetch_review.add_argument("--timeout", type=float, default=60)
     fetch_review.add_argument("--data-root", type=Path)
@@ -197,8 +222,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="record how the revision answers each requested change",
     )
     revision_response.add_argument("run_id")
-    revision_response.add_argument("--init", action="store_true",
-                                   help="write an empty answer per requested change")
+    revision_response.add_argument(
+        "--init", action="store_true", help="write an empty answer per requested change"
+    )
     revision_response.add_argument("--data-root", type=Path)
 
     prescreen = subparsers.add_parser(
@@ -217,8 +243,12 @@ def _build_parser() -> argparse.ArgumentParser:
     prescreen.add_argument("--executable")
     prescreen.add_argument("--timeout", type=float, default=60)
     prescreen.add_argument("--data-root", type=Path)
+    prescreen.add_argument("--hunt", dest="deadline_hunt_id")
+    prescreen.add_argument("--owner")
 
-    init_run = subparsers.add_parser("init-run", help="create a private local run record")
+    init_run = subparsers.add_parser(
+        "init-run", help="create a private local run record"
+    )
     init_run.add_argument("--repository", required=True)
     # Exactly one of these. A target whose contributors never file issues has
     # no issue to point at, and refusing those targets ruled out the
@@ -251,6 +281,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="model id for the reviewer, recorded with the run",
     )
     init_run.add_argument("--data-root", type=Path)
+    init_run.add_argument("--hunt", dest="deadline_hunt_id")
+    init_run.add_argument("--owner")
     init_run.add_argument(
         "--no-prescreen",
         metavar="REASON",
@@ -274,7 +306,8 @@ def _build_parser() -> argparse.ArgumentParser:
     fetch_issue.add_argument("--data-root", type=Path)
 
     build_prompts = subparsers.add_parser(
-        "build-prompts", help="turn the captured issue into primary and reviewer prompts"
+        "build-prompts",
+        help="turn the captured issue into primary and reviewer prompts",
     )
     build_prompts.add_argument("run_id")
     build_prompts.add_argument(
@@ -465,6 +498,8 @@ def _build_parser() -> argparse.ArgumentParser:
     screen.add_argument("--executable", help="path to the GitHub CLI executable")
     screen.add_argument("--timeout", type=float, default=120)
     screen.add_argument("--data-root", type=Path)
+    screen.add_argument("--hunt", dest="deadline_hunt_id")
+    screen.add_argument("--owner")
 
     transition = subparsers.add_parser("transition", help="change a run workflow state")
     transition.add_argument("run_id")
@@ -520,7 +555,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="record the patch and the upstream state of a run's contribution",
     )
     provenance_parser.add_argument("run_id")
-    provenance_parser.add_argument("--pr", type=int, help="upstream pull request number")
+    provenance_parser.add_argument(
+        "--pr", type=int, help="upstream pull request number"
+    )
     provenance_parser.add_argument("--head", help="fork branch the work was pushed to")
     provenance_parser.add_argument(
         "--superseded-by",
@@ -769,7 +806,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     packet.add_argument("--data-root", type=Path)
 
-    verify = subparsers.add_parser("verify", help="run and record a verification command")
+    verify = subparsers.add_parser(
+        "verify", help="run and record a verification command"
+    )
     verify.add_argument("run_id")
     verify.add_argument("--data-root", type=Path)
     verify.add_argument("--working-directory", type=Path, default=Path.cwd())
@@ -779,37 +818,73 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _hunt(arguments: argparse.Namespace) -> int:
     from mailman import hunt
+
     root = (arguments.data_root or default_data_root()).resolve()
     if arguments.action == "list":
-        print(json.dumps([{
-            **{k: row.get(k) for k in ("hunt_id", "status", "requested", "updated_at")},
-            # A hunt that says RUNNING with a dead lease has no coordinator.
-            # Reporting the stored word is how a session decides a target is
-            # taken when nobody is there.
-            "effective_status": hunt.effective_status(row),
-            "filed": sum(1 for entry in row.get("runs", []) if entry.get("filed")),
-        } for row in hunt.iter_hunts(root)], indent=2))
+        print(
+            json.dumps(
+                [
+                    {
+                        **{
+                            k: row.get(k)
+                            for k in ("hunt_id", "status", "requested", "updated_at")
+                        },
+                        # A hunt that says RUNNING with a dead lease has no coordinator.
+                        # Reporting the stored word is how a session decides a target is
+                        # taken when nobody is there.
+                        "effective_status": hunt.effective_status(row),
+                        "filed": sum(
+                            1 for entry in row.get("runs", []) if entry.get("filed")
+                        ),
+                    }
+                    for row in hunt.iter_hunts(root)
+                ],
+                indent=2,
+            )
+        )
         return 0
     if arguments.action == "targets":
         claims = hunt.target_claims(root)
-        print(json.dumps({"data_root": str(root), "claims": claims,
-                          "live": sorted({c["target"] for c in claims if c["live"]}),
-                          "filed": sorted({c["target"] for c in claims if c["filed"]})},
-                         indent=2))
+        print(
+            json.dumps(
+                {
+                    "data_root": str(root),
+                    "claims": claims,
+                    "live": sorted({c["target"] for c in claims if c["live"]}),
+                    "filed": sorted({c["target"] for c in claims if c["filed"]}),
+                },
+                indent=2,
+            )
+        )
         return 0
     if not arguments.hunt_id:
         raise ValueError("provide a hunt ID, or a count for hunt init")
     if arguments.action == "init":
-        if not all((arguments.primary, arguments.primary_model, arguments.reviewer, arguments.reviewer_model)):
-            raise ValueError("ask for primary and reviewer model IDs, then pass all four model flags")
-        record = hunt.create_hunt(root, int(arguments.hunt_id), primary=arguments.primary,
-                                  primary_model=arguments.primary_model, reviewer=arguments.reviewer,
-                                  reviewer_model=arguments.reviewer_model,
-                                  owner=arguments.owner)
+        if not all(
+            (
+                arguments.primary,
+                arguments.primary_model,
+                arguments.reviewer,
+                arguments.reviewer_model,
+            )
+        ):
+            raise ValueError(
+                "ask for primary and reviewer model IDs, then pass all four model flags"
+            )
+        record = hunt.create_hunt(
+            root,
+            int(arguments.hunt_id),
+            primary=arguments.primary,
+            primary_model=arguments.primary_model,
+            reviewer=arguments.reviewer,
+            reviewer_model=arguments.reviewer_model,
+            owner=arguments.owner,
+        )
         print(json.dumps(record, indent=2))
         return 0
     if arguments.action == "refresh-procedure":
         import hashlib
+
         path = hunt.hunt_path(root, arguments.hunt_id)
         record = hunt.read_object(path)
         if not record:
@@ -819,13 +894,18 @@ def _hunt(arguments: argparse.Namespace) -> int:
                 f"hunt {record['hunt_id']} is {record['status']}; a closed hunt "
                 "keeps the procedure version its work was prepared under"
             )
-        record["procedure_sha256"] = hashlib.sha256(hunt.PROCEDURE.read_bytes()).hexdigest()
+        record["procedure_sha256"] = hashlib.sha256(
+            hunt.PROCEDURE.read_bytes()
+        ).hexdigest()
         hunt.save(path, record)
-    record = hunt.load_hunt(root, arguments.hunt_id,
-                            require_procedure=arguments.action != "abandon")
+    record = hunt.load_hunt(
+        root, arguments.hunt_id, require_procedure=arguments.action != "abandon"
+    )
     if arguments.action == "lease":
         lease = hunt.acquire_lease(
-            root, record, owner=arguments.owner,
+            root,
+            record,
+            owner=arguments.owner,
             takeover_reason=arguments.reason if arguments.takeover else None,
         )
         print(json.dumps(lease, indent=2))
@@ -836,23 +916,55 @@ def _hunt(arguments: argparse.Namespace) -> int:
         # https://github.com/wolfgang-aura/Mailman/issues/77
         if hunt.is_terminal(record):
             raise ValueError(f"hunt {record['hunt_id']} is already {record['status']}")
-        closed = hunt.abandon(root, record, reason=arguments.reason, owner=arguments.owner)
-        print(json.dumps({"hunt_id": record["hunt_id"], "status": record["status"],
-                          "abandoned": closed}, indent=2))
+        closed = hunt.abandon(
+            root, record, reason=arguments.reason, owner=arguments.owner
+        )
+        print(
+            json.dumps(
+                {
+                    "hunt_id": record["hunt_id"],
+                    "status": record["status"],
+                    "abandoned": closed,
+                },
+                indent=2,
+            )
+        )
         return 0
     if arguments.action == "release":
         hunt.release_lease(root, record, owner=arguments.owner)
         print(json.dumps({"hunt_id": record["hunt_id"], "lease": None}, indent=2))
         return 0
-    if arguments.action in ("add", "drop", "restore", "escalate", "finish", "refresh", "file"):
+    if arguments.action in (
+        "add",
+        "drop",
+        "restore",
+        "escalate",
+        "finish",
+        "refresh",
+        "file",
+    ):
         hunt.require_lease(record, arguments.owner)
     if arguments.action == "file":
         if not arguments.run_id or not arguments.pr_url:
             raise ValueError("provide the run ID and --pr-url")
-        filed = hunt.record_filing(root, record, arguments.run_id,
-                                   pr_url=arguments.pr_url, commit=arguments.commit)
-        print(json.dumps({"hunt_id": record["hunt_id"], "run_id": arguments.run_id,
-                          "status": record["status"], "filed": filed}, indent=2))
+        filed = hunt.record_filing(
+            root,
+            record,
+            arguments.run_id,
+            pr_url=arguments.pr_url,
+            commit=arguments.commit,
+        )
+        print(
+            json.dumps(
+                {
+                    "hunt_id": record["hunt_id"],
+                    "run_id": arguments.run_id,
+                    "status": record["status"],
+                    "filed": filed,
+                },
+                indent=2,
+            )
+        )
         return 0
     if arguments.action == "add":
         if not arguments.run_id:
@@ -861,7 +973,9 @@ def _hunt(arguments: argparse.Namespace) -> int:
     if arguments.action == "drop":
         if not arguments.reason or not arguments.evidence:
             raise ValueError("a dropped candidate needs --reason and --evidence")
-        row = next((row for row in record["runs"] if row["run_id"] == arguments.run_id), None)
+        row = next(
+            (row for row in record["runs"] if row["run_id"] == arguments.run_id), None
+        )
         if row is None:
             raise ValueError("run is not in this hunt")
         row.update(dropped=True, reason=arguments.reason, evidence=arguments.evidence)
@@ -869,16 +983,39 @@ def _hunt(arguments: argparse.Namespace) -> int:
     if arguments.action == "restore":
         if not arguments.reason or not arguments.evidence:
             raise ValueError("a restored candidate needs --reason and --evidence")
-        hunt.restore_run(root, record, arguments.run_id, reason=arguments.reason,
-                         evidence=arguments.evidence)
+        hunt.restore_run(
+            root,
+            record,
+            arguments.run_id,
+            reason=arguments.reason,
+            evidence=arguments.evidence,
+        )
     if arguments.action == "escalate":
         if arguments.reason not in hunt.HUMAN_REASONS:
-            raise ValueError("routine failures are coordinator work; reason must be " + ", ".join(hunt.HUMAN_REASONS))
-        if not all((arguments.evidence, arguments.attempted, arguments.why_user, arguments.user_action)):
-            raise ValueError("escalation needs --evidence, --attempted, --why-user and --user-action")
-        record["escalations"].append({"reason": arguments.reason, "evidence": arguments.evidence,
-                                      "attempted": arguments.attempted, "why_user": arguments.why_user,
-                                      "user_action": arguments.user_action})
+            raise ValueError(
+                "routine failures are coordinator work; reason must be "
+                + ", ".join(hunt.HUMAN_REASONS)
+            )
+        if not all(
+            (
+                arguments.evidence,
+                arguments.attempted,
+                arguments.why_user,
+                arguments.user_action,
+            )
+        ):
+            raise ValueError(
+                "escalation needs --evidence, --attempted, --why-user and --user-action"
+            )
+        record["escalations"].append(
+            {
+                "reason": arguments.reason,
+                "evidence": arguments.evidence,
+                "attempted": arguments.attempted,
+                "why_user": arguments.why_user,
+                "user_action": arguments.user_action,
+            }
+        )
         hunt.save(hunt.hunt_path(root, record["hunt_id"]), record)
     if arguments.action == "refresh":
         result = hunt.refresh(root, record)
@@ -907,36 +1044,54 @@ def _doctor() -> int:
 def _fetch_review(arguments: argparse.Namespace) -> int:
     from mailman import maintainer_review
     from mailman.models import RunStatus
+
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
     record = maintainer_review.fetch_review(
-        run_directory, pull_request=arguments.pull_request,
-        executable=arguments.executable, timeout_seconds=arguments.timeout,
+        run_directory,
+        pull_request=arguments.pull_request,
+        executable=arguments.executable,
+        timeout_seconds=arguments.timeout,
     )
     if record["success"] and run.status is RunStatus.READY_FOR_HUMAN_REVIEW:
-        run.transition(RunStatus.MAINTAINER_CHANGES_REQUESTED,
-                       f"{record['repository']}#{record['number']} requested changes")
+        run.transition(
+            RunStatus.MAINTAINER_CHANGES_REQUESTED,
+            f"{record['repository']}#{record['number']} requested changes",
+        )
         write_run(run, run_directory)
-    print(json.dumps({
-        "run_id": run.run_id, "status": str(run.status),
-        "success": record["success"], "detail": record.get("detail"),
-        "requested_changes": record.get("change_count", 0),
-        "review": str(run_directory / maintainer_review.REVIEW_MARKDOWN),
-        "next": "mailman build-prompts to put the review in both prompts, then "
+    print(
+        json.dumps(
+            {
+                "run_id": run.run_id,
+                "status": str(run.status),
+                "success": record["success"],
+                "detail": record.get("detail"),
+                "requested_changes": record.get("change_count", 0),
+                "review": str(run_directory / maintainer_review.REVIEW_MARKDOWN),
+                "next": "mailman build-prompts to put the review in both prompts, then "
                 "resume the run through orchestrate or resume-review",
-    }, indent=2))
+            },
+            indent=2,
+        )
+    )
     return 0 if record["success"] else 1
 
 
 def _revision_response(arguments: argparse.Namespace) -> int:
     from mailman import maintainer_review
+
     _, run_directory = load_run(arguments.run_id, arguments.data_root)
     if arguments.init:
         record = maintainer_review.init_response(run_directory)
-        print(json.dumps({
-            "path": str(run_directory / maintainer_review.RESPONSE_FILENAME),
-            "answers": len(record["answers"]),
-            "next": "set every answer to answered or declined; a declined one needs a note",
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "path": str(run_directory / maintainer_review.RESPONSE_FILENAME),
+                    "answers": len(record["answers"]),
+                    "next": "set every answer to answered or declined; a declined one needs a note",
+                },
+                indent=2,
+            )
+        )
         return 0
     checked = maintainer_review.check_revision(run_directory)
     print(json.dumps(checked, indent=2))
@@ -945,10 +1100,14 @@ def _revision_response(arguments: argparse.Namespace) -> int:
 
 def _prescreen(arguments: argparse.Namespace) -> int:
     from mailman import prescreen
+
     root = (arguments.data_root or default_data_root()).resolve()
     record = prescreen.prescreen_issue(
-        root, arguments.issue, query=arguments.query,
-        symbols=arguments.symbols or (), executable=arguments.executable,
+        root,
+        arguments.issue,
+        query=arguments.query,
+        symbols=arguments.symbols or (),
+        executable=arguments.executable,
         timeout_seconds=arguments.timeout,
     )
     print(json.dumps(record, indent=2))
@@ -957,6 +1116,7 @@ def _prescreen(arguments: argparse.Namespace) -> int:
 
 def _init_run(arguments: argparse.Namespace) -> int:
     from mailman import prescreen
+
     prescreen_record = None
     if arguments.issue:
         root = (arguments.data_root or default_data_root()).resolve()
@@ -978,9 +1138,11 @@ def _init_run(arguments: argparse.Namespace) -> int:
     )
     if arguments.issue and arguments.no_prescreen:
         (run_directory / "prescreen-skipped.json").write_text(
-            json.dumps({"reason": arguments.no_prescreen, "issue": arguments.issue},
-                       indent=2),
-            encoding="utf-8")
+            json.dumps(
+                {"reason": arguments.no_prescreen, "issue": arguments.issue}, indent=2
+            ),
+            encoding="utf-8",
+        )
     elif prescreen_record is not None:
         (run_directory / "prescreen.json").write_text(
             json.dumps(prescreen_record, indent=2) + "\n", encoding="utf-8"
@@ -1032,7 +1194,9 @@ def _build_prompts(arguments: argparse.Namespace) -> int:
     verification = (
         resolve_command(
             run_directory,
-            environment_command(run_directory, arguments.command or arguments.verification.split()),
+            environment_command(
+                run_directory, arguments.command or arguments.verification.split()
+            ),
         )
         if arguments.command or arguments.verification
         else None
@@ -1196,8 +1360,7 @@ def _duplicate_search(arguments: argparse.Namespace) -> int:
     if not record["complete"]:
         for failure in record["failed_methods"]:
             print(
-                f"  {failure['kind']} {failure['method']} failed: "
-                f"{failure['detail']}",
+                f"  {failure['kind']} {failure['method']} failed: {failure['detail']}",
                 file=sys.stderr,
             )
         print(
@@ -1339,7 +1502,9 @@ def _prepare_submission(arguments: argparse.Namespace) -> int:
     reference = (issue_record or {}).get("reference")
     number = reference.get("number") if isinstance(reference, dict) else None
     branch = arguments.branch or (
-        f"mailman/issue-{number}" if isinstance(number, int) else f"mailman/run-{run.run_id}"
+        f"mailman/issue-{number}"
+        if isinstance(number, int)
+        else f"mailman/run-{run.run_id}"
     )
     fallback_title = (
         f"Address {run.issue}"
@@ -1434,7 +1599,9 @@ def _export_patch(arguments: argparse.Namespace) -> int:
 def _transition(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
     if RunStatus(arguments.target) is RunStatus.READY_FOR_HUMAN_REVIEW:
-        raise ValueError("use `mailman finalize-review` to validate the decision and evidence")
+        raise ValueError(
+            "use `mailman finalize-review` to validate the decision and evidence"
+        )
     run.transition(RunStatus(arguments.target), arguments.reason)
     write_run(run, run_directory)
     print(json.dumps({"run_id": run.run_id, "status": str(run.status)}, indent=2))
@@ -1537,7 +1704,9 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         configured.agent,
         model=model,
         max_turns=arguments.max_turns,
-        executable=toolchain_executable(run_directory, configured.agent.strip().lower()),
+        executable=toolchain_executable(
+            run_directory, configured.agent.strip().lower()
+        ),
         reasoning_effort=arguments.reasoning_effort,
     )
     report_path = run_directory / f"{arguments.role}-report.md"
@@ -1631,6 +1800,7 @@ def _default_prompt(run_directory: Path, given: Path | None, name: str) -> Path:
 def _orchestrate(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
     from mailman import hunt
+
     data_root = (arguments.data_root or default_data_root()).resolve()
     owning_hunt = hunt.hunt_for_run(data_root, run.run_id)
     deadline_at = None
@@ -1661,7 +1831,8 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
             owning_hunt.get("time_budget_seconds", hunt.HUNT_TIME_BUDGET_SECONDS)
         )
     command = environment_command(
-        run_directory, arguments.command or load_recorded_verification(run_directory) or []
+        run_directory,
+        arguments.command or load_recorded_verification(run_directory) or [],
     )
     if not command:
         raise ValueError("a verification command is required after --")
@@ -2043,9 +2214,7 @@ def _decision(arguments: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-        path.write_text(
-            json.dumps(blank_decision(), indent=2) + "\n", encoding="utf-8"
-        )
+        path.write_text(json.dumps(blank_decision(), indent=2) + "\n", encoding="utf-8")
         print(json.dumps({"run_id": arguments.run_id, "decision": str(path)}, indent=2))
         print(
             "written empty. Fill it in, then run `mailman decision "
@@ -2164,8 +2333,7 @@ def _reproduce(arguments: argparse.Namespace) -> int:
     # Failing here is the point: the run should stop rather than hand an
     # already-fixed issue to an agent.
     print(
-        "the reported behaviour did not happen at "
-        f"{run.base_commit}. Failed checks:",
+        f"the reported behaviour did not happen at {run.base_commit}. Failed checks:",
         file=sys.stderr,
     )
     for check in record["checks"]:
@@ -2244,13 +2412,27 @@ def _tail(text: str, lines: int = 20) -> str:
 #: Options only Mailman defines. One of these after `--` is always a mistake:
 #: it reaches the test runner, which fails collection, and the failure reads
 #: like a broken candidate. https://github.com/wolfgang-aura/Mailman/issues/70
-_MAILMAN_ONLY_OPTIONS = frozenset({
-    "--data-root", "--max-revisions", "--max-review-cycles", "--reasoning-effort",
-    "--max-turns", "--agent-timeout", "--verification-timeout", "--owner",
-    "--run-time-budget", "--time-budget-override-reason", "--agent-token-budget",
-    "--max-changed-files", "--max-changed-lines",
-    "--acknowledge-prior-attempts", "--acknowledge-claims", "--verification",
-})
+_MAILMAN_ONLY_OPTIONS = frozenset(
+    {
+        "--data-root",
+        "--max-revisions",
+        "--max-review-cycles",
+        "--reasoning-effort",
+        "--max-turns",
+        "--agent-timeout",
+        "--verification-timeout",
+        "--owner",
+        "--run-time-budget",
+        "--time-budget-override-reason",
+        "--agent-token-budget",
+        "--max-changed-files",
+        "--max-changed-lines",
+        "--acknowledge-prior-attempts",
+        "--acknowledge-claims",
+        "--verification",
+        "--hunt",
+    }
+)
 
 
 def check_verification_command(command: list[str]) -> None:
@@ -2273,10 +2455,98 @@ def check_verification_command(command: list[str]) -> None:
             )
 
 
+def _command_hunt(arguments: argparse.Namespace) -> dict | None:
+    """Find the hunt whose deadline bounds this CLI invocation."""
+    from mailman import hunt
+
+    root = (getattr(arguments, "data_root", None) or default_data_root()).resolve()
+    explicit = getattr(arguments, "deadline_hunt_id", None)
+    if explicit:
+        record = hunt.load_hunt(root, explicit)
+        if getattr(arguments, "owner", None):
+            hunt.require_lease(record, arguments.owner)
+        return record
+
+    if arguments.subcommand == "hunt":
+        if arguments.action in ("refresh", "finish") and arguments.hunt_id:
+            return hunt.load_hunt(root, arguments.hunt_id)
+        return None
+
+    bounded_commands = {
+        "acknowledge-duplicates",
+        "acknowledge-no-test",
+        "build-prompts",
+        "check-authors",
+        "check-target",
+        "claims",
+        "decision",
+        "draft-environment",
+        "duplicate-search",
+        "export-patch",
+        "fetch-issue",
+        "fetch-review",
+        "finalize-review",
+        "handoff",
+        "handoff-check",
+        "init-run",
+        "orchestrate",
+        "packet",
+        "prepare-environment",
+        "prepare-submission",
+        "prepare-workspace",
+        "prescreen",
+        "prior-art",
+        "probe-tool",
+        "provenance",
+        "reproduce",
+        "resume-review",
+        "review",
+        "revision-response",
+        "retrospective",
+        "run-agent",
+        "screen-target",
+        "target-intel",
+        "transition",
+        "verify",
+    }
+    if arguments.subcommand not in bounded_commands:
+        return None
+
+    run_ids = getattr(arguments, "run_id", None)
+    if isinstance(run_ids, str):
+        return hunt.hunt_for_run(root, run_ids)
+    if isinstance(run_ids, list):
+        for run_id in run_ids:
+            record = hunt.hunt_for_run(root, run_id)
+            if record:
+                return record
+
+    if arguments.subcommand in ("screen-target", "prescreen", "init-run"):
+        live = [
+            record
+            for record in hunt.iter_hunts(root)
+            if hunt.effective_status(record) == "RUNNING"
+        ]
+        if len(live) == 1:
+            return live[0]
+        if len(live) > 1:
+            raise ValueError(
+                "more than one live hunt uses this data root; pass --hunt so "
+                "screening uses the intended deadline"
+            )
+    return None
+
+
 def main(arguments: list[str] | None = None) -> int:
     raw_arguments = list(arguments if arguments is not None else sys.argv[1:])
     verification_command: list[str] | None = None
-    passthrough = (["verify"], ["orchestrate"], ["resume-review"], ["reproduce"], ["build-prompts"])
+    passthrough = (
+        ["verify"],
+        ["orchestrate"],
+        ["resume-review"],
+        ["reproduce"],
+        ["build-prompts"],
+    )
     if raw_arguments[:1] in passthrough and "--" in raw_arguments:
         delimiter = raw_arguments.index("--")
         verification_command = raw_arguments[delimiter + 1 :]
@@ -2284,21 +2554,45 @@ def main(arguments: list[str] | None = None) -> int:
 
     parser = _build_parser()
     parsed = parser.parse_args(raw_arguments)
-    if parsed.subcommand in ("verify", "orchestrate", "resume-review", "reproduce", "build-prompts"):
+    if parsed.subcommand in (
+        "verify",
+        "orchestrate",
+        "resume-review",
+        "reproduce",
+        "build-prompts",
+    ):
         parsed.command = verification_command or []
+    deadline_token = None
     try:
-        if parsed.subcommand in ("verify", "orchestrate", "resume-review", "reproduce", "build-prompts"):
+        deadline_hunt = _command_hunt(parsed)
+        if deadline_hunt:
+            from mailman.hunt import deadline
+
+            deadline_token = set_deadline(
+                deadline(deadline_hunt),
+                label=f"hunt {deadline_hunt['hunt_id']}",
+            )
+            clamp_timeout_seconds(1)
+        if parsed.subcommand in (
+            "verify",
+            "orchestrate",
+            "resume-review",
+            "reproduce",
+            "build-prompts",
+        ):
             check_verification_command(parsed.command)
         if parsed.subcommand == "doctor":
             return _doctor()
         if parsed.subcommand == "procedure":
             from mailman.hunt import PROCEDURE
+
             _emit(PROCEDURE.read_text(encoding="utf-8"))
             return 0
         if parsed.subcommand == "hunt":
             return _hunt(parsed)
         if parsed.subcommand == "draft-environment":
             from mailman.environment_plan import draft_plan
+
             _, directory = load_run(parsed.run_id, parsed.data_root)
             destination = directory / "environment-plan.json"
             draft_plan(directory / "workspace", destination, python=parsed.python)
@@ -2306,6 +2600,7 @@ def main(arguments: list[str] | None = None) -> int:
             return 0
         if parsed.subcommand == "finalize-review":
             from mailman.completion import finalize_review
+
             _, directory = load_run(parsed.run_id, parsed.data_root)
             print(json.dumps(finalize_review(directory), indent=2))
             return 0
@@ -2382,6 +2677,9 @@ def main(arguments: list[str] | None = None) -> int:
     except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
+    finally:
+        if deadline_token is not None:
+            reset_deadline(deadline_token)
     parser.error(f"unknown subcommand: {parsed.subcommand}")
     return 2
 

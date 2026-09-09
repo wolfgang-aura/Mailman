@@ -10,8 +10,8 @@ of on either vendor's schema.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import Iterable, Iterator
 
 from mailman.redaction import redact
 
@@ -19,6 +19,32 @@ CODEX = "codex"
 CLAUDE = "claude"
 
 _SUMMARY_LIMIT = 160
+
+
+def token_usage(stdout: str, agent: str) -> dict[str, int] | None:
+    """Return usage Mailman can account for from one agent execution."""
+    totals = {
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens": 0,
+    }
+    if agent != CODEX:
+        return None
+    reported = False
+    for line in stdout.splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("type") != "turn.completed":
+            continue
+        reported = True
+        usage = payload.get("usage") or {}
+        for key in totals:
+            value = usage.get(key, 0)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                totals[key] += value
+    return totals if reported else None
 
 
 @dataclass(frozen=True)
@@ -178,9 +204,7 @@ def _claude_blocks(message: dict) -> Iterator[TranscriptEvent]:
                 or json.dumps(arguments)
             )
             kind = "edits" if name in {"Edit", "Write", "NotebookEdit"} else "command"
-            yield TranscriptEvent(
-                kind, f"{name}: {described}", json.dumps(arguments)
-            )
+            yield TranscriptEvent(kind, f"{name}: {described}", json.dumps(arguments))
         elif block_type == "tool_result":
             body = block.get("content")
             if isinstance(body, list):

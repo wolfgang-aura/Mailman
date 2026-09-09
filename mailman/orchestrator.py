@@ -2,27 +2,32 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 
+from mailman import health
 from mailman.agents.base import AgentRequest, EngineeringAgent
 from mailman.artifacts import append_agent_execution, append_verification, write_run
 from mailman.completion import candidate_digest, git_bytes
 from mailman.environment import environment_command
 from mailman.executor import CommandResult, execute
 from mailman.instructions import describe_instruction_sources
-from mailman import health
-from mailman.limits import offload, truncate_stream
+from mailman.limits import offload
 from mailman.models import RunRecord, RunStatus, utc_now
 from mailman.prompts import load_recorded_verification
 from mailman.redaction import redact
 from mailman.targeting import assess_target
 from mailman.toolchain import prepare_agent_prompt, resolve_command
-from mailman.transcript import TranscriptEvent, count_commands, parse_stream
+from mailman.transcript import (
+    TranscriptEvent,
+    count_commands,
+    parse_stream,
+    token_usage,
+)
 from mailman.workspace import inspect_workspace
-
 
 VERDICT_APPROVE = "APPROVE"
 VERDICT_REVISE = "REVISE"
@@ -33,6 +38,7 @@ DEFAULT_MAX_CHANGED_LINES = 500
 
 class RunTimeBudgetExpired(RuntimeError):
     pass
+
 
 _STOP_REASONS = {
     "error_max_turns": "it ran out of turns, so the work was cut off mid-task",
@@ -53,6 +59,7 @@ def _describe_stop(reason: str | None, turn_budget: int | None) -> str:
     if reason == "error_max_turns" and turn_budget:
         return f"{described} (budget: {turn_budget} turns)"
     return described
+
 
 _VERDICT_PATTERN = re.compile(
     r"^[ \t>*-]*MAILMAN-VERDICT:[ \t]*(APPROVE|REVISE)[ \t]*$", re.MULTILINE
@@ -155,9 +162,7 @@ def _describe_failure(result: CommandResult) -> str:
             clipped.insert(0, f"[earlier {len(lines) - len(clipped)} line(s) omitted]")
         tail.append(f"### {name}" + chr(10) + chr(10) + chr(10).join(clipped))
     outcome = (
-        "timed out"
-        if result.timed_out
-        else f"exited with code {result.exit_code}"
+        "timed out" if result.timed_out else f"exited with code {result.exit_code}"
     )
     header = "```" + chr(10) + " ".join(result.command) + chr(10) + "```"
     body = chr(10) + chr(10) + (chr(10) + chr(10)).join(tail) if tail else ""
@@ -287,7 +292,9 @@ class _Orchestration:
         self.max_review_cycles = max_review_cycles
         self.run_time_budget_seconds = run_time_budget_seconds
         self.time_budget_name = time_budget_name
-        self.budget_override_reason = budget_override_reason.strip() if budget_override_reason else None
+        self.budget_override_reason = (
+            budget_override_reason.strip() if budget_override_reason else None
+        )
         created = datetime.fromisoformat(run.created_at)
         if created.tzinfo is None:
             created = created.replace(tzinfo=UTC)
@@ -337,7 +344,12 @@ class _Orchestration:
         return offload(
             assessment.to_dict(),
             self.run_directory / "target-assessment.json",
-            keep=("searched", "open_attempts", "merged_attempts", "superseded_attempts"),
+            keep=(
+                "searched",
+                "open_attempts",
+                "merged_attempts",
+                "superseded_attempts",
+            ),
         )
 
     def _transition(self, target: RunStatus, reason: str) -> None:
@@ -355,8 +367,12 @@ class _Orchestration:
             write_run(self.run, self.run_directory)
         else:
             self.run.history.append(
-                {"at": utc_now(), "from": str(RunStatus.BLOCKED),
-                 "to": str(RunStatus.BLOCKED), "reason": reason}
+                {
+                    "at": utc_now(),
+                    "from": str(RunStatus.BLOCKED),
+                    "to": str(RunStatus.BLOCKED),
+                    "reason": reason,
+                }
             )
             write_run(self.run, self.run_directory)
         self._step("blocked", ok=False, detail=reason)
@@ -385,9 +401,51 @@ class _Orchestration:
                 return str(record["session_id"])
         return None
 
+    def _role_usage(self, role: str) -> dict[str, int]:
+        totals = {
+            "input_tokens": 0,
+            "cached_input_tokens": 0,
+            "output_tokens": 0,
+        }
+        directory = self.run_directory / "agent-executions"
+        if not directory.is_dir():
+            return totals
+        for path in sorted(directory.glob("*.json")):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if record.get("role") != role:
+                continue
+            usage = record.get("usage") or {}
+            for key in totals:
+                value = usage.get(key, 0)
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                    totals[key] += value
+        return totals
+
     def _run_agent(self, role: str, source_prompt: Path) -> tuple[bool, str | None]:
         configured = self.run.primary if role == "primary" else self.run.reviewer
         agent = self.agent_factory(configured.agent, configured.model)
+        prior_usage = self._role_usage(role)
+        usage_budget = agent.token_budget
+        if usage_budget is not None and prior_usage["input_tokens"] >= usage_budget:
+            detail = (
+                f"{agent.name} {role} input budget spent: "
+                f"{prior_usage['input_tokens']} of {usage_budget} tokens recorded"
+            )
+            self._step(
+                f"agent:{role}",
+                ok=False,
+                detail=detail,
+                data={
+                    "agent": agent.name,
+                    "token_budget": usage_budget,
+                    "role_usage": prior_usage,
+                    "usage_budget_exceeded": True,
+                },
+            )
+            return False, None
         prompt_path = prepare_agent_prompt(
             self.run_directory, role=role, source_prompt=source_prompt
         )
@@ -443,6 +501,23 @@ class _Orchestration:
         tally = count_commands(
             parse_stream(result.command_result.stdout.splitlines(), agent.name)
         )
+        reported_usage = token_usage(result.command_result.stdout, agent.name)
+        usage_accounting_missing = bool(
+            agent.name == "codex"
+            and usage_budget is not None
+            and reported_usage is None
+        )
+        execution_usage = reported_usage or {
+            "input_tokens": 0,
+            "cached_input_tokens": 0,
+            "output_tokens": 0,
+        }
+        role_usage = {
+            key: prior_usage[key] + execution_usage[key] for key in prior_usage
+        }
+        usage_budget_exceeded = bool(
+            usage_budget is not None and role_usage["input_tokens"] > usage_budget
+        )
         record_path = append_agent_execution(
             self.run_directory,
             role,
@@ -456,6 +531,10 @@ class _Orchestration:
                 "prompt_path": str(prompt_path),
                 "turn_budget": agent.turn_budget,
                 "token_budget": agent.token_budget,
+                "usage": execution_usage,
+                "role_usage": role_usage,
+                "usage_budget_exceeded": usage_budget_exceeded,
+                "usage_accounting_missing": usage_accounting_missing,
                 "session_id": result.session_id,
                 "commands_run": tally["commands"],
                 "commands_refused_or_failed": tally["refused_or_failed"],
@@ -465,7 +544,13 @@ class _Orchestration:
                 "workflow_status_after_run": str(self.run.status),
             },
         )
-        ok = not result.timed_out and result.exit_code == 0 and result.report_present
+        ok = (
+            not result.timed_out
+            and result.exit_code == 0
+            and result.report_present
+            and not usage_budget_exceeded
+            and not usage_accounting_missing
+        )
         stop_reason = _describe_stop(result.stop_reason, agent.turn_budget)
         if not ok:
             state = health.classify(
@@ -484,7 +569,17 @@ class _Orchestration:
                 )
         else:
             health.clear(self.run_directory)
-        if result.timed_out:
+        if usage_accounting_missing:
+            detail = (
+                f"{agent.name} returned no turn usage, so Mailman cannot enforce "
+                f"the {role} input budget"
+            )
+        elif usage_budget_exceeded:
+            detail = (
+                f"{agent.name} exceeded the {role} input budget: "
+                f"{role_usage['input_tokens']} of {usage_budget} tokens recorded"
+            )
+        elif result.timed_out:
             detail = f"{agent.name} timed out"
         elif not result.report_present:
             detail = f"{agent.name} produced no report"
@@ -503,6 +598,11 @@ class _Orchestration:
                 "report_present": result.report_present,
                 "stop_reason": result.stop_reason,
                 "turn_budget": agent.turn_budget,
+                "token_budget": usage_budget,
+                "usage": execution_usage,
+                "role_usage": role_usage,
+                "usage_budget_exceeded": usage_budget_exceeded,
+                "usage_accounting_missing": usage_accounting_missing,
                 "commands_run": tally["commands"],
                 "commands_refused_or_failed": tally["refused_or_failed"],
                 "execution_record": str(record_path),
@@ -514,7 +614,11 @@ class _Orchestration:
 
     def _verify(self, stage: str) -> tuple[bool, CommandResult]:
         guard_workspace = stage in ("baseline", "final")
-        before = candidate_digest(self.workspace, self.run.base_commit) if guard_workspace else None
+        before = (
+            candidate_digest(self.workspace, self.run.base_commit)
+            if guard_workspace
+            else None
+        )
         self.announce(
             f"run  verification ({stage}): {' '.join(self.verification_command)}"
         )
@@ -527,7 +631,11 @@ class _Orchestration:
         )
         command_number = append_verification(self.run_directory, result.to_dict())
         ok = not result.timed_out and result.exit_code == 0
-        after = candidate_digest(self.workspace, self.run.base_commit) if guard_workspace else None
+        after = (
+            candidate_digest(self.workspace, self.run.base_commit)
+            if guard_workspace
+            else None
+        )
         if guard_workspace and before != after:
             ok = False
         detail = (
@@ -559,8 +667,14 @@ class _Orchestration:
         instead of leaving a reader to infer progress from a green check.
         """
         state = inspect_workspace(self.workspace)
-        changed = bool(git_bytes(self.workspace, "diff", self.run.base_commit, "--name-only").strip()
-                       or git_bytes(self.workspace, "ls-files", "--others", "--exclude-standard").strip())
+        changed = bool(
+            git_bytes(
+                self.workspace, "diff", self.run.base_commit, "--name-only"
+            ).strip()
+            or git_bytes(
+                self.workspace, "ls-files", "--others", "--exclude-standard"
+            ).strip()
+        )
         self.workspace_changed = changed
         self._step(
             f"workspace-change:{stage}",
@@ -620,7 +734,9 @@ class _Orchestration:
             )
         return ok
 
-    def _record_reviewer_change(self, before: tuple[str, ...], before_digest: str) -> bool:
+    def _record_reviewer_change(
+        self, before: tuple[str, ...], before_digest: str
+    ) -> bool:
         """Record whether the reviewer changed the workspace it was only reading.
 
         Compare candidate content, including paths already changed by the primary.
@@ -628,7 +744,9 @@ class _Orchestration:
         """
         state = inspect_workspace(self.workspace)
         introduced = tuple(line for line in state.changes if line not in before)
-        changed = candidate_digest(self.workspace, self.run.base_commit) != before_digest
+        changed = (
+            candidate_digest(self.workspace, self.run.base_commit) != before_digest
+        )
         self._step(
             "workspace-change:reviewer",
             ok=not changed,
@@ -672,9 +790,11 @@ class _Orchestration:
             scratch=self.run_directory / "scratch"
         )
         changes = inspect_workspace(self.workspace).changes
-        stat = git_bytes(
-            self.workspace, "diff", "--stat", self.run.base_commit, "--"
-        ).decode("utf-8", errors="replace").strip()
+        stat = (
+            git_bytes(self.workspace, "diff", "--stat", self.run.base_commit, "--")
+            .decode("utf-8", errors="replace")
+            .strip()
+        )
         primary_report = self.run_directory / "primary-report.md"
         report = (
             primary_report.read_text(encoding="utf-8", errors="replace")[-4_000:]
@@ -741,28 +861,50 @@ class _Orchestration:
         # is still unsatisfied blocks the run a second time rather than
         # slipping past.
         if resume_review:
-            if self.run.status not in (RunStatus.BLOCKED, RunStatus.ENGINEERING_COMPLETE,
-                                       RunStatus.READY_FOR_HUMAN_REVIEW,
-                                       RunStatus.MAINTAINER_CHANGES_REQUESTED):
-                raise ValueError("resume-review requires a blocked or completed engineering run")
+            if self.run.status not in (
+                RunStatus.BLOCKED,
+                RunStatus.ENGINEERING_COMPLETE,
+                RunStatus.READY_FOR_HUMAN_REVIEW,
+                RunStatus.MAINTAINER_CHANGES_REQUESTED,
+            ):
+                raise ValueError(
+                    "resume-review requires a blocked or completed engineering run"
+                )
             previous = self.run_directory / "orchestration.json"
             if not previous.is_file():
                 raise ValueError("no prior orchestration to resume")
             old = json.loads(previous.read_text(encoding="utf-8"))
+            if any(
+                (step.get("data") or {}).get("usage_budget_exceeded")
+                or (step.get("data") or {}).get("usage_accounting_missing")
+                for step in old.get("steps", [])
+            ):
+                raise ValueError(
+                    "agent usage budget already spent; this candidate cannot resume"
+                )
             previous_budget = float(
                 old.get("time_budget_seconds", DEFAULT_RUN_TIME_BUDGET_SECONDS)
             )
-            if self.run_time_budget_seconds > previous_budget and not self.budget_override_reason:
+            if (
+                self.run_time_budget_seconds > previous_budget
+                and not self.budget_override_reason
+            ):
                 raise ValueError(
                     "increasing a run time budget requires --time-budget-override-reason"
                 )
-            if not any(step.get("name") == "agent:primary" for step in old.get("steps", [])):
-                raise ValueError("primary never ran; use orchestrate after fixing preconditions")
+            if not any(
+                step.get("name") == "agent:primary" for step in old.get("steps", [])
+            ):
+                raise ValueError(
+                    "primary never ran; use orchestrate after fixing preconditions"
+                )
             self.revisions_used = int(old.get("revisions_used", 0))
             self.steps = [OrchestrationStep(**step) for step in old.get("steps", [])]
             archive = self.run_directory / "orchestration-history"
             archive.mkdir(exist_ok=True)
-            (archive / f"{len(list(archive.glob('*.json'))) + 1:04d}.json").write_bytes(previous.read_bytes())
+            (archive / f"{len(list(archive.glob('*.json'))) + 1:04d}.json").write_bytes(
+                previous.read_bytes()
+            )
             if self.run.status is not RunStatus.BLOCKED:
                 self._block("candidate requires a fresh independent review")
         if self.run.status not in (RunStatus.INITIALIZED, RunStatus.BLOCKED):
@@ -817,9 +959,7 @@ class _Orchestration:
                     detail="; ".join(assessment.blocking),
                     data=self._target_data(assessment),
                 )
-                self._block(
-                    "refused to start: " + "; ".join(assessment.blocking)
-                )
+                self._block("refused to start: " + "; ".join(assessment.blocking))
                 return self._outcome()
             self._step(
                 "target",
@@ -852,6 +992,7 @@ class _Orchestration:
 
         if resume_review:
             from mailman.workspace import commit_is_ancestor
+
             if not commit_is_ancestor(self.workspace, self.run.base_commit):
                 raise ValueError("candidate does not descend from the run base")
             self._record_workspace_change("resume")
@@ -896,7 +1037,9 @@ class _Orchestration:
         )
 
     def _loop(self, *, start_primary: bool = True) -> OrchestrationOutcome:
-        if start_primary and not self._finish_primary_stage(self.primary_prompt, "primary"):
+        if start_primary and not self._finish_primary_stage(
+            self.primary_prompt, "primary"
+        ):
             return self._outcome()
 
         while True:

@@ -8,7 +8,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from mailman.executor import execute
+from mailman.executor import clamp_timeout_seconds, execute
 from mailman.identity import Identity, apply_identity
 
 
@@ -36,7 +36,7 @@ def _git(workspace: Path, arguments: list[str]) -> str:
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=30,
+        timeout=clamp_timeout_seconds(30),
         check=False,
         shell=False,
     )
@@ -53,9 +53,7 @@ def inspect_workspace(path: Path) -> WorkspaceState:
     head = _git(workspace, ["rev-parse", "HEAD"])
     status = _git(workspace, ["status", "--porcelain=v1", "--untracked-files=all"])
     changes = tuple(line.strip() for line in status.splitlines() if line.strip())
-    return WorkspaceState(
-        path=workspace, head=head, clean=not changes, changes=changes
-    )
+    return WorkspaceState(path=workspace, head=head, clean=not changes, changes=changes)
 
 
 def workspace_fingerprint(path: Path) -> str:
@@ -127,7 +125,7 @@ def commit_is_ancestor(workspace: Path, ancestor: str) -> bool:
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=30,
+        timeout=clamp_timeout_seconds(30),
         check=False,
         shell=False,
     )
@@ -191,7 +189,9 @@ def prepare_workspace(
         state = inspect_workspace(destination)
         origin = _git(destination, ["remote", "get-url", "origin"])
         if origin != repository or state.head != base_commit or not state.clean:
-            raise ValueError("existing workspace does not match the recorded clean base")
+            raise ValueError(
+                "existing workspace does not match the recorded clean base"
+            )
         record = json.loads(record_path.read_text(encoding="utf-8"))
         if (
             record.get("repository") != repository

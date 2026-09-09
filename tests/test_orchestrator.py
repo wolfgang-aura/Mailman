@@ -16,13 +16,13 @@ from mailman.artifacts import create_run, load_run
 from mailman.cli import main
 from mailman.executor import CommandResult
 from mailman.models import RunStatus
-from mailman.toolchain import probe_tool
 from mailman.orchestrator import (
     VERDICT_APPROVE,
     VERDICT_REVISE,
     orchestrate,
     parse_verdict,
 )
+from mailman.toolchain import probe_tool
 
 
 def git(workspace: Path, *arguments: str) -> str:
@@ -45,10 +45,12 @@ class ScriptedAgent(EngineeringAgent):
         agent_name: str,
         script: list[dict[str, object]],
         turn_budget: int | None = None,
+        token_budget: int | None = None,
     ) -> None:
         self._name = agent_name
         self.script = script
         self._turn_budget = turn_budget
+        self._token_budget = token_budget
         self.calls: list[tuple[str, str]] = []
         self.session_ids: list[str | None] = []
 
@@ -59,6 +61,10 @@ class ScriptedAgent(EngineeringAgent):
     @property
     def turn_budget(self) -> int | None:
         return self._turn_budget
+
+    @property
+    def token_budget(self) -> int | None:
+        return self._token_budget
 
     def run(self, request: AgentRequest) -> AgentResult:
         if not self.script:
@@ -427,6 +433,82 @@ class EmptyCandidateTests(OrchestratorHarness):
 
 
 class OrchestrationTests(OrchestratorHarness):
+    def test_codex_input_overrun_blocks_before_review(self) -> None:
+        run, directory = self.make_run()
+        usage = json.dumps(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 120,
+                    "cached_input_tokens": 90,
+                    "output_tokens": 10,
+                },
+            }
+        )
+        primary = ScriptedAgent(
+            "codex",
+            [{"report": "candidate", "touch": ("fix.txt", "fixed"), "stdout": usage}],
+            token_budget=100,
+        )
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: primary,
+        )
+
+        self.assertEqual(outcome.status, RunStatus.BLOCKED)
+        agent_step = next(
+            step for step in outcome.steps if step.name == "agent:primary"
+        )
+        self.assertTrue(agent_step.data["usage_budget_exceeded"])
+        self.assertEqual(agent_step.data["role_usage"]["input_tokens"], 120)
+        execution = json.loads(
+            next((directory / "agent-executions").glob("*.json")).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(execution["usage"]["cached_input_tokens"], 90)
+
+        with self.assertRaisesRegex(ValueError, "usage budget already spent"):
+            orchestrate(
+                run=run,
+                run_directory=directory,
+                workspace=self.workspace,
+                primary_prompt=self.primary_prompt,
+                reviewer_prompt=self.reviewer_prompt,
+                verification_command=[sys.executable, "-c", PASSING_CHECK],
+                agent_factory=lambda name, model: self.fail("agent resumed"),
+                resume_review=True,
+            )
+
+    def test_bounded_codex_without_usage_blocks(self) -> None:
+        run, directory = self.make_run()
+        primary = ScriptedAgent(
+            "codex",
+            [{"report": "candidate", "touch": ("fix.txt", "fixed"), "stdout": ""}],
+            token_budget=100,
+        )
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: primary,
+        )
+
+        self.assertEqual(outcome.status, RunStatus.BLOCKED)
+        agent_step = next(
+            step for step in outcome.steps if step.name == "agent:primary"
+        )
+        self.assertTrue(agent_step.data["usage_accounting_missing"])
+        self.assertIn("cannot enforce", agent_step.detail)
+
     def test_failing_baseline_verification_stops_before_primary(self) -> None:
         run, directory = self.make_run()
         outcome = orchestrate(
@@ -445,9 +527,7 @@ class OrchestrationTests(OrchestratorHarness):
 
     def test_baseline_verification_may_not_dirty_the_workspace(self) -> None:
         run, directory = self.make_run()
-        command = (
-            "from pathlib import Path; Path('generated.txt').write_text('x')"
-        )
+        command = "from pathlib import Path; Path('generated.txt').write_text('x')"
         outcome = orchestrate(
             run=run,
             run_directory=directory,
@@ -459,7 +539,9 @@ class OrchestrationTests(OrchestratorHarness):
         )
 
         self.assertEqual(str(outcome.status), "BLOCKED")
-        baseline = next(step for step in outcome.steps if step.name == "verification:baseline")
+        baseline = next(
+            step for step in outcome.steps if step.name == "verification:baseline"
+        )
         self.assertFalse(baseline.ok)
         self.assertFalse(baseline.data["candidate_unchanged"])
 
@@ -484,7 +566,9 @@ class OrchestrationTests(OrchestratorHarness):
 
     def test_a_read_only_review_can_approve_before_the_harness_gate(self) -> None:
         outcome, run_directory, _, _ = self.orchestrate(
-            primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
             reviewer_script=[
                 {
                     "report": (
@@ -511,15 +595,21 @@ class OrchestrationTests(OrchestratorHarness):
 
     def test_a_reviewer_that_ran_the_gate_still_clears_the_run(self) -> None:
         outcome, _, _, _ = self.orchestrate(
-            primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
             reviewer_script=[{"report": APPROVED}],
         )
 
         self.assertIs(outcome.status, RunStatus.ENGINEERING_COMPLETE)
 
-    def test_a_legacy_blocked_verification_claim_does_not_replace_final_gate(self) -> None:
+    def test_a_legacy_blocked_verification_claim_does_not_replace_final_gate(
+        self,
+    ) -> None:
         outcome, _, _, _ = self.orchestrate(
-            primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
             reviewer_script=[
                 {
                     "report": (
@@ -535,7 +625,9 @@ class OrchestrationTests(OrchestratorHarness):
 
     def test_a_reviewer_needs_only_a_clear_verdict(self) -> None:
         outcome, _, _, _ = self.orchestrate(
-            primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
             reviewer_script=[
                 {"report": "read it, looks fine\nMAILMAN-VERDICT: APPROVE\n"}
             ],
@@ -546,7 +638,9 @@ class OrchestrationTests(OrchestratorHarness):
         self,
     ) -> None:
         outcome, _, _, _ = self.orchestrate(
-            primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
             reviewer_script=[{"report": APPROVED, "stdout": ""}],
         )
         self.assertIs(outcome.status, RunStatus.ENGINEERING_COMPLETE)
@@ -577,7 +671,9 @@ class OrchestrationTests(OrchestratorHarness):
 
     def test_the_reviewer_prompt_assigns_review_not_reverification(self) -> None:
         _, _, _, reviewer = self.orchestrate(
-            primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
             reviewer_script=[{"report": APPROVED}],
         )
 
@@ -625,7 +721,9 @@ class OrchestrationTests(OrchestratorHarness):
 
     def test_the_reviewer_execution_count_is_on_the_record(self) -> None:
         _, run_directory, _, _ = self.orchestrate(
-            primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
             reviewer_script=[
                 {"report": "no findings\nMAILMAN-VERDICT: APPROVE\n", "stdout": ""}
             ],
@@ -641,7 +739,9 @@ class OrchestrationTests(OrchestratorHarness):
 
     def test_approved_candidate_reaches_human_review(self) -> None:
         outcome, run_directory, primary, reviewer = self.orchestrate(
-            primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
             reviewer_script=[{"report": APPROVED}],
         )
 
@@ -709,7 +809,9 @@ class OrchestrationTests(OrchestratorHarness):
 
     def test_missing_verdict_blocks_instead_of_assuming_approval(self) -> None:
         outcome, _, _, _ = self.orchestrate(
-            primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
             reviewer_script=[{"report": "this all looks fine to me\n"}],
         )
 
@@ -757,7 +859,9 @@ class OrchestrationTests(OrchestratorHarness):
 
     def test_no_revision_budget_blocks_the_stage_as_before(self) -> None:
         outcome, _, primary, reviewer = self.orchestrate(
-            primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
             reviewer_script=[],
             check=POST_EDIT_FAILING_CHECK,
             max_revisions=0,
@@ -966,10 +1070,12 @@ class VerificationExecutableTests(OrchestratorHarness):
             timeout_seconds=30,
         )
         agents = {
-            "codex": ScriptedAgent("codex", [{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}], None),
-            "claude": ScriptedAgent(
-                "claude", [{"report": APPROVED}], None
+            "codex": ScriptedAgent(
+                "codex",
+                [{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
+                None,
             ),
+            "claude": ScriptedAgent("claude", [{"report": APPROVED}], None),
         }
         outcome = orchestrate(
             run=run,
@@ -1039,7 +1145,9 @@ class VerificationAgreementTests(OrchestratorHarness):
         self._record_prompt_verification(run_directory, ["python", "-m", "pytest"])
 
         outcome, run_directory, _, _ = self.orchestrate(
-            primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
             reviewer_script=[{"report": APPROVED}],
         )
 
@@ -1053,7 +1161,9 @@ class VerificationAgreementTests(OrchestratorHarness):
         )
 
         outcome, run_directory, _, _ = self.orchestrate(
-            primary_script=[{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
             reviewer_script=[{"report": APPROVED}],
         )
 
@@ -1086,7 +1196,9 @@ class OrchestrateCliTests(OrchestratorHarness):
         save(hunt_path(self.data_root, hunt["hunt_id"]), hunt)
         stdout = StringIO()
         stderr = StringIO()
-        with patch("mailman.cli._make_agent", side_effect=AssertionError("agent started")):
+        with patch(
+            "mailman.cli._make_agent", side_effect=AssertionError("agent started")
+        ):
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 exit_code = main(
                     [
@@ -1107,8 +1219,8 @@ class OrchestrateCliTests(OrchestratorHarness):
                     ]
                 )
 
-        self.assertEqual(exit_code, 1, stderr.getvalue())
-        self.assertIn("hunt time budget spent", stdout.getvalue())
+        self.assertEqual(exit_code, 2, stderr.getvalue())
+        self.assertIn("deadline expired", stderr.getvalue())
 
     def _invoke(self, agents: dict[str, ScriptedAgent], check: str) -> tuple[int, str]:
         run, run_directory = self.make_run()
@@ -1117,39 +1229,44 @@ class OrchestrateCliTests(OrchestratorHarness):
         )
         stdout = StringIO()
         stderr = StringIO()
-        with patch(
-            "mailman.cli._make_agent",
-            side_effect=lambda name, *, model, max_turns, executable=None,
-            reasoning_effort=None, token_budget=2_000_000: agents[name],
+        with (
+            patch(
+                "mailman.cli._make_agent",
+                side_effect=lambda name, *, model, max_turns, executable=None, reasoning_effort=None, token_budget=2_000_000: (
+                    agents[name]
+                ),
+            ),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
         ):
-            with redirect_stdout(stdout), redirect_stderr(stderr):
-                exit_code = main(
-                    [
-                        "orchestrate",
-                        run.run_id,
-                        "--primary-prompt",
-                        str(self.primary_prompt),
-                        "--reviewer-prompt",
-                        str(self.reviewer_prompt),
-                        "--workspace",
-                        str(self.workspace),
-                        "--data-root",
-                        str(self.data_root),
-                        "--",
-                        sys.executable,
-                        "-c",
-                        check,
-                    ]
-                )
+            exit_code = main(
+                [
+                    "orchestrate",
+                    run.run_id,
+                    "--primary-prompt",
+                    str(self.primary_prompt),
+                    "--reviewer-prompt",
+                    str(self.reviewer_prompt),
+                    "--workspace",
+                    str(self.workspace),
+                    "--data-root",
+                    str(self.data_root),
+                    "--",
+                    sys.executable,
+                    "-c",
+                    check,
+                ]
+            )
         self.assertEqual(stderr.getvalue(), "")
         return exit_code, stdout.getvalue()
 
     def test_cli_reports_a_ready_run_with_exit_code_zero(self) -> None:
         agents = {
-            "codex": ScriptedAgent("codex", [{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}]),
-            "claude": ScriptedAgent(
-                "claude", [{"report": APPROVED}]
+            "codex": ScriptedAgent(
+                "codex",
+                [{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}],
             ),
+            "claude": ScriptedAgent("claude", [{"report": APPROVED}]),
         }
         exit_code, output = self._invoke(agents, PASSING_CHECK)
 
@@ -1161,7 +1278,10 @@ class OrchestrateCliTests(OrchestratorHarness):
         agents = {
             "codex": ScriptedAgent(
                 "codex",
-                [{"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}, {"report": "second attempt\n"}],
+                [
+                    {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")},
+                    {"report": "second attempt\n"},
+                ],
             ),
             "claude": ScriptedAgent("claude", []),
         }
