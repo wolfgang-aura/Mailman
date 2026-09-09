@@ -25,6 +25,9 @@ reported 9,753,232 input tokens, including 9,515,520 cached tokens, against a
 configured 2,000,000. Issue #81 tracks these limits; issues #82 and #83 track
 the earlier gates.
 
+Commit `d975f45` is on `origin/main`. GitHub Actions run `34392659095` passed
+on Python 3.12 and 3.14.
+
 `520ab2a` on `main`, 2026-09-09, passed GitHub Actions run `34298470558`. It
 adds three commands and one run status on top of the procedure below:
 `mailman prescreen OWNER/REPO#N` screens an issue before a run exists and
