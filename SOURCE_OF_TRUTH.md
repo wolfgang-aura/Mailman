@@ -4,6 +4,17 @@ Last verified: 2026-09-07 in `Asia/Singapore`.
 
 ## Current local procedure
 
+`520ab2a` on `main`, 2026-09-09, passed GitHub Actions run `34298470558`. It
+adds three commands and one run status on top of the procedure below:
+`mailman prescreen OWNER/REPO#N` screens an issue before a run exists and
+`init-run` requires a fresh passing pre-screen; `hunt finish` re-reads the
+target for every ready candidate before gating, with `--no-refresh` for
+offline use; `fetch-review` and `revision-response` handle a maintainer's
+requested changes on a filed pull request through the new
+`MAINTAINER_CHANGES_REQUESTED` status. `procedure.md` changed with them, so
+any hunt record pinned to an earlier digest needs `hunt refresh-procedure`
+before it resumes.
+
 PR #61 (`Enforce one unattended PRHunt procedure`) merged into `main` as
 `5fbff826` on 2026-09-07. It adds the canonical `mailman/procedure.md`,
 repository skill and Claude command, persistent hunt quotas, completion gates,
