@@ -54,29 +54,39 @@ status check you did not act on is pure cost.
    `mailman screen-target OWNER/REPO --refresh`. Reject a failed screen.
    Human-only authorship declarations, assignment requirements and bans on
    generated descriptions are reasons to pick another target for this flow.
-2. Search narrow first. Give `duplicate-search` the issue number and the
-   symbols the change touches with `--symbol`; the broad listing runs after.
-   A record whose `decided_by` is `narrow` already found a duplicate and the
-   candidate is finished. Read overlapping patches and maintainer responses. A
-   broad empty search is not sufficient evidence, and neither is a narrow one.
-3. Initialize a run at an exact current upstream commit with the hunt's model
+2. Pre-screen every issue on the shortlist before opening a run on any of
+   them: `mailman prescreen OWNER/REPO#N --symbols NAME NAME`. It runs the same
+   narrow duplicate search, prior-art read and claim check the run stage runs,
+   writes the verdict beside the repository screens, and exits non-zero on a
+   reject. Most targets fail here. One hunt opened 24 runs to file 3, and 14 of
+   the 21 drops were "someone already fixed this": a question this answers for
+   the price of one query instead of a whole run.
+   `init-run` refuses an issue with no fresh passing pre-screen. Override with
+   `--no-prescreen REASON` only when you mean it; the reason is recorded.
+3. Search narrow first inside the run too. Give `duplicate-search` the issue
+   number and the symbols the change touches with `--symbol`; the broad listing
+   runs after. A record whose `decided_by` is `narrow` already found a
+   duplicate and the candidate is finished. Read overlapping patches and
+   maintainer responses. A broad empty search is not sufficient evidence, and
+   neither is a narrow one.
+4. Initialize a run at an exact current upstream commit with the hunt's model
    configuration. Add it with `mailman hunt add HUNT_ID RUN_ID`.
-4. Run `fetch-issue`, `duplicate-search`, `prior-art`, `target-intel` and
+5. Run `fetch-issue`, `duplicate-search`, `prior-art`, `target-intel` and
    `claims`. Record evidence for every acknowledgement. Never acknowledge an
    overlap just to clear a gate. Choose another candidate when uncertain.
 
 ## Prepare and prove
 
-5. Run `prepare-workspace`. Use the personal fork account and configured
+6. Run `prepare-workspace`. Use the personal fork account and configured
    GitHub noreply identity. Keep environments and scratch outside the target.
-6. Run `draft-environment RUN_ID`, inspect its draft against CI and contribution
+7. Run `draft-environment RUN_ID`, inspect its draft against CI and contribution
    instructions, adjust it and run `prepare-environment --plan PATH`. Resolve
    wheel/interpreter mismatches from the exact installation error. Do not
    install compilers or weaken the target screen to rescue a candidate.
-7. Capture a baseline and a focused reproducer at the base commit. Separate
+8. Capture a baseline and a focused reproducer at the base commit. Separate
    missing dependencies from the reported defect. Run `reproduce`, then
    `check-target`. A bug that no longer reproduces means replace the candidate.
-8. Use `build-prompts RUN_ID -- EXECUTABLE ARG ...` to record verification argv.
+9. Use `build-prompts RUN_ID -- EXECUTABLE ARG ...` to record verification argv.
    Everything after `--` is run as a program, so it starts with an executable
    and carries no Mailman option; the CLI refuses the common mistakes but not
    all of them. `orchestrate RUN_ID` reads that same command. Do not supply
@@ -85,9 +95,9 @@ status check you did not act on is pure cost.
 
 ## Repair without escalating routine work
 
-9. Run `orchestrate`. An `ENGINEERING_COMPLETE` outcome means finish the
+10. Run `orchestrate`. An `ENGINEERING_COMPLETE` outcome means finish the
    package. A `BLOCKED` run is a local stop, not a request for the user.
-10. On a failure, read the exact failed command, stage, exit code and output.
+11. On a failure, read the exact failed command, stage, exit code and output.
     Fix the evidenced cause. After one failed fix, reproduce and instrument
     before another edit. Never retry an identical command indefinitely.
     For an unusable review, preserve the patch, repair the environment, then
@@ -102,35 +112,38 @@ status check you did not act on is pure cost.
     candidate spends the same allowance again. `INFRASTRUCTURE` means the host,
     such as an unwritable temporary directory. Neither is a candidate defect and
     neither is a reason to drop a target.
-11. Drop duplicate, assigned, prohibited, unreproducible or unsuitable targets.
+12. Drop duplicate, assigned, prohibited, unreproducible or unsuitable targets.
     Record why and continue searching until N candidates pass. A dropped run
     costs no user decision. A failed candidate may be replaced after bounded
     repair; the quota must never lower the quality bar.
 
 ## Complete the package
 
-12. After engineering completes, export the patch and prepare the submission.
+13. After engineering completes, export the patch and prepare the submission.
     Fix hygiene, missing coverage and formatting findings yourself. Write the
     final PR body with the trigger, before/after behaviour, cause, scope and
     actual verification results. Follow docs/pull-request-standard.md and the
     target's template. Remove placeholders and claims that only the human can
     make true. Include required AI disclosure. Do not invent human testing.
-13. Write decision.json using `decision --init` and the schema in
+14. Write decision.json using `decision --init` and the schema in
     docs/review-page-standard.md. Keep evidence classes distinct. Questions
     must be genuine user choices, never tasks you can do. Use [] otherwise.
     Do not claim SEND for an incomplete or unverifiable candidate. Run
     `decision`, then `finalize-review`. If candidate bytes changed after the
     final verification, re-review and verify them before finalizing.
-14. Commit the reviewed change locally with the configured identity. Check
+15. Commit the reviewed change locally with the configured identity. Check
     authors, refresh duplicates and claims, then prepare `handoff` with the
     exact local branch and final body. Run `handoff-check`. Keep all filings
     and upstream writes pending. For a self-sourced defect, prepare any required
     issue text alongside the PR and ask for approval of the ordered filings.
-15. Refresh the aging evidence for every ready candidate together with
+16. Refresh the aging evidence for every ready candidate together with
     `mailman hunt refresh HUNT_ID --owner TOKEN` immediately before finishing.
     Duplicate searches and claim reads expire in an hour, and refreshing them
     one at a time is how a hunt with two ready candidates reported zero.
-16. `mailman hunt finish HUNT_ID --owner TOKEN` must exit 0. It counts only SEND decisions
+17. `mailman hunt finish HUNT_ID --owner TOKEN` must exit 0. It re-reads the
+    target for every candidate that is ready, because those are the ones about
+    to be pushed and a rival pull request has appeared 94 minutes after a run
+    finished. Pass `--no-refresh` only when you are offline. It counts only SEND decisions
     with passing filing checks and generates the existing packet format.
     Inspect that generated packet visually. Never hand-write review HTML.
     Present the packet and ask for approval of the exact filings once.
@@ -163,6 +176,17 @@ publish only if the checks still pass. If material bytes or destination change,
 regenerate the packet and obtain approval for that change. Use body files for
 GitHub commands. Record filing URLs and provenance. Keep issues open until the
 change is deployed and live-verified. No automatic upstream messages.
+
+When a maintainer asks for changes on a filed pull request, the run is not
+finished and must not be left reading `READY_FOR_HUMAN_REVIEW`. Run
+`mailman fetch-review RUN_ID --pr URL`. It reads the review bodies and the
+inline comments into the run and moves it to `MAINTAINER_CHANGES_REQUESTED`.
+Run `build-prompts` again so both agents get the maintainer's own words, then
+resume the run through `resume-review`. Before pushing the revision, run
+`mailman revision-response RUN_ID --init`, answer every requested change with
+`answered` or `declined`, give every declined one a note saying why, and run
+`mailman revision-response RUN_ID` until it exits 0. A revision that silently
+skips one of the maintainer's points costs a second review round.
 
 Record each filing in the hunt as it happens: `mailman hunt file HUNT_ID RUN_ID
 --owner TOKEN --pr-url https://github.com/OWNER/REPO/pull/N --commit SHA`. The

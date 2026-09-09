@@ -21,6 +21,10 @@ class RunStatus(StrEnum):
     VERIFICATION_PENDING = "VERIFICATION_PENDING"
     ENGINEERING_COMPLETE = "ENGINEERING_COMPLETE"
     READY_FOR_HUMAN_REVIEW = "READY_FOR_HUMAN_REVIEW"
+    # A maintainer reviewed the filed pull request and asked for changes. The
+    # run used to stop at READY_FOR_HUMAN_REVIEW while the pull request moved
+    # two states past it. https://github.com/wolfgang-aura/Mailman/issues/60
+    MAINTAINER_CHANGES_REQUESTED = "MAINTAINER_CHANGES_REQUESTED"
     BLOCKED = "BLOCKED"
     ABANDONED = "ABANDONED"
 
@@ -62,7 +66,15 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     RunStatus.ENGINEERING_COMPLETE: frozenset(
         {RunStatus.READY_FOR_HUMAN_REVIEW, RunStatus.BLOCKED, RunStatus.ABANDONED}
     ),
-    RunStatus.READY_FOR_HUMAN_REVIEW: frozenset({RunStatus.BLOCKED}),
+    RunStatus.READY_FOR_HUMAN_REVIEW: frozenset(
+        {RunStatus.BLOCKED, RunStatus.MAINTAINER_CHANGES_REQUESTED}
+    ),
+    # The revision runs through the same primary and reviewer cycle the
+    # original did, so this hands the run back to the orchestrator rather than
+    # opening a second path beside it.
+    RunStatus.MAINTAINER_CHANGES_REQUESTED: frozenset(
+        {RunStatus.BLOCKED, RunStatus.ABANDONED}
+    ),
     RunStatus.BLOCKED: frozenset(
         {RunStatus.PRIMARY_RUNNING, RunStatus.REVIEW_PENDING, RunStatus.ABANDONED}
     ),

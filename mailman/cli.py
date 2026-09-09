@@ -133,6 +133,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     hunt.add_argument("--commit", help="the filed head commit, for hunt file")
     hunt.add_argument(
+        "--no-refresh",
+        action="store_true",
+        help="skip the pre-filing evidence refresh in hunt finish. The refresh "
+        "re-reads the target for a rival that appeared while the candidate "
+        "waited, so skip it only when you are offline",
+    )
+    hunt.add_argument(
         "--full",
         action="store_true",
         help="print every replaced candidate's reason and evidence too. The "
@@ -162,6 +169,43 @@ def _build_parser() -> argparse.ArgumentParser:
     finalize = subparsers.add_parser("finalize-review", help="validate the decision against the verified candidate")
     finalize.add_argument("run_id")
     finalize.add_argument("--data-root", type=Path)
+
+    fetch_review = subparsers.add_parser(
+        "fetch-review",
+        help="read a maintainer's review of a filed pull request into the run",
+    )
+    fetch_review.add_argument("run_id")
+    fetch_review.add_argument("--pr", required=True, dest="pull_request",
+                              help="https://github.com/OWNER/REPO/pull/NUMBER")
+    fetch_review.add_argument("--executable")
+    fetch_review.add_argument("--timeout", type=float, default=60)
+    fetch_review.add_argument("--data-root", type=Path)
+
+    revision_response = subparsers.add_parser(
+        "revision-response",
+        help="record how the revision answers each requested change",
+    )
+    revision_response.add_argument("run_id")
+    revision_response.add_argument("--init", action="store_true",
+                                   help="write an empty answer per requested change")
+    revision_response.add_argument("--data-root", type=Path)
+
+    prescreen = subparsers.add_parser(
+        "prescreen",
+        help="decide an issue is not worth a run, before creating one",
+    )
+    prescreen.add_argument("issue", help="OWNER/REPO#NUMBER or an issue URL")
+    prescreen.add_argument(
+        "--symbols",
+        nargs="*",
+        default=(),
+        help="the functions or files a fix would touch. The narrow search runs "
+        "on these plus the issue number, and it is the cheap query",
+    )
+    prescreen.add_argument("--query", help="override the duplicate search query")
+    prescreen.add_argument("--executable")
+    prescreen.add_argument("--timeout", type=float, default=60)
+    prescreen.add_argument("--data-root", type=Path)
 
     init_run = subparsers.add_parser("init-run", help="create a private local run record")
     init_run.add_argument("--repository", required=True)
@@ -196,6 +240,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="model id for the reviewer, recorded with the run",
     )
     init_run.add_argument("--data-root", type=Path)
+    init_run.add_argument(
+        "--no-prescreen",
+        metavar="REASON",
+        help="open the run without a passing pre-screen, and record why. Most "
+        "targets fail the pre-screen, so skipping it is how a hunt spends "
+        "eight runs to file one",
+    )
 
     fetch_issue = subparsers.add_parser(
         "fetch-issue", help="capture the run's issue text into the private run record"
@@ -784,6 +835,11 @@ def _hunt(arguments: argparse.Namespace) -> int:
     if arguments.action == "refresh":
         result = hunt.refresh(root, record)
     elif arguments.action == "finish":
+        if not arguments.no_refresh:
+            # The candidates that are ready are the ones about to be pushed,
+            # and they are the ones `hunt refresh` skips mid-hunt.
+            # https://github.com/wolfgang-aura/Mailman/issues/41
+            hunt.refresh(root, record, include_ready=True)
         result = hunt.finish(root, record)
     else:
         result = hunt.status(root, record)
@@ -800,7 +856,66 @@ def _doctor() -> int:
     return 1 if any(check.required and not check.ok for check in checks) else 0
 
 
+def _fetch_review(arguments: argparse.Namespace) -> int:
+    from mailman import maintainer_review
+    from mailman.models import RunStatus
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    record = maintainer_review.fetch_review(
+        run_directory, pull_request=arguments.pull_request,
+        executable=arguments.executable, timeout_seconds=arguments.timeout,
+    )
+    if record["success"] and run.status is RunStatus.READY_FOR_HUMAN_REVIEW:
+        run.transition(RunStatus.MAINTAINER_CHANGES_REQUESTED,
+                       f"{record['repository']}#{record['number']} requested changes")
+        write_run(run, run_directory)
+    print(json.dumps({
+        "run_id": run.run_id, "status": str(run.status),
+        "success": record["success"], "detail": record.get("detail"),
+        "requested_changes": record.get("change_count", 0),
+        "review": str(run_directory / maintainer_review.REVIEW_MARKDOWN),
+        "next": "mailman build-prompts to put the review in both prompts, then "
+                "resume the run through orchestrate or resume-review",
+    }, indent=2))
+    return 0 if record["success"] else 1
+
+
+def _revision_response(arguments: argparse.Namespace) -> int:
+    from mailman import maintainer_review
+    _, run_directory = load_run(arguments.run_id, arguments.data_root)
+    if arguments.init:
+        record = maintainer_review.init_response(run_directory)
+        print(json.dumps({
+            "path": str(run_directory / maintainer_review.RESPONSE_FILENAME),
+            "answers": len(record["answers"]),
+            "next": "set every answer to answered or declined; a declined one needs a note",
+        }, indent=2))
+        return 0
+    checked = maintainer_review.check_revision(run_directory)
+    print(json.dumps(checked, indent=2))
+    return 0 if checked["ok"] else 1
+
+
+def _prescreen(arguments: argparse.Namespace) -> int:
+    from mailman import prescreen
+    root = (arguments.data_root or default_data_root()).resolve()
+    record = prescreen.prescreen_issue(
+        root, arguments.issue, query=arguments.query,
+        symbols=arguments.symbols or (), executable=arguments.executable,
+        timeout_seconds=arguments.timeout,
+    )
+    print(json.dumps(record, indent=2))
+    return 0 if record["verdict"] == "pass" else 1
+
+
 def _init_run(arguments: argparse.Namespace) -> int:
+    from mailman import prescreen
+    if arguments.issue:
+        root = (arguments.data_root or default_data_root()).resolve()
+        _, refusal = prescreen.check(root, arguments.issue)
+        if refusal and not arguments.no_prescreen:
+            raise ValueError(refusal)
+    elif arguments.no_prescreen:
+        raise ValueError("a defect report has no upstream issue to pre-screen")
     run, run_directory = create_run(
         repository=arguments.repository,
         issue=arguments.issue,
@@ -812,6 +927,11 @@ def _init_run(arguments: argparse.Namespace) -> int:
         reviewer_model=arguments.reviewer_model,
         data_root=arguments.data_root,
     )
+    if arguments.issue and arguments.no_prescreen:
+        (run_directory / "prescreen-skipped.json").write_text(
+            json.dumps({"reason": arguments.no_prescreen, "issue": arguments.issue},
+                       indent=2),
+            encoding="utf-8")
     print(json.dumps({"run_id": run.run_id, "path": str(run_directory)}, indent=2))
     return 0
 
@@ -2076,6 +2196,12 @@ def main(arguments: list[str] | None = None) -> int:
             _, directory = load_run(parsed.run_id, parsed.data_root)
             print(json.dumps(finalize_review(directory), indent=2))
             return 0
+        if parsed.subcommand == "fetch-review":
+            return _fetch_review(parsed)
+        if parsed.subcommand == "revision-response":
+            return _revision_response(parsed)
+        if parsed.subcommand == "prescreen":
+            return _prescreen(parsed)
         if parsed.subcommand == "init-run":
             return _init_run(parsed)
         if parsed.subcommand == "fetch-issue":

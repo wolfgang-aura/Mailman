@@ -591,7 +591,9 @@ class _Orchestration:
         # is still unsatisfied blocks the run a second time rather than
         # slipping past.
         if resume_review:
-            if self.run.status not in (RunStatus.BLOCKED, RunStatus.ENGINEERING_COMPLETE, RunStatus.READY_FOR_HUMAN_REVIEW):
+            if self.run.status not in (RunStatus.BLOCKED, RunStatus.ENGINEERING_COMPLETE,
+                                       RunStatus.READY_FOR_HUMAN_REVIEW,
+                                       RunStatus.MAINTAINER_CHANGES_REQUESTED):
                 raise ValueError("resume-review requires a blocked or completed engineering run")
             previous = self.run_directory / "orchestration.json"
             if not previous.is_file():

@@ -564,7 +564,7 @@ def write_checkpoint(root: Path, record: dict, result: dict) -> Path | None:
     return destination
 
 
-def refresh(root: Path, record: dict) -> dict:
+def refresh(root: Path, record: dict, *, include_ready: bool = False) -> dict:
     """Re-run the aging evidence for every ready candidate, as one batch.
 
     Duplicate searches and claim reads expire in an hour. Two finished
@@ -586,11 +586,16 @@ def refresh(root: Path, record: dict) -> dict:
         if row.get("dropped"):
             continue
         run, directory = load_run(row["run_id"], root)
-        # A candidate that is ready needs no refresh, and one that never
-        # reached a handoff has an earlier problem than aging. The runs this is
-        # for are the finished ones whose evidence expired while another
-        # candidate was still in review: complete packages reading as failures.
-        if row["ready"] or load_handoff(directory) is None:
+        # A candidate that never reached a handoff has an earlier problem than
+        # aging. Mid-hunt, a ready candidate needs no refresh either: the runs
+        # this is for are the finished ones whose evidence expired while
+        # another candidate was still in review.
+        #
+        # Immediately before filing, the opposite is true. The ready ones are
+        # exactly the ones about to be pushed, and a duplicate has appeared 94
+        # minutes after a run finished. `include_ready` is that pass.
+        # https://github.com/wolfgang-aura/Mailman/issues/41
+        if (row["ready"] and not include_ready) or load_handoff(directory) is None:
             continue
         outcome = {"run_id": run.run_id}
         search = read_object(directory / "duplicate-search.json")

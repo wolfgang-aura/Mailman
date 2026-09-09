@@ -420,3 +420,26 @@ class CompactViewTests(HuntTests):
         self.assertEqual(row["action"], "mailman screen-target a/b")
         self.assertTrue(row["detail"].endswith("..."))
         self.assertEqual(len(row["detail"]), 203)
+
+
+class PreFilingRefreshTests(HuntTests):
+    """The candidates about to be pushed are the ones refresh used to skip.
+
+    https://github.com/wolfgang-aura/Mailman/issues/41
+    """
+
+    def test_refresh_skips_a_ready_candidate_mid_hunt(self):
+        record = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        self.assertEqual(status(self.data_root, record)["ready"], 1)
+        result = refresh(self.data_root, record)
+        self.assertEqual(result["refreshed"], [])
+
+    def test_include_ready_refreshes_the_candidate_about_to_be_filed(self):
+        record = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        self.assertEqual(status(self.data_root, record)["ready"], 1)
+        result = refresh(self.data_root, record, include_ready=True)
+        self.assertEqual([row["run_id"] for row in result["refreshed"]], [directory.name])

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+from mailman.maintainer_review import load_review_markdown
 from mailman.models import RunRecord
 from mailman.prior_art import load_prior_art_markdown
 
@@ -98,12 +99,44 @@ def _prior_art_section(prior_art: str | None, *, audience: str) -> str:
 """
 
 
+def _maintainer_review_section(review: str | None, *, audience: str) -> str:
+    """Put the maintainer's own words in front of both agents.
+
+    A revision that answers a reviewer without reading them is the most
+    expensive kind of work: it costs a second review round and some of the
+    maintainer's patience. https://github.com/wolfgang-aura/Mailman/issues/60
+    """
+    if not review:
+        return ""
+    if audience == "primary":
+        instruction = (
+            "This pull request is already filed and a maintainer has asked for "
+            "changes. Answer every point below. Where you disagree, say so in "
+            "your report and explain why rather than ignoring it. A constraint "
+            "the maintainer named is not yours to negotiate away."
+        )
+    else:
+        instruction = (
+            "Judge the revision against these requests, not only against the "
+            "issue. A revision that leaves one of them unanswered is not "
+            "ready, however good the code is."
+        )
+    return f"""
+## The maintainer's review of the filed pull request
+
+{instruction}
+
+{review.strip()}
+"""
+
+
 def build_primary_prompt(
     run: RunRecord,
     issue_markdown: str,
     *,
     verification_command: Sequence[str] | None,
     prior_art: str | None = None,
+    maintainer_review: str | None = None,
 ) -> str:
     return f"""# Primary engineering task
 
@@ -129,7 +162,7 @@ instructions before editing, and follow its existing conventions.
 ## Issue
 
 {issue_markdown.strip()}
-{_prior_art_section(prior_art, audience="primary")}"""
+{_prior_art_section(prior_art, audience="primary")}{_maintainer_review_section(maintainer_review, audience="primary")}"""
 
 
 def build_reviewer_prompt(
@@ -138,6 +171,7 @@ def build_reviewer_prompt(
     *,
     verification_command: Sequence[str] | None,
     prior_art: str | None = None,
+    maintainer_review: str | None = None,
 ) -> str:
     return f"""# Reviewer task
 
@@ -164,7 +198,7 @@ workspace. List every required change as a short bullet above your verdict.
 ## Issue
 
 {issue_markdown.strip()}
-{_prior_art_section(prior_art, audience="reviewer")}"""
+{_prior_art_section(prior_art, audience="reviewer")}{_maintainer_review_section(maintainer_review, audience="reviewer")}"""
 
 
 def write_task_prompts(
@@ -186,6 +220,7 @@ def write_task_prompts(
             "before building prompts."
         )
     prior_art = load_prior_art_markdown(run_directory)
+    maintainer_review = load_review_markdown(run_directory)
     primary_path = run_directory / PRIMARY_TASK_FILENAME
     reviewer_path = run_directory / REVIEWER_TASK_FILENAME
     primary_path.write_text(
@@ -194,6 +229,7 @@ def write_task_prompts(
             issue_markdown,
             verification_command=verification_command,
             prior_art=prior_art,
+            maintainer_review=maintainer_review,
         ),
         encoding="utf-8",
     )
@@ -203,6 +239,7 @@ def write_task_prompts(
             issue_markdown,
             verification_command=verification_command,
             prior_art=prior_art,
+            maintainer_review=maintainer_review,
         ),
         encoding="utf-8",
     )

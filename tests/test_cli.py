@@ -423,6 +423,8 @@ class CliTests(unittest.TestCase):
                         "codex-test-model",
                         "--reviewer-model",
                         "claude-test-model",
+                        "--no-prescreen",
+                        "unit test: targeting is not the subject here",
                         "--data-root",
                         str(data_root),
                     ]
@@ -642,6 +644,8 @@ class InitRunModelTests(unittest.TestCase):
                         "codex",
                         "--reviewer",
                         "claude",
+                        "--no-prescreen",
+                        "unit test: targeting is not the subject here",
                         "--data-root",
                         str(data_root),
                     ]
@@ -672,6 +676,8 @@ class InitRunModelTests(unittest.TestCase):
                         "codex-model-id",
                         "--reviewer-model",
                         "claude-model-id",
+                        "--no-prescreen",
+                        "unit test: targeting is not the subject here",
                         "--data-root",
                         str(data_root),
                     ]
