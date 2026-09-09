@@ -12,14 +12,14 @@ hunt and any target already used by that hunt, including a dropped run.
 Agent work now requires a machine-checked reproduction. Before the primary
 starts, Mailman runs the exact verification argv recorded by `build-prompts`
 on the clean base tree and blocks if it fails or changes candidate bytes.
-Local verification passed 781 tests and 54 subtests. Documentation commit
-`29a8469` is on `origin/main`; GitHub Actions runs `34388619436` and
-`34388871841` passed. The next local checkpoint binds screening, environment,
-agent, verification and packaging subprocesses to the hunt's remaining wall
-time. It also records Codex input and cached-input usage per execution, totals
-input per role, blocks an over-budget or unaccounted turn, and refuses later
-resumes. Codex reports usage only when a turn completes, so the wall deadline,
-not the token setting, remains the hard in-flight stop. Live run
+GitHub Actions runs `34388619436` and `34388871841` passed for the earlier
+checkpoint. Commit `09c8e66` binds screening, environment, agent, verification
+and packaging subprocesses to the hunt's remaining wall time. It also records
+Codex input and cached-input usage per execution, totals input per role, blocks
+an over-budget or unaccounted turn, and refuses later resumes. Local
+verification for this commit passed 789 tests and 54 subtests in 5m41s. Codex
+reports usage only when a turn completes, so the wall deadline, not the token
+setting, remains the hard in-flight stop. Live run
 `20260909T132347Z-ddf1ac` is the evidence for this rule: its first primary turn
 reported 9,753,232 input tokens, including 9,515,520 cached tokens, against a
 configured 2,000,000. Issue #81 tracks these limits; issues #82 and #83 track
