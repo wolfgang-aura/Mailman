@@ -563,6 +563,28 @@ sentence was posted by someone who had not read it, because the preview lived in
 prose and in an agent's memory rather than in the harness. See
 [issue #47](https://github.com/wolfgang-aura/Mailman/issues/47).
 
+It refuses on one more thing: text that belongs to the draft rather than to the
+change. `pull-request.md` is written for the person preparing the submission —
+placeholder paragraphs, a "Before filing" checklist, a suggested branch — and
+whatever survives the rewrite is read by a maintainer as part of the argument
+for the change. `handoff` and `handoff-check` name every line that still carries
+it, in three families: draft scaffolding, sentences saying the work is still
+pending (false the moment they are posted), and references to run IDs or
+`.mailman` paths that upstream cannot see. The pending and internal families are
+matched across a whole paragraph, because a sentence that survives a rewrite
+gets re-wrapped.
+
+This one also exists because it was not there. `pytest-dev/pytest`
+[#14993](https://github.com/pytest-dev/pytest/pull/14993) was filed carrying the
+draft's alternative-not-taken heading, its host-environment section, and the
+sentence "Human review and filing remain pending"; the maintainer closed it the
+same day and led with "It's hard to understand the use case with all of the AI
+verbosity." See
+[the pytest #14992 record](docs/runs/0010-pytest-14992-closed-unmerged.md).
+
+What it does not judge is length. Whether a section earns its place is the
+writer's call, and the standard still asks for the host limits to be stated.
+
 ## Human boundary
 
 Mailman may eventually prepare branches, patches, and pull request text. It must not push, open a pull request, comment on an issue, or otherwise change an upstream project without a separate human approval step.

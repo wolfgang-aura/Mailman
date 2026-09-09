@@ -16,6 +16,7 @@ from mailman.handoff import (
     build_handoff,
     check_handoff,
     check_prior_art_freshness,
+    draft_leftovers,
     first_person_claims,
     publish_command,
 )
@@ -28,6 +29,28 @@ The fix caches it. 76 tests pass at 2.3.3.
 """
 
 CLAIMING_BODY = BODY + "\nI have read, tested, and take responsibility for it.\n"
+
+# The shape pytest-dev/pytest#14993 was filed in: a body written from
+# `pull-request.md` with the draft's own furniture still in it.
+LEFTOVER_BODY = """Closes #14992.
+
+The traversal put dependencies ahead of the initial request order.
+
+### An alternative I did not take
+
+_Name the design you rejected and the trade-off._
+
+### AI disclosure
+
+This change was drafted with AI assistance. Human review and filing remain
+pending.
+
+## Before filing
+
+- [ ] The base commit is level with the target's default branch
+
+Evidence is under .mailman/20260908T230139Z-abc123/verification.
+"""
 
 
 def _run_directory(root: Path) -> tuple[RunRecord, Path]:
@@ -116,6 +139,38 @@ class FirstPersonTests(unittest.TestCase):
     ) -> None:
         self.assertEqual(
             first_person_claims("The harness ran the suite and it passed."), []
+        )
+
+
+class DraftLeftoverTests(unittest.TestCase):
+    def test_a_body_written_from_the_draft_is_reported_line_by_line(self) -> None:
+        codes = {item["code"] for item in draft_leftovers(LEFTOVER_BODY)}
+        self.assertEqual(
+            codes, {"scaffolding", "pending-state", "internal-reference"}
+        )
+
+    def test_the_pending_sentence_is_caught_where_it_wraps(self) -> None:
+        found = draft_leftovers(LEFTOVER_BODY)
+        pending = [item for item in found if item["code"] == "pending-state"]
+        self.assertEqual(len(pending), 1)
+        self.assertIn("pending", pending[0]["text"])
+
+    def test_a_run_directory_path_is_internal_and_a_commit_is_not(self) -> None:
+        self.assertEqual(
+            [item["code"] for item in draft_leftovers("Evidence: .mailman/runs/x")],
+            ["internal-reference"],
+        )
+        self.assertEqual(draft_leftovers("Fixed at 3fd8675d6d79."), [])
+
+    def test_a_body_a_maintainer_would_want_is_clean(self) -> None:
+        self.assertEqual(draft_leftovers(BODY), [])
+
+    def test_naming_the_harness_that_ran_the_tests_is_not_a_leftover(self) -> None:
+        self.assertEqual(
+            draft_leftovers(
+                "The Mailman harness executed the commands, not the agent."
+            ),
+            [],
         )
 
 
@@ -305,6 +360,66 @@ class HandoffCliTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("FIRST-PERSON CLAIMS", output)
             self.assertIn("take responsibility", output)
+
+    def test_draft_scaffolding_exits_non_zero_and_names_the_line(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            run, _ = _run_directory(root)
+            body_path = root / "body.md"
+            body_path.write_text(LEFTOVER_BODY, encoding="utf-8", newline="\n")
+            code, output = self._invoke(
+                [
+                    "handoff",
+                    run.run_id,
+                    "--body",
+                    str(body_path),
+                    "--repo",
+                    "pytest-dev/pytest",
+                    "--head",
+                    "Mailman-Fork:mailman/issue-14992",
+                    "--base",
+                    "main",
+                    "--title",
+                    "Keep usefixtures fixtures ahead of autouse dependencies",
+                    "--data-root",
+                    str(root),
+                ]
+            )
+            self.assertEqual(code, 1)
+            self.assertIn("DRAFT LEFTOVERS", output)
+            self.assertIn("remain", output)
+
+    def test_handoff_check_refuses_a_body_that_still_carries_the_draft(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            run, directory = _run_directory(root)
+            body_path = root / "body.md"
+            body_path.write_text(LEFTOVER_BODY, encoding="utf-8", newline="\n")
+            _prior_art(directory)
+            self._invoke(
+                [
+                    "handoff",
+                    run.run_id,
+                    "--body",
+                    str(body_path),
+                    "--repo",
+                    "pytest-dev/pytest",
+                    "--head",
+                    "Mailman-Fork:mailman/issue-14992",
+                    "--base",
+                    "main",
+                    "--title",
+                    "Keep usefixtures fixtures ahead",
+                    "--data-root",
+                    str(root),
+                ]
+            )
+            result = check_handoff(directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "draft-leftovers")
+            self.assertIn("pending-state", result["detail"])
 
     def test_handoff_check_exits_non_zero_once_the_body_changes(self) -> None:
         with TemporaryDirectory() as name:

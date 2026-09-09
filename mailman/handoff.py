@@ -86,6 +86,121 @@ _PRESERVATION_TRIGGERS = re.compile(
 _BULLET = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
 
 
+# Text `prepare-submission` writes for the person preparing the submission,
+# and text that describes the harness rather than the change. Both are correct
+# in `pull-request.md` and wrong the moment they are posted upstream.
+#
+# pytest-dev/pytest#14993 was filed with the draft's host-environment section,
+# its alternative-not-taken heading, and the sentence "Human review and filing
+# remain pending" still in the body. The maintainer closed it the same day and
+# led with "It's hard to understand the use case with all of the AI verbosity."
+# Nothing checked the final body against the scaffolding it came from.
+#
+# See docs/runs/0010-pytest-14992-closed-unmerged.md.
+_DRAFT_SCAFFOLDING = re.compile(
+    r"(?:"
+    r"^#\s*Draft pull request|"
+    r"^#{1,6}\s*Before filing\b|"
+    r"^\s*-\s*\[[ x]\]|"
+    r"\bSuggested branch\b|"
+    r"\bWorking title\b|"
+    r"\bdocs/pull-request-standard\.md\b|"
+    r"\bmailman\s+(?:handoff|handoff-check|prepare-submission)\b|"
+    r"^_.*_$"
+    r")",
+    re.IGNORECASE,
+)
+
+_DRAFT_PENDING = re.compile(
+    r"(?:"
+    r"\b(?:remains?|are|is)\s+pending\b|"
+    r"\bpending\s+(?:human\s+)?(?:review|filing|approval)\b|"
+    r"\bnothing\s+here\s+has\s+been\s+sent\b|"
+    r"\bhas\s+not\s+been\s+(?:sent|filed|posted|opened)\b|"
+    r"\bbefore\s+(?:this|it)\s+is\s+filed\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_DRAFT_INTERNAL = re.compile(
+    r"(?:"
+    r"\b\d{8}T\d{6}Z-[0-9a-f]{6}\b|"
+    r"(?:^|[\s`\"\'(])\.mailman[/\\]"
+    r")"
+)
+
+#: Each family, and what to tell the person holding the draft.
+#:
+#: `flowing` families are searched across a whole paragraph, because a
+#: sentence that survives a rewrite gets re-wrapped by whatever wrote it;
+#: "Human review and filing remain\npending." is the same sentence as the one
+#: that shipped, and a line-at-a-time search does not see it.
+_DRAFT_LEFTOVERS: tuple[tuple[str, re.Pattern[str], bool, str], ...] = (
+    ("scaffolding", _DRAFT_SCAFFOLDING, False,
+     "template text for you, not for the maintainer. Cut it."),
+    ("pending-state", _DRAFT_PENDING, True,
+     "false the moment this is posted. Cut it."),
+    ("internal-reference", _DRAFT_INTERNAL, True,
+     "names this harness's private run state, which upstream cannot see."),
+)
+
+
+def _paragraphs(lines: list[str]) -> list[tuple[int, str]]:
+    """Blank-line separated blocks, each with the line number it starts on."""
+    blocks: list[tuple[int, str]] = []
+    current: list[str] = []
+    first = 0
+    for number, line in enumerate(lines, start=1):
+        if line.strip():
+            if not current:
+                first = number
+            current.append(line.strip())
+            continue
+        if current:
+            blocks.append((first, " ".join(current)))
+            current = []
+    if current:
+        blocks.append((first, " ".join(current)))
+    return blocks
+
+
+def draft_leftovers(text: str) -> list[dict[str, Any]]:
+    """Every line carrying draft scaffolding or harness-internal detail.
+
+    The body a person posts is written from `pull-request.md`, which is full of
+    instructions addressed to that person. Whatever survives the rewrite is
+    read by a maintainer as part of the change's argument.
+    """
+    lines = text.replace("\r\n", "\n").split("\n")
+    found: dict[int, dict[str, Any]] = {}
+    for number, line in enumerate(lines, start=1):
+        if line.strip() and _DRAFT_SCAFFOLDING.search(line):
+            found[number] = {
+                "line": number,
+                "text": line.strip(),
+                "code": "scaffolding",
+                "guidance": _DRAFT_LEFTOVERS[0][3],
+            }
+    for first, paragraph in _paragraphs(lines):
+        for code, pattern, flowing, guidance in _DRAFT_LEFTOVERS:
+            if not flowing:
+                continue
+            match = pattern.search(paragraph)
+            if match is None:
+                continue
+            line = first + paragraph.count("\n", 0, match.start())
+            found.setdefault(
+                line,
+                {
+                    "line": line,
+                    "text": paragraph,
+                    "code": code,
+                    "guidance": guidance,
+                },
+            )
+    return [found[number] for number in sorted(found)]
+
+
 def preservation_claims(text: str) -> list[dict[str, Any]]:
     """Every line asserting that something kept working, and its list items.
 
@@ -284,6 +399,29 @@ def _preamble(record: dict[str, Any], claims: list[dict[str, Any]]) -> list[str]
                 "",
             ]
         )
+    leftovers = record.get("draft_leftovers") or []
+    if leftovers:
+        lines.extend(
+            [
+                "-" * 72,
+                "DRAFT LEFTOVERS -- harness text, addressed to you, not upstream",
+                "-" * 72,
+                "",
+            ]
+        )
+        for leftover in leftovers:
+            lines.append(f"  line {leftover['line']}: {leftover['text']}")
+            lines.append(f"      {leftover['guidance']}")
+        lines.extend(
+            [
+                "",
+                "A maintainer reads every line of this as part of the argument",
+                "for the change. Scaffolding from pull-request.md, and anything",
+                "describing the run rather than the fix, spends their attention",
+                "on the harness instead.",
+                "",
+            ]
+        )
     if claims:
         lines.extend(
             [
@@ -389,6 +527,7 @@ def build_handoff(
         "digest": body_digest(body),
         "first_person_claims": first_person_claims(body),
         "preservation_claims": preservation_claims(body),
+        "draft_leftovers": draft_leftovers(body),
         "head_owner": owner,
         "head_owner_type": owner_type,
         "maintainer_edit_warning": maintainer_edit_warning(owner, owner_type),
@@ -587,6 +726,21 @@ def check_handoff(
             "expected_digest": record.get("digest"),
             "actual_digest": current,
         }
+    leftovers = draft_leftovers(body_path.read_text(encoding="utf-8"))
+    if leftovers:
+        return {
+            "ok": False,
+            "reason": "draft-leftovers",
+            "detail": (
+                "the body still carries text from the draft, or text about the "
+                "run rather than the change: "
+                + "; ".join(
+                    f"line {item['line']} ({item['code']})" for item in leftovers
+                )
+                + ". Cut it and run `mailman handoff` again."
+            ),
+            "draft_leftovers": leftovers,
+        }
     if first_person_claims(body_path.read_text(encoding="utf-8")):
         return {"ok": False, "reason": "first-person-claims", "detail": "remove claims only the human can make true"}
     unchanged = {
@@ -596,6 +750,7 @@ def check_handoff(
         "digest": current,
         "first_person_claims": record.get("first_person_claims") or [],
         "preservation_claims": record.get("preservation_claims") or [],
+        "draft_leftovers": record.get("draft_leftovers") or [],
         "maintainer_edit_warning": record.get("maintainer_edit_warning"),
     }
     if record.get("kind") != "pull-request":

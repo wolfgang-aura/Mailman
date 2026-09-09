@@ -109,3 +109,28 @@ results were not read for this record, and the three rewritten assertions were
 not independently re-derived here. Nothing in this record should be read as
 "the fix was good and the maintainer was wrong" — the disagreement is about
 whether the behaviour is a guarantee, and that is the maintainer's to settle.
+
+## What was changed here
+
+`handoff` and `handoff-check` now refuse a body that still carries draft
+scaffolding, a sentence saying the work is pending, or a run ID or `.mailman`
+path (`draft_leftovers` in `mailman/handoff.py`, tested in
+`tests/test_handoff.py`). That would have caught the third failure above and
+part of the second. It would not have caught the first: no local check knows
+whether a maintainer accepts the premise of an issue somebody else filed.
+
+## Disposition: nothing was posted upstream
+
+The maintainer named a re-entry condition — "a use case which doesn't involve
+modifying `metafunc.fixturenames`". On the evidence in the issue there is none.
+The reporter's own second comment says that with the `pytest_generate_tests`
+hook removed the order is identical on every version from 8.3.5 to 9.1.1, and
+the real-world case it stands in for, `pytest-fixture-order`'s
+`@pytest.mark.late`, reorders `metafunc.fixturenames` by the same mechanism. So
+a reply would restate what the maintainer already read, on an issue this project
+did not file, in a thread where the last complaint was about volume.
+
+Dropped: no comment, no reopen, no second attempt. If a case does turn up that
+reaches the same ordering through supported API only, that is a new run against
+a re-opened premise, not a continuation of this one.
+

@@ -326,6 +326,13 @@ pending" left in after filing. A submission body is written for the reviewer
 deciding, not as a run report. See
 `docs/runs/0010-pytest-14992-closed-unmerged.md`.
 
+That second lesson is now mechanical: `handoff` and `handoff-check` refuse a
+body carrying draft scaffolding, a still-pending sentence, or a run ID or
+`.mailman` path, the same way they already refuse a first-person claim. The
+first lesson is not mechanical and may never be — no local check can tell
+whether a project accepts an issue's premise. Asking on the issue is the only
+instrument.
+
 ## Authority and artifact boundaries
 
 - The target repository checkout and machine-observed command results outrank agent self-reports.

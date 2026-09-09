@@ -1392,9 +1392,10 @@ def _handoff(arguments: argparse.Namespace) -> int:
         data_root=arguments.data_root,
     )
     print(block)
-    # A body claiming the human read it is not ready until the human says so.
-    # Exiting non-zero stops a chained publish command from running behind it.
-    return 1 if record["first_person_claims"] else 0
+    # A body claiming the human read it is not ready until the human says so,
+    # and neither is one still carrying the draft's scaffolding. Exiting
+    # non-zero stops a chained publish command from running behind it.
+    return 1 if record["first_person_claims"] or record["draft_leftovers"] else 0
 
 
 def _handoff_check(arguments: argparse.Namespace) -> int:
