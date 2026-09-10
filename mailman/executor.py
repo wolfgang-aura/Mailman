@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import platform
+import signal
 import subprocess
 import threading
 import time
@@ -105,6 +106,11 @@ def _stream(
     An agent can work for an hour. Buffering its output until it exits means
     nobody can see what it is doing, or tell a slow run from a stuck one.
     """
+    popen_options: dict[str, object] = {}
+    if os.name == "nt":
+        popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_options["start_new_session"] = True
     process = subprocess.Popen(
         list(command),
         cwd=cwd,
@@ -117,12 +123,40 @@ def _stream(
         errors="replace",
         bufsize=1,
         shell=False,
+        **popen_options,
     )
     timed_out = threading.Event()
+    kill_lock = threading.Lock()
+
+    def kill_tree() -> None:
+        """Stop the wrapper and every child that inherited its output pipes."""
+        with kill_lock:
+            if process.poll() is not None:
+                return
+            if os.name == "nt":
+                try:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=10,
+                        check=False,
+                        shell=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            if process.poll() is None:
+                process.kill()
 
     def give_up() -> None:
         timed_out.set()
-        process.kill()
+        kill_tree()
 
     watchdog = threading.Timer(timeout_seconds, give_up)
     watchdog.daemon = True
@@ -165,7 +199,7 @@ def _stream(
                     on_stdout_line(line.rstrip("\r\n"))
                 except StopExecution as error:
                     stopped_reason = str(error)
-                    process.kill()
+                    kill_tree()
                 except Exception:  # noqa: BLE001 - a broken console must not
                     pass  # cost the run its evidence
         exit_code = process.wait()

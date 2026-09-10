@@ -486,6 +486,7 @@ class OrchestrationTests(OrchestratorHarness):
             reviewer_prompt=self.reviewer_prompt,
             verification_command=[sys.executable, "-c", PASSING_CHECK],
             agent_factory=lambda name, model: primary,
+            primary_command_budget=20,
         )
 
         self.assertEqual(outcome.status, RunStatus.BLOCKED)
@@ -497,6 +498,112 @@ class OrchestrationTests(OrchestratorHarness):
         self.assertTrue(agent_step.data["command_budget_exceeded"])
         self.assertFalse(agent_step.data["usage_accounting_missing"])
         self.assertEqual(agent_step.detail, reason)
+
+    def test_completed_codex_turn_is_kept_when_command_stop_arrives_too_late(self) -> None:
+        run, directory = self.make_run()
+        reason = "command budget exceeded: 21 commands attempted, budget 20"
+        usage = json.dumps(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 10,
+                    "cached_input_tokens": 8,
+                    "output_tokens": 2,
+                },
+            }
+        )
+        primary = ScriptedAgent(
+            "codex",
+            [
+                {
+                    "report": "candidate complete",
+                    "touch": ("fix.txt", "fixed"),
+                    "exit_code": 1,
+                    "stdout": usage,
+                    "stopped_reason": reason,
+                }
+            ],
+            token_budget=100,
+        )
+        reviewer = ScriptedAgent("claude", [{"report": APPROVED}])
+        agents = {"codex": primary, "claude": reviewer}
+
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: agents[name],
+            primary_command_budget=20,
+        )
+
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
+        step = next(item for item in outcome.steps if item.name == "agent:primary")
+        self.assertTrue(step.data["completed_before_command_stop"])
+
+    def test_reviewer_command_stop_can_resume_without_rerunning_primary(self) -> None:
+        run, directory = self.make_run()
+        reason = "command budget exceeded: 11 commands attempted, budget 10"
+        primary = ScriptedAgent(
+            "codex", [{"report": "candidate", "touch": ("fix.txt", "fixed")}]
+        )
+        stopped_reviewer = ScriptedAgent(
+            "claude", [{"exit_code": 1, "stdout": "", "stopped_reason": reason}]
+        )
+        agents = {"codex": primary, "claude": stopped_reviewer}
+        first = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: agents[name],
+            reviewer_command_budget=10,
+        )
+        self.assertEqual(first.status, RunStatus.BLOCKED)
+
+        resumed_reviewer = ScriptedAgent("claude", [{"report": APPROVED}])
+        resumed_agents = {"codex": primary, "claude": resumed_reviewer}
+        second = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: resumed_agents[name],
+            resume_review=True,
+        )
+
+        self.assertEqual(second.status, RunStatus.ENGINEERING_COMPLETE)
+        self.assertEqual(len(primary.calls), 1)
+
+    def test_review_prompt_contains_the_candidate_diff(self) -> None:
+        run, directory = self.make_run()
+        primary = ScriptedAgent(
+            "codex", [{"report": "done", "touch": ("fix.txt", "new-value\n")}]
+        )
+        reviewer = ScriptedAgent("claude", [{"report": APPROVED}])
+        agents = {"codex": primary, "claude": reviewer}
+
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: agents[name],
+        )
+
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
+        review_prompt = reviewer.calls[0][1]
+        self.assertIn("Candidate diff", review_prompt)
+        self.assertIn("+new-value", review_prompt)
+        self.assertIn("Do not use the shell unless", review_prompt)
 
     def test_codex_input_overrun_blocks_before_review(self) -> None:
         run, directory = self.make_run()

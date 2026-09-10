@@ -16,6 +16,9 @@ holding finished work until the quota is met.
 If model choices are missing, ask which primary and reviewer adapter/model IDs
 the user wants. Do not assume defaults. N counts complete PR candidates, not
 attempts. Repair routine failures or replace candidates without asking the user.
+When either Codex role uses `gpt-5.6-luna`, run orchestration at `medium`
+reasoning effort unless the user explicitly asks for a slower effort after being
+told that higher effort increases end-to-end latency on these bounded tasks.
 
 Run Mailman from this repository with `python -m mailman` if the installed
 entry point resolves to another checkout. Never publish or file an issue until

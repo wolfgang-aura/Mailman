@@ -651,7 +651,7 @@ class CliTests(unittest.TestCase):
             record = json.loads(
                 (run_directory / "prompts.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(record["schema_version"], 1)
+            self.assertEqual(record["schema_version"], 2)
             command = record["verification_command"]
             self.assertEqual(len(command), 3)
             self.assertIn("python", command[0].replace("\\", "/"))

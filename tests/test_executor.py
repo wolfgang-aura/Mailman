@@ -212,6 +212,30 @@ class StreamingTests(unittest.TestCase):
         )
         self.assertLess(time.monotonic() - start, 5)
 
+    def test_a_stream_stop_kills_descendants_that_hold_the_output_pipe(self) -> None:
+        def stop_after_ready(line: str) -> None:
+            if line == "ready":
+                raise StopExecution("stage stopped")
+
+        child = "import time; time.sleep(20)"
+        script = (
+            "import subprocess, sys, time\n"
+            f"subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(20)\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            start = time.monotonic()
+            result = execute(
+                [sys.executable, "-c", script],
+                working_directory=Path(temporary_directory),
+                timeout_seconds=15,
+                on_stdout_line=stop_after_ready,
+            )
+
+        self.assertEqual(result.stopped_reason, "stage stopped")
+        self.assertLess(time.monotonic() - start, 5)
+
 
 if __name__ == "__main__":
     unittest.main()

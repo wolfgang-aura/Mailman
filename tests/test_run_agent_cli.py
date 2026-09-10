@@ -108,7 +108,7 @@ class RunAgentCliTests(unittest.TestCase):
             self.assertEqual(record["process"]["exit_code"], 0)
             self.assertEqual(record["report"], "candidate ready\n")
             self.assertEqual(record["workflow_status_after_run"], "INITIALIZED")
-            self.assertEqual(record["command_budget"], 20)
+            self.assertIsNone(record["command_budget"])
             # A run that cannot say what else the CLI read is not reproducible.
             self.assertIsInstance(record["instruction_sources"], list)
             # A stream that names no model says so, rather than recording null.

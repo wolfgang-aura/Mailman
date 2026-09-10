@@ -33,8 +33,8 @@ VERDICT_APPROVE = "APPROVE"
 VERDICT_REVISE = "REVISE"
 DEFAULT_RUN_TIME_BUDGET_SECONDS = 7200
 DEFAULT_AGENT_TIMEOUT_SECONDS = 600
-DEFAULT_PRIMARY_COMMAND_BUDGET = 20
-DEFAULT_REVIEWER_COMMAND_BUDGET = 10
+DEFAULT_PRIMARY_COMMAND_BUDGET = None
+DEFAULT_REVIEWER_COMMAND_BUDGET = None
 DEFAULT_MAX_CHANGED_FILES = 8
 DEFAULT_MAX_CHANGED_LINES = 500
 
@@ -62,6 +62,39 @@ def _describe_stop(reason: str | None, turn_budget: int | None) -> str:
     if reason == "error_max_turns" and turn_budget:
         return f"{described} (budget: {turn_budget} turns)"
     return described
+
+
+def _candidate_diff(workspace: Path, base_commit: str, *, limit: int = 32_000) -> str:
+    """Return a bounded diff that includes files Git has not tracked yet."""
+    tracked = git_bytes(workspace, "diff", base_commit, "--").decode(
+        "utf-8", errors="replace"
+    )
+    chunks = [tracked]
+    untracked = git_bytes(
+        workspace, "ls-files", "--others", "--exclude-standard", "-z"
+    ).decode("utf-8", errors="replace")
+    root = workspace.resolve()
+    for relative in (item for item in untracked.split("\0") if item):
+        path = (workspace / relative).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            continue
+        remaining = limit - sum(len(chunk) for chunk in chunks)
+        if remaining <= 0:
+            break
+        try:
+            body = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            body = "[unreadable file]"
+        added = "\n".join(f"+{line}" for line in body.splitlines())
+        chunks.append(
+            f"diff --git a/{relative} b/{relative}\n"
+            "new file mode 100644\n"
+            f"--- /dev/null\n+++ b/{relative}\n@@ new file @@\n{added}\n"
+        )
+    combined = "".join(chunks).strip()
+    if len(combined) > limit:
+        return combined[:limit] + "\n[diff clipped by Mailman]"
+    return combined
 
 
 _VERDICT_PATTERN = re.compile(
@@ -271,8 +304,8 @@ class _Orchestration:
         verification_command: Sequence[str],
         agent_factory: AgentFactory,
         agent_timeout_seconds: float,
-        primary_command_budget: int,
-        reviewer_command_budget: int,
+        primary_command_budget: int | None,
+        reviewer_command_budget: int | None,
         verification_timeout_seconds: float,
         max_revisions: int,
         max_review_cycles: int,
@@ -476,7 +509,8 @@ class _Orchestration:
         session_id = self._previous_session(role)
         self.announce(
             f"run  {role}: {agent.name} with a "
-            f"{timeout:g} second timeout and {command_budget} command budget"
+            f"{timeout:g} second timeout"
+            + (f" and {command_budget} command budget" if command_budget else "")
             + (f", resuming session {session_id}." if session_id else ".")
         )
         log_path = self.run_directory / "agent-executions" / f"{role}-live.log"
@@ -528,6 +562,12 @@ class _Orchestration:
                 "command budget exceeded:"
             )
         )
+        completed_before_command_stop = bool(
+            command_budget_exceeded
+            and result.report_present
+            and reported_usage is not None
+            and not result.timed_out
+        )
         execution_usage = reported_usage or {
             "input_tokens": 0,
             "cached_input_tokens": 0,
@@ -545,6 +585,7 @@ class _Orchestration:
             {
                 "agent": agent.name,
                 "model": configured.model,
+                "reasoning_effort": getattr(agent, "reasoning_effort", None),
                 "role": role,
                 "report_path": str(result.report_path),
                 "report_present": result.report_present,
@@ -554,6 +595,7 @@ class _Orchestration:
                 "token_budget": agent.token_budget,
                 "command_budget": command_budget,
                 "command_budget_exceeded": command_budget_exceeded,
+                "completed_before_command_stop": completed_before_command_stop,
                 "usage": execution_usage,
                 "role_usage": role_usage,
                 "usage_budget_exceeded": usage_budget_exceeded,
@@ -569,7 +611,7 @@ class _Orchestration:
         )
         ok = (
             not result.timed_out
-            and result.exit_code == 0
+            and (result.exit_code == 0 or completed_before_command_stop)
             and result.report_present
             and not usage_budget_exceeded
             and not usage_accounting_missing
@@ -592,7 +634,12 @@ class _Orchestration:
                 )
         else:
             health.clear(self.run_directory)
-        if command_budget_exceeded:
+        if completed_before_command_stop:
+            detail = (
+                f"{agent.name} completed its turn before the command stop; "
+                "the report and candidate were kept"
+            )
+        elif command_budget_exceeded:
             detail = result.command_result.stopped_reason or "command budget exceeded"
         elif usage_accounting_missing:
             detail = (
@@ -618,6 +665,7 @@ class _Orchestration:
             detail=detail,
             data={
                 "agent": agent.name,
+                "reasoning_effort": getattr(agent, "reasoning_effort", None),
                 "exit_code": result.exit_code,
                 "timed_out": result.timed_out,
                 "report_present": result.report_present,
@@ -625,6 +673,7 @@ class _Orchestration:
                 "turn_budget": agent.turn_budget,
                 "command_budget": command_budget,
                 "command_budget_exceeded": command_budget_exceeded,
+                "completed_before_command_stop": completed_before_command_stop,
                 "token_budget": usage_budget,
                 "usage": execution_usage,
                 "role_usage": role_usage,
@@ -834,6 +883,13 @@ class _Orchestration:
             f"Diff stat:\n```text\n{stat or 'empty'}\n```\n\n"
             f"Primary report (tail):\n\n{report.strip()}\n"
         )
+        diff = _candidate_diff(self.workspace, self.run.base_commit)
+        candidate += (
+            "\n## Candidate diff\n\n"
+            "Review this before using the shell. Do not use the shell unless a "
+            "specific question remains.\n\n"
+            f"```diff\n{diff or 'No tracked diff. Check the changed-path list for new files.'}\n```\n"
+        )
         return self._write_derived_prompt(
             "review-input.md",
             f"{source}{candidate}\n{notice}{sandbox}{_VERDICT_CONTRACT}",
@@ -901,15 +957,24 @@ class _Orchestration:
             if not previous.is_file():
                 raise ValueError("no prior orchestration to resume")
             old = json.loads(previous.read_text(encoding="utf-8"))
-            if any(
+            old_steps = old.get("steps", [])
+            usage_spent = any(
                 (step.get("data") or {}).get("usage_budget_exceeded")
                 or (step.get("data") or {}).get("usage_accounting_missing")
-                or (step.get("data") or {}).get("command_budget_exceeded")
-                for step in old.get("steps", [])
-            ):
+                for step in old_steps
+            )
+            incomplete_primary_cap = any(
+                step.get("name") == "agent:primary"
+                and (step.get("data") or {}).get("command_budget_exceeded")
+                and not (step.get("data") or {}).get(
+                    "completed_before_command_stop"
+                )
+                for step in old_steps
+            )
+            if usage_spent or incomplete_primary_cap:
                 raise ValueError(
-                    "agent usage budget already spent or command budget spent; "
-                    "this candidate cannot resume"
+                    "agent usage budget already spent or the primary stopped "
+                    "before completion; this candidate cannot resume"
                 )
             previous_budget = float(
                 old.get("time_budget_seconds", DEFAULT_RUN_TIME_BUDGET_SECONDS)
@@ -947,7 +1012,10 @@ class _Orchestration:
             raise ValueError("max_review_cycles must be at least 1")
         if self.run_time_budget_seconds <= 0:
             raise ValueError("run_time_budget_seconds must be positive")
-        if any(budget <= 0 for budget in self.command_budgets.values()):
+        if any(
+            budget is not None and budget <= 0
+            for budget in self.command_budgets.values()
+        ):
             raise ValueError("agent command budgets must be positive")
         if (
             self.run_time_budget_seconds > DEFAULT_RUN_TIME_BUDGET_SECONDS
@@ -1252,8 +1320,8 @@ def orchestrate(
     verification_command: Sequence[str],
     agent_factory: AgentFactory,
     agent_timeout_seconds: float = DEFAULT_AGENT_TIMEOUT_SECONDS,
-    primary_command_budget: int = DEFAULT_PRIMARY_COMMAND_BUDGET,
-    reviewer_command_budget: int = DEFAULT_REVIEWER_COMMAND_BUDGET,
+    primary_command_budget: int | None = DEFAULT_PRIMARY_COMMAND_BUDGET,
+    reviewer_command_budget: int | None = DEFAULT_REVIEWER_COMMAND_BUDGET,
     verification_timeout_seconds: float = 900,
     max_revisions: int = 1,
     max_review_cycles: int = 3,

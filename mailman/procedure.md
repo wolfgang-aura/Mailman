@@ -106,19 +106,23 @@ status check you did not act on is pure cost.
    Everything after `--` is run as a program, so it starts with an executable
    and carries no Mailman option; the CLI refuses the common mistakes but not
    all of them. `orchestrate RUN_ID` reads that same command. Do not supply
-   custom prompts or call `run-agent` to bypass this sequence. Both model roles
-   have a ten-minute wall-clock limit. The primary may attempt at most 20
-   commands and the reviewer at most 10; Mailman terminates the live process on
-   the first command beyond the limit. A budget stop costs the candidate and
-   `resume-review` cannot grant it a fresh allowance. These are containment
-   limits, not completion targets: a healthy run should finish sooner. Both
+   custom prompts or call `run-agent` to bypass this sequence. `build-prompts`
+   must resolve at least one exact existing start file from the issue or
+   reproducer. Supply `--start-file PATH` when it cannot. Never start an agent
+   with only a broad symbol. Both model roles have a ten-minute wall-clock
+   limit. Mailman does not use command counts as a completion test. A completed
+   report and Codex `turn.completed` event keep the candidate even when an
+   optional operator-supplied command cap races with process exit. Both
    model roles must use the same recorded procedure and the independent
    verification gate.
    Before the primary starts, Mailman runs that exact argv on the clean base
    tree. It refuses a failing command or one that changes candidate bytes.
    The generated task carries the pre-screened symbols and the recorded
-   baseline. The primary starts there, runs only focused checks needed to guide
-   the edit, and does not redo discovery, reproduction or the full gate.
+   baseline. The primary starts with the exact work-order files, runs only
+   focused checks needed to guide the edit, and does not redo discovery,
+   reproduction or the full gate. For `gpt-5.6-luna`, use
+   `orchestrate --reasoning-effort medium`; higher effort is not the default for
+   these bounded tasks and must be an intentional operator override.
 
 ## Repair without escalating routine work
 

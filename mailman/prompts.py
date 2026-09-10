@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from mailman.maintainer_review import load_review_markdown
 from mailman.models import RunRecord
 from mailman.prior_art import load_prior_art_markdown
 
-
 PRIMARY_TASK_FILENAME = "primary-task.md"
 REVIEWER_TASK_FILENAME = "reviewer-task.md"
 PROMPTS_RECORD_FILENAME = "prompts.json"
-PROMPTS_RECORD_SCHEMA_VERSION = 1
+PROMPTS_RECORD_SCHEMA_VERSION = 2
+WORK_ORDER_FILENAME = "work-order.json"
+
+_PATH_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+(?::\d+)?)"
+)
 
 
 _EXECUTION_DISCIPLINE = """
@@ -100,6 +105,64 @@ def _known_scope_section(run_directory: Path) -> str:
         "Start with these issue symbols; do not begin with a repository-wide "
         f"search: {', '.join(f'`{item}`' for item in symbols)}.\n"
     )
+
+
+def _work_order(
+    run_directory: Path,
+    issue_markdown: str,
+    verification_command: Sequence[str] | None,
+    start_files: Sequence[str] = (),
+) -> tuple[dict[str, object], str]:
+    """Resolve issue hints to files that exist before an agent is started."""
+    workspace = run_directory / "workspace"
+    reproduction = _read_json(run_directory / "reproduction.json")
+    prescreen = _read_json(run_directory / "prescreen.json")
+    evidence = "\n".join(
+        (
+            issue_markdown,
+            json.dumps(reproduction.get("command") or []),
+            json.dumps(reproduction.get("artifacts") or []),
+            json.dumps(prescreen.get("symbols") or []),
+        )
+    )
+    found: set[str] = set()
+    if workspace.is_dir():
+        root = workspace.resolve()
+        candidates = [match.group(1) for match in _PATH_PATTERN.finditer(evidence)]
+        candidates.extend(start_files)
+        for raw_candidate in candidates:
+            candidate = str(raw_candidate).replace("\\", "/")
+            candidate = re.sub(r":\d+$", "", candidate)
+            if "://" in candidate or candidate.startswith(("github.com/", "www.")):
+                continue
+            resolved = (workspace / candidate).resolve()
+            if resolved.is_relative_to(root) and resolved.is_file():
+                found.add(resolved.relative_to(root).as_posix())
+    order: dict[str, object] = {
+        "schema_version": 1,
+        "start_files": sorted(found),
+        "symbols": [str(item) for item in prescreen.get("symbols") or [] if str(item)],
+        "verification_command": list(verification_command or []),
+    }
+    (run_directory / WORK_ORDER_FILENAME).write_text(
+        json.dumps(order, indent=2) + "\n", encoding="utf-8"
+    )
+    files = order["start_files"]
+    if not files:
+        return order, ""
+    listed = "\n".join(f"- `{path}`" for path in files)
+    section = f"""
+## Ready-to-code work order
+
+Mailman verified these paths in the prepared workspace. Open them first. Do not
+search the repository until one of these files proves that another path is needed.
+
+{listed}
+
+The independent gate is already fixed. Your task is to make the smallest change
+that satisfies the reported behavior and that gate.
+"""
+    return order, section
 
 
 def _reproduction_section(run_directory: Path) -> str:
@@ -219,6 +282,7 @@ def build_primary_prompt(
     maintainer_review: str | None = None,
     scope: str = "",
     reproduction: str = "",
+    work_order: str = "",
 ) -> str:
     return f"""# Primary engineering task
 
@@ -232,7 +296,7 @@ instructions before editing, and follow its existing conventions.
 {_verification_line(verification_command)}
 {_focused_check_note(verification_command)}
 {_EXECUTION_DISCIPLINE}
-{scope}{reproduction}
+{work_order}{scope}{reproduction}
 ## Required behavior
 
 - Keep the change focused on this issue. No drive-by refactors.
@@ -242,6 +306,8 @@ instructions before editing, and follow its existing conventions.
   the upstream repository. Stop at a change in this workspace.
 - Report commands you ran and their results, limitations, assumptions, and any
   failure you could not resolve. Separate what you observed from what you infer.
+- Once the patch, focused check, and report are complete, stop. Do not spend more
+  commands looking for optional improvements.
 
 ## Issue
 
@@ -258,6 +324,7 @@ def build_reviewer_prompt(
     maintainer_review: str | None = None,
     scope: str = "",
     reproduction: str = "",
+    work_order: str = "",
 ) -> str:
     return f"""# Reviewer task
 
@@ -265,12 +332,13 @@ You are a read-only maintainer reviewing a candidate change. Do not edit any
 file. The working directory is the repository, and the primary engineer's
 uncommitted change sits on top of base commit `{run.base_commit}`.
 
-Read the change with `git diff {run.base_commit}` and read the surrounding code
-it touches.
+Mailman appends the candidate diff and the primary report when review starts.
+Read that supplied diff first. Do not use the shell unless a specific unresolved
+question requires a bounded slice of surrounding code or one focused check.
 
 {_verification_line(verification_command)}
 {_EXECUTION_DISCIPLINE}
-{scope}{reproduction}
+{work_order}{scope}{reproduction}
 
 ## Judge
 
@@ -294,6 +362,7 @@ def write_task_prompts(
     run_directory: Path,
     *,
     verification_command: Sequence[str] | None = None,
+    start_files: Sequence[str] = (),
 ) -> tuple[Path, Path]:
     """Turn the captured issue into a primary and a reviewer prompt."""
     issue_path = run_directory / "issue.md"
@@ -311,6 +380,16 @@ def write_task_prompts(
     maintainer_review = load_review_markdown(run_directory)
     scope = _known_scope_section(run_directory)
     reproduction = _reproduction_section(run_directory)
+    work_order, work_order_section = _work_order(
+        run_directory, issue_markdown, verification_command, start_files
+    )
+    workspace = run_directory / "workspace"
+    if (workspace / ".git").exists() and not work_order["start_files"]:
+        raise ValueError(
+            "no exact start file could be verified in the prepared workspace. "
+            "Name one with `mailman build-prompts --start-file PATH`; do not "
+            "send an agent a symbol-only repository search."
+        )
     primary_path = run_directory / PRIMARY_TASK_FILENAME
     reviewer_path = run_directory / REVIEWER_TASK_FILENAME
     primary_path.write_text(
@@ -322,6 +401,7 @@ def write_task_prompts(
             maintainer_review=maintainer_review,
             scope=scope,
             reproduction=reproduction,
+            work_order=work_order_section,
         ),
         encoding="utf-8",
     )
@@ -334,6 +414,7 @@ def write_task_prompts(
             maintainer_review=maintainer_review,
             scope=scope,
             reproduction=reproduction,
+            work_order=work_order_section,
         ),
         encoding="utf-8",
     )
@@ -342,6 +423,7 @@ def write_task_prompts(
         "verification_command": (
             list(verification_command) if verification_command else None
         ),
+        "work_order": work_order,
     }
     (run_directory / PROMPTS_RECORD_FILENAME).write_text(
         json.dumps(record, indent=2) + "\n", encoding="utf-8"

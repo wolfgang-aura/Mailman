@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,7 +65,7 @@ class TaskPromptTests(unittest.TestCase):
                 self.assertIn(run.base_commit, prompt)
             self.assertIn("Do not push, open a pull request", primary)
             self.assertIn("Do not edit any", reviewer)
-            self.assertIn(f"git diff {run.base_commit}", reviewer)
+            self.assertIn("Mailman appends the candidate diff", reviewer)
 
     def test_prompts_include_precomputed_scope_and_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -98,6 +99,78 @@ class TaskPromptTests(unittest.TestCase):
                 self.assertIn("Baseline already proved", prompt)
                 self.assertIn("python repro.py", prompt)
                 self.assertIn("Do not spend time", prompt)
+
+    def test_builds_a_work_order_from_existing_paths_in_issue_and_reproducer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, run_directory = make_run(Path(temporary_directory) / "runs")
+            workspace = run_directory / "workspace"
+            source = workspace / "frontend" / "src" / "Positions.tsx"
+            test = workspace / "frontend" / "src" / "Positions.test.tsx"
+            source.parent.mkdir(parents=True)
+            source.write_text("export const value = 1;\n", encoding="utf-8")
+            test.write_text("test('value', () => {});\n", encoding="utf-8")
+            (run_directory / "issue.md").write_text(
+                "# Wrong position\n\nThe bug is in `frontend/src/Positions.tsx:41`.\n",
+                encoding="utf-8",
+            )
+            (run_directory / "reproduction.json").write_text(
+                json.dumps(
+                    {
+                        "success": True,
+                        "reproduced": True,
+                        "command": [
+                            "python",
+                            "-c",
+                            "Path('frontend/src/Positions.test.tsx').read_text()",
+                        ],
+                        "exit_code": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            primary_path, _ = write_task_prompts(
+                run,
+                run_directory,
+                verification_command=["npm", "test", "--", "Positions.test.tsx"],
+            )
+
+            prompt = primary_path.read_text(encoding="utf-8")
+            self.assertIn("Ready-to-code work order", prompt)
+            self.assertIn("`frontend/src/Positions.tsx`", prompt)
+            self.assertIn("`frontend/src/Positions.test.tsx`", prompt)
+            order = json.loads(
+                (run_directory / "work-order.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                order["start_files"],
+                [
+                    "frontend/src/Positions.test.tsx",
+                    "frontend/src/Positions.tsx",
+                ],
+            )
+
+    def test_refuses_a_prepared_workspace_without_an_exact_start_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, run_directory = make_run(Path(temporary_directory) / "runs")
+            workspace = run_directory / "workspace"
+            workspace.mkdir()
+            subprocess.run(
+                ["git", "init", str(workspace)],
+                capture_output=True,
+                check=True,
+                shell=False,
+            )
+            (run_directory / "issue.md").write_text(
+                "# Crash\n\nSomething crashes in Parser.parse.\n", encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(ValueError, "no exact start file"):
+                write_task_prompts(
+                    run,
+                    run_directory,
+                    verification_command=["python", "-m", "pytest"],
+                )
 
     def test_prompt_shows_the_exact_reproducer_and_requires_alignment(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

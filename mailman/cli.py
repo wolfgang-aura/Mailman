@@ -317,6 +317,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--verification",
         help="the verification command to quote in both prompts, as one string",
     )
+    build_prompts.add_argument(
+        "--start-file",
+        action="append",
+        default=[],
+        help="existing workspace file the agents must inspect first; repeat as needed",
+    )
     build_prompts.add_argument("--data-root", type=Path)
 
     prepare_environment_parser = subparsers.add_parser(
@@ -650,6 +656,7 @@ def _build_parser() -> argparse.ArgumentParser:
     orchestrate_parser.add_argument(
         "--reasoning-effort",
         choices=REASONING_EFFORTS,
+        default="medium",
         help="how hard a Codex model is asked to think, recorded with the run",
     )
     orchestrate_parser.add_argument("--max-revisions", type=int, default=1)
@@ -1220,7 +1227,10 @@ def _build_prompts(arguments: argparse.Namespace) -> int:
         else None
     )
     primary_path, reviewer_path = write_task_prompts(
-        run, run_directory, verification_command=verification
+        run,
+        run_directory,
+        verification_command=verification,
+        start_files=arguments.start_file,
     )
     print(
         json.dumps(
@@ -1758,9 +1768,12 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         verification_command=verification,
         command_budget=command_budget,
     )
+    limit_text = (
+        f" and {command_budget} command budget" if command_budget is not None else ""
+    )
     print(
         f"Starting {agent.name} as {arguments.role} with a "
-        f"{arguments.timeout:g} second timeout and {command_budget} command budget.",
+        f"{arguments.timeout:g} second timeout{limit_text}.",
         flush=True,
     )
     result = agent.run(request)
