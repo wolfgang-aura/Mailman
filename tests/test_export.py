@@ -169,6 +169,67 @@ class ExportTests(unittest.TestCase):
                 )
             self.assertFalse((root / "export" / "changes.diff").exists())
 
+    def test_exports_when_only_a_context_line_looks_like_a_credential(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workspace = root / "workspace"
+            workspace.mkdir(parents=True)
+            source = [
+                "def call(api_key):",
+                "    return request(api_key=api_key)",
+                "",
+                "def other():",
+                "    return 0",
+                "",
+            ]
+            (workspace / "client.py").write_text(
+                "\n".join(source), encoding="utf-8"
+            )
+            git(workspace, "init", "--initial-branch=main")
+            git(workspace, "config", "user.name", "Fixture")
+            git(workspace, "config", "user.email", "fixture@example.invalid")
+            git(workspace, "add", "--", "client.py")
+            git(workspace, "commit", "-m", "base")
+            base_commit = git(workspace, "rev-parse", "HEAD")
+            run, run_directory = make_ready_run(root, base_commit)
+            (workspace / "client.py").write_text(
+                "\n".join(source).replace("return 0", "return 1"), encoding="utf-8"
+            )
+
+            record = export_patch(
+                run, run_directory, workspace=workspace, destination=root / "export"
+            )
+
+            self.assertEqual(record["changed_files"], ["client.py"])
+            diff = (root / "export" / "changes.diff").read_text(encoding="utf-8")
+            self.assertIn("api_key=api_key", diff)
+
+    def test_refuses_a_removed_line_that_looks_like_a_credential(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workspace, base_commit = make_workspace(root)
+            git(workspace, "config", "diff.context", "0")
+            run, run_directory = make_ready_run(root, base_commit)
+            (workspace / "code.py").write_text(
+                "def slugify(value):\n    return value.lower()\n", encoding="utf-8"
+            )
+            (workspace / "secret.py").write_text(
+                "TOKEN = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'\n", encoding="utf-8"
+            )
+            git(workspace, "add", "--", "secret.py")
+            git(workspace, "commit", "-m", "committed secret")
+            base_commit = git(workspace, "rev-parse", "HEAD")
+            run.base_commit = base_commit
+            write_run(run, run_directory)
+            (workspace / "secret.py").write_text(
+                "TOKEN = read_token()\n", encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(ValueError, "credential pattern"):
+                export_patch(
+                    run, run_directory, workspace=workspace, destination=root / "export"
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

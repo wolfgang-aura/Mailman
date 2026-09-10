@@ -9,7 +9,7 @@ from typing import Any
 from mailman.executor import clamp_timeout_seconds
 from mailman.issue import load_issue_record
 from mailman.models import RunRecord, RunStatus
-from mailman.redaction import redact
+from mailman.redaction import diff_reveals_credential, redact
 from mailman.toolchain import resolve_tool
 
 
@@ -265,13 +265,15 @@ def export_patch(
         raise ValueError(
             f"the workspace has no change against base commit {run.base_commit}"
         )
-    if redact(diff) != diff:
+    if diff_reveals_credential(diff):
         # Refusing beats rewriting. A redacted patch would not apply cleanly and
-        # the human would never learn which hunk was altered.
+        # the human would never learn which hunk was altered. Only added and
+        # removed lines are scanned: a context line is already upstream, so it
+        # can only produce a false refusal (#80).
         raise ValueError(
-            "the diff matches a credential pattern. Mailman will not export a "
-            "patch that may contain a secret, and will not rewrite the diff "
-            "either. Inspect the workspace by hand."
+            "the diff adds or removes a line matching a credential pattern. "
+            "Mailman will not export a patch that may contain a secret, and "
+            "will not rewrite the diff either. Inspect the workspace by hand."
         )
 
     issue_record = load_issue_record(run_directory)
