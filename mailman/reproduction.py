@@ -18,7 +18,9 @@ See https://github.com/wolfgang-aura/Mailman/issues/37.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,7 +30,9 @@ from mailman.executor import CommandResult
 from mailman.workspace import WORKSPACE_DIRECTORY, commit_is_ancestor
 
 REPRODUCTION_FILENAME = "reproduction.json"
-REPRODUCTION_SCHEMA_VERSION = 1
+REPRODUCTION_SCHEMA_VERSION = 2
+REPRODUCTION_ARTIFACT_DIRECTORY = "reproduction-artifacts"
+REPRODUCTION_ARTIFACT_MAX_BYTES = 1_000_000
 
 #: How the record was produced.
 BY_COMMAND = "command"
@@ -175,6 +179,9 @@ def record_command_reproduction(
 ) -> dict[str, Any]:
     """Write what one reproduction attempt proved, or failed to prove."""
     outcome = evaluate(result, expectation)
+    artifacts = _snapshot_command_artifacts(
+        run_directory, result.command, working_directory
+    )
     record = {
         "schema_version": REPRODUCTION_SCHEMA_VERSION,
         "recorded_at": datetime.now(UTC).isoformat(),
@@ -192,10 +199,54 @@ def record_command_reproduction(
         "command_record": command_record,
         "expectation": expectation.to_dict(),
         "checks": [check.to_dict() for check in outcome.checks],
+        "artifacts": artifacts,
         "note": None,
     }
     _write(run_directory, record)
     return record
+
+
+def _snapshot_command_artifacts(
+    run_directory: Path, command: list[str], working_directory: Path
+) -> list[dict[str, Any]]:
+    """Preserve workspace files named by a reproducer after scratch cleanup."""
+    workspace = working_directory.resolve()
+    artifacts: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    for argument in command[1:]:
+        if argument.startswith("-"):
+            continue
+        path_text = argument.split("::", 1)[0]
+        candidate = Path(path_text)
+        if not candidate.is_absolute():
+            candidate = workspace / candidate
+        try:
+            source = candidate.resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if (
+            source in seen
+            or not source.is_file()
+            or not source.is_relative_to(workspace)
+        ):
+            continue
+        size = source.stat().st_size
+        if size > REPRODUCTION_ARTIFACT_MAX_BYTES:
+            continue
+        seen.add(source)
+        relative = source.relative_to(workspace)
+        snapshot = run_directory / REPRODUCTION_ARTIFACT_DIRECTORY / relative
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, snapshot)
+        artifacts.append(
+            {
+                "source": relative.as_posix(),
+                "snapshot": snapshot.relative_to(run_directory).as_posix(),
+                "sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+                "size_bytes": size,
+            }
+        )
+    return artifacts
 
 
 def record_human_reproduction(

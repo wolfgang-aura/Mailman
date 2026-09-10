@@ -67,6 +67,9 @@ def _describe_stop(reason: str | None, turn_budget: int | None) -> str:
 _VERDICT_PATTERN = re.compile(
     r"^[ \t>*-]*MAILMAN-VERDICT:[ \t]*(APPROVE|REVISE)[ \t]*$", re.MULTILINE
 )
+_REPRODUCTION_MISMATCH_PATTERN = re.compile(
+    r"^[ \t]*MAILMAN-REPRODUCTION-MISMATCH:[ \t]*(.+?)[ \t]*$", re.MULTILINE
+)
 
 VERIFICATION_RAN = "RAN"
 VERIFICATION_BLOCKED = "BLOCKED"
@@ -1165,9 +1168,23 @@ class _Orchestration:
         return self._outcome()
 
     def _finish_primary_stage(self, prompt: Path, stage: str) -> bool:
-        primary_ok, _ = self._run_agent("primary", prompt)
+        primary_ok, primary_report = self._run_agent("primary", prompt)
         if not primary_ok:
             self._block(f"primary agent did not complete the {stage} stage")
+            return False
+        mismatch = _REPRODUCTION_MISMATCH_PATTERN.search(primary_report or "")
+        if mismatch:
+            reason = mismatch.group(1).strip()
+            self._step(
+                "reproduction-alignment",
+                ok=False,
+                detail=reason,
+                data={"stage": stage, "reason": reason},
+            )
+            self._block(
+                "primary agent found that the recorded reproducer does not match "
+                "the reported bug"
+            )
             return False
         self._record_workspace_change(stage)
         if not self._check_candidate_scope(stage):

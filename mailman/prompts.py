@@ -113,13 +113,41 @@ def _reproduction_section(run_directory: Path) -> str:
             if reproduction.get("timed_out")
             else f"exited {reproduction.get('exit_code')}"
         )
+        artifact_text = _reproduction_artifact_text(run_directory, reproduction)
         return (
             "\n## Baseline already proved by Mailman\n\n"
             f"At the recorded base commit, `{command}` {outcome} and satisfied "
-            "the reproduction contract. Do not spend time recreating or rerunning "
-            "that baseline. Use it as the observed before-state.\n"
+            "the reproduction contract. The exact reproducer source is below when "
+            "the command named a workspace file. Before running any command, compare "
+            "it with the issue's reported conditions and the repository's supported "
+            "setup. If it checks different conditions or behavior, stop "
+            "and put `MAILMAN-REPRODUCTION-MISMATCH: REASON` on its own line in your "
+            "report. Otherwise, use it as the observed before-state. Do not spend "
+            f"time recreating or rerunning the baseline.\n{artifact_text}"
         )
     return ""
+
+
+def _reproduction_artifact_text(
+    run_directory: Path, reproduction: dict
+) -> str:
+    sections: list[str] = []
+    root = run_directory.resolve()
+    for artifact in reproduction.get("artifacts") or []:
+        if not isinstance(artifact, dict):
+            continue
+        snapshot_name = artifact.get("snapshot")
+        source_name = artifact.get("source")
+        if not isinstance(snapshot_name, str) or not isinstance(source_name, str):
+            continue
+        snapshot = (run_directory / snapshot_name).resolve()
+        if not snapshot.is_relative_to(root) or not snapshot.is_file():
+            continue
+        source = snapshot.read_text(encoding="utf-8", errors="replace")
+        sections.append(
+            f"\n### Reproducer source: `{source_name}`\n\n```text\n{source}\n```\n"
+        )
+    return "".join(sections)
 
 
 def _prior_art_section(prior_art: str | None, *, audience: str) -> str:

@@ -99,6 +99,46 @@ class TaskPromptTests(unittest.TestCase):
                 self.assertIn("python repro.py", prompt)
                 self.assertIn("Do not spend time", prompt)
 
+    def test_prompt_shows_the_exact_reproducer_and_requires_alignment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, run_directory = make_run(Path(temporary_directory) / "runs")
+            (run_directory / "issue.md").write_text(
+                "# Proxy issue\n\nDocker reports the bridge IP.\n", encoding="utf-8"
+            )
+            snapshot = run_directory / "reproduction-artifacts" / "test" / "repro.py"
+            snapshot.parent.mkdir(parents=True)
+            snapshot.write_text(
+                "assert session_ip == '172.19.0.1'\n", encoding="utf-8"
+            )
+            (run_directory / "reproduction.json").write_text(
+                json.dumps(
+                    {
+                        "success": True,
+                        "reproduced": True,
+                        "command": ["python", "-m", "pytest", "test/repro.py"],
+                        "exit_code": 0,
+                        "timed_out": False,
+                        "artifacts": [
+                            {
+                                "source": "test/repro.py",
+                                "snapshot": "reproduction-artifacts/test/repro.py",
+                                "sha256": "a" * 64,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            primary_path, _ = write_task_prompts(
+                run, run_directory, verification_command=["python", "-m", "pytest"]
+            )
+            prompt = primary_path.read_text(encoding="utf-8")
+
+            self.assertIn("assert session_ip == '172.19.0.1'", prompt)
+            self.assertIn("MAILMAN-REPRODUCTION-MISMATCH:", prompt)
+            self.assertIn("Before running any command", prompt)
+
     def test_prompts_state_the_evidence_rule_without_a_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             run, run_directory = make_run(Path(temporary_directory) / "runs")

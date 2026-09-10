@@ -98,7 +98,10 @@ status check you did not act on is pure cost.
    `check-target`. The reproduction must check the reported behavior by
    machine. A human reading or locally convenient proxy may be kept as
    evidence, but it does not authorize agent work. A bug that no longer
-   reproduces means replace the candidate.
+   reproduces means replace the candidate. Mailman snapshots any workspace file
+   named by the reproduction command. The primary must compare that exact source
+   with the report before running a command; a semantic mismatch stops the run
+   before review or verification.
 9. Use `build-prompts RUN_ID -- EXECUTABLE ARG ...` to record verification argv.
    Everything after `--` is run as a program, so it starts with an executable
    and carries no Mailman option; the CLI refuses the common mistakes but not

@@ -95,6 +95,43 @@ class EvaluateTests(unittest.TestCase):
 
 
 class RecordTests(unittest.TestCase):
+    def test_a_workspace_reproducer_is_snapshotted_with_its_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            source = workspace / "test" / "__repro.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("assert reported_ip == client_ip\n", encoding="utf-8")
+            result = _result(exit_code=0, stdout="1 passed")
+            result = CommandResult(
+                **{
+                    **result.__dict__,
+                    "command": [
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        "test/__repro.py::test_proxy_ip",
+                    ],
+                    "working_directory": str(workspace),
+                }
+            )
+
+            record = record_command_reproduction(
+                root,
+                result=result,
+                expectation=Expectation(exit_code=0, required_output=("1 passed",)),
+                working_directory=workspace,
+                command_record=1,
+            )
+            source.unlink()
+
+            artifact = record["artifacts"][0]
+            snapshot = root / artifact["snapshot"]
+            self.assertEqual(artifact["source"], "test/__repro.py")
+            self.assertTrue(snapshot.is_file())
+            self.assertIn("reported_ip", snapshot.read_text(encoding="utf-8"))
+            self.assertEqual(len(artifact["sha256"]), 64)
+
     def test_a_command_record_keeps_the_checks_it_ran(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -436,6 +436,40 @@ class EmptyCandidateTests(OrchestratorHarness):
 
 
 class OrchestrationTests(OrchestratorHarness):
+    def test_primary_can_reject_a_semantically_wrong_reproducer_before_review(
+        self,
+    ) -> None:
+        run, directory = self.make_run()
+        primary = ScriptedAgent(
+            "codex",
+            [
+                {
+                    "report": (
+                        "MAILMAN-REPRODUCTION-MISMATCH: the test disables the "
+                        "supported proxy configuration\n"
+                    )
+                }
+            ],
+        )
+        reviewer = ScriptedAgent("claude", [])
+        agents = {"codex": primary, "claude": reviewer}
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: agents[name],
+        )
+
+        self.assertEqual(outcome.status, RunStatus.BLOCKED)
+        self.assertEqual(reviewer.calls, [])
+        mismatch = next(
+            step for step in outcome.steps if step.name == "reproduction-alignment"
+        )
+        self.assertIn("supported proxy configuration", mismatch.detail)
+
     def test_command_budget_stop_is_recorded_without_a_false_usage_failure(self) -> None:
         run, directory = self.make_run()
         reason = "command budget exceeded: 21 commands attempted, budget 20"
