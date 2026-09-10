@@ -300,6 +300,33 @@ class HuntTests(OrchestratorHarness):
         self.assertEqual(result["stage"], "handoff")
         self.assertFalse(result["human_required"])
 
+    def test_acknowledged_closed_attempts_remain_ready_after_orchestration(self):
+        directory = self.ready_run()
+        (directory / "prior-art.json").write_text(
+            json.dumps({
+                "attempts": [{
+                    "number": 17,
+                    "outcome": "closed unmerged",
+                    "title": "Earlier attempt",
+                    "url": "https://github.com/example/project/pull/17",
+                }],
+            }),
+            encoding="utf-8",
+        )
+        (directory / "target-assessment.json").write_text(
+            json.dumps({
+                "may_start": True,
+                "warnings": ["unacknowledged-prior-attempts"],
+                "closed_attempts": [{"number": 17}],
+            }),
+            encoding="utf-8",
+        )
+
+        result = next_action(directory)
+
+        self.assertTrue(result["ready"], result)
+        self.assertEqual(result["stage"], "filing-approval")
+
     def test_new_duplicate_replaces_a_previously_ready_candidate(self):
         directory = self.ready_run()
         path = directory / "duplicate-search.json"

@@ -17,7 +17,7 @@ from mailman.models import RunStatus, utc_now
 from mailman.review_decision import DecisionError, load_decision
 from mailman.screen import load_screen
 from mailman.target_intel import repository_slug
-from mailman.targeting import assess_target
+from mailman.targeting import UNACKNOWLEDGED_ATTEMPTS, assess_target
 
 PROCEDURE = Path(__file__).with_name("procedure.md")
 #: How long one coordinator owns a hunt before another may take it over
@@ -489,7 +489,29 @@ def next_action(directory: Path) -> dict:
         data = read_object(directory / filename)
         if not data or data.get("success") is False:
             return action(command, f"mailman {command} {run.run_id}")
-    assessment = assess_target(directory)
+    # Orchestration can start after the coordinator has explicitly read and
+    # acknowledged closed attempts. Preserve that decision for the later
+    # readiness check, but only while the current closed-attempt set has not
+    # grown since the recorded assessment.
+    recorded_assessment = read_object(directory / "target-assessment.json")
+    recorded_closed = {
+        attempt.get("number")
+        for attempt in recorded_assessment.get("closed_attempts", [])
+        if isinstance(attempt, dict) and isinstance(attempt.get("number"), int)
+    }
+    current_assessment = assess_target(directory)
+    current_closed = {
+        attempt.get("number")
+        for attempt in current_assessment.closed_attempts
+        if isinstance(attempt.get("number"), int)
+    }
+    acknowledged = (
+        recorded_assessment.get("may_start") is True
+        and UNACKNOWLEDGED_ATTEMPTS in (recorded_assessment.get("warnings") or [])
+        and bool(current_closed)
+        and current_closed <= recorded_closed
+    )
+    assessment = assess_target(directory, acknowledged=acknowledged)
     if assessment.blocking:
         code = assessment.blocking[0]
         return action("target", f"mailman check-target {run.run_id}", "; ".join(assessment.blocking),
