@@ -14,10 +14,54 @@ from mailman.agents.claude_cli import (
     _final_result,
 )
 from mailman.agents.codex_cli import CodexCliAgent
-from mailman.executor import CommandResult
+from mailman.executor import CommandResult, StopExecution
 
 
 class AgentAdapterTests(unittest.TestCase):
+    def test_request_stops_on_the_first_command_past_its_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            seen = []
+            request = AgentRequest(
+                run_id="run-1",
+                role="primary",
+                prompt_path=root / "prompt.md",
+                workspace=root,
+                report_path=root / "report.md",
+                command_budget=2,
+                on_event=seen.append,
+            )
+            observe = request.observe("codex")
+            assert observe is not None
+            for index in range(2):
+                observe(
+                    json.dumps(
+                        {
+                            "type": "item.started",
+                            "item": {
+                                "type": "command_execution",
+                                "command": f"command-{index}",
+                            },
+                        }
+                    )
+                )
+            with self.assertRaisesRegex(
+                StopExecution, "3 commands attempted, budget 2"
+            ):
+                observe(
+                    json.dumps(
+                        {
+                            "type": "item.started",
+                            "item": {
+                                "type": "command_execution",
+                                "command": "command-2",
+                            },
+                        }
+                    )
+                )
+
+        self.assertEqual([event.kind for event in seen], ["command", "command"])
+
     def test_codex_does_not_count_unchanged_placeholder_as_report(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

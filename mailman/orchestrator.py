@@ -32,6 +32,9 @@ from mailman.workspace import inspect_workspace
 VERDICT_APPROVE = "APPROVE"
 VERDICT_REVISE = "REVISE"
 DEFAULT_RUN_TIME_BUDGET_SECONDS = 7200
+DEFAULT_AGENT_TIMEOUT_SECONDS = 600
+DEFAULT_PRIMARY_COMMAND_BUDGET = 20
+DEFAULT_REVIEWER_COMMAND_BUDGET = 10
 DEFAULT_MAX_CHANGED_FILES = 8
 DEFAULT_MAX_CHANGED_LINES = 500
 
@@ -265,6 +268,8 @@ class _Orchestration:
         verification_command: Sequence[str],
         agent_factory: AgentFactory,
         agent_timeout_seconds: float,
+        primary_command_budget: int,
+        reviewer_command_budget: int,
         verification_timeout_seconds: float,
         max_revisions: int,
         max_review_cycles: int,
@@ -287,6 +292,10 @@ class _Orchestration:
         self.verification_command = resolve_command(run_directory, verification_command)
         self.agent_factory = agent_factory
         self.agent_timeout_seconds = agent_timeout_seconds
+        self.command_budgets = {
+            "primary": primary_command_budget,
+            "reviewer": reviewer_command_budget,
+        }
         self.verification_timeout_seconds = verification_timeout_seconds
         self.max_revisions = max_revisions
         self.max_review_cycles = max_review_cycles
@@ -426,6 +435,7 @@ class _Orchestration:
 
     def _run_agent(self, role: str, source_prompt: Path) -> tuple[bool, str | None]:
         configured = self.run.primary if role == "primary" else self.run.reviewer
+        command_budget = self.command_budgets[role]
         agent = self.agent_factory(configured.agent, configured.model)
         prior_usage = self._role_usage(role)
         usage_budget = agent.token_budget
@@ -463,7 +473,7 @@ class _Orchestration:
         session_id = self._previous_session(role)
         self.announce(
             f"run  {role}: {agent.name} with a "
-            f"{timeout:g} second timeout"
+            f"{timeout:g} second timeout and {command_budget} command budget"
             + (f", resuming session {session_id}." if session_id else ".")
         )
         log_path = self.run_directory / "agent-executions" / f"{role}-live.log"
@@ -488,6 +498,7 @@ class _Orchestration:
                     verification_command=tuple(self.verification_command),
                     scratch_directory=scratch_directory,
                     session_id=session_id,
+                    command_budget=command_budget,
                 )
             )
         report_text = (
@@ -506,6 +517,13 @@ class _Orchestration:
             agent.name == "codex"
             and usage_budget is not None
             and reported_usage is None
+            and result.command_result.stopped_reason is None
+        )
+        command_budget_exceeded = bool(
+            result.command_result.stopped_reason
+            and result.command_result.stopped_reason.startswith(
+                "command budget exceeded:"
+            )
         )
         execution_usage = reported_usage or {
             "input_tokens": 0,
@@ -531,6 +549,8 @@ class _Orchestration:
                 "prompt_path": str(prompt_path),
                 "turn_budget": agent.turn_budget,
                 "token_budget": agent.token_budget,
+                "command_budget": command_budget,
+                "command_budget_exceeded": command_budget_exceeded,
                 "usage": execution_usage,
                 "role_usage": role_usage,
                 "usage_budget_exceeded": usage_budget_exceeded,
@@ -552,7 +572,7 @@ class _Orchestration:
             and not usage_accounting_missing
         )
         stop_reason = _describe_stop(result.stop_reason, agent.turn_budget)
-        if not ok:
+        if not ok and not command_budget_exceeded:
             state = health.classify(
                 result.stop_reason,
                 stop_reason,
@@ -569,7 +589,9 @@ class _Orchestration:
                 )
         else:
             health.clear(self.run_directory)
-        if usage_accounting_missing:
+        if command_budget_exceeded:
+            detail = result.command_result.stopped_reason or "command budget exceeded"
+        elif usage_accounting_missing:
             detail = (
                 f"{agent.name} returned no turn usage, so Mailman cannot enforce "
                 f"the {role} input budget"
@@ -598,6 +620,8 @@ class _Orchestration:
                 "report_present": result.report_present,
                 "stop_reason": result.stop_reason,
                 "turn_budget": agent.turn_budget,
+                "command_budget": command_budget,
+                "command_budget_exceeded": command_budget_exceeded,
                 "token_budget": usage_budget,
                 "usage": execution_usage,
                 "role_usage": role_usage,
@@ -877,10 +901,12 @@ class _Orchestration:
             if any(
                 (step.get("data") or {}).get("usage_budget_exceeded")
                 or (step.get("data") or {}).get("usage_accounting_missing")
+                or (step.get("data") or {}).get("command_budget_exceeded")
                 for step in old.get("steps", [])
             ):
                 raise ValueError(
-                    "agent usage budget already spent; this candidate cannot resume"
+                    "agent usage budget already spent or command budget spent; "
+                    "this candidate cannot resume"
                 )
             previous_budget = float(
                 old.get("time_budget_seconds", DEFAULT_RUN_TIME_BUDGET_SECONDS)
@@ -918,6 +944,8 @@ class _Orchestration:
             raise ValueError("max_review_cycles must be at least 1")
         if self.run_time_budget_seconds <= 0:
             raise ValueError("run_time_budget_seconds must be positive")
+        if any(budget <= 0 for budget in self.command_budgets.values()):
+            raise ValueError("agent command budgets must be positive")
         if (
             self.run_time_budget_seconds > DEFAULT_RUN_TIME_BUDGET_SECONDS
             and not self.budget_override_reason
@@ -1206,7 +1234,9 @@ def orchestrate(
     reviewer_prompt: Path,
     verification_command: Sequence[str],
     agent_factory: AgentFactory,
-    agent_timeout_seconds: float = 3600,
+    agent_timeout_seconds: float = DEFAULT_AGENT_TIMEOUT_SECONDS,
+    primary_command_budget: int = DEFAULT_PRIMARY_COMMAND_BUDGET,
+    reviewer_command_budget: int = DEFAULT_REVIEWER_COMMAND_BUDGET,
     verification_timeout_seconds: float = 900,
     max_revisions: int = 1,
     max_review_cycles: int = 3,
@@ -1232,6 +1262,8 @@ def orchestrate(
         verification_command=verification_command,
         agent_factory=agent_factory,
         agent_timeout_seconds=agent_timeout_seconds,
+        primary_command_budget=primary_command_budget,
+        reviewer_command_budget=reviewer_command_budget,
         verification_timeout_seconds=verification_timeout_seconds,
         max_revisions=max_revisions,
         max_review_cycles=max_review_cycles,

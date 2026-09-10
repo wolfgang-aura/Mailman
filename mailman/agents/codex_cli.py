@@ -182,6 +182,7 @@ class CodexCliAgent(EngineeringAgent):
             timed_out=result.timed_out,
             report_present=report_present,
             command_result=result,
+            stop_reason=result.stopped_reason,
             observed_model=observed_model(result.stdout, CODEX),
             session_id=_thread_id(result.stdout),
         )

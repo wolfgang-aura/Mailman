@@ -104,7 +104,13 @@ status check you did not act on is pure cost.
    and carries no Mailman option; the CLI refuses the common mistakes but not
    all of them. `orchestrate RUN_ID` reads that same command. Do not supply
    custom prompts or call `run-agent` to bypass this sequence. Both model roles
-   must use the same recorded procedure and the independent verification gate.
+   have a ten-minute wall-clock limit. The primary may attempt at most 20
+   commands and the reviewer at most 10; Mailman terminates the live process on
+   the first command beyond the limit. A budget stop costs the candidate and
+   `resume-review` cannot grant it a fresh allowance. These are containment
+   limits, not completion targets: a healthy run should finish sooner. Both
+   model roles must use the same recorded procedure and the independent
+   verification gate.
    Before the primary starts, Mailman runs that exact argv on the clean base
    tree. It refuses a failing command or one that changes candidate bytes.
    The generated task carries the pre-screened symbols and the recorded

@@ -7,7 +7,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from mailman.executor import execute, reset_deadline, set_deadline
+from mailman.executor import StopExecution, execute, reset_deadline, set_deadline
 
 
 class ExecutorTests(unittest.TestCase):
@@ -179,6 +179,38 @@ class StreamingTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0)
         self.assertIn("still recorded", result.stdout)
+
+    def test_a_deliberate_stream_stop_kills_the_process_and_records_why(self) -> None:
+        seen: list[str] = []
+
+        def stop_after_first_line(line: str) -> None:
+            seen.append(line)
+            raise StopExecution(
+                "command budget exceeded: 2 commands attempted, budget 1"
+            )
+
+        script = (
+            "import time\n"
+            "print('command two', flush=True)\n"
+            "time.sleep(30)\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            start = time.monotonic()
+            result = execute(
+                [sys.executable, "-c", script],
+                working_directory=Path(temporary_directory),
+                timeout_seconds=20,
+                on_stdout_line=stop_after_first_line,
+            )
+
+        self.assertEqual(seen, ["command two"])
+        self.assertFalse(result.timed_out)
+        self.assertIsNone(result.exit_code)
+        self.assertEqual(
+            result.stopped_reason,
+            "command budget exceeded: 2 commands attempted, budget 1",
+        )
+        self.assertLess(time.monotonic() - start, 5)
 
 
 if __name__ == "__main__":

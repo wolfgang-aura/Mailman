@@ -14,6 +14,10 @@ from pathlib import Path
 from mailman.redaction import redact
 
 
+class StopExecution(RuntimeError):
+    """Ask the streaming executor to stop a live child and retain its evidence."""
+
+
 @dataclass(frozen=True)
 class ExecutionDeadline:
     at: datetime
@@ -60,6 +64,7 @@ class CommandResult:
     timed_out: bool
     timeout_seconds: float
     environment: dict[str, str]
+    stopped_reason: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         """The recorded form of this result, with captured streams capped.
@@ -94,7 +99,7 @@ def _stream(
     stdin_text: str | None,
     timeout_seconds: float,
     on_stdout_line: Callable[[str], None],
-) -> tuple[int | None, str, str, bool]:
+) -> tuple[int | None, str, str, bool, str | None]:
     """Run a command, handing every stdout line over as it arrives.
 
     An agent can work for an hour. Buffering its output until it exits means
@@ -149,12 +154,18 @@ def _stream(
     stdin_thread.start()
 
     stdout_lines: list[str] = []
+    stopped_reason: str | None = None
     try:
         if process.stdout is not None:
             for line in process.stdout:
                 stdout_lines.append(line)
+                if stopped_reason is not None:
+                    continue
                 try:
                     on_stdout_line(line.rstrip("\r\n"))
+                except StopExecution as error:
+                    stopped_reason = str(error)
+                    process.kill()
                 except Exception:  # noqa: BLE001 - a broken console must not
                     pass  # cost the run its evidence
         exit_code = process.wait()
@@ -165,7 +176,15 @@ def _stream(
 
     if timed_out.is_set():
         exit_code = None
-    return exit_code, "".join(stdout_lines), "".join(stderr_lines), timed_out.is_set()
+    if stopped_reason is not None:
+        exit_code = None
+    return (
+        exit_code,
+        "".join(stdout_lines),
+        "".join(stderr_lines),
+        timed_out.is_set(),
+        stopped_reason,
+    )
 
 
 def execute(
@@ -197,7 +216,7 @@ def execute(
         process_environment.update(environment)
 
     if on_stdout_line is not None:
-        exit_code, stdout, stderr, timed_out = _stream(
+        exit_code, stdout, stderr, timed_out, stopped_reason = _stream(
             command,
             cwd=cwd,
             process_environment=process_environment,
@@ -216,6 +235,7 @@ def execute(
             timed_out=timed_out,
             timeout_seconds=timeout_seconds,
             environment=_environment_metadata(),
+            stopped_reason=stopped_reason,
         )
 
     try:

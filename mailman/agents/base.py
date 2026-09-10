@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from mailman.executor import CommandResult
+from mailman.executor import CommandResult, StopExecution
 from mailman.transcript import TranscriptEvent, parse_line
 
 
@@ -73,16 +73,35 @@ class AgentRequest:
     https://github.com/wolfgang-aura/Mailman/issues/29."""
     session_id: str | None = None
     """A prior session for the same run and role, when the adapter can resume it."""
+    command_budget: int | None = None
+    """Maximum shell/tool commands allowed before the live process is stopped."""
+
+    def __post_init__(self) -> None:
+        if self.command_budget is not None and self.command_budget <= 0:
+            raise ValueError("command_budget must be positive")
 
     def observe(self, agent: str) -> Callable[[str], None] | None:
         """Turn one line of agent output into events for whoever is watching."""
-        if self.on_event is None:
+        if self.on_event is None and self.command_budget is None:
             return None
         sink = self.on_event
+        commands = 0
 
         def handle(line: str) -> None:
+            nonlocal commands
             for event in parse_line(line, agent):
-                sink(event)
+                if event.kind == "command":
+                    commands += 1
+                    if (
+                        self.command_budget is not None
+                        and commands > self.command_budget
+                    ):
+                        raise StopExecution(
+                            "command budget exceeded: "
+                            f"{commands} commands attempted, budget {self.command_budget}"
+                        )
+                if sink is not None:
+                    sink(event)
 
         return handle
 

@@ -163,7 +163,7 @@ class ClaudeCliAgent(EngineeringAgent):
             timed_out=result.timed_out,
             report_present=report_present,
             command_result=result,
-            stop_reason=stop_reason,
+            stop_reason=result.stopped_reason or stop_reason,
             observed_model=observed_model(result.stdout, CLAUDE),
             session_id=request.session_id,
         )

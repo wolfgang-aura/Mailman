@@ -59,8 +59,11 @@ from mailman.knowledge.collect import collect_retrospective, write_retrospective
 from mailman.knowledge.retrospective import RETROSPECTIVE_SECTIONS
 from mailman.models import RunStatus
 from mailman.orchestrator import (
+    DEFAULT_AGENT_TIMEOUT_SECONDS,
     DEFAULT_MAX_CHANGED_FILES,
     DEFAULT_MAX_CHANGED_LINES,
+    DEFAULT_PRIMARY_COMMAND_BUDGET,
+    DEFAULT_REVIEWER_COMMAND_BUDGET,
     DEFAULT_RUN_TIME_BUDGET_SECONDS,
     orchestrate,
 )
@@ -524,7 +527,10 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=REASONING_EFFORTS,
         help="how hard a Codex model is asked to think, recorded with the run",
     )
-    run_agent.add_argument("--timeout", type=float, default=3600)
+    run_agent.add_argument(
+        "--timeout", type=float, default=DEFAULT_AGENT_TIMEOUT_SECONDS
+    )
+    run_agent.add_argument("--command-budget", type=int)
     run_agent.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
     run_agent.add_argument(
         "--verification",
@@ -606,7 +612,19 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="defaults to the workspace `prepare-workspace` wrote for this run",
     )
-    orchestrate_parser.add_argument("--agent-timeout", type=float, default=3600)
+    orchestrate_parser.add_argument(
+        "--agent-timeout", type=float, default=DEFAULT_AGENT_TIMEOUT_SECONDS
+    )
+    orchestrate_parser.add_argument(
+        "--primary-command-budget",
+        type=int,
+        default=DEFAULT_PRIMARY_COMMAND_BUDGET,
+    )
+    orchestrate_parser.add_argument(
+        "--reviewer-command-budget",
+        type=int,
+        default=DEFAULT_REVIEWER_COMMAND_BUDGET,
+    )
     orchestrate_parser.add_argument("--verification-timeout", type=float, default=900)
     orchestrate_parser.add_argument(
         "--run-time-budget",
@@ -1720,6 +1738,15 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         if arguments.verification
         else ()
     )
+    command_budget = (
+        arguments.command_budget
+        if arguments.command_budget is not None
+        else (
+            DEFAULT_PRIMARY_COMMAND_BUDGET
+            if arguments.role == "primary"
+            else DEFAULT_REVIEWER_COMMAND_BUDGET
+        )
+    )
     request = AgentRequest(
         run_id=run.run_id,
         role=arguments.role,
@@ -1729,10 +1756,11 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         timeout_seconds=arguments.timeout,
         on_event=lambda event: _emit(f"     {event.line()}"),
         verification_command=verification,
+        command_budget=command_budget,
     )
     print(
         f"Starting {agent.name} as {arguments.role} with a "
-        f"{arguments.timeout:g} second timeout.",
+        f"{arguments.timeout:g} second timeout and {command_budget} command budget.",
         flush=True,
     )
     result = agent.run(request)
@@ -1753,6 +1781,13 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         "report": report_text,
         "prompt_path": str(prompt_path),
         "turn_budget": agent.turn_budget,
+        "command_budget": command_budget,
+        "command_budget_exceeded": bool(
+            result.command_result.stopped_reason
+            and result.command_result.stopped_reason.startswith(
+                "command budget exceeded:"
+            )
+        ),
         "reasoning_effort": arguments.reasoning_effort,
         "model_reported_by_cli": result.observed_model or "not reported",
         "commands_run": tally["commands"],
@@ -1774,6 +1809,7 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         "report_present": result.report_present,
         "stop_reason": result.stop_reason,
         "turn_budget": agent.turn_budget,
+        "command_budget": command_budget,
         "execution_record": str(record_path),
         "workflow_status": str(run.status),
         "status_changed": False,
@@ -1781,6 +1817,8 @@ def _run_agent(arguments: argparse.Namespace) -> int:
     print(json.dumps(summary, indent=2))
     if result.timed_out:
         return 124
+    if result.command_result.stopped_reason:
+        return 1
     return result.exit_code or 0
 
 
@@ -1874,6 +1912,8 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
             token_budget=arguments.agent_token_budget,
         ),
         agent_timeout_seconds=arguments.agent_timeout,
+        primary_command_budget=arguments.primary_command_budget,
+        reviewer_command_budget=arguments.reviewer_command_budget,
         verification_timeout_seconds=arguments.verification_timeout,
         max_revisions=arguments.max_revisions,
         max_review_cycles=arguments.max_review_cycles,

@@ -53,6 +53,7 @@ class ScriptedAgent(EngineeringAgent):
         self._token_budget = token_budget
         self.calls: list[tuple[str, str]] = []
         self.session_ids: list[str | None] = []
+        self.command_budgets: list[int | None] = []
 
     @property
     def name(self) -> str:
@@ -74,6 +75,7 @@ class ScriptedAgent(EngineeringAgent):
             (request.role, request.prompt_path.read_text(encoding="utf-8"))
         )
         self.session_ids.append(request.session_id)
+        self.command_budgets.append(request.command_budget)
         report = step.get("report")
         touch = step.get("touch")
         if isinstance(touch, tuple):
@@ -94,6 +96,7 @@ class ScriptedAgent(EngineeringAgent):
             timed_out=timed_out,
             timeout_seconds=request.timeout_seconds,
             environment={"operating_system": "test"},
+            stopped_reason=step.get("stopped_reason"),  # type: ignore[arg-type]
         )
         return AgentResult(
             exit_code=command_result.exit_code,
@@ -433,6 +436,34 @@ class EmptyCandidateTests(OrchestratorHarness):
 
 
 class OrchestrationTests(OrchestratorHarness):
+    def test_command_budget_stop_is_recorded_without_a_false_usage_failure(self) -> None:
+        run, directory = self.make_run()
+        reason = "command budget exceeded: 21 commands attempted, budget 20"
+        primary = ScriptedAgent(
+            "codex",
+            [{"exit_code": 1, "stdout": "", "stopped_reason": reason}],
+            token_budget=100,
+        )
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: primary,
+        )
+
+        self.assertEqual(outcome.status, RunStatus.BLOCKED)
+        agent_step = next(
+            step for step in outcome.steps if step.name == "agent:primary"
+        )
+        self.assertEqual(primary.command_budgets, [20])
+        self.assertEqual(agent_step.data["command_budget"], 20)
+        self.assertTrue(agent_step.data["command_budget_exceeded"])
+        self.assertFalse(agent_step.data["usage_accounting_missing"])
+        self.assertEqual(agent_step.detail, reason)
+
     def test_codex_input_overrun_blocks_before_review(self) -> None:
         run, directory = self.make_run()
         usage = json.dumps(
