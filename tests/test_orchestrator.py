@@ -658,11 +658,11 @@ class OrchestrationTests(OrchestratorHarness):
         )
         self.assertTrue(agent_step.data["usage_budget_exceeded"])
         self.assertEqual(agent_step.data["role_usage"]["input_tokens"], 120)
-        execution = json.loads(
-            next((directory / "agent-executions").glob("*.json")).read_text(
-                encoding="utf-8"
-            )
-        )
+        executions = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in (directory / "agent-executions").glob("*.json")
+        ]
+        execution = next(row for row in executions if row["role"] == "primary")
         self.assertEqual(execution["usage"]["cached_input_tokens"], 90)
 
         self.assertEqual(len(primary.calls), 1)
