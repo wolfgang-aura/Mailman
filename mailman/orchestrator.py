@@ -38,9 +38,61 @@ DEFAULT_REVIEWER_COMMAND_BUDGET = None
 DEFAULT_MAX_CHANGED_FILES = 8
 DEFAULT_MAX_CHANGED_LINES = 500
 
+ORCHESTRATION_RECORD = "orchestration.json"
+ORCHESTRATION_INDEX = "orchestration-index.json"
+
 
 class RunTimeBudgetExpired(RuntimeError):
     pass
+
+
+def write_orchestration_index(run_directory: Path, step_names: Sequence[str]) -> Path:
+    """Record the step names of an orchestration next to the full record.
+
+    `orchestration.json` carries every agent report inline and reaches hundreds
+    of megabytes on a long run. A status check only needs to know which stages
+    ran, so it reads this index instead (#74).
+    """
+    destination = run_directory / ORCHESTRATION_INDEX
+    payload = {"schema_version": 1, "step_names": list(step_names)}
+    temporary = destination.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(destination)
+    return destination
+
+
+def orchestration_step_names(run_directory: Path) -> list[str]:
+    """Return the step names of the recorded orchestration, cheaply.
+
+    Runs written before the index existed fall back to the full record, and the
+    index is backfilled so the next check does not pay again. A read-only data
+    root just keeps paying rather than failing.
+    """
+    index = run_directory / ORCHESTRATION_INDEX
+    if index.is_file():
+        try:
+            payload = json.loads(index.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("step_names"), list):
+            return [name for name in payload["step_names"] if isinstance(name, str)]
+    record = run_directory / ORCHESTRATION_RECORD
+    if not record.is_file():
+        return []
+    try:
+        history = json.loads(record.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    names = [
+        step.get("name")
+        for step in history.get("steps", [])
+        if isinstance(step, dict) and isinstance(step.get("name"), str)
+    ]
+    try:
+        write_orchestration_index(run_directory, names)
+    except OSError:
+        pass
+    return names
 
 
 _STOP_REASONS = {
@@ -1281,7 +1333,7 @@ class _Orchestration:
             deadline_at=self.deadline.isoformat(),
             budget_override_reason=self.budget_override_reason,
             review_cycles=self.run.review_cycles,
-            record_path=self.run_directory / "orchestration.json",
+            record_path=self.run_directory / ORCHESTRATION_RECORD,
         )
         destination = outcome.record_path
         temporary = destination.with_suffix(".json.tmp")
@@ -1289,6 +1341,9 @@ class _Orchestration:
             json.dumps(outcome.to_dict(), indent=2) + "\n", encoding="utf-8"
         )
         temporary.replace(destination)
+        write_orchestration_index(
+            self.run_directory, [step.name for step in outcome.steps]
+        )
         return outcome
 
 

@@ -17,9 +17,11 @@ from mailman.cli import main
 from mailman.executor import CommandResult
 from mailman.models import RunStatus
 from mailman.orchestrator import (
+    ORCHESTRATION_INDEX,
     VERDICT_APPROVE,
     VERDICT_REVISE,
     orchestrate,
+    orchestration_step_names,
     parse_verdict,
 )
 from mailman.toolchain import probe_tool
@@ -1494,6 +1496,53 @@ class OrchestrateCliTests(OrchestratorHarness):
             )
         self.assertEqual(exit_code, 2)
         self.assertIn("verification command is required", stderr.getvalue())
+
+
+class OrchestrationIndexTests(unittest.TestCase):
+    """https://github.com/wolfgang-aura/Mailman/issues/74
+
+    A status check needs the step names, not the reports those steps carry.
+    """
+
+    def test_step_names_come_from_the_index_not_the_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / ORCHESTRATION_INDEX).write_text(
+                json.dumps({"schema_version": 1, "step_names": ["agent:primary"]}),
+                encoding="utf-8",
+            )
+            (directory / "orchestration.json").write_text(
+                "this is not JSON", encoding="utf-8"
+            )
+
+            self.assertEqual(orchestration_step_names(directory), ["agent:primary"])
+
+    def test_a_run_without_an_index_falls_back_and_backfills_one(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "orchestration.json").write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {"name": "agent:primary", "report": "x" * 1000},
+                            {"name": "verification", "report": "y" * 1000},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            names = orchestration_step_names(directory)
+
+            self.assertEqual(names, ["agent:primary", "verification"])
+            index = json.loads(
+                (directory / ORCHESTRATION_INDEX).read_text(encoding="utf-8")
+            )
+            self.assertEqual(index["step_names"], names)
+
+    def test_no_orchestration_at_all_reads_as_no_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            self.assertEqual(orchestration_step_names(Path(temporary_directory)), [])
 
 
 if __name__ == "__main__":

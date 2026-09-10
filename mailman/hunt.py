@@ -14,6 +14,7 @@ from mailman.artifacts import load_run, new_run_id
 from mailman.completion import finalize_review, read_object
 from mailman.handoff import check_handoff, load_handoff
 from mailman.models import RunStatus, utc_now
+from mailman.orchestrator import orchestration_step_names
 from mailman.review_decision import DecisionError, load_decision
 from mailman.screen import load_screen
 from mailman.target_intel import repository_slug
@@ -526,8 +527,7 @@ def next_action(directory: Path) -> dict:
             # again. https://github.com/wolfgang-aura/Mailman/issues/67
             return {**action(state["stage"], state["resume_command"], state["detail"]),
                     "health": state["state"]}
-        history = read_object(directory / "orchestration.json")
-        has_primary = any(step.get("name") == "agent:primary" for step in history.get("steps", []))
+        has_primary = "agent:primary" in orchestration_step_names(directory)
         command = "resume-review" if run.status is RunStatus.BLOCKED and has_primary else "orchestrate"
         return action("engineering", f"mailman {command} {run.run_id}",
                       "Read orchestration.json and the failed stage before retrying." if run.status is RunStatus.BLOCKED else "")
