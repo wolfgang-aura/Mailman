@@ -2,6 +2,26 @@
 
 Last verified: 2026-09-10 in `Asia/Singapore`.
 
+## Luna work-order checkpoint
+
+Code checkpoint `fd1ca3a` on `main` changes the PRHunt agent contract based on
+hunt `20260910T013711Z-019af0`. Command counts are no longer default completion
+gates. If an optional cap races with a completed Codex turn, Mailman keeps the
+report and candidate. A reviewer-only cap can resume without rerunning the
+verified primary. Stream stops and timeouts kill the full Windows process tree,
+so a Codex child cannot keep the output pipes open after its wrapper stops.
+
+`build-prompts` now writes `work-order.json` and refuses a prepared Git
+workspace unless it can verify at least one exact start file from the issue,
+reproducer or `--start-file`. Primary prompts tell the agent to stop after the
+patch, focused check and report. Reviewer prompts carry a bounded candidate
+diff, including untracked files, before the reviewer starts. Orchestration now
+defaults Codex reasoning effort to `medium`; the PRHunt procedure makes that the
+Luna default. The focused regression set passed 133 tests, the full suite passed
+800 tests and 54 subtests in 5m19s before the final reviewer-resume addition,
+and the current orchestrator and direct-agent set passed 63 tests afterward.
+No live Luna replay has run against this checkpoint yet.
+
 ## Current local procedure
 
 Code checkpoint `54bf8ed` on `main` starts one
