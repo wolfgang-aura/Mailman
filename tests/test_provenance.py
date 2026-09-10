@@ -21,6 +21,7 @@ from mailman.provenance import (
     render_contributions,
     repository_slug,
     state_is_stale,
+    unrecorded_submissions,
     write_patch,
 )
 
@@ -126,6 +127,147 @@ class PatchTests(unittest.TestCase):
             head = _git(workspace, "rev-parse", "HEAD")
             with self.assertRaises(ProvenanceError):
                 write_patch(workspace, head, root / "out.patch")
+
+
+class HeadTipTests(unittest.TestCase):
+    """https://github.com/wolfgang-aura/Mailman/issues/84
+
+    python/mypy#21961 was squashed and force-pushed after a reviewer asked, and
+    the first provenance call wrote permalinks to two commits that no longer
+    existed on any branch.
+    """
+
+    def test_a_workspace_matching_the_branch_tip_is_recorded(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            workspace, base = _repository(root)
+            tip = _git(workspace, "rev-parse", "HEAD")
+
+            record = record_provenance(
+                run_id="20260909T000000Z-aaaaaa",
+                run_directory=root,
+                repository="python/mypy",
+                base_commit=base,
+                workspace=workspace,
+                pull_request=21961,
+                head="wolfgang-aura:mailman/issue-1",
+                state_lookup=_merged,
+                head_lookup=lambda repository, head: tip,
+            )
+
+            self.assertEqual(record["head"], "wolfgang-aura:mailman/issue-1")
+            self.assertEqual(record["commits"], [tip])
+
+    def test_a_force_pushed_branch_refuses_rather_than_writing_dead_links(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            workspace, base = _repository(root)
+
+            with self.assertRaisesRegex(ProvenanceError, "force-pushed"):
+                record_provenance(
+                    run_id="20260909T000000Z-bbbbbb",
+                    run_directory=root,
+                    repository="python/mypy",
+                    base_commit=base,
+                    workspace=workspace,
+                    pull_request=21961,
+                    head="wolfgang-aura:mailman/issue-1",
+                    state_lookup=_merged,
+                    head_lookup=lambda repository, head: "f" * 40,
+                )
+            self.assertIsNone(load_provenance(root))
+
+    def test_an_unreadable_branch_is_refused_not_assumed_to_agree(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            workspace, base = _repository(root)
+
+            with self.assertRaisesRegex(ProvenanceError, "could not read the tip"):
+                record_provenance(
+                    run_id="20260909T000000Z-cccccc",
+                    run_directory=root,
+                    repository="python/mypy",
+                    base_commit=base,
+                    workspace=workspace,
+                    head="wolfgang-aura:mailman/issue-1",
+                    state_lookup=_merged,
+                    head_lookup=lambda repository, head: None,
+                )
+
+    def test_a_recorded_head_is_rechecked_on_a_later_pass(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            workspace, base = _repository(root)
+            tip = _git(workspace, "rev-parse", "HEAD")
+            record_provenance(
+                run_id="20260909T000000Z-dddddd",
+                run_directory=root,
+                repository="python/mypy",
+                base_commit=base,
+                workspace=workspace,
+                head="wolfgang-aura:mailman/issue-1",
+                state_lookup=_merged,
+                head_lookup=lambda repository, head: tip,
+            )
+
+            with self.assertRaisesRegex(ProvenanceError, "force-pushed"):
+                record_provenance(
+                    run_id="20260909T000000Z-dddddd",
+                    run_directory=root,
+                    repository="python/mypy",
+                    base_commit=base,
+                    workspace=workspace,
+                    state_lookup=_merged,
+                    head_lookup=lambda repository, head: "f" * 40,
+                )
+
+
+class UnrecordedSubmissionTests(unittest.TestCase):
+    """https://github.com/wolfgang-aura/Mailman/issues/84
+
+    Two PRs filed on 2026-09-09 were absent from the ledger for a day, and the
+    ledger read as complete throughout.
+    """
+
+    def _ready_run(self, data_root: Path, run_id: str) -> Path:
+        directory = data_root / run_id
+        (directory / "submission").mkdir(parents=True)
+        (directory / "submission" / "submission.json").write_text(
+            json.dumps({"ready": True}), encoding="utf-8"
+        )
+        return directory
+
+    def test_a_ready_submission_without_provenance_is_listed(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            self._ready_run(data_root, "20260908T220821Z-124828")
+
+            self.assertEqual(
+                unrecorded_submissions(data_root), ["20260908T220821Z-124828"]
+            )
+
+    def test_a_recorded_run_is_not_listed(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            directory = self._ready_run(data_root, "20260908T220821Z-124828")
+            (directory / "submission" / "provenance.json").write_text(
+                json.dumps({"run_id": "20260908T220821Z-124828"}), encoding="utf-8"
+            )
+
+            self.assertEqual(unrecorded_submissions(data_root), [])
+
+    def test_an_unready_submission_is_not_listed(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            directory = data_root / "20260908T220821Z-124828" / "submission"
+            directory.mkdir(parents=True)
+            (directory / "submission.json").write_text(
+                json.dumps({"ready": False}), encoding="utf-8"
+            )
+
+            self.assertEqual(unrecorded_submissions(data_root), [])
 
 
 class RecordTests(unittest.TestCase):

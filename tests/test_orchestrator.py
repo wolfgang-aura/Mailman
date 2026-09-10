@@ -17,6 +17,7 @@ from mailman.cli import main
 from mailman.executor import CommandResult
 from mailman.models import RunStatus
 from mailman.orchestrator import (
+    DEFAULT_RUN_TIME_BUDGET_SECONDS,
     ORCHESTRATION_INDEX,
     VERDICT_APPROVE,
     VERDICT_REVISE,
@@ -600,6 +601,105 @@ class OrchestrationTests(OrchestratorHarness):
 
         self.assertEqual(second.status, RunStatus.ENGINEERING_COMPLETE)
         self.assertEqual(len(primary.calls), 1)
+
+    def _blocked_after_one_review(self, run, directory):
+        """Leave the run BLOCKED with a primary candidate and one cycle spent."""
+        primary = ScriptedAgent(
+            "codex", [{"report": "candidate", "touch": ("fix.txt", "fixed")}]
+        )
+        reviewer = ScriptedAgent("claude", [{"report": "MAILMAN-VERDICT: REVISE"}])
+        agents = {"codex": primary, "claude": reviewer}
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: agents[name],
+            max_revisions=0,
+            max_review_cycles=1,
+        )
+        self.assertEqual(outcome.status, RunStatus.BLOCKED)
+        self.assertEqual(outcome.review_cycles, 1)
+        return primary
+
+    def test_resume_review_cannot_raise_the_time_budget_without_a_reason(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/81
+
+        Retries got their limits from the invocation, so a coordinator could
+        hand the same candidate a fresh hour by passing a larger budget.
+        """
+        run, directory = self.make_run()
+        primary = self._blocked_after_one_review(run, directory)
+        resumed = ScriptedAgent("claude", [{"report": APPROVED}])
+        agents = {"codex": primary, "claude": resumed}
+
+        with self.assertRaisesRegex(ValueError, "time-budget-override-reason"):
+            orchestrate(
+                run=run,
+                run_directory=directory,
+                workspace=self.workspace,
+                primary_prompt=self.primary_prompt,
+                reviewer_prompt=self.reviewer_prompt,
+                verification_command=[sys.executable, "-c", PASSING_CHECK],
+                agent_factory=lambda name, model: agents[name],
+                resume_review=True,
+                run_time_budget_seconds=DEFAULT_RUN_TIME_BUDGET_SECONDS * 2,
+            )
+
+    def test_the_run_deadline_survives_a_resume_review(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/81
+
+        The deadline is anchored to the run's creation, not to the invocation,
+        so a second call inherits what the first one already spent.
+        """
+        run, directory = self.make_run()
+        primary = self._blocked_after_one_review(run, directory)
+        first = json.loads(
+            (directory / "orchestration.json").read_text(encoding="utf-8")
+        )
+        resumed = ScriptedAgent("claude", [{"report": APPROVED}])
+        agents = {"codex": primary, "claude": resumed}
+
+        second = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: agents[name],
+            resume_review=True,
+            max_review_cycles=3,
+        )
+
+        self.assertEqual(second.deadline_at, first["deadline_at"])
+        # The cycle the first invocation spent is still spent.
+        self.assertEqual(second.review_cycles, 2)
+        self.assertEqual(len(primary.calls), 1)
+
+    def test_an_expired_run_deadline_stops_a_resume_review(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/81"""
+        run, directory = self.make_run()
+        primary = self._blocked_after_one_review(run, directory)
+        resumed = ScriptedAgent("claude", [{"report": APPROVED}])
+        agents = {"codex": primary, "claude": resumed}
+
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: agents[name],
+            resume_review=True,
+            deadline_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+        )
+
+        self.assertEqual(outcome.status, RunStatus.BLOCKED)
+        self.assertEqual(len(resumed.calls), 0)
 
     def test_review_prompt_contains_the_candidate_diff(self) -> None:
         run, directory = self.make_run()

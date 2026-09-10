@@ -75,6 +75,7 @@ from mailman.provenance import (
     record_provenance,
     refresh_contributions,
     render_contributions,
+    unrecorded_submissions,
 )
 from mailman.reproduction import (
     PURPOSE_KEY,
@@ -2052,10 +2053,38 @@ def _contributions(arguments: argparse.Namespace) -> int:
         found, failures = refresh_contributions(data_root)
     else:
         found = collect_contributions(data_root)
+    unrecorded = unrecorded_submissions(data_root)
     if arguments.json:
-        print(json.dumps([entry.to_dict() for entry in found], indent=2))
+        print(
+            json.dumps(
+                {
+                    "contributions": [entry.to_dict() for entry in found],
+                    "unrecorded_submissions": unrecorded,
+                },
+                indent=2,
+            )
+        )
     else:
         print(render_contributions(found))
+    if unrecorded:
+        # A ready submission with no provenance is either a filed pull request
+        # missing from this ledger or an unfinished run. Either way the ledger
+        # cannot be read as complete while one exists.
+        # https://github.com/wolfgang-aura/Mailman/issues/84
+        print(
+            "\n".join(
+                [
+                    "",
+                    f"{len(unrecorded)} ready submission(s) recorded no provenance, "
+                    "so any pull request filed from them is missing from the list "
+                    "above:",
+                    *(f"  {run_id}" for run_id in unrecorded),
+                    "Run `mailman provenance RUN_ID --pull-request N --head "
+                    "OWNER:BRANCH` for each filed one.",
+                ]
+            ),
+            file=sys.stderr,
+        )
     if failures:
         for failure in failures:
             print(f"could not re-read {failure}", file=sys.stderr)
@@ -2063,8 +2092,7 @@ def _contributions(arguments: argparse.Namespace) -> int:
             "the states above are the ones already on disk, not fresh readings",
             file=sys.stderr,
         )
-        return 1
-    return 0
+    return 1 if (unrecorded or failures) else 0
 
 
 def _identity(arguments: argparse.Namespace) -> int:

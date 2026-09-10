@@ -33,6 +33,7 @@ from mailman.hunt import (
 )
 from mailman.identity import Identity, save_identity
 from mailman.models import AgentConfig
+from mailman.provenance import ProvenanceError, unrecorded_submissions
 from mailman.screen import screen_path
 from mailman.submission import prepare_submission
 from tests.test_orchestrator import APPROVED, OrchestratorHarness, git
@@ -373,6 +374,38 @@ class FilingRecordTests(HuntTests):
         self.assertEqual(record["status"], "FILED")
         stored = json.loads(hunt_path(self.data_root, record["hunt_id"]).read_text(encoding="utf-8"))
         self.assertEqual(stored["runs"][0]["filed"]["pr_url"], filed["pr_url"])
+
+    def test_filing_writes_the_ledger_entry(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/84
+
+        Nothing after `handoff` required `mailman provenance`, so a filed pull
+        request could be absent from `mailman contributions` entirely.
+        """
+        _, directory, filed = self.file_one()
+        record = json.loads(
+            (directory / "submission" / "provenance.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(record["pull_request"], filed["pr_number"])
+        self.assertEqual(record["repository"], "example/project")
+        self.assertEqual(unrecorded_submissions(self.data_root), [])
+
+    def test_a_filing_whose_provenance_fails_is_not_recorded(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/84"""
+        record = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+
+        def refuse(**_):
+            raise ProvenanceError("the branch was force-pushed")
+
+        with self.assertRaisesRegex(ProvenanceError, "force-pushed"):
+            record_filing(self.data_root, record, directory.name,
+                          pr_url="https://github.com/example/project/pull/42",
+                          provenance_recorder=refuse)
+
+        stored = load_hunt(self.data_root, record["hunt_id"])
+        self.assertNotIn("filed", stored["runs"][0])
+        self.assertEqual(stored["status"], "RUNNING")
 
     def test_a_partly_filed_hunt_is_not_terminal(self):
         record = self.new_hunt(2)

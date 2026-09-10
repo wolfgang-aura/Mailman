@@ -36,6 +36,28 @@ class ContributionsCliTests(unittest.TestCase):
             self.assertEqual(code, 0)
             refreshed.assert_called_once_with(data_root.resolve())
 
+    def test_a_ready_submission_with_no_provenance_exits_non_zero(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/84
+
+        The ledger printed what it had and looked complete, while two filed
+        pull requests were missing from it entirely.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            submission = data_root / "20260908T220821Z-124828" / "submission"
+            submission.mkdir(parents=True)
+            (submission / "submission.json").write_text(
+                json.dumps({"ready": True}), encoding="utf-8"
+            )
+
+            out, err = StringIO(), StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                code = main(["contributions", "--data-root", str(data_root)])
+
+            self.assertEqual(code, 1)
+            self.assertIn("20260908T220821Z-124828", err.getvalue())
+            self.assertIn("recorded no provenance", err.getvalue())
+
     def test_a_refresh_that_could_not_read_github_exits_non_zero(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_root = Path(temporary_directory) / "runs"

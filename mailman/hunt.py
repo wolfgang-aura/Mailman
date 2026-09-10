@@ -251,13 +251,35 @@ def hunt_for_run(root: Path, run_id: str) -> dict | None:
     return None
 
 
+def _record_run_provenance(*, root: Path, run, run_directory: Path,
+                           pull_request: int) -> dict:
+    """The ledger entry for a filed candidate, written where the PR is known."""
+    from mailman.provenance import record_provenance
+
+    return record_provenance(
+        run_id=run.run_id,
+        run_directory=run_directory,
+        repository=run.repository,
+        base_commit=run.base_commit,
+        pull_request=pull_request,
+        head=(load_handoff(run_directory) or {}).get("head"),
+    )
+
+
 def record_filing(root: Path, record: dict, run_id: str, *, pr_url: str,
-                  commit: str | None = None) -> dict:
+                  commit: str | None = None,
+                  provenance_recorder=None) -> dict:
     """Write the pull request a candidate became, and close the hunt when done.
 
     This is the only thing that makes a filing visible to the next session. It
     runs after the operator approves and after the PR exists, so it takes the
     URL rather than creating anything.
+
+    It also writes the run's provenance, because nothing else required it and
+    two PRs filed on 2026-09-09 were absent from `mailman contributions` until
+    a hand audit found them. Nothing is saved if the provenance cannot be
+    written: a filing the ledger cannot see is the failure this closes.
+    See https://github.com/wolfgang-aura/Mailman/issues/84.
     """
     if is_terminal(record):
         raise ValueError(f"hunt {record['hunt_id']} is {record['status']}; start a new hunt")
@@ -277,6 +299,10 @@ def record_filing(root: Path, record: dict, run_id: str, *, pr_url: str,
             f"that pull request is on {match['repository']}, the run targets "
             f"{run.repository}"
         )
+    directory = root / run_id
+    recorder = provenance_recorder or _record_run_provenance
+    recorder(root=root, run=run, run_directory=directory,
+             pull_request=int(match["number"]))
     row["filed"] = {"pr_url": pr_url.strip(), "pr_number": int(match["number"]),
                     "repository": match["repository"], "target": target_key(run),
                     "commit": commit, "filed_at": utc_now()}

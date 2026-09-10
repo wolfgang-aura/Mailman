@@ -139,6 +139,56 @@ class ViolationTests(unittest.TestCase):
             roles = {entry["role"] for entry in violations[0]["emails"]}
             self.assertEqual(roles, {"author", "committer"})
 
+    def test_a_co_author_trailer_is_held_to_the_same_rule(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/57
+
+        A trailer publishes an address without ever touching `git config`.
+        """
+        with TemporaryDirectory() as name:
+            repository = _repository(Path(name))
+            _git(repository, "config", "user.email", PRIVATE)
+            base = _git(repository, "rev-parse", "HEAD")
+            (repository / "file.txt").write_text("changed\n", encoding="utf-8")
+            _git(
+                repository,
+                "commit",
+                "-am",
+                f"change\n\nCo-authored-by: Someone Real <{PERSONAL}>\n",
+            )
+
+            commits = branch_commits(repository, base)
+            violations = author_violations(
+                commits, Identity(name="wolfgang-aura", email=PRIVATE)
+            )
+
+            self.assertEqual(len(violations), 1)
+            self.assertEqual(
+                violations[0]["emails"], [{"role": "co-author", "email": PERSONAL}]
+            )
+
+    def test_a_noreply_co_author_trailer_passes(self) -> None:
+        with TemporaryDirectory() as name:
+            repository = _repository(Path(name))
+            _git(repository, "config", "user.email", PRIVATE)
+            base = _git(repository, "rev-parse", "HEAD")
+            (repository / "file.txt").write_text("changed\n", encoding="utf-8")
+            _git(
+                repository,
+                "commit",
+                "-am",
+                f"change\n\nCo-authored-by: Claude <{OTHER_PRIVATE}>\n",
+            )
+
+            commits = branch_commits(repository, base)
+
+            self.assertIn("Co-authored-by", commits[0]["message"])
+            self.assertEqual(
+                author_violations(
+                    commits, Identity(name="wolfgang-aura", email=PRIVATE)
+                ),
+                [],
+            )
+
     def test_a_noreply_address_passes_whoever_owns_it(self) -> None:
         with TemporaryDirectory() as name:
             repository = _repository(Path(name))

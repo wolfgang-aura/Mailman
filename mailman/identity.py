@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -151,13 +152,15 @@ def apply_identity(workspace: Path, identity: Identity) -> None:
 def branch_commits(workspace: Path, base_commit: str) -> list[dict[str, str]]:
     """Every commit the run added on top of the base, newest first."""
     separator = "\x1f"
+    terminator = "\x1e"
     completed = subprocess.run(
         [
             "git",
             "-C",
             str(workspace),
             "log",
-            f"--format=%H{separator}%an{separator}%ae{separator}%cn{separator}%ce",
+            f"--format=%H{separator}%an{separator}%ae{separator}%cn{separator}%ce"
+            f"{separator}%B{terminator}",
             f"{base_commit}..HEAD",
         ],
         capture_output=True,
@@ -172,22 +175,36 @@ def branch_commits(workspace: Path, base_commit: str) -> list[dict[str, str]]:
         detail = completed.stderr.strip() or completed.stdout.strip()
         raise IdentityError(f"could not read commits on {workspace}: {detail}")
     commits: list[dict[str, str]] = []
-    for line in completed.stdout.splitlines():
-        if not line.strip():
+    for entry in completed.stdout.split(terminator):
+        entry = entry.strip("\n")
+        if not entry.strip():
             continue
-        parts = line.split(separator)
-        if len(parts) != 5:
+        parts = entry.split(separator)
+        if len(parts) != 6:
             continue
         commits.append(
             {
-                "sha": parts[0],
+                "sha": parts[0].strip(),
                 "author_name": parts[1],
                 "author_email": parts[2],
                 "committer_name": parts[3],
                 "committer_email": parts[4],
+                "message": parts[5],
             }
         )
     return commits
+
+
+#: `Co-authored-by: Name <address>`, the trailer that publishes a second
+#: address without ever touching `git config`.
+CO_AUTHOR = re.compile(
+    r"(?im)^\s*co-authored-by\s*:\s*.*?<([^>]+)>\s*$",
+)
+
+
+def co_author_emails(message: str) -> list[str]:
+    """Every address a commit message credits as a co-author."""
+    return [match.strip() for match in CO_AUTHOR.findall(message or "")]
 
 
 def author_violations(
@@ -198,13 +215,25 @@ def author_violations(
     Anything ending in GitHub's noreply suffix is fine whoever it belongs to:
     it is already the address a person chose to be seen under. Everything else
     has to match the configured identity exactly.
+
+    A `Co-authored-by:` trailer publishes an address the same way the author
+    field does, without ever touching `git config`, so it is held to the same
+    rule. See https://github.com/wolfgang-aura/Mailman/issues/57.
     """
     allowed = {identity.email.strip().lower()} if identity else set()
     violations: list[dict[str, Any]] = []
     for commit in commits:
         offending = []
-        for role in ("author", "committer"):
-            email = commit.get(f"{role}_email", "").strip()
+        roles = [
+            ("author", commit.get("author_email", "")),
+            ("committer", commit.get("committer_email", "")),
+            *(
+                ("co-author", address)
+                for address in co_author_emails(commit.get("message", ""))
+            ),
+        ]
+        for role, raw in roles:
+            email = raw.strip()
             if not email:
                 continue
             if is_private_email(email) or email.lower() in allowed:

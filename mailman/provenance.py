@@ -125,6 +125,42 @@ def write_patch(workspace: Path, base_commit: str, destination: Path) -> Path:
     return destination
 
 
+def head_branch_tip(repository: str, head: str, *, timeout: float = 60) -> str | None:
+    """The commit `OWNER:BRANCH` currently points at on github.com.
+
+    Read from the fork itself rather than from the workspace, because the
+    workspace is what goes stale: python/mypy#21961 was squashed and
+    force-pushed after a reviewer asked, and provenance recorded two permalinks
+    to commits that no longer existed on any branch.
+
+    Returns None when the ref cannot be read at all, which the caller reports
+    rather than treating as agreement.
+    See https://github.com/wolfgang-aura/Mailman/issues/84.
+    """
+    owner, _, branch = head.partition(":")
+    if not branch:
+        owner, branch = "", head
+    name = repository_slug(repository).split("/", 1)[1]
+    fork = f"https://github.com/{owner or repository_slug(repository).split('/')[0]}/{name}.git"
+    completed = subprocess.run(
+        ["git", "ls-remote", fork, f"refs/heads/{branch}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=clamp_timeout_seconds(timeout),
+        check=False,
+        shell=False,
+    )
+    if completed.returncode != 0:
+        return None
+    for line in completed.stdout.splitlines():
+        sha = line.split("\t", 1)[0].strip()
+        if sha:
+            return sha
+    return None
+
+
 def pull_request_state(repository: str, number: int) -> dict[str, Any]:
     """What GitHub says became of the pull request, or why it could not say."""
     slug = repository_slug(repository)
@@ -202,6 +238,7 @@ def record_provenance(
     head: str | None = None,
     superseded_by: int | None = None,
     state_lookup: Any = pull_request_state,
+    head_lookup: Any = head_branch_tip,
 ) -> dict[str, Any]:
     """Write the patch and everything known about where the work ended up."""
     slug = repository_slug(repository)
@@ -223,6 +260,26 @@ def record_provenance(
         if commits:
             patch_path = str(
                 write_patch(clone, base_commit, directory / PATCH_FILENAME)
+            )
+
+    branch = head or existing.get("head")
+    if branch and commits:
+        # Recording a head ref and then not reading it is worse than not
+        # recording it: the permalinks would name commits the branch no longer
+        # has. See https://github.com/wolfgang-aura/Mailman/issues/84.
+        tip = head_lookup(slug, branch)
+        if tip is None:
+            raise ProvenanceError(
+                f"could not read the tip of {branch} on github.com, so the "
+                "commits in this workspace cannot be shown to be what was "
+                "filed. Check the fork exists and the branch name is right."
+            )
+        if tip != commits[-1]:
+            raise ProvenanceError(
+                f"{branch} points at {tip}, but this workspace ends at "
+                f"{commits[-1]}. The branch was force-pushed, or the workspace "
+                "moved on. Reset the workspace to the pushed head and re-run, "
+                "so the permalinks name commits the branch actually has."
             )
 
     record: dict[str, Any] = {
@@ -361,6 +418,33 @@ def collect_contributions(data_root: Path) -> list[Contribution]:
             continue
         found.append(contribution_from_record(record))
     return found
+
+
+def unrecorded_submissions(data_root: Path) -> list[str]:
+    """Runs whose submission is ready and whose provenance was never written.
+
+    Nothing after `handoff` requires `provenance` to run, so a pull request the
+    operator filed and moved on from is absent from the ledger entirely, and
+    the ledger looks complete either way. Two PRs filed on 2026-09-09 were
+    invisible until a hand audit found them.
+    See https://github.com/wolfgang-aura/Mailman/issues/84.
+    """
+    pending: list[str] = []
+    if not data_root.is_dir():
+        return pending
+    for directory in sorted(path for path in data_root.glob("*") if path.is_dir()):
+        submission = directory / SUBMISSION_DIRECTORY / "submission.json"
+        if not submission.is_file():
+            continue
+        try:
+            record = json.loads(submission.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict) or record.get("ready") is not True:
+            continue
+        if load_provenance(directory) is None:
+            pending.append(directory.name)
+    return pending
 
 
 def render_contributions(
