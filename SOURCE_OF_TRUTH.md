@@ -20,7 +20,18 @@ defaults Codex reasoning effort to `medium`; the PRHunt procedure makes that the
 Luna default. The focused regression set passed 133 tests, the full suite passed
 800 tests and 54 subtests in 5m19s before the final reviewer-resume addition,
 and the current orchestrator and direct-agent set passed 63 tests afterward.
-No live Luna replay has run against this checkpoint yet.
+The exact pushed checkpoint then passed 801 tests and 54 subtests in 4m30s.
+
+A controlled Luna `medium` replay used a synthetic two-file Python bug outside
+the repository. With both start files named and one allowed test command, Luna
+read the files, made the correct one-branch fix, attempted the test, wrote its
+report and stopped in about 35 seconds. It used two commands and reported
+68,355 input tokens, including 49,408 cached. The synthetic prompt named bare
+`python`, which the elevated agent environment could not resolve; running the
+same test with the host's resolved Python executable passed both tests. Real
+`build-prompts` records that resolved executable, so this was a replay-fixture
+error rather than a candidate or model error. This proves the bounded Luna
+behavior, not a complete PRHunt under 30 minutes.
 
 ## Current local procedure
 
