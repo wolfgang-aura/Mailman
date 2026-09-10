@@ -166,6 +166,33 @@ class ViolationTests(unittest.TestCase):
                 violations[0]["emails"], [{"role": "co-author", "email": PERSONAL}]
             )
 
+    def test_a_vendor_no_reply_co_author_trailer_passes(self) -> None:
+        """The trailer this repository's own commits carry identifies nobody.
+
+        Refusing it would block a clean run the way #80 did, over an address
+        that is not a personal mailbox.
+        """
+        with TemporaryDirectory() as name:
+            repository = _repository(Path(name))
+            _git(repository, "config", "user.email", PRIVATE)
+            base = _git(repository, "rev-parse", "HEAD")
+            (repository / "file.txt").write_text("changed\n", encoding="utf-8")
+            _git(
+                repository,
+                "commit",
+                "-am",
+                "change\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n",
+            )
+
+            commits = branch_commits(repository, base)
+
+            self.assertEqual(
+                author_violations(
+                    commits, Identity(name="wolfgang-aura", email=PRIVATE)
+                ),
+                [],
+            )
+
     def test_a_noreply_co_author_trailer_passes(self) -> None:
         with TemporaryDirectory() as name:
             repository = _repository(Path(name))

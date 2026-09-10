@@ -48,8 +48,19 @@ class IdentityError(ValueError):
 
 
 def is_private_email(email: str) -> bool:
-    """True for an address GitHub issues instead of a personal mailbox."""
-    return email.strip().lower().endswith(NOREPLY_SUFFIX)
+    """True for an address that is not a personal mailbox.
+
+    GitHub's per-account noreply is the common case. A vendor's own no-reply
+    address qualifies too: `Co-Authored-By: Claude <noreply@anthropic.com>` is
+    the trailer this repository's own commits carry, and refusing it would
+    block a clean run over an address that identifies nobody. The harm this
+    guards against is a *personal* address reaching a third party's history.
+    """
+    address = email.strip().lower()
+    return address.endswith(NOREPLY_SUFFIX) or address.split("@", 1)[0] in {
+        "noreply",
+        "no-reply",
+    }
 
 
 def _validate(name: str, email: str, *, source: str) -> Identity:
