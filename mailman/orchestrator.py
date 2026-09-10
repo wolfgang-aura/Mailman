@@ -475,23 +475,6 @@ class _Orchestration:
         agent = self.agent_factory(configured.agent, configured.model)
         prior_usage = self._role_usage(role)
         usage_budget = agent.token_budget
-        if usage_budget is not None and prior_usage["input_tokens"] >= usage_budget:
-            detail = (
-                f"{agent.name} {role} input budget spent: "
-                f"{prior_usage['input_tokens']} of {usage_budget} tokens recorded"
-            )
-            self._step(
-                f"agent:{role}",
-                ok=False,
-                detail=detail,
-                data={
-                    "agent": agent.name,
-                    "token_budget": usage_budget,
-                    "role_usage": prior_usage,
-                    "usage_budget_exceeded": True,
-                },
-            )
-            return False, None
         prompt_path = prepare_agent_prompt(
             self.run_directory, role=role, source_prompt=source_prompt
         )
@@ -501,10 +484,10 @@ class _Orchestration:
         # do with the candidate (#29). The scratch lives beside the run
         # record, outside the workspace, so using it cannot dirty the
         # candidate; the adapter makes it writable to the agent's sandbox.
-        scratch_directory: Path | None = None
-        if role == "reviewer":
-            scratch_directory = self.run_directory / "scratch"
-            scratch_directory.mkdir(parents=True, exist_ok=True)
+        scratch_directory = self.run_directory / "scratch"
+        if role == "primary":
+            scratch_directory /= "primary"
+        scratch_directory.mkdir(parents=True, exist_ok=True)
         timeout = self._remaining_timeout(self.agent_timeout_seconds, f"agent:{role}")
         session_id = self._previous_session(role)
         self.announce(
@@ -613,7 +596,6 @@ class _Orchestration:
             not result.timed_out
             and (result.exit_code == 0 or completed_before_command_stop)
             and result.report_present
-            and not usage_budget_exceeded
             and not usage_accounting_missing
         )
         stop_reason = _describe_stop(result.stop_reason, agent.turn_budget)
@@ -646,10 +628,11 @@ class _Orchestration:
                 f"{agent.name} returned no turn usage, so Mailman cannot enforce "
                 f"the {role} input budget"
             )
-        elif usage_budget_exceeded:
+        elif usage_budget_exceeded and result.exit_code == 0 and result.report_present:
             detail = (
-                f"{agent.name} exceeded the {role} input budget: "
-                f"{role_usage['input_tokens']} of {usage_budget} tokens recorded"
+                f"{agent.name} completed; observed {role} input exceeded the "
+                f"advisory budget: {role_usage['input_tokens']} of {usage_budget} "
+                "tokens recorded"
             )
         elif result.timed_out:
             detail = f"{agent.name} timed out"
@@ -959,8 +942,7 @@ class _Orchestration:
             old = json.loads(previous.read_text(encoding="utf-8"))
             old_steps = old.get("steps", [])
             usage_spent = any(
-                (step.get("data") or {}).get("usage_budget_exceeded")
-                or (step.get("data") or {}).get("usage_accounting_missing")
+                (step.get("data") or {}).get("usage_accounting_missing")
                 for step in old_steps
             )
             incomplete_primary_cap = any(
@@ -973,7 +955,7 @@ class _Orchestration:
             )
             if usage_spent or incomplete_primary_cap:
                 raise ValueError(
-                    "agent usage budget already spent or the primary stopped "
+                    "agent usage accounting is missing or the primary stopped "
                     "before completion; this candidate cannot resume"
                 )
             previous_budget = float(

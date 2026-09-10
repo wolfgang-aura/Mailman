@@ -2513,6 +2513,23 @@ def _command_hunt(arguments: argparse.Namespace) -> dict | None:
     from mailman import hunt
 
     root = (getattr(arguments, "data_root", None) or default_data_root()).resolve()
+    # The deadline bounds target selection, setup and agent work. Once those
+    # stages finish, blocking deterministic packaging after the deadline makes
+    # a valid candidate impossible to file and cannot save agent time.
+    post_engineering_commands = {
+        "check-authors",
+        "decision",
+        "export-patch",
+        "finalize-review",
+        "handoff",
+        "handoff-check",
+        "packet",
+        "prepare-submission",
+        "provenance",
+        "review",
+    }
+    if arguments.subcommand in post_engineering_commands:
+        return None
     explicit = getattr(arguments, "deadline_hunt_id", None)
     if explicit:
         record = hunt.load_hunt(root, explicit)
@@ -2521,39 +2538,29 @@ def _command_hunt(arguments: argparse.Namespace) -> dict | None:
         return record
 
     if arguments.subcommand == "hunt":
-        if arguments.action in ("refresh", "finish") and arguments.hunt_id:
-            return hunt.load_hunt(root, arguments.hunt_id)
+        # Refresh and finish only recheck or package completed work. Their own
+        # gates decide whether the hunt may advance.
         return None
 
     bounded_commands = {
         "acknowledge-duplicates",
         "acknowledge-no-test",
         "build-prompts",
-        "check-authors",
         "check-target",
         "claims",
-        "decision",
         "draft-environment",
         "duplicate-search",
-        "export-patch",
         "fetch-issue",
         "fetch-review",
-        "finalize-review",
-        "handoff",
-        "handoff-check",
         "init-run",
         "orchestrate",
-        "packet",
         "prepare-environment",
-        "prepare-submission",
         "prepare-workspace",
         "prescreen",
         "prior-art",
         "probe-tool",
-        "provenance",
         "reproduce",
         "resume-review",
-        "review",
         "revision-response",
         "retrospective",
         "run-agent",

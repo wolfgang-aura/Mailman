@@ -192,7 +192,7 @@ def prescreen_issue(
     search = record_duplicate_search(
         directory,
         repository=slug,
-        query=query or f"#{number}",
+        query=query or str(captured.get("title") or f"#{number}"),
         issue_number=number,
         symbols=symbols,
         executable=executable,

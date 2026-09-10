@@ -54,6 +54,7 @@ class ScriptedAgent(EngineeringAgent):
         self.calls: list[tuple[str, str]] = []
         self.session_ids: list[str | None] = []
         self.command_budgets: list[int | None] = []
+        self.scratch_directories: list[Path | None] = []
 
     @property
     def name(self) -> str:
@@ -76,6 +77,7 @@ class ScriptedAgent(EngineeringAgent):
         )
         self.session_ids.append(request.session_id)
         self.command_budgets.append(request.command_budget)
+        self.scratch_directories.append(request.scratch_directory)
         report = step.get("report")
         touch = step.get("touch")
         if isinstance(touch, tuple):
@@ -360,6 +362,22 @@ class EmptyCandidateTests(OrchestratorHarness):
         self.assertIn(str(run_directory / "scratch"), prompt)
         self.assertIs(outcome.status, RunStatus.ENGINEERING_COMPLETE)
 
+    def test_the_primary_receives_run_owned_scratch_outside_the_workspace(self) -> None:
+        outcome, run_directory, primary, _ = self.orchestrate(
+            primary_script=[
+                {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+            ],
+            reviewer_script=[{"report": APPROVED}],
+        )
+
+        self.assertEqual(
+            primary.scratch_directories, [run_directory / "scratch" / "primary"]
+        )
+        self.assertFalse(
+            str(primary.scratch_directories[0]).startswith(str(self.workspace))
+        )
+        self.assertIs(outcome.status, RunStatus.ENGINEERING_COMPLETE)
+
     def test_a_reviewer_that_edits_the_workspace_stops_the_run(self) -> None:
         outcome, _, _, _ = self.orchestrate(
             primary_script=[
@@ -605,7 +623,7 @@ class OrchestrationTests(OrchestratorHarness):
         self.assertIn("+new-value", review_prompt)
         self.assertIn("Do not use the shell unless", review_prompt)
 
-    def test_codex_input_overrun_blocks_before_review(self) -> None:
+    def test_completed_codex_input_overrun_is_recorded_and_kept(self) -> None:
         run, directory = self.make_run()
         usage = json.dumps(
             {
@@ -622,6 +640,8 @@ class OrchestrationTests(OrchestratorHarness):
             [{"report": "candidate", "touch": ("fix.txt", "fixed"), "stdout": usage}],
             token_budget=100,
         )
+        reviewer = ScriptedAgent("claude", [{"report": APPROVED}])
+        agents = {"codex": primary, "claude": reviewer}
         outcome = orchestrate(
             run=run,
             run_directory=directory,
@@ -629,10 +649,10 @@ class OrchestrationTests(OrchestratorHarness):
             primary_prompt=self.primary_prompt,
             reviewer_prompt=self.reviewer_prompt,
             verification_command=[sys.executable, "-c", PASSING_CHECK],
-            agent_factory=lambda name, model: primary,
+            agent_factory=lambda name, model: agents[name],
         )
 
-        self.assertEqual(outcome.status, RunStatus.BLOCKED)
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
         agent_step = next(
             step for step in outcome.steps if step.name == "agent:primary"
         )
@@ -645,17 +665,9 @@ class OrchestrationTests(OrchestratorHarness):
         )
         self.assertEqual(execution["usage"]["cached_input_tokens"], 90)
 
-        with self.assertRaisesRegex(ValueError, "usage budget already spent"):
-            orchestrate(
-                run=run,
-                run_directory=directory,
-                workspace=self.workspace,
-                primary_prompt=self.primary_prompt,
-                reviewer_prompt=self.reviewer_prompt,
-                verification_command=[sys.executable, "-c", PASSING_CHECK],
-                agent_factory=lambda name, model: self.fail("agent resumed"),
-                resume_review=True,
-            )
+        self.assertEqual(len(primary.calls), 1)
+        self.assertEqual(len(reviewer.calls), 1)
+        self.assertIn("completed", agent_step.detail)
 
     def test_bounded_codex_without_usage_blocks(self) -> None:
         run, directory = self.make_run()

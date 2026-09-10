@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from mailman.artifacts import create_run
-from mailman.cli import _emit, main
+from mailman.cli import _command_hunt, _emit, main
 
 
 class ContributionsCliTests(unittest.TestCase):
@@ -66,6 +66,37 @@ class ContributionsCliTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_post_engineering_packaging_is_not_stopped_by_hunt_deadline(self) -> None:
+        for subcommand in (
+            "check-authors",
+            "decision",
+            "export-patch",
+            "finalize-review",
+            "handoff",
+            "handoff-check",
+            "packet",
+            "prepare-submission",
+            "provenance",
+            "review",
+        ):
+            arguments = SimpleNamespace(
+                subcommand=subcommand,
+                data_root=Path("missing"),
+                deadline_hunt_id="expired-hunt",
+                owner=None,
+            )
+            self.assertIsNone(_command_hunt(arguments), subcommand)
+
+    def test_hunt_finish_is_not_stopped_by_hunt_deadline(self) -> None:
+        arguments = SimpleNamespace(
+            subcommand="hunt",
+            action="finish",
+            hunt_id="expired-hunt",
+            data_root=Path("missing"),
+            deadline_hunt_id=None,
+        )
+        self.assertIsNone(_command_hunt(arguments))
+
     def test_attached_run_command_refuses_an_expired_hunt(self) -> None:
         from mailman.artifacts import write_run
         from mailman.hunt import add_run, create_hunt, hunt_path, save

@@ -103,6 +103,11 @@ class PrescreenTests(unittest.TestCase):
         self.assertIn("init-run", record["next"])
         self.assertEqual(load_prescreen(self.root, "example/project", 7), record)
         self.assertEqual(record["issue"]["title"], "Crash on empty input")
+        directory = prescreen_directory(self.root, "example/project", 7)
+        search = json.loads(
+            (directory / "duplicate-search.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(search["query"], "Crash on empty input")
 
     def test_cli_binds_pre_run_screening_to_the_single_live_hunt(self) -> None:
         hunt = create_hunt(
@@ -189,6 +194,27 @@ class PrescreenTests(unittest.TestCase):
         assessment = assess_target(directory)
         self.assertIn(OPEN_PULL_REQUEST, assessment.blocking)
         self.assertIn(OPEN_PULL_REQUEST, DECIDABLE)
+
+    def test_title_search_rejects_an_open_semantic_rival_before_setup(self) -> None:
+        rival = [
+            {
+                "number": 99,
+                "title": "Fix crash on empty input",
+                "state": "open",
+                "url": "https://github.com/example/project/pull/99",
+                "createdAt": "2026-09-02T00:00:00Z",
+                "body": "Handle the empty-input crash.",
+                "headRefName": "fix-empty-input",
+            }
+        ]
+
+        record = prescreen_issue(
+            self.root, "example/project#7", executable=self.stub(json.dumps(rival))
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertIn(OPEN_PULL_REQUEST, record["blocking"])
+        self.assertEqual(record["open_attempts"], [99])
 
     def test_a_verdict_never_rests_on_something_this_stage_cannot_know(self) -> None:
         record = prescreen_issue(

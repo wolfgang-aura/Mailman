@@ -450,6 +450,25 @@ evidence for the missing-report blocking cause. See
 
 ## PRHunt performance controls
 
+Verified locally on 2026-09-10 after hunt `20260910T081030Z-887058`. The useful
+Luna primary completed in 277 seconds and the reviewer in 37 seconds. Mailman
+then discarded that completed primary because its reported input was 108,049
+tokens above a two-million-token threshold, and the hunt deadline later blocked
+handoff packaging even though engineering had completed before it expired.
+Two earlier candidates also reached setup because their pre-screens searched
+only the issue number; title-based searches performed later found the open
+overlaps that caused both drops.
+
+The current fix keeps a completed agent result while recording its token
+overrun, gives the primary the same run-owned temporary storage discipline as
+the reviewer, uses the captured issue title as the pre-screen duplicate query,
+and applies the hunt deadline to selection/setup/agent work rather than
+post-engineering packaging. The earlier local checkpoint `2381203` is preserved
+and keeps acknowledged target gates stable during packaging. Local verification:
+812 tests and 54 subtests passed in 265.15 seconds. The real expired hunt now
+reaches `handoff-check`; it correctly stops on 2.3-hour-old duplicate and claim
+evidence instead of the expired deadline. Nothing was filed.
+
 Verified on 2026-09-09 after two Luna Max hunts took 5h13m and 7h27m. The
 engineering work was not inherently that slow: LangGraph run
 `20260909T030115Z-1b980a` reached `ENGINEERING_COMPLETE` in 10.6 minutes. The

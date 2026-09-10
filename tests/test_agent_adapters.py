@@ -236,6 +236,42 @@ class AgentAdapterTests(unittest.TestCase):
         self.assertEqual(environment["PYTEST_ADDOPTS"], "-p no:cacheprovider")
         self.assertEqual(result.session_id, "t-1")
 
+    def test_codex_primary_temp_variables_point_at_run_scratch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            scratch = root / "runs" / "run-1" / "scratch" / "primary"
+            prompt = root / "prompt.md"
+            prompt.write_text("fix the fixture", encoding="utf-8")
+            request = AgentRequest(
+                run_id="run-1",
+                role="primary",
+                prompt_path=prompt,
+                workspace=root / "workspace",
+                report_path=root / "primary-report.md",
+                scratch_directory=scratch,
+            )
+            process = CommandResult(
+                command=["codex", "exec"],
+                working_directory=str(root),
+                started_at="2026-09-02T00:00:00+00:00",
+                duration_seconds=0.1,
+                exit_code=0,
+                stdout=json.dumps({"type": "thread.started", "thread_id": "t-1"}),
+                stderr="",
+                timed_out=False,
+                timeout_seconds=60,
+                environment={},
+            )
+            with patch("mailman.agents.codex_cli.execute", return_value=process) as run:
+                CodexCliAgent(windows_sandbox=None, executable=sys.executable).run(request)
+
+        environment = run.call_args.kwargs["environment"]
+        self.assertEqual(environment["TMP"], str(scratch.resolve()))
+        self.assertEqual(environment["TEMP"], str(scratch.resolve()))
+        self.assertEqual(environment["TMPDIR"], str(scratch.resolve()))
+        roots = [part for part in run.call_args.args[0] if "writable_roots" in part]
+        self.assertEqual(len(roots), 1)
+
     def test_codex_rejects_unknown_windows_sandbox_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

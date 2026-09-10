@@ -87,7 +87,7 @@ class CodexCliAgent(EngineeringAgent):
             command.extend(
                 ["--config", f"windows.sandbox='{self.windows_sandbox}'"]
             )
-        if request.role == "reviewer" and request.scratch_directory is not None:
+        if request.scratch_directory is not None:
             # Single-quoted TOML literal strings: double quotes would make the
             # backslashes in a Windows path escape sequences.
             scratch = request.scratch_directory.resolve().as_posix()
@@ -130,12 +130,11 @@ class CodexCliAgent(EngineeringAgent):
     def run(self, request: AgentRequest) -> AgentResult:
         prompt = request.prompt_path.read_text(encoding="utf-8")
         environment = None
-        if request.role == "reviewer" and request.scratch_directory is not None:
+        if request.scratch_directory is not None:
             scratch = str(request.scratch_directory.resolve())
             # The scratch directory is where temp writes belong. pytest's own
             # cache writes into the workspace root, so it is disabled for the
-            # reviewer's runs: the second run of the same gate must not dirty
-            # the workspace the primary stage left behind.
+            # agent's runs: repeated focused checks must not dirty the candidate.
             environment = {
                 "TMP": scratch,
                 "TEMP": scratch,

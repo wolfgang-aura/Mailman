@@ -129,19 +129,26 @@ status check you did not act on is pure cost.
 10. Run `orchestrate`. An `ENGINEERING_COMPLETE` outcome means finish the
     package. A `BLOCKED` run is a local stop, not a request for the user.
     Every run uses the hunt's cumulative two-hour deadline from `hunt init`,
-    not a fresh deadline per candidate or agent call. Mailman binds all
-    candidate commands to that deadline and clamps each subprocess to the
-    remaining time when it starts. Pre-run commands require `--hunt` when the
+    not a fresh deadline per candidate or agent call. Mailman binds selection,
+    setup and agent commands to that deadline and clamps each subprocess to the
+    remaining time when it starts. Once engineering completes, deterministic
+    review-page, handoff and filing gates remain available after the deadline;
+    blocking them cannot save agent time and can strand a valid candidate.
+    Pre-run commands require `--hunt` when the
     data root has more than one live hunt. Codex reports usage only when a turn
     completes. Mailman records input and cached-input tokens separately,
-    totals input per role across resumed turns, blocks a turn that crosses the
-    configured limit, and refuses later resumes. The wall deadline remains the
-    in-flight limit because Mailman cannot stop a Codex turn at an unreported
-    token boundary. Later turns resume the same per-role session so they do not
+    totals input per role across resumed turns, and records an overrun without
+    discarding a completed report or candidate. The configured token limit is
+    advisory because Codex reports usage only after the turn; the wall deadline
+    remains the enforceable in-flight limit. Later turns resume the same
+    per-role session so they do not
     rediscover the repository. Revision prompts carry only the new failure or
     review findings. Reviewer prompts carry the changed paths, diff stat and primary
     report tail; the reviewer inspects logic, scope, tests and risk instead of
-    duplicating the full verification command. Mailman owns that command and
+    duplicating the full verification command. Both roles receive run-owned
+    temporary storage outside the candidate workspace, with pytest cache writes
+    disabled, so environment noise cannot consume the candidate revision.
+    Mailman owns that command and
     runs it after the primary and again after approval. The first primary stage
     and every revision stop before
     review if the candidate exceeds 8 files or 500 changed lines. Treat that as
