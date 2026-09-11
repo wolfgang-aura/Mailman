@@ -234,6 +234,11 @@ opening the local packet URL during this session; visual state is unverified.
   `closing-reply.json`. `provenance --superseded-by` prints the rule on stderr. 862 unit tests,
   up from 801. Run `20260908T220821Z-124828` (python/mypy#21961, superseded by #21967) carries
   the marker for the reply posted on #21967 on 2026-09-11.
+- Foreign-thread deployment: commit `8ef48e7` passed GitHub Actions in run `34596949018`.
+  `handoff` refuses an issue comment aimed at a pull request another author opened, in any run
+  state (`gh api repos/O/R/pulls/N` names the author; unreachable means not refused), and warns
+  when a reply passes 120 words. Live check: the open poetry run refused a comment on
+  python-poetry/poetry#11050 with exit 2 and rendered one for its own #11052. 864 unit tests.
 
 ### Reproduce gate, live-verified 2026-09-04
 
