@@ -650,6 +650,11 @@ def render_contributions(
                 f"    merged as https://github.com/{entry.repository}"
                 f"/commit/{entry.merge_commit}"
             )
+        if entry.superseded_by:
+            lines.append(
+                f"    superseded by https://github.com/{entry.repository}"
+                f"/pull/{entry.superseded_by}"
+            )
         if entry.patch_path:
             lines.append(f"    patch {entry.patch_path}")
     return "\n".join(lines)

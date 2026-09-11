@@ -829,6 +829,22 @@ class ReadingAgeTests(unittest.TestCase):
             self.assertIn("stale", later)
             self.assertIn("--refresh", later)
 
+    def test_the_listing_names_the_pull_request_that_superseded_a_run(self) -> None:
+        """An unfiled run overtaken upstream read as plain `unsubmitted`, with
+        nothing to say a duplicate had been found and the run dropped."""
+        rendered = render_contributions(
+            [
+                contribution_from_record(
+                    {
+                        "run_id": "20260910T094019Z-7d1e6e",
+                        "repository": "python/mypy",
+                        "superseded_by": 21966,
+                    }
+                )
+            ]
+        )
+        self.assertIn("superseded by https://github.com/python/mypy/pull/21966", rendered)
+
     def test_a_run_with_no_pull_request_gets_no_reading_line(self) -> None:
         rendered = render_contributions(
             [contribution_from_record({"run_id": "r", "repository": "pdm-project/pdm"})]
