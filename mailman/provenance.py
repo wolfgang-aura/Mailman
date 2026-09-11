@@ -55,6 +55,7 @@ class Contribution:
     superseded_by: int | None = None
     patch_path: str | None = None
     checked_at: str | None = None
+    competition: dict[str, Any] | None = None
 
     def permalinks(self) -> tuple[str, ...]:
         return tuple(
@@ -73,6 +74,7 @@ class Contribution:
             "superseded_by": self.superseded_by,
             "patch_path": self.patch_path,
             "checked_at": self.checked_at,
+            "competition": self.competition,
         }
 
 
@@ -208,6 +210,123 @@ def pull_request_state(repository: str, number: int) -> dict[str, Any]:
     }
 
 
+_ISSUE_URL = re.compile(
+    r"^https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/issues/(\d+)/?$"
+)
+
+
+def upstream_issue_number(run_directory: Path, repository: str) -> int | None:
+    """The issue this run set out to fix, if the run names one in `repository`.
+
+    `run.json` carries the issue URL from the start of the run; the staged
+    `submission.json` carries the number and target again. Either will do, and
+    an issue in some other repository says nothing about this one.
+    """
+    slug = repository_slug(repository).lower()
+    run_record = _read_json(run_directory / "run.json")
+    match = _ISSUE_URL.match(str(run_record.get("issue") or "").strip())
+    if match is not None and match.group(1).lower() == slug:
+        return int(match.group(2))
+    submission = _read_json(run_directory / SUBMISSION_DIRECTORY / "submission.json")
+    number = submission.get("issue_number")
+    target = str(submission.get("target") or "").lower()
+    if isinstance(number, int) and number > 0 and target == slug:
+        return number
+    return None
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def competing_pull_requests(
+    repository: str, issue_number: int, *, own_number: int
+) -> dict[str, Any]:
+    """Every other pull request in `repository` that references the issue.
+
+    Read from the issue's timeline, where GitHub records each cross-reference
+    as it is made. That catches `Fixes #N` in a body, a mention in a comment and
+    a manual link, which a text search for `#N` does not. Pull requests from
+    other repositories reference issues too and are left out; so are ones that
+    closed without merging, which stopped competing.
+    See https://github.com/wolfgang-aura/Mailman/issues/86.
+    """
+    slug = repository_slug(repository)
+    if shutil.which("gh") is None:
+        return {"available": False, "detail": "gh is not installed"}
+    try:
+        completed = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{slug}/issues/{issue_number}/timeline",
+                "--paginate",
+                "--slurp",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=clamp_timeout_seconds(60),
+            check=False,
+            shell=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {"available": False, "detail": str(error)}
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        return {"available": False, "detail": detail}
+    try:
+        pages = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        return {"available": False, "detail": f"unreadable response ({error})"}
+    events: list[Any] = []
+    for page in pages if isinstance(pages, list) else []:
+        events.extend(page if isinstance(page, list) else [])
+    return {
+        "available": True,
+        "pull_requests": competitors_from_timeline(events, slug, own_number=own_number),
+    }
+
+
+def competitors_from_timeline(
+    events: list[Any], repository: str, *, own_number: int
+) -> list[dict[str, Any]]:
+    """The competing pull requests in a GitHub issue timeline, oldest first."""
+    found: dict[int, dict[str, Any]] = {}
+    repository_url = f"https://api.github.com/repos/{repository}".lower()
+    for event in events:
+        if not isinstance(event, dict) or event.get("event") != "cross-referenced":
+            continue
+        source = event.get("source") or {}
+        issue = source.get("issue") if isinstance(source, dict) else None
+        if not isinstance(issue, dict) or not issue.get("pull_request"):
+            continue
+        if str(issue.get("repository_url") or "").lower() != repository_url:
+            continue
+        number = issue.get("number")
+        if not isinstance(number, int) or number == own_number:
+            continue
+        pull_request = issue.get("pull_request")
+        merged = isinstance(pull_request, dict) and bool(pull_request.get("merged_at"))
+        state = "merged" if merged else str(issue.get("state") or "").lower()
+        if state not in {"open", "merged"}:
+            continue
+        user = issue.get("user") or {}
+        found[number] = {
+            "number": number,
+            "state": state,
+            "author": user.get("login") if isinstance(user, dict) else None,
+            "url": issue.get("html_url"),
+            "created_at": issue.get("created_at"),
+        }
+    return [found[number] for number in sorted(found)]
+
+
 def submission_directory(run_directory: Path) -> Path:
     return run_directory / SUBMISSION_DIRECTORY
 
@@ -325,6 +444,9 @@ def contribution_from_record(record: dict[str, Any]) -> Contribution:
         superseded_by=record.get("superseded_by"),
         patch_path=record.get("patch_path"),
         checked_at=record.get("checked_at"),
+        competition=record.get("competition")
+        if isinstance(record.get("competition"), dict)
+        else None,
     )
 
 
@@ -355,6 +477,7 @@ def refresh_state(
     run_directory: Path,
     *,
     state_lookup: Any = pull_request_state,
+    competitor_lookup: Any = competing_pull_requests,
     now: datetime | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Re-read one run's pull request state from GitHub and store the answer.
@@ -363,6 +486,11 @@ def refresh_state(
     so it still works after the clone is gone. A lookup that fails leaves every
     stored field alone and returns why: a state written on filing day beats one
     invented now.
+
+    While the pull request is open, the issue it fixes is read too, for a pull
+    request someone else filed against it. python/mypy#21967 was opened against
+    the issue python/mypy#21961 fixed and nothing here noticed for a day.
+    See https://github.com/wolfgang-aura/Mailman/issues/86.
     """
     record = load_provenance(run_directory)
     if record is None:
@@ -381,15 +509,60 @@ def refresh_state(
     record["merge_commit"] = lookup.get("merge_commit")
     if lookup.get("url"):
         record["url"] = lookup.get("url")
+    record["competition"] = _read_competition(
+        run_directory, slug, int(number), record["state"], competitor_lookup, now=now
+    )
     path = provenance_path(run_directory)
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n")
+    competition = record["competition"]
+    if competition.get("detail"):
+        detail = competition["detail"]
+        return record, f"{slug}#{number}: competitors unchecked: {detail}"
     return record, None
+
+
+def _read_competition(
+    run_directory: Path,
+    slug: str,
+    number: int,
+    state: str | None,
+    competitor_lookup: Any,
+    *,
+    now: datetime | None,
+) -> dict[str, Any]:
+    """What was read about other pull requests on the run's issue, or why not.
+
+    Only an open pull request can be overtaken, so a closed or merged one is
+    not looked up; its record says why the list is empty.
+    """
+    checked_at = (now or datetime.now(UTC)).isoformat()
+    if (state or "").upper() != "OPEN":
+        return {"checked_at": checked_at, "skipped": f"the pull request is {state}"}
+    issue_number = upstream_issue_number(run_directory, slug)
+    if issue_number is None:
+        return {
+            "checked_at": checked_at,
+            "detail": "run.json names no issue in this repository",
+        }
+    lookup = competitor_lookup(slug, issue_number, own_number=number)
+    if not lookup.get("available"):
+        return {
+            "checked_at": checked_at,
+            "issue": issue_number,
+            "detail": lookup.get("detail") or "gh gave no reason",
+        }
+    return {
+        "checked_at": checked_at,
+        "issue": issue_number,
+        "pull_requests": list(lookup.get("pull_requests") or []),
+    }
 
 
 def refresh_contributions(
     data_root: Path,
     *,
     state_lookup: Any = pull_request_state,
+    competitor_lookup: Any = competing_pull_requests,
     now: datetime | None = None,
 ) -> tuple[list[Contribution], list[str]]:
     """Every recorded run, re-read from GitHub, with whatever could not be."""
@@ -398,7 +571,12 @@ def refresh_contributions(
     if not data_root.is_dir():
         return found, failures
     for directory in sorted(path for path in data_root.glob("*") if path.is_dir()):
-        record, failure = refresh_state(directory, state_lookup=state_lookup, now=now)
+        record, failure = refresh_state(
+            directory,
+            state_lookup=state_lookup,
+            competitor_lookup=competitor_lookup,
+            now=now,
+        )
         if record is None:
             continue
         if failure:
@@ -464,6 +642,7 @@ def render_contributions(
         lines.append(f"{entry.run_id}  {entry.repository}  {pull_request}  {state}")
         if entry.pull_request:
             lines.append(f"    {_reading_age(entry, now=now)}")
+            lines.extend(f"    {line}" for line in _competition_lines(entry))
         for link in entry.permalinks():
             lines.append(f"    {link}")
         if entry.merge_commit:
@@ -474,6 +653,40 @@ def render_contributions(
         if entry.patch_path:
             lines.append(f"    patch {entry.patch_path}")
     return "\n".join(lines)
+
+
+def competitors(entry: Contribution) -> list[dict[str, Any]]:
+    """The other pull requests read against this run's issue, if any were read."""
+    competition = entry.competition or {}
+    found = competition.get("pull_requests")
+    if not isinstance(found, list):
+        return []
+    return [item for item in found if isinstance(item, dict)]
+
+
+def _competition_lines(entry: Contribution) -> list[str]:
+    """What is known about other pull requests on the issue.
+
+    Silence is not an option for an open pull request: an unchecked one would
+    read exactly like an unchallenged one.
+    """
+    if (entry.state or "").upper() != "OPEN":
+        return []
+    competition = entry.competition
+    if competition is None:
+        return [
+            "competing pull requests never read -- run `mailman contributions --refresh`"
+        ]
+    if competition.get("detail"):
+        return [f"competing pull requests unchecked: {competition['detail']}"]
+    found = competitors(entry)
+    if not found:
+        return [f"no competing pull request on issue #{competition.get('issue')}"]
+    return [
+        f"COMPETING: #{item.get('number')} {item.get('state')} by {item.get('author')}, "
+        f"opened {item.get('created_at')} {item.get('url')}"
+        for item in found
+    ]
 
 
 def _reading_age(entry: Contribution, *, now: datetime | None = None) -> str:

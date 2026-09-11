@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 from mailman.artifacts import create_run
 from mailman.cli import _command_hunt, _emit, main
+from mailman.provenance import contribution_from_record
 
 
 class ContributionsCliTests(unittest.TestCase):
@@ -74,6 +75,41 @@ class ContributionsCliTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn(failure, err.getvalue())
             self.assertIn("not fresh readings", err.getvalue())
+
+    def test_a_competing_pull_request_exits_non_zero_and_names_it(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/86"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            data_root.mkdir()
+            entry = contribution_from_record(
+                {
+                    "run_id": "20260908T204404Z-1e0aa3",
+                    "repository": "python/mypy",
+                    "pull_request": 21961,
+                    "state": "OPEN",
+                    "competition": {
+                        "issue": 21960,
+                        "pull_requests": [
+                            {
+                                "number": 21967,
+                                "state": "open",
+                                "author": "EmmanuelNiyonshuti",
+                                "url": "https://github.com/python/mypy/pull/21967",
+                                "created_at": "2026-09-10T20:17:05Z",
+                            }
+                        ],
+                    },
+                }
+            )
+            with patch("mailman.cli.refresh_contributions", return_value=([entry], [])):
+                out, err = StringIO(), StringIO()
+                with redirect_stdout(out), redirect_stderr(err):
+                    code = main(
+                        ["contributions", "--refresh", "--data-root", str(data_root)]
+                    )
+            self.assertEqual(code, 1)
+            self.assertIn("COMPETING: #21967", out.getvalue())
+            self.assertIn("python/mypy#21961: #21967 (open)", err.getvalue())
 
     def test_without_refresh_nothing_calls_github(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

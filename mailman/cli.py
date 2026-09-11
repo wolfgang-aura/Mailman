@@ -71,6 +71,7 @@ from mailman.prior_art import collect_prior_art
 from mailman.prompts import load_recorded_verification, write_task_prompts
 from mailman.provenance import (
     collect_contributions,
+    competitors,
     deletion_is_safe,
     record_provenance,
     refresh_contributions,
@@ -2092,7 +2093,31 @@ def _contributions(arguments: argparse.Namespace) -> int:
             "the states above are the ones already on disk, not fresh readings",
             file=sys.stderr,
         )
-    return 1 if (unrecorded or failures) else 0
+    challenged = [entry for entry in found if competitors(entry)]
+    if challenged:
+        # Someone else's pull request on the same issue changes what to do
+        # with ours, and the maintainer's review time is spent either way.
+        # https://github.com/wolfgang-aura/Mailman/issues/86
+        print(
+            "\n".join(
+                [
+                    "",
+                    f"{len(challenged)} open pull request(s) have a competing pull "
+                    "request on the same issue. Read it and decide whether ours "
+                    "still stands:",
+                    *(
+                        f"  {entry.repository}#{entry.pull_request}: "
+                        + ", ".join(
+                            f"#{item.get('number')} ({item.get('state')})"
+                            for item in competitors(entry)
+                        )
+                        for entry in challenged
+                    ),
+                ]
+            ),
+            file=sys.stderr,
+        )
+    return 1 if (unrecorded or failures or challenged) else 0
 
 
 def _identity(arguments: argparse.Namespace) -> int:

@@ -12,6 +12,8 @@ from tempfile import TemporaryDirectory
 from mailman.provenance import (
     ProvenanceError,
     collect_contributions,
+    competitors,
+    competitors_from_timeline,
     contribution_from_record,
     deletion_is_safe,
     load_provenance,
@@ -22,6 +24,7 @@ from mailman.provenance import (
     repository_slug,
     state_is_stale,
     unrecorded_submissions,
+    upstream_issue_number,
     write_patch,
 )
 
@@ -437,6 +440,276 @@ class ListingTests(unittest.TestCase):
             ["https://github.com/pmorissette/ffn/commit/" + "a" * 40],
         )
         self.assertEqual(json.loads(json.dumps(payload))["state"], "CLOSED")
+
+
+# The cross-references on python/mypy#21960, as `gh api .../timeline --paginate
+# --slurp` returned them on 2026-09-11, trimmed to the fields read. Ours is
+# #21961; #21967 is the competing fix; the last is this tracker's own issue
+# #85, which is neither a pull request nor in the target repository.
+# https://github.com/wolfgang-aura/Mailman/issues/86
+MYPY_21960_TIMELINE: list[dict[str, object]] = [
+    {"event": "labeled"},
+    {
+        "event": "cross-referenced",
+        "source": {
+            "type": "issue",
+            "issue": {
+                "number": 21961,
+                "state": "closed",
+                "html_url": "https://github.com/python/mypy/pull/21961",
+                "repository_url": "https://api.github.com/repos/python/mypy",
+                "created_at": "2026-09-09T02:12:50Z",
+                "user": {"login": "wolfgang-aura"},
+                "pull_request": {
+                    "url": "https://api.github.com/repos/python/mypy/pulls/21961",
+                    "merged_at": None,
+                },
+            },
+        },
+    },
+    {"event": "subscribed"},
+    {"event": "referenced"},
+    {
+        "event": "cross-referenced",
+        "source": {
+            "type": "issue",
+            "issue": {
+                "number": 21967,
+                "state": "open",
+                "html_url": "https://github.com/python/mypy/pull/21967",
+                "repository_url": "https://api.github.com/repos/python/mypy",
+                "created_at": "2026-09-10T20:17:05Z",
+                "user": {"login": "EmmanuelNiyonshuti"},
+                "pull_request": {
+                    "url": "https://api.github.com/repos/python/mypy/pulls/21967",
+                    "merged_at": None,
+                },
+            },
+        },
+    },
+    {
+        "event": "cross-referenced",
+        "source": {
+            "type": "issue",
+            "issue": {
+                "number": 85,
+                "state": "open",
+                "html_url": "https://github.com/wolfgang-aura/Mailman/issues/85",
+                "repository_url": "https://api.github.com/repos/wolfgang-aura/Mailman",
+                "created_at": "2026-09-10T20:21:38Z",
+                "user": {"login": "wolfgang-aura"},
+                "pull_request": None,
+            },
+        },
+    },
+]
+
+
+def _mypy_competitors(repository: str, issue: int, *, own_number: int) -> dict[str, object]:
+    return {
+        "available": True,
+        # The recorded timeline is mypy's whatever repository the test filed against.
+        "pull_requests": competitors_from_timeline(
+            MYPY_21960_TIMELINE, "python/mypy", own_number=own_number
+        ),
+    }
+
+
+def _no_competitors(repository: str, issue: int, *, own_number: int) -> dict[str, object]:
+    return {"available": True, "pull_requests": []}
+
+
+def _competitors_offline(
+    repository: str, issue: int, *, own_number: int
+) -> dict[str, object]:
+    return {"available": False, "detail": "gh is not installed"}
+
+
+def _name_the_issue(run_directory: Path, issue: str) -> None:
+    (run_directory / "run.json").write_text(
+        json.dumps({"run_id": run_directory.name, "issue": issue}), encoding="utf-8"
+    )
+
+
+class CompetingPullRequestTests(unittest.TestCase):
+    """https://github.com/wolfgang-aura/Mailman/issues/86."""
+
+    def test_the_timeline_yields_the_other_pull_request_and_nothing_else(self) -> None:
+        found = competitors_from_timeline(
+            MYPY_21960_TIMELINE, "python/mypy", own_number=21961
+        )
+
+        self.assertEqual(
+            found,
+            [
+                {
+                    "number": 21967,
+                    "state": "open",
+                    "author": "EmmanuelNiyonshuti",
+                    "url": "https://github.com/python/mypy/pull/21967",
+                    "created_at": "2026-09-10T20:17:05Z",
+                }
+            ],
+        )
+
+    def test_a_merged_competitor_is_reported_as_merged(self) -> None:
+        events = [
+            {
+                "event": "cross-referenced",
+                "source": {
+                    "issue": {
+                        "number": 7,
+                        "state": "closed",
+                        "html_url": "https://github.com/pdm-project/pdm/pull/7",
+                        "repository_url": "https://api.github.com/repos/pdm-project/pdm",
+                        "created_at": "2026-09-01T00:00:00Z",
+                        "user": {"login": "other"},
+                        "pull_request": {"merged_at": "2026-09-02T00:00:00Z"},
+                    }
+                },
+            },
+            {
+                "event": "cross-referenced",
+                "source": {
+                    "issue": {
+                        "number": 8,
+                        "state": "closed",
+                        "html_url": "https://github.com/pdm-project/pdm/pull/8",
+                        "repository_url": "https://api.github.com/repos/pdm-project/pdm",
+                        "created_at": "2026-09-01T00:00:00Z",
+                        "user": {"login": "other"},
+                        "pull_request": {"merged_at": None},
+                    }
+                },
+            },
+        ]
+
+        found = competitors_from_timeline(events, "pdm-project/pdm", own_number=9)
+
+        self.assertEqual([item["number"] for item in found], [7])
+        self.assertEqual(found[0]["state"], "merged")
+
+    def test_the_issue_number_comes_from_the_run_record(self) -> None:
+        with TemporaryDirectory() as name:
+            run_directory = Path(name)
+            self.assertIsNone(upstream_issue_number(run_directory, "python/mypy"))
+
+            _name_the_issue(run_directory, "https://github.com/python/mypy/issues/21960")
+            self.assertEqual(upstream_issue_number(run_directory, "python/mypy"), 21960)
+            self.assertEqual(
+                upstream_issue_number(
+                    run_directory, "https://github.com/python/mypy.git"
+                ),
+                21960,
+            )
+            # An issue in another repository says nothing about this one's competitors.
+            self.assertIsNone(upstream_issue_number(run_directory, "pdm-project/pdm"))
+
+    def test_the_staged_submission_is_the_second_source(self) -> None:
+        with TemporaryDirectory() as name:
+            run_directory = Path(name)
+            submission = run_directory / "submission"
+            submission.mkdir()
+            (submission / "submission.json").write_text(
+                json.dumps({"target": "python/mypy", "issue_number": 21964}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(upstream_issue_number(run_directory, "python/mypy"), 21964)
+            self.assertIsNone(upstream_issue_number(run_directory, "pdm-project/pdm"))
+
+    def test_a_refresh_records_the_competitor_on_an_open_pull_request(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            run_directory = _filed_run(data_root, "20260908T204404Z-1e0aa3", 21961)
+            _name_the_issue(run_directory, "https://github.com/pdm-project/pdm/issues/3")
+            now = datetime(2026, 9, 11, 6, 0, tzinfo=UTC)
+
+            record, failure = refresh_state(
+                run_directory,
+                state_lookup=_open,
+                competitor_lookup=_mypy_competitors,
+                now=now,
+            )
+
+            self.assertIsNone(failure)
+            self.assertEqual(record["competition"]["issue"], 3)
+            self.assertEqual(record["competition"]["checked_at"], now.isoformat())
+            entry = contribution_from_record(load_provenance(run_directory))
+            self.assertEqual([item["number"] for item in competitors(entry)], [21967])
+
+    def test_a_closed_pull_request_is_not_looked_up(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            run_directory = _filed_run(data_root, "20260908T204404Z-1e0aa3", 21961)
+            _name_the_issue(run_directory, "https://github.com/pdm-project/pdm/issues/3")
+
+            def _never(repository: str, issue: int, *, own_number: int) -> dict[str, object]:
+                raise AssertionError("a closed pull request cannot be overtaken")
+
+            record, failure = refresh_state(
+                run_directory, state_lookup=_closed, competitor_lookup=_never
+            )
+
+            self.assertIsNone(failure)
+            self.assertIn("CLOSED", record["competition"]["skipped"])
+            self.assertEqual(competitors(contribution_from_record(record)), [])
+
+    def test_an_unreadable_issue_is_a_failure_not_a_clean_bill(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            run_directory = _filed_run(data_root, "20260908T204404Z-1e0aa3", 21961)
+            _name_the_issue(run_directory, "https://github.com/pdm-project/pdm/issues/3")
+
+            record, failure = refresh_state(
+                run_directory, state_lookup=_open, competitor_lookup=_competitors_offline
+            )
+
+            self.assertIn("competitors unchecked", failure)
+            self.assertIn("gh is not installed", failure)
+            self.assertEqual(record["state"], "OPEN")
+            self.assertEqual(competitors(contribution_from_record(record)), [])
+
+    def test_a_run_that_names_no_issue_says_so(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            run_directory = _filed_run(data_root, "20260908T204404Z-1e0aa3", 21961)
+
+            record, failure = refresh_state(
+                run_directory, state_lookup=_open, competitor_lookup=_mypy_competitors
+            )
+
+            self.assertIn("names no issue", failure)
+            rendered = render_contributions([contribution_from_record(record)])
+            self.assertIn("competing pull requests unchecked", rendered)
+
+    def test_the_listing_names_the_competitor_and_the_all_clear(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            challenged = _filed_run(data_root, "20260908T204404Z-1e0aa3", 21961)
+            _name_the_issue(challenged, "https://github.com/pdm-project/pdm/issues/3")
+            clear = _filed_run(data_root, "20260908T223126Z-2b2b81", 14993)
+            _name_the_issue(clear, "https://github.com/pdm-project/pdm/issues/4")
+            refresh_state(challenged, state_lookup=_open, competitor_lookup=_mypy_competitors)
+            refresh_state(clear, state_lookup=_open, competitor_lookup=_no_competitors)
+
+            rendered = render_contributions(collect_contributions(data_root))
+
+            self.assertIn(
+                "COMPETING: #21967 open by EmmanuelNiyonshuti, opened "
+                "2026-09-10T20:17:05Z https://github.com/python/mypy/pull/21967",
+                rendered,
+            )
+            self.assertIn("no competing pull request on issue #4", rendered)
+
+    def test_an_open_pull_request_never_checked_says_so(self) -> None:
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            _filed_run(data_root, "20260908T204404Z-1e0aa3", 21961)
+
+            rendered = render_contributions(collect_contributions(data_root))
+
+            self.assertIn("competing pull requests never read", rendered)
 
 
 if __name__ == "__main__":
