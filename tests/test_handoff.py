@@ -684,3 +684,97 @@ class ClosedRunTests(unittest.TestCase):
             self.assertIn("case closed: our pull request was superseded by #330", err.getvalue())
             self.assertIn("the issue #327", err.getvalue())
             self.assertIn("--closing-reply", err.getvalue())
+
+
+class SilentCloseTests(unittest.TestCase):
+    """pdm#3884 and pytest#14993 both closed without a word. The first was
+    filed on an issue its maintainer had already closed; the second on an
+    issue nobody from the project had answered.
+    See https://github.com/wolfgang-aura/Mailman/issues/88."""
+
+    def setUp(self):
+        authors = patch(
+            "mailman.handoff.check_authorship",
+            return_value={"ok": True, "head": "fixture"},
+        )
+        authors.start()
+        self.addCleanup(authors.stop)
+        foreign = patch("mailman.handoff.foreign_pull_request", return_value=None)
+        foreign.start()
+        self.addCleanup(foreign.stop)
+
+    def _claims(self, directory: Path, **fields) -> None:
+        _prior_art(directory)
+        path = directory / "claims.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record.update(fields)
+        path.write_text(json.dumps(record), encoding="utf-8", newline="\n")
+
+    def _pull_request(self, root: Path, directory: Path):
+        body_path = root / "body.md"
+        body_path.write_text(BODY, encoding="utf-8", newline="\n")
+        return build_handoff(
+            run_id=directory.name,
+            run_directory=directory,
+            body_path=body_path,
+            kind="pull-request",
+            repository="pmorissette/ffn",
+            title="t",
+            head="wolfgang-aura:b",
+            base="master",
+        )
+
+    def test_a_closed_issue_refuses_the_publish(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            self._pull_request(root, directory)
+            self._claims(
+                directory, issue_state="closed", issue_closed_at="2026-09-08T09:27:46Z"
+            )
+            result = check_handoff(directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "issue-closed")
+            self.assertIn("2026-09-08T09:27:46Z", result["detail"])
+
+    def test_an_open_issue_still_publishes(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            self._pull_request(root, directory)
+            self._claims(directory, issue_state="open")
+            self.assertTrue(check_handoff(directory)["ok"])
+
+    def test_an_outside_report_nobody_answered_is_flagged(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            self._claims(
+                directory, reporter_association="NONE", maintainer_replied=False
+            )
+            record, block = self._pull_request(root, directory)
+            self.assertIn("UNTRIAGED ISSUE", block)
+            self.assertIn("(NONE)", record["triage_warning"])
+
+    def test_a_maintainer_reply_or_report_clears_the_flag(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            self._claims(
+                directory, reporter_association="NONE", maintainer_replied=True
+            )
+            record, _ = self._pull_request(root, directory)
+            self.assertIsNone(record["triage_warning"])
+            self._claims(
+                directory, reporter_association="MEMBER", maintainer_replied=False
+            )
+            record, _ = self._pull_request(root, directory)
+            self.assertIsNone(record["triage_warning"])
+
+    def test_an_older_claims_record_gets_no_flag(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            self._claims(directory)
+            record, _ = self._pull_request(root, directory)
+            self.assertIsNone(record["triage_warning"])

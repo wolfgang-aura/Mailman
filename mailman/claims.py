@@ -244,6 +244,12 @@ def read_claims(
         if isinstance(entry, dict) and entry.get("login")
     ]
     record["issue_state"] = payload.get("state")
+    record["issue_closed_at"] = payload.get("closed_at")
+    # Who reported it, and whether anyone who can speak for the project has
+    # answered. pytest-dev/pytest#14992 was thirteen hours old, reported from
+    # outside, unanswered, and its premise was wrong; the fix filed against it
+    # closed without a word. See wolfgang-aura/Mailman#88.
+    record["reporter_association"] = payload.get("author_association")
 
     comments: list[dict[str, Any]] = []
     for page in range(1, pages + 1):
@@ -269,6 +275,11 @@ def read_claims(
         elif kind == "assignment":
             record["assignments"].append(_row(comment))
     record["comments_read"] = len(comments)
+    record["maintainer_replied"] = any(
+        comment.get("author_association") in MAINTAINER_ASSOCIATIONS
+        for comment in comments
+        if isinstance(comment, dict)
+    )
     record["success"] = True
     _write(run_directory, record)
     return record

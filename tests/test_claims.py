@@ -276,3 +276,53 @@ class ReadClaimsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TriageFieldsTests(unittest.TestCase):
+    """What the record says about who reported the issue and who answered.
+    See https://github.com/wolfgang-aura/Mailman/issues/88."""
+
+    def _run(self, root: Path) -> Path:
+        return ReadClaimsTests._run(self, root)
+
+    def test_an_outside_report_with_no_maintainer_reply(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._run(Path(temporary))
+            record = read_claims(
+                root,
+                executable="gh",
+                execute=_FakeGh(
+                    {
+                        "number": 4775,
+                        "assignees": [],
+                        "state": "open",
+                        "closed_at": None,
+                        "author_association": "NONE",
+                    },
+                    [_comment("Reverified, still reproduces.")],
+                ),
+            )
+            self.assertEqual(record["reporter_association"], "NONE")
+            self.assertFalse(record["maintainer_replied"])
+            self.assertIsNone(record["issue_closed_at"])
+
+    def test_a_member_reply_and_a_close_are_both_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._run(Path(temporary))
+            record = read_claims(
+                root,
+                executable="gh",
+                execute=_FakeGh(
+                    {
+                        "number": 4775,
+                        "assignees": [],
+                        "state": "closed",
+                        "closed_at": "2026-09-08T09:27:46Z",
+                        "author_association": "NONE",
+                    },
+                    [_comment("Fixed in dc4e314.", association="OWNER")],
+                ),
+            )
+            self.assertTrue(record["maintainer_replied"])
+            self.assertEqual(record["issue_state"], "closed")
+            self.assertEqual(record["issue_closed_at"], "2026-09-08T09:27:46Z")

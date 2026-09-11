@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from mailman.claims import load_claims
+from mailman.claims import MAINTAINER_ASSOCIATIONS, load_claims
 from mailman.completion import check_authorship
 from mailman.executor import clamp_timeout_seconds
 from mailman.provenance import load_provenance, upstream_issue_number
@@ -407,6 +407,32 @@ def closing_reply_refusal(
     )
 
 
+def triage_warning(run_directory: Path) -> str | None:
+    """Why the issue may not be a bug: nobody who speaks for the project said so.
+
+    An outside reporter, no maintainer reply. pytest-dev/pytest#14992 looked
+    exactly like this when #14993 was filed against it; the maintainer's
+    first reply, eleven hours later, said the use case was unsupported, and
+    the reporter withdrew the premise. Older claims records lack the fields
+    and get no warning, which is a gap and not a pass.
+    See https://github.com/wolfgang-aura/Mailman/issues/88.
+    """
+    claims = load_claims(run_directory) or {}
+    reporter = claims.get("reporter_association")
+    replied = claims.get("maintainer_replied")
+    if reporter is None or replied is None:
+        return None
+    if reporter in MAINTAINER_ASSOCIATIONS or replied:
+        return None
+    return (
+        f"the issue was reported from outside the project ({reporter}) and no "
+        "owner, member or collaborator has replied on it. Nobody who can "
+        "speak for the project has said this is a bug they want fixed. "
+        "pytest-dev/pytest#14993 was filed on an issue in this state; the "
+        "premise turned out to be wrong and the pull request closed unread."
+    )
+
+
 def _preamble(record: dict[str, Any], claims: list[dict[str, Any]]) -> list[str]:
     lines = [
         "=" * 72,
@@ -432,6 +458,18 @@ def _preamble(record: dict[str, Any], claims: list[dict[str, Any]]) -> list[str]
                 "  courtesy reply the run may still send. After it is posted,",
                 "  nothing further goes to the issue, our pull request or the",
                 "  superseding one.",
+                "",
+            ]
+        )
+    triage = record.get("triage_warning")
+    if triage:
+        lines.extend(
+            [
+                "-" * 72,
+                "UNTRIAGED ISSUE -- no maintainer has said this is a bug",
+                "-" * 72,
+                "",
+                "  " + triage,
                 "",
             ]
         )
@@ -619,6 +657,7 @@ def build_handoff(
         "first_person_claims": first_person_claims(body),
         "preservation_claims": preservation_claims(body),
         "word_count": len(body.split()),
+        "triage_warning": triage_warning(run_directory) if kind == "pull-request" else None,
         "head_owner": owner,
         "head_owner_type": owner_type,
         "maintainer_edit_warning": maintainer_edit_warning(owner, owner_type),
@@ -750,6 +789,24 @@ def check_prior_art_freshness(
                 f"the limit is {max_age_minutes:g} minutes. An upstream "
                 "duplicate has appeared 94 minutes after a run finished, so "
                 f"evidence this old clears nothing. {refresh}"
+            ),
+            "evidence": evidence,
+        }
+    if (claims.get("issue_state") or "").lower() == "closed":
+        return {
+            "ok": False,
+            "reason": "issue-closed",
+            "detail": (
+                "the issue this fixes was already closed "
+                + (
+                    f"at {claims['issue_closed_at']}"
+                    if claims.get("issue_closed_at")
+                    else f"when claims were read at {claims.get('collected_at')}"
+                )
+                + ". pdm-project/pdm#3877 was closed by its "
+                "maintainer nine hours before pdm#3884 was filed against it, "
+                "and the claims check had recorded the state. A closed issue "
+                "is somebody else's decision; do not file on it."
             ),
             "evidence": evidence,
         }
