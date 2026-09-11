@@ -19,6 +19,23 @@ _PATH_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+(?::\d+)?)"
 )
 
+# Phrases an issue author uses to say how something other than the target
+# handles the same case. python/mypy#21960 named three checkers this way, each
+# with its own framing of the rule, and the agents never saw the sentence.
+# https://github.com/wolfgang-aura/Mailman/issues/85
+_COMPARISON_CUES = re.compile(
+    r"\b("
+    r"other (?:type )?(?:checkers?|tools?|linters?|implementations?|libraries|"
+    r"languages?|runtimes?|compilers?|engines?)"
+    r"|unlike|whereas|in contrast|by contrast|compared (?:to|with)|for comparison"
+    r"|(?:the|per|according to the) (?:typing |language |json |html |http |css )?"
+    r"(?:spec|specification|standard|rfc|pep)\b"
+    r")",
+    re.IGNORECASE,
+)
+_MAX_COMPARISONS = 6
+_MAX_COMPARISON_CHARS = 700
+
 
 _EXECUTION_DISCIPLINE = """
 ## Time and context discipline
@@ -107,6 +124,71 @@ def _known_scope_section(run_directory: Path) -> str:
     )
 
 
+def issue_comparisons(issue_markdown: str) -> list[str]:
+    """Paragraphs of the issue body that say how another tool handles the case.
+
+    Prose only: fenced code and the capture header are skipped, and the answer
+    is capped so a long issue cannot flood the prompt. A miss costs a sentence
+    the agent could have read anyway; a hit tells it which framings the
+    maintainers have already been shown.
+    """
+    body = issue_markdown.split("## Issue body", 1)[-1].split("## Capture boundary", 1)[0]
+    found: list[str] = []
+    in_fence = False
+    paragraph: list[str] = []
+
+    def flush() -> None:
+        text = " ".join(line.strip() for line in paragraph).strip()
+        paragraph.clear()
+        if not text or text.startswith("#") or not _COMPARISON_CUES.search(text):
+            return
+        if len(text) > _MAX_COMPARISON_CHARS:
+            text = text[: _MAX_COMPARISON_CHARS - 3].rstrip() + "..."
+        if text not in found:
+            found.append(text)
+
+    for line in body.splitlines():
+        if line.strip().startswith(("```", "~~~")):
+            in_fence = not in_fence
+            flush()
+            continue
+        if in_fence:
+            continue
+        if not line.strip():
+            flush()
+            continue
+        paragraph.append(line)
+    flush()
+    return found[:_MAX_COMPARISONS]
+
+
+def _comparison_section(comparisons: Sequence[str], *, audience: str) -> str:
+    if not comparisons:
+        return ""
+    quoted = "\n".join(f"> {text}" for text in comparisons)
+    if audience == "reviewer":
+        ask = (
+            "Say which of these framings the candidate follows, and whether the "
+            "others were considered and why they were not taken. A patch that "
+            "picks the narrowest reading when the issue names a broader rule "
+            "another implementation enforces is a required change, not a note."
+        )
+    else:
+        ask = (
+            "These are framings the maintainers have already been shown. Decide "
+            "which rule your change enforces, say so in the report, and say why "
+            "the others were not the right mechanism here. Do not pick one "
+            "silently."
+        )
+    return f"""
+## How the issue says other implementations handle this
+
+{quoted}
+
+{ask}
+"""
+
+
 def _work_order(
     run_directory: Path,
     issue_markdown: str,
@@ -143,6 +225,7 @@ def _work_order(
         "start_files": sorted(found),
         "symbols": [str(item) for item in prescreen.get("symbols") or [] if str(item)],
         "verification_command": list(verification_command or []),
+        "comparisons": issue_comparisons(issue_markdown),
     }
     (run_directory / WORK_ORDER_FILENAME).write_text(
         json.dumps(order, indent=2) + "\n", encoding="utf-8"
@@ -283,6 +366,7 @@ def build_primary_prompt(
     scope: str = "",
     reproduction: str = "",
     work_order: str = "",
+    comparisons: str = "",
 ) -> str:
     return f"""# Primary engineering task
 
@@ -296,7 +380,7 @@ instructions before editing, and follow its existing conventions.
 {_verification_line(verification_command)}
 {_focused_check_note(verification_command)}
 {_EXECUTION_DISCIPLINE}
-{work_order}{scope}{reproduction}
+{work_order}{scope}{reproduction}{comparisons}
 ## Required behavior
 
 - Keep the change focused on this issue. No drive-by refactors.
@@ -325,6 +409,7 @@ def build_reviewer_prompt(
     scope: str = "",
     reproduction: str = "",
     work_order: str = "",
+    comparisons: str = "",
 ) -> str:
     return f"""# Reviewer task
 
@@ -338,8 +423,7 @@ question requires a bounded slice of surrounding code or one focused check.
 
 {_verification_line(verification_command)}
 {_EXECUTION_DISCIPLINE}
-{work_order}{scope}{reproduction}
-
+{work_order}{scope}{reproduction}{comparisons}
 ## Judge
 
 - Does the change address the issue below, and only that issue?
@@ -402,6 +486,9 @@ def write_task_prompts(
             scope=scope,
             reproduction=reproduction,
             work_order=work_order_section,
+            comparisons=_comparison_section(
+                work_order["comparisons"], audience="primary"
+            ),
         ),
         encoding="utf-8",
     )
@@ -415,6 +502,9 @@ def write_task_prompts(
             scope=scope,
             reproduction=reproduction,
             work_order=work_order_section,
+            comparisons=_comparison_section(
+                work_order["comparisons"], audience="reviewer"
+            ),
         ),
         encoding="utf-8",
     )

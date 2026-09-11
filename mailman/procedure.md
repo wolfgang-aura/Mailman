@@ -120,7 +120,9 @@ status check you did not act on is pure cost.
    The generated task carries the pre-screened symbols and the recorded
    baseline. The primary starts with the exact work-order files, runs only
    focused checks needed to guide the edit, and does not redo discovery,
-   reproduction or the full gate. For `gpt-5.6-luna`, use
+   reproduction or the full gate. When the issue says how another tool or
+   the spec handles the case, the work order quotes it and both roles must
+   say which framing the patch follows. For `gpt-5.6-luna`, use
    `orchestrate --reasoning-effort medium`; higher effort is not the default for
    these bounded tasks and must be an intentional operator override.
 

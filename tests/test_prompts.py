@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from mailman.artifacts import create_run
-from mailman.prompts import write_task_prompts
+from mailman.prompts import issue_comparisons, write_task_prompts
 
 
 def make_run(root: Path):
@@ -19,6 +19,42 @@ def make_run(root: Path):
         reviewer="claude",
         data_root=root,
     )
+
+
+# python/mypy#21960 as `mailman fetch-issue` captured it on 2026-09-08, cut to
+# the paragraphs that matter. https://github.com/wolfgang-aura/Mailman/issues/85
+MYPY_21960_ISSUE = """\
+# python/mypy#21960: Self is not rejected when used as a PEP 695 type parameter bound
+
+- Source: https://github.com/python/mypy/issues/21960
+- Capture method: github-cli
+
+## Issue body
+
+### Bug Report
+
+It seems one location wasn't covered: using Self as the bound (or constraint) of a PEP 695 type parameter.
+
+### To Reproduce:
+```python
+from typing import Self
+class Foo:
+      def fails[T: Self](self: T) -> None: pass
+```
+### Expected Behavior
+
+Mypy should reject `Self` here with an error.
+
+From a quick look at other type checkers: pyright and ty treat it as an invalid/generic TypeVar bound (`TypeVar upper bound cannot be generic`), while zuban rejects it with the same message mypy already uses elsewhere,
+```Self type is only allowed in annotations within class definition```.
+
+### Actual Behavior
+No error is reported.
+
+## Capture boundary
+
+This file is the only issue text the agents see.
+"""
 
 
 class TaskPromptTests(unittest.TestCase):
@@ -149,6 +185,78 @@ class TaskPromptTests(unittest.TestCase):
                     "frontend/src/Positions.tsx",
                 ],
             )
+
+    def test_the_issue_comparison_to_other_tools_reaches_both_agents(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/85
+
+        python/mypy#21960 said pyright and ty treat the case as a generic bound
+        and zuban as an invalid `Self` location. The run chose the `Self`
+        framing, a contributor's generic-bound fix replaced it, and neither
+        agent had been asked which rule the patch enforces.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, run_directory = make_run(Path(temporary_directory) / "runs")
+            (run_directory / "issue.md").write_text(
+                MYPY_21960_ISSUE, encoding="utf-8"
+            )
+
+            primary_path, reviewer_path = write_task_prompts(
+                run, run_directory, verification_command=["pytest", "-q"]
+            )
+
+            primary = primary_path.read_text(encoding="utf-8")
+            reviewer = reviewer_path.read_text(encoding="utf-8")
+            heading = "## How the issue says other implementations handle this"
+            self.assertIn(heading, primary)
+            self.assertIn(heading, reviewer)
+            self.assertIn("> From a quick look at other type checkers: pyright", primary)
+            self.assertIn("Do not pick one silently", primary)
+            self.assertIn("which of these framings the candidate follows", reviewer)
+            order = json.loads(
+                (run_directory / "work-order.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(order["comparisons"]), 1)
+            self.assertTrue(order["comparisons"][0].startswith("From a quick look"))
+
+    def test_an_issue_without_a_comparison_adds_no_section(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, run_directory = make_run(Path(temporary_directory) / "runs")
+            (run_directory / "issue.md").write_text(
+                "# Crash\n\n## Issue body\n\nIt crashes on empty input.\n",
+                encoding="utf-8",
+            )
+
+            primary_path, _ = write_task_prompts(
+                run, run_directory, verification_command=["pytest", "-q"]
+            )
+
+            self.assertNotIn("other implementations", primary_path.read_text("utf-8"))
+            order = json.loads(
+                (run_directory / "work-order.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(order["comparisons"], [])
+
+    def test_comparisons_skip_code_and_the_capture_header(self) -> None:
+        text = (
+            "# x/y#1: t\n\n- Source: unlike anything\n\n## Issue body\n\n"
+            "```\nunlike this code\n```\n\n"
+            "Whereas the reference parser accepts it, ours does not.\n\n"
+            "## Capture boundary\n\nUnlike the header, this is not issue text.\n"
+        )
+
+        self.assertEqual(
+            issue_comparisons(text),
+            ["Whereas the reference parser accepts it, ours does not."],
+        )
+
+    def test_a_long_comparison_is_cut_not_dropped(self) -> None:
+        text = "## Issue body\n\nUnlike ours, " + "x" * 2000 + "\n"
+
+        found = issue_comparisons(text)
+
+        self.assertEqual(len(found), 1)
+        self.assertLessEqual(len(found[0]), 700)
+        self.assertTrue(found[0].endswith("..."))
 
     def test_refuses_a_prepared_workspace_without_an_exact_start_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
