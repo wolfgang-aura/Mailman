@@ -239,6 +239,12 @@ opening the local packet URL during this session; visual state is unverified.
   state (`gh api repos/O/R/pulls/N` names the author; unreachable means not refused), and warns
   when a reply passes 120 words. Live check: the open poetry run refused a comment on
   python-poetry/poetry#11050 with exit 2 and rendered one for its own #11052. 864 unit tests.
+- Silent-close deployment: commit `c8f0b73` passed GitHub Actions in run `34598020147`. It
+  carries #88: `claims` records `issue_closed_at`, `reporter_association` and
+  `maintainer_replied`; `handoff-check` refuses a pull request whose issue is closed
+  (`issue-closed`); `handoff` prints `UNTRIAGED ISSUE` for an outside report no maintainer has
+  answered. Live check: the pdm run's real `claims.json` refuses with `issue-closed`. 871 unit
+  tests. Run records 0010 and 0011 hold the four closed cases.
 
 ### Reproduce gate, live-verified 2026-09-04
 

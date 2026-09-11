@@ -198,6 +198,9 @@ status check you did not act on is pure cost.
     exact local branch and final body. Run `handoff-check`. Keep all filings
     and upstream writes pending. For a self-sourced defect, prepare any required
     issue text alongside the PR and ask for approval of the ordered filings.
+    A closed issue is refused; an issue with no maintainer reply is flagged
+    in the block, and on one the operator decides whether to file or to ask
+    on the issue first.
     After filing, the run writes to two threads only: its own issue and its
     own pull request. Never a pull request someone else opened. One reply per
     thread per event, under 120 words unless a maintainer asked questions. If

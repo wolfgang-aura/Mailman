@@ -579,6 +579,15 @@ to stop. See
 [the run record](docs/runs/0010-mypy-21961-superseded.md) and
 [issue #87](https://github.com/wolfgang-aura/Mailman/issues/87).
 
+Before that, `handoff-check` refuses a pull request whose issue the claims
+check found closed, and `handoff` flags an issue reported from outside the
+project that no maintainer has answered. pdm#3884 was filed nine hours after
+its maintainer closed the issue, with the state already in `claims.json`;
+pytest#14993 was filed on a thirteen-hour-old outside report whose premise the
+reporter later withdrew. Both closed without a word. See
+[the two silent closes](docs/runs/0011-pdm-3884-pytest-14993-silent-closes.md)
+and [issue #88](https://github.com/wolfgang-aura/Mailman/issues/88).
+
 ## Human boundary
 
 Mailman may eventually prepare branches, patches, and pull request text. It must not push, open a pull request, comment on an issue, or otherwise change an upstream project without a separate human approval step.
