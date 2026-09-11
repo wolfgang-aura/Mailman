@@ -226,6 +226,14 @@ opening the local packet URL during this session; visual state is unverified.
   characters before it clones, and records what is left. `handoff-check` refuses a pull request
   whose duplicate search or claims check is missing, failed, older than an hour, or covers another
   repository. 534 unit tests, up from 510.
+- Closed-case deployment: commit `2490144` passed GitHub Actions in run `34584586612`. It
+  carries #87: once provenance records a run's pull request as `CLOSED` or names a
+  `superseded_by`, `handoff` refuses a comment on the issue, our pull request or the superseding
+  one, and a new pull request; `handoff-check` re-reads provenance at publish time and refuses
+  `run-closed`. `handoff --closing-reply` allows one courtesy reply to one thread, recorded in
+  `closing-reply.json`. `provenance --superseded-by` prints the rule on stderr. 862 unit tests,
+  up from 801. Run `20260908T220821Z-124828` (python/mypy#21961, superseded by #21967) carries
+  the marker for the reply posted on #21967 on 2026-09-11.
 
 ### Reproduce gate, live-verified 2026-09-04
 
