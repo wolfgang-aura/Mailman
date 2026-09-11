@@ -4,7 +4,7 @@ import io
 import json
 import unittest
 from unittest.mock import patch
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,6 +20,7 @@ from mailman.handoff import (
     publish_command,
 )
 from mailman.models import AgentConfig, RunRecord
+from mailman.provenance import record_provenance
 
 
 BODY = """Nothing was cached, so every call recomputed the window.
@@ -453,3 +454,193 @@ class PriorArtFreshnessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _close_the_case(
+    directory: Path, *, pull_request: int = 21961, superseded_by: int | None = 21967
+) -> None:
+    """Provenance as it reads after `mailman provenance --superseded-by`."""
+    submission = directory / "submission"
+    submission.mkdir(exist_ok=True)
+    (submission / "provenance.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": directory.name,
+                "repository": "python/mypy",
+                "pull_request": pull_request,
+                "state": "CLOSED",
+                "superseded_by": superseded_by,
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    (submission / "submission.json").write_text(
+        json.dumps({"target": "python/mypy", "issue_number": 21960}),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+class ClosedRunTests(unittest.TestCase):
+    """After python/mypy#21961 was superseded by #21967, a review comment went
+    to #21967 in the same minute. Its author asked for the activity to stop.
+    See https://github.com/wolfgang-aura/Mailman/issues/87."""
+
+    def setUp(self):
+        authors = patch(
+            "mailman.handoff.check_authorship",
+            return_value={"ok": True, "head": "fixture"},
+        )
+        authors.start()
+        self.addCleanup(authors.stop)
+
+    def _comment(self, root: Path, directory: Path, issue: int, **extra):
+        body_path = root / "reply.md"
+        body_path.write_text("Thanks, closing this one.\n", encoding="utf-8")
+        return build_handoff(
+            run_id=directory.name,
+            run_directory=directory,
+            body_path=body_path,
+            kind="issue-comment",
+            repository="python/mypy",
+            issue_number=issue,
+            **extra,
+        )
+
+    def test_a_comment_on_the_superseding_pull_request_is_refused(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            _close_the_case(directory)
+            with self.assertRaises(ValueError) as caught:
+                self._comment(root, directory, 21967)
+            self.assertIn("superseded by #21967", str(caught.exception))
+            self.assertIn("the superseding pull request #21967", str(caught.exception))
+            self.assertIn("--closing-reply", str(caught.exception))
+
+    def test_the_issue_and_our_own_pull_request_are_closed_too(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            _close_the_case(directory)
+            for number in (21960, 21961):
+                with self.assertRaises(ValueError, msg=number):
+                    self._comment(root, directory, number)
+
+    def test_a_closed_pull_request_without_a_successor_is_closed_as_well(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            _close_the_case(directory, superseded_by=None)
+            with self.assertRaises(ValueError) as caught:
+                self._comment(root, directory, 21961)
+            self.assertIn("#21961 is closed", str(caught.exception))
+
+    def test_an_unrelated_thread_is_not_gated(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            _close_the_case(directory)
+            record, _ = self._comment(root, directory, 21999)
+            self.assertFalse(record["closing_reply"])
+            self.assertTrue(record["closure"]["closed"])
+
+    def test_an_open_run_is_untouched(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            record, _ = self._comment(root, directory, 21967)
+            self.assertFalse(record["closure"]["closed"])
+            with self.assertRaises(ValueError):
+                self._comment(root, directory, 21967, closing_reply=True)
+
+    def test_one_closing_reply_is_allowed_and_a_second_thread_is_not(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            _close_the_case(directory)
+            record, block = self._comment(root, directory, 21967, closing_reply=True)
+            self.assertTrue(record["closing_reply"])
+            self.assertIn("CLOSING REPLY", block)
+            self.assertTrue(check_handoff(directory)["ok"])
+            # Re-rendering the same reply is fine; the marker names the thread.
+            self._comment(root, directory, 21967, closing_reply=True)
+            with self.assertRaises(ValueError) as caught:
+                self._comment(root, directory, 21960, closing_reply=True)
+            self.assertIn("already went to #21967", str(caught.exception))
+
+    def test_the_case_closing_after_the_handoff_stops_the_publish(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            record, _ = self._comment(root, directory, 21967)
+            self.assertTrue(check_handoff(directory)["ok"])
+            _close_the_case(directory)
+            result = check_handoff(directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "run-closed")
+
+    def test_the_cli_refuses_and_names_the_flag(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            run, directory = _run_directory(root)
+            _close_the_case(directory)
+            body_path = root / "reply.md"
+            body_path.write_text("Thanks.\n", encoding="utf-8")
+            shared = [
+                "handoff",
+                run.run_id,
+                "--body",
+                str(body_path),
+                "--repo",
+                "python/mypy",
+                "--kind",
+                "issue-comment",
+                "--issue",
+                "21967",
+                "--data-root",
+                str(root),
+            ]
+            stream = io.StringIO()
+            with redirect_stdout(stream):
+                self.assertEqual(main(shared), 2)
+            with redirect_stdout(stream):
+                self.assertEqual(main([*shared, "--closing-reply"]), 0)
+            self.assertIn("CLOSING REPLY", stream.getvalue())
+
+    def test_provenance_says_the_case_is_closed_when_it_closes_it(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            run, directory = _run_directory(root)
+            (directory / "submission").mkdir()
+            (directory / "submission" / "submission.json").write_text(
+                json.dumps({"target": "pmorissette/ffn", "issue_number": 327}),
+                encoding="utf-8",
+            )
+            out, err = io.StringIO(), io.StringIO()
+            closed = {"available": True, "state": "CLOSED"}
+            with patch(
+                "mailman.cli.record_provenance",
+                side_effect=lambda **kw: record_provenance(
+                    **kw, state_lookup=lambda *_: closed
+                ),
+            ):
+                with redirect_stdout(out), redirect_stderr(err):
+                    code = main(
+                        [
+                            "provenance",
+                            run.run_id,
+                            "--pr",
+                            "328",
+                            "--superseded-by",
+                            "330",
+                            "--data-root",
+                            str(root),
+                        ]
+                    )
+            self.assertEqual(code, 0)
+            self.assertIn("case closed: our pull request was superseded by #330", err.getvalue())
+            self.assertIn("the issue #327", err.getvalue())
+            self.assertIn("--closing-reply", err.getvalue())

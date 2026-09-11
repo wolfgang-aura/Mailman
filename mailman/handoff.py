@@ -24,10 +24,15 @@ from typing import Any
 from mailman.claims import load_claims
 from mailman.completion import check_authorship
 from mailman.executor import clamp_timeout_seconds
+from mailman.provenance import load_provenance, upstream_issue_number
 from mailman.submission import load_duplicate_search
 from mailman.target_intel import repository_slug
 
 HANDOFF_FILENAME = "handoff.json"
+
+#: Written once, when the single closing reply a closed run may still send is
+#: handed over. Its presence is what makes the second one refuse.
+CLOSING_REPLY_FILENAME = "closing-reply.json"
 
 HANDOFF_SCHEMA_VERSION = 1
 
@@ -237,6 +242,95 @@ def publish_command(
     )
 
 
+def closed_threads(run_directory: Path, repository: str) -> dict[str, Any]:
+    """The threads a run may no longer write to, and why.
+
+    Once a run's pull request is closed, or its provenance names the pull
+    request that superseded it, the case is over. The issue, our pull request
+    and the superseding pull request are then somebody else's threads, and
+    anything this run still has to say there is noise. python/mypy#21961 was
+    closed in favour of #21967 at 20:31Z, and a review-style comment went to
+    #21967 in the same minute; its author asked for the activity to stop.
+
+    Returns `closed` False with an empty `threads` map for a run whose pull
+    request is still open or was never recorded, so the check has nothing to
+    refuse. See https://github.com/wolfgang-aura/Mailman/issues/87.
+    """
+    record = load_provenance(run_directory) or {}
+    state = str(record.get("state") or "").upper()
+    superseded_by = record.get("superseded_by")
+    if state != "CLOSED" and not superseded_by:
+        return {"closed": False, "why": None, "threads": {}}
+    threads: dict[int, str] = {}
+    issue = upstream_issue_number(run_directory, repository)
+    if issue:
+        threads[issue] = f"the issue #{issue}"
+    own = record.get("pull_request")
+    if isinstance(own, int):
+        threads[own] = f"our closed pull request #{own}"
+    if isinstance(superseded_by, int):
+        threads[superseded_by] = f"the superseding pull request #{superseded_by}"
+    why = (
+        f"our pull request was superseded by #{superseded_by}"
+        if superseded_by
+        else f"our pull request #{own} is closed"
+    )
+    return {"closed": True, "why": why, "threads": threads}
+
+
+def closure_refusal(
+    closure: dict[str, Any], *, kind: str, issue_number: int | None
+) -> str | None:
+    """Why this handoff must not go out, or None when the case is still open."""
+    if not closure.get("closed"):
+        return None
+    threads = closure.get("threads") or {}
+    if kind == "pull-request":
+        target = "a new pull request"
+    elif issue_number in threads:
+        target = threads[issue_number]
+    else:
+        return None
+    named = ", ".join(threads[number] for number in sorted(threads))
+    return (
+        f"this run is closed: {closure['why']}. Nothing more goes to {named}, "
+        f"and this handoff targets {target}. If this is the one closing "
+        "courtesy reply, and no reply has been handed over since the case "
+        "closed, pass --closing-reply."
+    )
+
+
+def load_closing_reply(run_directory: Path) -> dict[str, Any] | None:
+    path = run_directory / CLOSING_REPLY_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def closing_reply_refusal(
+    run_directory: Path, *, kind: str, issue_number: int | None
+) -> str | None:
+    """Why the override cannot be used, or None when it still can.
+
+    The override covers one reply to one thread. Re-rendering the same reply
+    is fine; a second thread, or a pull request, is not what it is for.
+    """
+    if kind != "issue-comment":
+        return "--closing-reply is for one comment, not for a new pull request"
+    earlier = load_closing_reply(run_directory)
+    if earlier is None or earlier.get("issue_number") == issue_number:
+        return None
+    return (
+        f"the closing reply for this run already went to #{earlier['issue_number']} "
+        f"at {earlier.get('prepared_at')}. There is one, and this targets "
+        f"#{issue_number}."
+    )
+
+
 def _preamble(record: dict[str, Any], claims: list[dict[str, Any]]) -> list[str]:
     lines = [
         "=" * 72,
@@ -251,6 +345,20 @@ def _preamble(record: dict[str, Any], claims: list[dict[str, Any]]) -> list[str]
         f"Digest:    {record['digest']}",
         "",
     ]
+    if record.get("closing_reply"):
+        lines.extend(
+            [
+                "-" * 72,
+                "CLOSING REPLY -- the last thing this run says",
+                "-" * 72,
+                "",
+                f"  {(record.get('closure') or {}).get('why')}. This is the one",
+                "  courtesy reply the run may still send. After it is posted,",
+                "  nothing further goes to the issue, our pull request or the",
+                "  superseding one.",
+                "",
+            ]
+        )
     warning = record.get("maintainer_edit_warning")
     if warning:
         lines.extend(
@@ -343,9 +451,25 @@ def build_handoff(
     base: str | None = None,
     issue_number: int | None = None,
     data_root: Path | None = None,
+    closing_reply: bool = False,
     owner_type_lookup: Callable[[str], str | None] = github_owner_type,
 ) -> tuple[dict[str, Any], str]:
     """Record the body's digest and render the block that hands it over."""
+    closure = closed_threads(run_directory, repository)
+    refusal = closure_refusal(closure, kind=kind, issue_number=issue_number)
+    if refusal and not closing_reply:
+        raise ValueError(refusal)
+    if closing_reply:
+        if refusal is None:
+            raise ValueError(
+                "--closing-reply is for a run whose case is closed, and this "
+                "one is not: nothing here needs overriding."
+            )
+        blocked = closing_reply_refusal(
+            run_directory, kind=kind, issue_number=issue_number
+        )
+        if blocked:
+            raise ValueError(blocked)
     resolved = body_path.resolve()
     if not resolved.is_file():
         raise ValueError(f"no body at {resolved}")
@@ -398,9 +522,26 @@ def build_handoff(
         "command": command,
         "verify_command": verify,
         "authorship": authorship,
+        "closure": closure,
+        "closing_reply": closing_reply,
     }
     path = run_directory / HANDOFF_FILENAME
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n")
+    if closing_reply:
+        marker = run_directory / CLOSING_REPLY_FILENAME
+        marker.write_text(
+            json.dumps(
+                {
+                    "issue_number": issue_number,
+                    "prepared_at": record["prepared_at"],
+                    "digest": record["digest"],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
     return record, render_handoff(record, body)
 
 
@@ -596,6 +737,23 @@ def check_handoff(
             "reason": "first-person-claims",
             "detail": "remove claims only the human can make true",
         }
+    # Read again rather than trusting the record: provenance can close the
+    # case between the handoff and the publish, and that is the moment the
+    # check exists for. See https://github.com/wolfgang-aura/Mailman/issues/87.
+    closure = closed_threads(run_directory, str(record.get("repository") or ""))
+    refusal = closure_refusal(
+        closure, kind=str(record.get("kind")), issue_number=record.get("issue_number")
+    )
+    if refusal and not record.get("closing_reply"):
+        return {"ok": False, "reason": "run-closed", "detail": refusal}
+    if refusal and record.get("closing_reply"):
+        blocked = closing_reply_refusal(
+            run_directory,
+            kind=str(record.get("kind")),
+            issue_number=record.get("issue_number"),
+        )
+        if blocked:
+            return {"ok": False, "reason": "closing-reply-spent", "detail": blocked}
     unchanged = {
         "ok": True,
         "reason": "unchanged",

@@ -563,6 +563,17 @@ sentence was posted by someone who had not read it, because the preview lived in
 prose and in an agent's memory rather than in the harness. See
 [issue #47](https://github.com/wolfgang-aura/Mailman/issues/47).
 
+Once `mailman provenance` records a run's pull request as closed, or names the
+pull request that superseded it with `--superseded-by`, the case is over and
+`handoff` refuses anything aimed at the issue, our pull request or the
+superseding one; `handoff-check` re-reads provenance at publish time, so a case
+that closes after the preview stops there too. One courtesy reply may still go
+out with `--closing-reply`, to one thread, once. On 2026-09-10 python/mypy#21961
+was closed in favour of #21967 and a review-style comment went to #21967 in the
+same minute; its author asked for the activity to stop. See
+[the run record](docs/runs/0010-mypy-21961-superseded.md) and
+[issue #87](https://github.com/wolfgang-aura/Mailman/issues/87).
+
 ## Human boundary
 
 Mailman may eventually prepare branches, patches, and pull request text. It must not push, open a pull request, comment on an issue, or otherwise change an upstream project without a separate human approval step.

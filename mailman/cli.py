@@ -39,7 +39,7 @@ from mailman.executor import (
     set_deadline,
 )
 from mailman.export import export_patch
-from mailman.handoff import build_handoff, check_handoff
+from mailman.handoff import build_handoff, check_handoff, closed_threads
 from mailman.identity import (
     Identity,
     author_violations,
@@ -385,6 +385,11 @@ def _build_parser() -> argparse.ArgumentParser:
     handoff.add_argument("--head", help="fork branch, for example Mailman-Fork:branch")
     handoff.add_argument("--base", help="upstream branch to target")
     handoff.add_argument("--issue", type=int, help="issue number, for an issue comment")
+    handoff.add_argument(
+        "--closing-reply",
+        action="store_true",
+        help="the one courtesy reply a closed or superseded run may still send",
+    )
     handoff.add_argument("--data-root", type=Path)
 
     handoff_check = subparsers.add_parser(
@@ -1585,6 +1590,7 @@ def _handoff(arguments: argparse.Namespace) -> int:
         base=arguments.base,
         issue_number=arguments.issue,
         data_root=arguments.data_root,
+        closing_reply=arguments.closing_reply,
     )
     print(block)
     # A body claiming the human read it is not ready until the human says so.
@@ -2044,6 +2050,16 @@ def _provenance(arguments: argparse.Namespace) -> int:
         f"\nfork deletion: {'safe' if safe else 'not safe'} -- {reason}",
         file=sys.stderr,
     )
+    closure = closed_threads(run_directory, run.repository)
+    if closure["closed"]:
+        threads = ", ".join(
+            closure["threads"][number] for number in sorted(closure["threads"])
+        )
+        print(
+            f"case closed: {closure['why']}. `mailman handoff` now refuses "
+            f"{threads}; one closing reply may go out with --closing-reply.",
+            file=sys.stderr,
+        )
     return 0
 
 
