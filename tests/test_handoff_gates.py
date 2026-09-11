@@ -131,6 +131,9 @@ class BuildHandoffTests(unittest.TestCase):
         authors = patch("mailman.handoff.check_authorship", return_value={"ok": True, "head": "fixture"})
         authors.start()
         self.addCleanup(authors.stop)
+        foreign = patch("mailman.handoff.foreign_pull_request", return_value=None)
+        foreign.start()
+        self.addCleanup(foreign.stop)
 
     def _run(self, root: Path):
         run = RunRecord(

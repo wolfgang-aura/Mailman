@@ -568,9 +568,14 @@ pull request that superseded it with `--superseded-by`, the case is over and
 `handoff` refuses anything aimed at the issue, our pull request or the
 superseding one; `handoff-check` re-reads provenance at publish time, so a case
 that closes after the preview stops there too. One courtesy reply may still go
-out with `--closing-reply`, to one thread, once. On 2026-09-10 python/mypy#21961
-was closed in favour of #21967 and a review-style comment went to #21967 in the
-same minute; its author asked for the activity to stop. See
+out with `--closing-reply`, to one thread, once. Independently of the run's
+state, a comment aimed at a pull request somebody else opened is refused: the
+harness writes to its own issue and its own pull request, nowhere else. A reply
+over 120 words gets a length warning in the block. On 2026-09-10
+python/mypy#21961 was closed in favour of #21967; a 158-word review-style
+comment went to #21967 twelve seconds before the close and a 184-word one to
+#21961, each linking the other, and the author of #21967 asked for the activity
+to stop. See
 [the run record](docs/runs/0010-mypy-21961-superseded.md) and
 [issue #87](https://github.com/wolfgang-aura/Mailman/issues/87).
 

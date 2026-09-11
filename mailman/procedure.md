@@ -198,6 +198,12 @@ status check you did not act on is pure cost.
     exact local branch and final body. Run `handoff-check`. Keep all filings
     and upstream writes pending. For a self-sourced defect, prepare any required
     issue text alongside the PR and ask for approval of the ordered filings.
+    After filing, the run writes to two threads only: its own issue and its
+    own pull request. Never a pull request someone else opened. One reply per
+    thread per event, under 120 words unless a maintainer asked questions. If
+    our pull request is closed or overtaken, record `provenance --pr N
+    --superseded-by M` first; after that, `handoff` refuses all three threads
+    and allows one `--closing-reply`. Nothing else goes out.
 16. Refresh the aging evidence for every ready candidate together with
     `mailman hunt refresh HUNT_ID --owner TOKEN` immediately before finishing.
     Duplicate searches and claim reads expire in an hour, and refreshing them

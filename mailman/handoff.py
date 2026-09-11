@@ -51,6 +51,12 @@ EVIDENCE_MAX_AGE_MINUTES = 60
 
 _KINDS = frozenset({"pull-request", "issue-comment"})
 
+#: Where a follow-up comment stops being a reply and becomes a review. The two
+#: comments that drew the complaint on python/mypy were 158 and 184 words; the
+#: one that answered a maintainer's two questions was 321 and was welcome, so
+#: this warns and does not refuse.
+COMMENT_WORD_LIMIT = 120
+
 # Claims only the person posting can make true. The agent cannot read a diff
 # on the human's behalf, cannot take responsibility, and cannot vouch for the
 # change; a body that says otherwise in the first person is false the moment
@@ -278,6 +284,76 @@ def closed_threads(run_directory: Path, repository: str) -> dict[str, Any]:
     return {"closed": True, "why": why, "threads": threads}
 
 
+def foreign_pull_request(repository: str, number: int) -> str | None:
+    """The author of pull request `number` in `repository`, or None.
+
+    None means "not a pull request", or "GitHub could not be asked". The
+    caller treats the second the same as the first, because the thread it is
+    about to refuse is one it can also name from provenance; this lookup only
+    catches the case provenance has not seen yet.
+    """
+    if shutil.which("gh") is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{repository_slug(repository)}/pulls/{number}",
+                "--jq",
+                ".user.login",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=clamp_timeout_seconds(15),
+            check=False,
+            shell=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
+def foreign_thread_refusal(
+    run_directory: Path,
+    *,
+    repository: str,
+    kind: str,
+    issue_number: int | None,
+    pull_request_lookup: Callable[[str, int], str | None] | None = None,
+) -> str | None:
+    """Why a comment must not go to this thread: it is somebody else's PR.
+
+    The harness reviews its own pull request and answers on its own issue.
+    It has no business on a pull request someone else opened, whatever the
+    state of our run: the comment that drew the complaint on python/mypy#21967
+    went out twelve seconds before our own pull request was closed, when
+    nothing about the case was closed yet.
+    See https://github.com/wolfgang-aura/Mailman/issues/87.
+    """
+    if kind != "issue-comment" or issue_number is None:
+        return None
+    record = load_provenance(run_directory) or {}
+    if issue_number == record.get("pull_request"):
+        return None
+    if issue_number == upstream_issue_number(run_directory, repository):
+        return None
+    lookup = pull_request_lookup or foreign_pull_request
+    author = lookup(repository, issue_number)
+    if author is None:
+        return None
+    return (
+        f"#{issue_number} is a pull request by {author}, not ours. This run "
+        "comments on its own issue and its own pull request; a review of "
+        "somebody else's pull request is not something it sends, and "
+        "--closing-reply does not cover it."
+    )
+
+
 def closure_refusal(
     closure: dict[str, Any], *, kind: str, issue_number: int | None
 ) -> str | None:
@@ -356,6 +432,20 @@ def _preamble(record: dict[str, Any], claims: list[dict[str, Any]]) -> list[str]
                 "  courtesy reply the run may still send. After it is posted,",
                 "  nothing further goes to the issue, our pull request or the",
                 "  superseding one.",
+                "",
+            ]
+        )
+    words = record.get("word_count") or 0
+    if record.get("kind") == "issue-comment" and words > COMMENT_WORD_LIMIT:
+        lines.extend(
+            [
+                "-" * 72,
+                f"LENGTH -- {words} words, and a reply is under {COMMENT_WORD_LIMIT}",
+                "-" * 72,
+                "",
+                "  A follow-up this long reads as a review. Answer what the thread",
+                "  asked and cut the rest; on python/mypy#21967 two comments of",
+                "  158 and 184 words, each linking the other, drew a request to stop.",
                 "",
             ]
         )
@@ -453,11 +543,23 @@ def build_handoff(
     data_root: Path | None = None,
     closing_reply: bool = False,
     owner_type_lookup: Callable[[str], str | None] = github_owner_type,
+    pull_request_lookup: Callable[[str, int], str | None] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Record the body's digest and render the block that hands it over."""
     closure = closed_threads(run_directory, repository)
     refusal = closure_refusal(closure, kind=kind, issue_number=issue_number)
-    if refusal and not closing_reply:
+    if refusal is None:
+        # Not one of the case's own threads, so the override has no say.
+        foreign = foreign_thread_refusal(
+            run_directory,
+            repository=repository,
+            kind=kind,
+            issue_number=issue_number,
+            pull_request_lookup=pull_request_lookup,
+        )
+        if foreign:
+            raise ValueError(foreign)
+    elif not closing_reply:
         raise ValueError(refusal)
     if closing_reply:
         if refusal is None:
@@ -516,6 +618,7 @@ def build_handoff(
         "digest": body_digest(body),
         "first_person_claims": first_person_claims(body),
         "preservation_claims": preservation_claims(body),
+        "word_count": len(body.split()),
         "head_owner": owner,
         "head_owner_type": owner_type,
         "maintainer_edit_warning": maintainer_edit_warning(owner, owner_type),

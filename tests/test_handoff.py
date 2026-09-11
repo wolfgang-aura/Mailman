@@ -349,6 +349,9 @@ class PriorArtFreshnessTests(unittest.TestCase):
         authors = patch("mailman.handoff.check_authorship", return_value={"ok": True, "head": "fixture"})
         authors.start()
         self.addCleanup(authors.stop)
+        foreign = patch("mailman.handoff.foreign_pull_request", return_value=None)
+        foreign.start()
+        self.addCleanup(foreign.stop)
 
     """The push-time half of the duplicate check.
 
@@ -495,6 +498,13 @@ class ClosedRunTests(unittest.TestCase):
         )
         authors.start()
         self.addCleanup(authors.stop)
+        # #21967 is somebody else's pull request; everything else is an issue.
+        foreign = patch(
+            "mailman.handoff.foreign_pull_request",
+            side_effect=lambda _repo, number: "someone" if number == 21967 else None,
+        )
+        foreign.start()
+        self.addCleanup(foreign.stop)
 
     def _comment(self, root: Path, directory: Path, issue: int, **extra):
         body_path = root / "reply.md"
@@ -551,10 +561,40 @@ class ClosedRunTests(unittest.TestCase):
         with TemporaryDirectory() as name:
             root = Path(name)
             _, directory = _run_directory(root)
-            record, _ = self._comment(root, directory, 21967)
+            record, _ = self._comment(root, directory, 21960)
             self.assertFalse(record["closure"]["closed"])
             with self.assertRaises(ValueError):
+                self._comment(root, directory, 21960, closing_reply=True)
+
+    def test_somebody_elses_pull_request_is_refused_while_ours_is_open(self) -> None:
+        # The comment that drew the complaint went out twelve seconds before
+        # our pull request closed. The close is not what makes it wrong.
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            with self.assertRaises(ValueError) as caught:
+                self._comment(root, directory, 21967)
+            self.assertIn("pull request by someone, not ours", str(caught.exception))
+            # And the override does not reach it until provenance names it.
+            with self.assertRaises(ValueError):
                 self._comment(root, directory, 21967, closing_reply=True)
+
+    def test_a_long_reply_is_flagged_as_a_review(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            body_path = root / "reply.md"
+            body_path.write_text(("word " * 158).strip(), encoding="utf-8")
+            record, block = build_handoff(
+                run_id=directory.name,
+                run_directory=directory,
+                body_path=body_path,
+                kind="issue-comment",
+                repository="python/mypy",
+                issue_number=21960,
+            )
+            self.assertEqual(record["word_count"], 158)
+            self.assertIn("LENGTH -- 158 words", block)
 
     def test_one_closing_reply_is_allowed_and_a_second_thread_is_not(self) -> None:
         with TemporaryDirectory() as name:
@@ -575,7 +615,7 @@ class ClosedRunTests(unittest.TestCase):
         with TemporaryDirectory() as name:
             root = Path(name)
             _, directory = _run_directory(root)
-            record, _ = self._comment(root, directory, 21967)
+            record, _ = self._comment(root, directory, 21960)
             self.assertTrue(check_handoff(directory)["ok"])
             _close_the_case(directory)
             result = check_handoff(directory)
