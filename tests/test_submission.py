@@ -530,6 +530,35 @@ class PrepareSubmissionTests(unittest.TestCase):
         record = self._prepare()
         self.assertTrue(record["ready"], record["blocking_codes"])
 
+    def test_an_open_issue_naming_ours_is_read_not_treated_as_a_rival(self) -> None:
+        # skfolio#312, a tracking issue that cross-references #307, blocked the
+        # run as a possible duplicate. An open issue is a thread for a human
+        # to read; only a pull request can race ours.
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-14T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [
+                        {
+                            "number": 312,
+                            "title": "Code quality assessment at v1.0.6",
+                            "state": "open",
+                            "pull_request": False,
+                            "matched_by": ["search", "#307"],
+                            "methods": ["search"],
+                            "references_issue": True,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        record = self._prepare()
+        self.assertNotIn("possible-duplicate", record["blocking_codes"])
+        self.assertIn("unreviewed-duplicate-candidates", record["blocking_codes"])
+
     def test_a_weak_listing_match_blocks_as_unreviewed_not_as_a_duplicate(self) -> None:
         (self.run_directory / "duplicate-search.json").write_text(
             json.dumps(

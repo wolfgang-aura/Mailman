@@ -941,6 +941,10 @@ def duplicate_strength(row: dict[str, Any]) -> str:
         # A closed attempt is prior art, not a rival in flight. `prior-art`
         # reads it into both prompts; the gate only has to make a human look.
         return "weak"
+    if not row.get("pull_request"):
+        # An open issue that names this one is a thread to read, not a patch
+        # racing ours. skfolio#312, a tracking issue, blocked #307 as a rival.
+        return "weak"
     return "strong" if duplicate_is_related(row) else "weak"
 
 
