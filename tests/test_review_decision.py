@@ -8,8 +8,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
+from mailman.claims import CLAIMS_FILENAME
 from mailman.review_decision import (
     DECISION_FILENAME,
+    UNTRIAGED_GATE,
     DecisionError,
     blank_decision,
     load_decision,
@@ -178,6 +180,59 @@ class DecisionFileTests(unittest.TestCase):
             decision = load_decision(directory)
 
         self.assertEqual(decision.recommendation, "SEND")
+
+
+def _write_untriaged_claims(directory: Path) -> None:
+    (directory / CLAIMS_FILENAME).write_text(
+        json.dumps({"reporter_association": "NONE", "maintainer_replied": False}),
+        encoding="utf-8",
+    )
+
+
+class UntriagedIssueGateTests(unittest.TestCase):
+    """skfolio#316: the warning went to a terminal; the page said zero questions."""
+
+    def test_an_unanswered_outside_report_refuses_a_decision_that_never_asks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            _write_untriaged_claims(directory)
+            (directory / DECISION_FILENAME).write_text(
+                json.dumps(VALID), encoding="utf-8"
+            )
+            with self.assertRaises(DecisionError) as caught:
+                load_decision(directory)
+
+        problems = " ".join(caught.exception.problems)
+        self.assertIn("no owner, member or collaborator has replied", problems)
+        self.assertIn(UNTRIAGED_GATE, problems)
+
+    def test_the_seeded_question_satisfies_the_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            _write_untriaged_claims(directory)
+            seeded = blank_decision(directory)["questions"][0]
+            self.assertEqual(seeded["gate"], UNTRIAGED_GATE)
+            self.assertTrue(seeded["blocking"])
+            data = copy.deepcopy(VALID)
+            data["questions"] = [seeded]
+            (directory / DECISION_FILENAME).write_text(json.dumps(data), encoding="utf-8")
+            decision = load_decision(directory)
+
+        self.assertEqual(decision.questions[0].gate, UNTRIAGED_GATE)
+        self.assertEqual(len(decision.blocking_questions), 1)
+
+    def test_a_maintainer_reply_seeds_nothing_and_gates_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / CLAIMS_FILENAME).write_text(
+                json.dumps({"reporter_association": "NONE", "maintainer_replied": True}),
+                encoding="utf-8",
+            )
+            self.assertEqual(blank_decision(directory)["questions"][0]["question"], "")
+            (directory / DECISION_FILENAME).write_text(
+                json.dumps(VALID), encoding="utf-8"
+            )
+            load_decision(directory)
 
 
 class DecisionRenderingTests(unittest.TestCase):

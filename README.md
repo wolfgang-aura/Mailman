@@ -588,6 +588,13 @@ reporter later withdrew. Both closed without a word. See
 [the two silent closes](docs/runs/0011-pdm-3884-pytest-14993-silent-closes.md)
 and [issue #88](https://github.com/wolfgang-aura/Mailman/issues/88).
 
+That warning went to a terminal, not a page. skfolio#316 was filed on a
+four-day-old outside report with no maintainer reply, from a packet that said
+zero questions, and closed in sixteen minutes as a design choice. Now
+`decision --init` seeds a blocking question on such a run and `decision`
+refuses a file without it. See
+[0012](docs/runs/0012-skfolio-316-untriaged-closed-as-design.md).
+
 ## Human boundary
 
 Mailman may eventually prepare branches, patches, and pull request text. It must not push, open a pull request, comment on an issue, or otherwise change an upstream project without a separate human approval step.

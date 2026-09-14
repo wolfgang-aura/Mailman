@@ -58,6 +58,10 @@ _RECOMMENDATION_TONE = {"SEND": "ok", "HOLD": "warn", "DROP": "stop"}
 #: the choice he is picking.
 OPTION_LABELS = "ABCDEFGH"
 
+from mailman.claims import triage_warning
+
+UNTRIAGED_GATE = "untriaged-issue"
+
 _MAX_CLAIM = 220
 
 
@@ -93,6 +97,7 @@ class Question:
     options: list[Option]
     recommendation: str
     blocking: bool
+    gate: str | None = None
 
 
 @dataclass(frozen=True)
@@ -244,7 +249,11 @@ def _parse_questions(raw_questions: Any, problems: list[str]) -> list[Question]:
                 "what stops the patch."
             )
             blocking = bool(blocking)
-        questions.append(Question(text, options, recommendation, blocking))
+        gate = entry.get("gate")
+        if gate is not None and not isinstance(gate, str):
+            problems.append(f"{where}.gate is {gate!r}; a gate is named by a string.")
+            gate = None
+        questions.append(Question(text, options, recommendation, blocking, gate))
     return questions
 
 
@@ -363,13 +372,78 @@ def load_decision(run_directory: Path) -> Decision:
     except json.JSONDecodeError as error:
         raise DecisionError([f"not valid JSON: {error}"], path) from error
     try:
-        return parse_decision(data)
+        decision = parse_decision(data)
     except DecisionError as error:
         raise DecisionError(error.problems, path) from None
+    problem = untriaged_problem(Path(run_directory), decision)
+    if problem:
+        raise DecisionError([problem], path)
+    return decision
 
 
-def blank_decision() -> dict[str, Any]:
-    """A skeleton an agent fills in. Every string here fails validation on purpose."""
+def untriaged_problem(run_directory: Path, decision: Decision) -> str | None:
+    """Why this decision cannot stand: the untriaged warning fired and nobody was asked.
+
+    `handoff` has printed UNTRIAGED ISSUE since pytest#14993. It printed it for
+    skfolio#316 too, to a coordinator's terminal; the review page said zero
+    questions, the operator approved, and the maintainer closed the pull
+    request in fifteen minutes because the behaviour was a choice. The warning
+    belongs on the page, as the question it is.
+    """
+    warning = triage_warning(run_directory)
+    if warning is None:
+        return None
+    if any(question.gate == UNTRIAGED_GATE for question in decision.questions):
+        return None
+    return (
+        f"the claims record says {warning} Nobody who decides has been asked. "
+        f"Keep the question `mailman decision --init` seeds (gate "
+        f"{UNTRIAGED_GATE!r}), or write one with that gate."
+    )
+
+
+def untriaged_question(warning: str) -> dict[str, Any]:
+    """The question the operator answers before filing on an unanswered outside report."""
+    return {
+        "question": (
+            "No maintainer has said this is a bug: " + warning.split(". ")[0]
+            + ". File the pull request anyway?"
+        ),
+        "blocking": True,
+        "gate": UNTRIAGED_GATE,
+        "options": [
+            {
+                "label": "A",
+                "text": "Ask on the issue first and file once a maintainer answers.",
+                "cost": "Days of delay; the patch may go stale.",
+            },
+            {
+                "label": "B",
+                "text": "File now.",
+                "cost": (
+                    "pytest#14993 and skfolio#316 were filed in this state and closed "
+                    "as not-a-bug; a closed pull request under the account's name."
+                ),
+            },
+            {
+                "label": "C",
+                "text": "Drop the target.",
+                "cost": "The work done on the run.",
+            },
+        ],
+        "recommendation": "A - a reproduction proves the behaviour, not that it is unwanted.",
+    }
+
+
+def blank_decision(run_directory: Path | None = None) -> dict[str, Any]:
+    """A skeleton an agent fills in. Every string here fails validation on purpose.
+
+    When the run's claims record shows an unanswered outside report, the
+    untriaged question is seeded complete; it is the one question the agent
+    may not remove.
+    """
+    warning = triage_warning(run_directory) if run_directory is not None else None
+    seeded = [untriaged_question(warning)] if warning else []
     return {
         "schema_version": DECISION_SCHEMA_VERSION,
         "recommendation": "HOLD",
@@ -378,7 +452,8 @@ def blank_decision() -> dict[str, Any]:
             key: {"claim": "", "detail": "", "evidence": "machine-checked"}
             for key in PANEL_KEYS
         },
-        "questions": [
+        "questions": seeded
+        + [
             {
                 "question": "",
                 "blocking": True,

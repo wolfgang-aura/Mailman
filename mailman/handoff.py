@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from mailman.claims import MAINTAINER_ASSOCIATIONS, load_claims
+from mailman.claims import load_claims, triage_warning
 from mailman.completion import check_authorship
 from mailman.executor import clamp_timeout_seconds
 from mailman.provenance import load_provenance, upstream_issue_number
@@ -404,32 +404,6 @@ def closing_reply_refusal(
         f"the closing reply for this run already went to #{earlier['issue_number']} "
         f"at {earlier.get('prepared_at')}. There is one, and this targets "
         f"#{issue_number}."
-    )
-
-
-def triage_warning(run_directory: Path) -> str | None:
-    """Why the issue may not be a bug: nobody who speaks for the project said so.
-
-    An outside reporter, no maintainer reply. pytest-dev/pytest#14992 looked
-    exactly like this when #14993 was filed against it; the maintainer's
-    first reply, eleven hours later, said the use case was unsupported, and
-    the reporter withdrew the premise. Older claims records lack the fields
-    and get no warning, which is a gap and not a pass.
-    See https://github.com/wolfgang-aura/Mailman/issues/88.
-    """
-    claims = load_claims(run_directory) or {}
-    reporter = claims.get("reporter_association")
-    replied = claims.get("maintainer_replied")
-    if reporter is None or replied is None:
-        return None
-    if reporter in MAINTAINER_ASSOCIATIONS or replied:
-        return None
-    return (
-        f"the issue was reported from outside the project ({reporter}) and no "
-        "owner, member or collaborator has replied on it. Nobody who can "
-        "speak for the project has said this is a bug they want fixed. "
-        "pytest-dev/pytest#14993 was filed on an issue in this state; the "
-        "premise turned out to be wrong and the pull request closed unread."
     )
 
 

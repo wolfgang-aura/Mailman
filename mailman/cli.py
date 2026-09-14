@@ -2336,7 +2336,7 @@ def _decision(arguments: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-        path.write_text(json.dumps(blank_decision(), indent=2) + "\n", encoding="utf-8")
+        path.write_text(json.dumps(blank_decision(run_directory), indent=2) + "\n", encoding="utf-8")
         print(json.dumps({"run_id": arguments.run_id, "decision": str(path)}, indent=2))
         print(
             "written empty. Fill it in, then run `mailman decision "
