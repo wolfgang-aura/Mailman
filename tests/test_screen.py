@@ -202,6 +202,35 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(gate["data"]["verified_occurrences"], 1)
         self.assertIn("#91", gate["detail"])
 
+    def test_a_workflow_that_closes_unassigned_pull_requests_rejects(self) -> None:
+        # pydantic/pydantic-ai#8164 and #7146 were closed by pr-guard.yml,
+        # which the screen passed on 2026-09-14 because no marker matched.
+        guard = (
+            "name: PR Guard\n"
+            "on: pull_request_target\n"
+            "jobs:\n"
+            "  guard:\n"
+            "    steps:\n"
+            "      - run: |\n"
+            "          # Contributors should discuss and be assigned an issue before\n"
+            "          # opening a PR. Issue and bot authors are exempt from this requirement.\n"
+            "          gh pr comment $PR --body 'please wait to be assigned before opening a PR.'\n"
+            "          gh pr close $PR\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(workflows={"ci.yml": HEALTHY_WORKFLOW, "pr-guard.yml": guard}),
+            )
+
+        self.assertEqual(record["verdict"], "fail")
+        self.assertIn("assignment", record["failed_gates"])
+        gate = _named(record, "assignment")
+        self.assertEqual(gate["data"]["workflow_rule"]["workflow"], "pr-guard.yml")
+        self.assertTrue(gate["data"]["workflow_rule"]["issue_author_exempt"])
+        self.assertIn("pr-guard.yml", gate["detail"])
+        self.assertIn("issue authors", gate["detail"])
+
     def test_loose_search_hits_without_the_exact_marker_do_not_reject(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(

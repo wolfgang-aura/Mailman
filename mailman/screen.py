@@ -693,13 +693,76 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     )
 
 
+#: What a workflow says when it closes a pull request whose issue is not
+#: assigned to the author. pydantic-ai's pr-guard.yml: "Contributors should
+#: discuss and be assigned an issue before opening a PR" and "please wait to
+#: be assigned before opening a PR ... closed automatically because issue #N
+#: is not assigned to you". langchain says it with a marker instead; the
+#: comment search below covers that spelling.
+_ASSIGNMENT_RULE = re.compile(
+    r"wait to be assigned"
+    r"|is not assigned to you"
+    r"|must be assigned"
+    r"|be assigned (?:an|the|to an|to the) issue before opening",
+    re.IGNORECASE,
+)
+_ISSUE_AUTHOR_EXEMPT = re.compile(
+    r"issue (?:and bot )?authors? (?:are|is) exempt|author of the issue", re.IGNORECASE
+)
+
+
+def _workflow_assignment_rule(gh: _Gh, slug: str) -> dict[str, Any] | None:
+    """The workflow that closes unassigned outside pull requests, if one is written down.
+
+    pydantic/pydantic-ai passed the screen on 2026-09-14 (#89) because its rule is
+    in `.github/workflows/pr-guard.yml`, in plain words, and the gate only
+    knew langchain's bot marker. A workflow that names the rule is better
+    evidence than a closed pull request: it is the rule, not one enforcement.
+    """
+    listing = gh.json(f"repos/{slug}/contents/.github/workflows")
+    if not isinstance(listing, list):
+        return None
+    for entry in listing:
+        name = entry.get("name") if isinstance(entry, dict) else None
+        if not isinstance(name, str) or not name.endswith((".yml", ".yaml")):
+            continue
+        body = _decoded(gh.json(f"repos/{slug}/contents/.github/workflows/{name}"))
+        match = _ASSIGNMENT_RULE.search(body)
+        if match and re.search(r"clos", body, re.IGNORECASE):
+            return {
+                "workflow": name,
+                "phrase": match.group(0),
+                "issue_author_exempt": bool(_ISSUE_AUTHOR_EXEMPT.search(body)),
+            }
+    return None
+
+
 def _assignment_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     """Reject repositories whose bot closes unassigned outside pull requests.
 
-    GitHub issue search indexes comments as well as the pull request body. The
-    search is only a shortlist: the gate reads those comments and requires the
-    exact marker from a bot, avoiding GitHub's loose token matches.
+    Two readings, either one enough. The workflows are read for the rule in
+    the project's own words. Then GitHub issue search, which indexes comments
+    as well as the pull request body, shortlists closed pull requests; the
+    gate reads those comments and requires the exact marker from a bot,
+    avoiding GitHub's loose token matches.
     """
+    rule = _workflow_assignment_rule(gh, slug)
+    if rule:
+        exempt = (
+            "; the workflow exempts issue authors, so a self-reported defect stays filable"
+            if rule["issue_author_exempt"]
+            else ""
+        )
+        return _gate(
+            "assignment",
+            passed=False,
+            blocking=True,
+            detail=(
+                f"{rule['workflow']} closes pull requests whose issue is not assigned "
+                f"to the author (\"{rule['phrase']}\"){exempt}"
+            ),
+            data={"marker": None, "workflow_rule": rule},
+        )
     query = quote(f'repo:{slug} is:pr is:closed "require-issue-link"')
     result = gh.json(f"search/issues?q={query}&per_page=5")
     candidates = result.get("items") if isinstance(result, dict) else None
@@ -720,6 +783,7 @@ def _assignment_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     )
     data = {
         "marker": "require-issue-link",
+        "workflow_rule": None,
         "search_matches": (
             result.get("total_count") if isinstance(result, dict) else None
         ),
@@ -750,7 +814,10 @@ def _assignment_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         "assignment",
         passed=True,
         blocking=True,
-        detail="no require-issue-link bot marker found in the search samples",
+        detail=(
+            "no workflow names an assignment rule and no require-issue-link bot "
+            "marker was found in the search samples"
+        ),
         data=data,
     )
 

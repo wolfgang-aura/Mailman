@@ -171,7 +171,7 @@ def triage_warning(run_directory: Path) -> str | None:
     first reply, eleven hours later, said the use case was unsupported, and
     the reporter withdrew the premise. Older claims records lack the fields
     and get no warning, which is a gap and not a pass.
-    See https://github.com/wolfgang-aura/Mailman/issues/88. skfolio#316 was
+    See https://github.com/wolfgang-aura/Mailman/issues/88 and /issues/90. skfolio#316 was
     filed on an issue in the same state, four days old and unanswered; the
     maintainer closed it in fifteen minutes: the behaviour was a choice.
     """
