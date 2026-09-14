@@ -188,6 +188,38 @@ class AssessTargetTests(unittest.TestCase):
         self.assertIn(OPEN_PULL_REQUEST, assessment.blocking)
         self.assertIn("2330", assessment.summary())
 
+    def test_a_strong_open_issue_match_is_not_an_attempt(self) -> None:
+        # skfolio#312 is a tracking issue that cross-references #307. It matched
+        # strongly and was reported as an open pull request, refusing a target
+        # with no attempt on it. Only a pull request is an attempt.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _record(Path(temporary), attempts=None)
+            (root / "duplicate-search.json").write_text(
+                json.dumps(
+                    {
+                        "success": True,
+                        "complete": True,
+                        "matches": [
+                            {
+                                "number": 312,
+                                "title": "Code quality assessment at v1.0.6",
+                                "state": "OPEN",
+                                "url": "https://github.com/skfolio/skfolio/issues/312",
+                                "pull_request": False,
+                                "matched_by": ["search", "#307"],
+                                "methods": ["search"],
+                                "references_issue": True,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            assessment = assess_target(root)
+
+        self.assertNotIn(OPEN_PULL_REQUEST, assessment.blocking)
+        self.assertEqual(assessment.open_attempts, [])
+
     def test_a_closed_search_match_requires_prior_art_without_its_record(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _record(Path(temporary), attempts=None)

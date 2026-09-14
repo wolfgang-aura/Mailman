@@ -335,6 +335,11 @@ def assess_target(
         state = str(match.get("state") or "").lower()
         if state not in ("open", "merged"):
             continue
+        # An open issue that cross-references this one is not an attempt.
+        # skfolio#312, a tracking issue, was read as an open pull request
+        # against #307 and refused a target nobody had claimed.
+        if not match.get("pull_request"):
+            continue
         number = match.get("number")
         if not isinstance(number, int):
             continue
