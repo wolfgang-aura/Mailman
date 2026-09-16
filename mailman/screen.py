@@ -154,10 +154,17 @@ _TEST_RUNNER = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
-#: Files whose presence means a compiler is in the build. The operator has no
-#: Rust or MSVC toolchain, so these are fatal rather than inconvenient.
-_COMPILED_MARKERS = ("Cargo.toml", "setup.py", "Makefile", "meson.build")
+#: Files whose presence means a compiler may be in the build. The operator has
+#: no Rust or MSVC toolchain, so `Cargo.toml` is fatal on its own; the others
+#: only decide whether a few compiled bytes are fixtures or an extension. A
+#: `Makefile` is not here: on sphinx it builds the docs, and it said "compiler"
+#: on the record. https://github.com/wolfgang-aura/Mailman/issues/100
+_COMPILED_MARKERS = ("Cargo.toml", "setup.py", "meson.build", "CMakeLists.txt")
 _COMPILED_LANGUAGES = ("Cython", "Rust", "C", "C++", "Go", "Zig")
+#: Cython or Rust bytes below this share of the Python are fixtures, not a
+#: build, when nothing else names a compiler. sphinx carries 245 bytes of
+#: Cython under 4.9 MB of Python, from a test of its own C-extension docs.
+COMPILED_FIXTURE_SHARE = 0.005
 
 #: Build requirements that mean a compiler runs at install time even when every
 #: file on disk is a `.py`. `pmorissette/bt` is 100% Python by GitHub's count
@@ -680,9 +687,21 @@ def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     )
     build_compilers, requires_line = _build_requires(pyproject)
     wheel_hook = _wheel_only_hook(pyproject)
+    python_bytes = languages.get("Python", 0) or 0
+    compiled_bytes = compiled.get("Cython", 0) + compiled.get("Rust", 0)
+    compiled_share = (compiled_bytes / python_bytes) if python_bytes else 0.0
+    # A stray `.pyx` fixture is not a build. It counts as one only when a
+    # marker or the build back end could turn it into an extension.
+    fixture_only = (
+        compiled_bytes > 0
+        and compiled_share < COMPILED_FIXTURE_SHARE
+        and not markers
+        and not build_compilers
+    )
     data = {
         "python_share": round(python_share, 3),
         "compiled_languages": compiled,
+        "compiled_share": round(compiled_share, 3),
         "root_markers": markers,
         "languages": languages,
         "build_requires_compilers": build_compilers,
@@ -702,7 +721,9 @@ def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
             ),
             data=data,
         )
-    if "Cargo.toml" in markers or "Cython" in compiled or "Rust" in compiled:
+    if "Cargo.toml" in markers or (
+        ("Cython" in compiled or "Rust" in compiled) and not fixture_only
+    ):
         return _gate(
             "pure-python",
             passed=False,
@@ -744,11 +765,19 @@ def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
             ),
             data=data,
         )
+    detail = f"Python is {python_share:.0%} of the source, no compiler markers"
+    if fixture_only:
+        detail = (
+            f"Python is {python_share:.0%} of the source; the "
+            f"{compiled_bytes:,} bytes of {', '.join(sorted(compiled))} are "
+            f"fixtures ({compiled_share:.2%} of the Python, no compiler in the "
+            "build back end)"
+        )
     return _gate(
         "pure-python",
         passed=True,
         blocking=True,
-        detail=f"Python is {python_share:.0%} of the source, no compiler markers",
+        detail=detail,
         data=data,
     )
 

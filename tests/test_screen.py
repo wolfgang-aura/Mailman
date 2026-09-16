@@ -482,6 +482,45 @@ class ScreenTests(unittest.TestCase):
         self.assertIn("pure-python", record["failed_gates"])
         self.assertIn("compiler is in the build", _named(record, "pure-python")["detail"])
 
+    def test_compiled_fixture_bytes_under_a_pure_back_end_pass(self) -> None:
+        # sphinx-doc/sphinx: 245 bytes of Cython and 87 of C are test fixtures,
+        # the build is flit_core, and the Makefile builds the docs.
+        # https://github.com/wolfgang-aura/Mailman/issues/100
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    languages={"Python": 4879591, "Cython": 245, "C": 87},
+                    root=[{"name": "pyproject.toml"}, {"name": "Makefile"}],
+                    policies={
+                        "pyproject.toml": (
+                            "[build-system]\n"
+                            'requires = ["flit_core>=3.12"]\n'
+                            'build-backend = "flit_core.buildapi"\n'
+                        )
+                    },
+                ),
+            )
+        gate = _named(record, "pure-python")
+
+        self.assertNotIn("pure-python", record["failed_gates"], gate["detail"])
+        self.assertEqual(gate["data"]["compiled_share"], 0.0)
+        self.assertIn("fixtures", gate["detail"])
+
+    def test_compiled_fixture_bytes_beside_a_setup_py_still_fail(self) -> None:
+        # The same 332 bytes with a setup.py at the root may be an ext_modules
+        # entry, and this host cannot find out by building it.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    languages={"Python": 4879591, "Cython": 245},
+                    root=[{"name": "pyproject.toml"}, {"name": "setup.py"}],
+                ),
+            )
+
+        self.assertIn("pure-python", record["failed_gates"])
+
     def test_a_rust_workspace_fails_the_language_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(
