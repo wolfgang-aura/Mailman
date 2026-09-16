@@ -118,6 +118,51 @@ class EnforcementMarkerTests(unittest.TestCase):
         self.assertIn("not assigned to the linked issue", markers[0]["quote"])
         self.assertNotIn("not-a-rule", names)
 
+    def test_a_summary_bots_layout_markers_are_not_rules(self) -> None:
+        # The shape of CodeRabbit's comment on securo-finance/securo#875, which
+        # made target-intel list fourteen rules the repository does not have.
+        coderabbit = "\n".join(
+            [
+                "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->",
+                "<!-- review_stack_entry_start -->",
+                "[stack]",
+                "<!-- review_stack_entry_end -->",
+                "<!-- recent_review_start -->",
+                "No actionable comments.",
+                "<!-- cr-comment:v1:a2ffbe0291ffaaafd86b4451 -->",
+                "<!-- recent_review_end -->",
+                "<!-- walkthrough_start -->",
+                "## Walkthrough",
+                "<!-- walkthrough_end -->",
+                "<!-- finishing_touch_checkbox_start -->",
+                "- [ ] tests",
+                "<!-- finishing_touch_checkbox_end -->",
+                "<!-- tips_start -->",
+                "Thanks for using CodeRabbit!",
+                "<!-- tips_end -->",
+            ]
+        )
+        comments = [
+            {
+                "user": {"login": "coderabbitai[bot]", "type": "Bot"},
+                "body": coderabbit,
+                "_pull_request": 875,
+            },
+            {
+                "user": {"login": "github-actions[bot]", "type": "Bot"},
+                "body": "<!-- require-issue-link -->\nLink an issue.",
+                "_pull_request": 876,
+            },
+            {
+                # An unpaired `_start` is still a marker; only the pair is layout.
+                "user": {"login": "some-bot[bot]", "type": "Bot"},
+                "body": "<!-- lint_start -->\nlint failed, fix before review",
+                "_pull_request": 877,
+            },
+        ]
+        names = [entry["marker"] for entry in enforcement_markers(comments)]
+        self.assertEqual(sorted(names), ["lint_start", "require-issue-link"])
+
 
 class SlugTests(unittest.TestCase):
     def test_a_clone_url_reduces_to_owner_and_name(self) -> None:

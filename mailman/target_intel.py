@@ -45,6 +45,10 @@ OUTSIDE_ASSOCIATIONS = frozenset(
 #: `<!-- block-fork-main -->` are two of langchain's; sqlfluff's agentscan uses
 #: `<!-- agentscan:possible-bot-comment:v1 -->`.
 _MARKER = re.compile(r"<!--\s*([a-z0-9][a-z0-9:._-]{2,60})\s*-->", re.IGNORECASE)
+#: A marker whose last segment is a hex id names one comment, not a rule:
+#: CodeRabbit's `cr-comment:v1:a2ffbe0291ffaaafd86b4451`.
+_HASH_TAIL = re.compile(r"[:._-][0-9a-f]{12,}$")
+_LAYOUT_ENDS = ("_start", "_end")
 
 _ISSUE_REFERENCE = re.compile(r"#(\d{2,7})")
 _ISSUE_URL_REFERENCE = re.compile(r"issues/(\d{2,7})")
@@ -121,6 +125,32 @@ def classify_claims(pull_requests: list[dict[str, Any]]) -> dict[str, set[str]]:
     return {"claiming": claiming, "abandoned": abandoned}
 
 
+def _rule_markers(body: str) -> list[str]:
+    """Keep the markers in one comment that could name a rule.
+
+    A summary bot wraps each section of its comment in a `foo_start` /
+    `foo_end` pair, and stamps each inline note with a hash. CodeRabbit leaves
+    fourteen of those per pull request, which on securo-finance/securo made
+    the rules section fourteen lines of layout and zero rules
+    (https://github.com/wolfgang-aura/Mailman/issues/91).
+    """
+    markers = [marker.lower() for marker in _MARKER.findall(body)]
+    present = set(markers)
+    kept: list[str] = []
+    for marker in markers:
+        if _HASH_TAIL.search(marker):
+            continue
+        for end in _LAYOUT_ENDS:
+            if marker.endswith(end):
+                stem = marker[: -len(end)]
+                other = stem + (_LAYOUT_ENDS[1] if end == _LAYOUT_ENDS[0] else _LAYOUT_ENDS[0])
+                if other in present:
+                    break
+        else:
+            kept.append(marker)
+    return kept
+
+
 def enforcement_markers(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Name the automated rules a repository enforces, from the bot's own words."""
     found: dict[str, dict[str, Any]] = {}
@@ -128,7 +158,7 @@ def enforcement_markers(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not _is_bot(comment.get("user")):
             continue
         body = comment.get("body") or ""
-        for marker in _MARKER.findall(body):
+        for marker in _rule_markers(body):
             entry = found.setdefault(
                 marker.lower(),
                 {"marker": marker.lower(), "count": 0, "quote": "", "seen_on": []},
