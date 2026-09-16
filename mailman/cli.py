@@ -25,6 +25,9 @@ from mailman.artifacts import (
 )
 from mailman.base_snippets import check_base_snippets
 from mailman.claims import read_claims, render_claims
+# The subparser for `hunt` is itself called `hunt` in the argument block, so
+# the module's own name is not available there.
+from mailman.hunt import HUNT_TIME_BUDGET_SECONDS
 from mailman.doctor import run_checks
 from mailman.environment import (
     environment_command,
@@ -202,6 +205,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--takeover",
         action="store_true",
         help="take a live lease from another coordinator; needs --reason",
+    )
+    hunt.add_argument(
+        "--time-budget-hours",
+        type=float,
+        help="the hunt's whole clock, for hunt init. One fixed deadline is set "
+        "at creation and screening, setup, every candidate, review, repair and "
+        "replacement all spend it. Defaults to "
+        f"{HUNT_TIME_BUDGET_SECONDS / 3600:g} hours",
     )
     hunt.add_argument("--attempted")
     hunt.add_argument("--why-user")
@@ -917,6 +928,9 @@ def _hunt(arguments: argparse.Namespace) -> int:
             raise ValueError(
                 "ask for primary and reviewer model IDs, then pass all four model flags"
             )
+        budget = arguments.time_budget_hours
+        if budget is not None and budget <= 0:
+            raise ValueError("--time-budget-hours must be positive")
         record = hunt.create_hunt(
             root,
             int(arguments.hunt_id),
@@ -925,6 +939,9 @@ def _hunt(arguments: argparse.Namespace) -> int:
             reviewer=arguments.reviewer,
             reviewer_model=arguments.reviewer_model,
             owner=arguments.owner,
+            time_budget_seconds=(
+                hunt.HUNT_TIME_BUDGET_SECONDS if budget is None else budget * 3600
+            ),
         )
         print(json.dumps(record, indent=2))
         return 0

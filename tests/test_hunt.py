@@ -19,6 +19,7 @@ from mailman.hunt import (
     require_lease,
     compact,
     create_hunt,
+    deadline,
     effective_status,
     finish,
     holding_hunt,
@@ -354,6 +355,62 @@ class HuntTests(OrchestratorHarness):
                          "--data-root", str(self.data_root)])
         self.assertEqual(code, 2)
         self.assertEqual(load_hunt(self.data_root, hunt["hunt_id"])["escalations"], [])
+
+
+class TimeBudgetTests(HuntTests):
+    """The hunt's clock is set once, at creation.
+
+    https://github.com/wolfgang-aura/Mailman/issues/106
+    """
+
+    def test_the_default_budget_is_two_hours(self):
+        record = self.new_hunt()
+
+        self.assertEqual(record["time_budget_seconds"], 2 * 60 * 60)
+        self.assertEqual(
+            deadline(record),
+            datetime.fromisoformat(record["created_at"]) + timedelta(hours=2),
+        )
+
+    def test_six_hours_moves_the_deadline_six_hours_out(self):
+        record = create_hunt(
+            self.data_root, 1, primary="codex", primary_model="fixture-primary",
+            reviewer="claude", reviewer_model="fixture-reviewer",
+            time_budget_seconds=6 * 60 * 60,
+        )
+
+        self.assertEqual(record["time_budget_seconds"], 6 * 60 * 60)
+        self.assertEqual(
+            deadline(record),
+            datetime.fromisoformat(record["created_at"]) + timedelta(hours=6),
+        )
+
+    def test_the_cli_flag_sets_it(self):
+        printed = StringIO()
+        with redirect_stdout(printed):
+            code = main([
+                "hunt", "init", "2",
+                "--primary", "codex", "--primary-model", "fixture-primary",
+                "--reviewer", "claude", "--reviewer-model", "fixture-reviewer",
+                "--time-budget-hours", "6",
+                "--data-root", str(self.data_root),
+            ])
+        record = json.loads(printed.getvalue())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(record["time_budget_seconds"], 6 * 60 * 60)
+        self.assertEqual(
+            deadline(record),
+            datetime.fromisoformat(record["created_at"]) + timedelta(hours=6),
+        )
+
+    def test_a_budget_of_nothing_is_refused(self):
+        with self.assertRaises(ValueError):
+            create_hunt(
+                self.data_root, 1, primary="codex",
+                primary_model="fixture-primary", reviewer="claude",
+                reviewer_model="fixture-reviewer", time_budget_seconds=0,
+            )
 
 
 class FilingRecordTests(HuntTests):

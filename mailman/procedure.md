@@ -21,9 +21,11 @@ token. Keep that token: every action that changes the hunt takes `--owner
 TOKEN`. `mailman hunt status HUNT_ID` gives the next missing step and last-check
 timestamp. Update it after each run. Its records survive a new conversation.
 The coordinator performs the actions; the command does not spawn a background
-agent or discover targets itself. The hunt records one fixed two-hour deadline
-at creation. Screening, setup, every candidate, review, repair and replacement
-all spend that same clock.
+agent or discover targets itself. The hunt records one fixed deadline at
+creation, two hours unless `hunt init --time-budget-hours FLOAT` says
+otherwise. Ask for a different budget before creating the hunt: the deadline is
+written once and every later command reads it. Screening, setup, every
+candidate, review, repair and replacement all spend that same clock.
 
 One hunt has one coordinator. If `hunt status` shows a live lease you do not
 hold, you are the second task on someone else's hunt. Do not poll it and do not
@@ -156,8 +158,8 @@ own without a domain narrowing the pool before they see it.
 
 10. Run `orchestrate`. An `ENGINEERING_COMPLETE` outcome means finish the
     package. A `BLOCKED` run is a local stop, not a request for the user.
-    Every run uses the hunt's cumulative two-hour deadline from `hunt init`,
-    not a fresh deadline per candidate or agent call. Mailman binds selection,
+    Every run uses the hunt's one cumulative deadline from `hunt init`, not a
+    fresh deadline per candidate or agent call. Mailman binds selection,
     setup and agent commands to that deadline and clamps each subprocess to the
     remaining time when it starts. Once engineering completes, deterministic
     review-page, handoff and filing gates remain available after the deadline;

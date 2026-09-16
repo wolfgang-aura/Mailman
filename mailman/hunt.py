@@ -29,6 +29,9 @@ PROCEDURE = Path(__file__).with_name("procedure.md")
 #: without an argument. Long enough to cover a reviewer stage, short enough
 #: that an abandoned hunt is not stuck for a day.
 LEASE_MINUTES = 90
+#: The default clock a hunt gets, overridable per hunt with
+#: `hunt init --time-budget-hours`. Screening, setup, every candidate, review,
+#: repair and replacement all spend it.
 HUNT_TIME_BUDGET_SECONDS = 2 * 60 * 60
 
 HUMAN_REASONS = ("authentication", "budget", "scope", "conflicting-instructions")
@@ -119,19 +122,22 @@ def hunt_path(root: Path, hunt_id: str) -> Path:
 
 
 def create_hunt(root: Path, count: int, *, primary: str, primary_model: str,
-                reviewer: str, reviewer_model: str, owner: str | None = None) -> dict:
+                reviewer: str, reviewer_model: str, owner: str | None = None,
+                time_budget_seconds: float = HUNT_TIME_BUDGET_SECONDS) -> dict:
     if count < 1 or isinstance(count, bool):
         raise ValueError("the PR count must be positive")
     if not primary_model.strip() or not reviewer_model.strip():
         raise ValueError("ask for both model IDs before starting the hunt")
+    if time_budget_seconds <= 0:
+        raise ValueError("a hunt's time budget must be positive")
     created_at = utc_now()
     created = datetime.fromisoformat(created_at)
     record = {
         "schema_version": 1, "hunt_id": new_run_id(), "requested": count,
         "data_root": str(root.resolve()), "created_at": created_at,
-        "time_budget_seconds": HUNT_TIME_BUDGET_SECONDS,
+        "time_budget_seconds": time_budget_seconds,
         "deadline_at": (
-            created + timedelta(seconds=HUNT_TIME_BUDGET_SECONDS)
+            created + timedelta(seconds=time_budget_seconds)
         ).isoformat(),
         "primary": {"agent": normalize_agent_name(primary), "model": primary_model},
         "reviewer": {"agent": normalize_agent_name(reviewer), "model": reviewer_model},
