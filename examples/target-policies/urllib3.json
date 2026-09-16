@@ -1,0 +1,23 @@
+{
+  "name": "urllib3/urllib3",
+  "policy_url": "https://github.com/urllib3/urllib3/blob/main/docs/contributing.rst",
+  "stance": "permitted",
+  "policy_read_on": "2026-09-17",
+  "disclosure_required": false,
+  "ai_trailer": "optional",
+  "requires_linked_issue": false,
+  "requires_maintainer_assignment": false,
+  "requires_duplicate_search": false,
+  "changelog_directory": null,
+  "changelog_filename_template": null,
+  "checklist": [
+    "Either a changelog fragment under changelog/ named <issue>.<type>.rst, or the `Skip Changelog` label when the change has no user-visible effect",
+    "The new test fails without the source change",
+    "The pull request targets main"
+  ],
+  "notes": [
+    "docs/contributing.rst was read in full on 2026-09-17: it carries no AI or LLM policy of any kind, and neither does the repository. Recorded as permitted in the sense the repository screen uses - nothing in writing closes the door - not as an endorsement.",
+    "changelog/README.rst sets the fragment convention and says explicitly that a change which does not deserve an entry takes the `Skip Changelog` GitHub label instead, so the fragment is not unconditional.",
+    "The project builds with hatchling and hatch-vcs and runs its suite under nox with uv; a plain pip install of the `test` dependency group plus trustme is enough for test/test_util.py."
+  ]
+}

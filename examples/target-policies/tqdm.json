@@ -1,0 +1,28 @@
+{
+  "name": "tqdm/tqdm",
+  "policy_url": "https://github.com/tqdm/tqdm/blob/master/.github/PULL_REQUEST_TEMPLATE/pr.md",
+  "stance": "permitted_with_disclosure",
+  "policy_read_on": "2026-09-17",
+  "disclosure_required": true,
+  "ai_trailer": "required",
+  "ai_trailer_form": "Co-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+  "requires_linked_issue": false,
+  "requires_maintainer_assignment": false,
+  "requires_duplicate_search": true,
+  "changelog_directory": null,
+  "changelog_filename_template": null,
+  "checklist": [
+    "The applicable category checkbox is ticked (exception-raising fix, visual output fix, documentation modification, new feature)",
+    "The related issue is mentioned",
+    "Any AI-assisted commit carries an author, Co-authored-by or Assisted-by trailer in the form `Provider Model <email>`",
+    "The issue tracker was searched for duplicates",
+    "Version numbers, operating system and environment are stated",
+    "The new test fails without the source change"
+  ],
+  "notes": [
+    "The pull request template requires AI-assisted commits to be marked with a trailer and gives `Co-authored-by: Claude Opus 5 <noreply@anthropic.com>` as its own example, so disclosure is mandatory rather than optional.",
+    "CONTRIBUTING.md has no separate AI policy and nothing in it forbids assisted work.",
+    "No changelog directory: releases are generated from the commit history, so no fragment file is expected.",
+    "tqdm.std must stay dependency-free; contrib submodules may use third-party libraries."
+  ]
+}
