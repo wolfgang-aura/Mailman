@@ -2392,17 +2392,43 @@ def _decision(arguments: argparse.Namespace) -> int:
 
 
 def _packet(arguments: argparse.Namespace) -> int:
-    """One page for a batch of runs, with each run's own page written beside it."""
+    """One page for a batch of runs, with each run's own page written beside it.
+
+    Every decision is read before anything is written. This used to write the
+    page and then exit 1, so a packet call for a batch that was not ready
+    destroyed the previous batch's page at the same path, and the exit code
+    AGENTS.md calls the gate arrived after the damage.
+    https://github.com/wolfgang-aura/Mailman/issues/104
+    """
     directories = []
     incomplete = []
     for run_id in arguments.run_id:
         _, run_directory = load_run(run_id, arguments.data_root)
-        write_run_page(run_directory)
         directories.append(run_directory)
         try:
             load_decision(run_directory)
         except DecisionError:
             incomplete.append(run_id)
+    if incomplete:
+        print(
+            json.dumps(
+                {
+                    "packet": None,
+                    "runs": len(directories),
+                    "without_decision": incomplete,
+                    "detail": (
+                        f"{len(incomplete)} of {len(directories)} run(s) have no "
+                        f"valid decision, so {arguments.output} was left alone. "
+                        "Run `mailman decision RUN_ID` for each of them until it "
+                        "exits 0."
+                    ),
+                },
+                indent=2,
+            )
+        )
+        return 1
+    for run_directory in directories:
+        write_run_page(run_directory)
     destination = write_packet_page(
         directories, arguments.output, title=arguments.title
     )
@@ -2411,14 +2437,14 @@ def _packet(arguments: argparse.Namespace) -> int:
             {
                 "packet": str(destination),
                 "runs": len(directories),
-                "without_decision": incomplete,
+                "without_decision": [],
             },
             indent=2,
         )
     )
     if not arguments.no_open:
         _open_page(destination)
-    return 1 if incomplete else 0
+    return 0
 
 
 def _reproduce(arguments: argparse.Namespace) -> int:
