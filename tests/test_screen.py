@@ -443,6 +443,21 @@ class ScreenTests(unittest.TestCase):
         self.assertIn("TypeScript is the majority", gate["detail"])
         self.assertEqual(gate["data"]["python_share"], 0.1)
 
+    def test_notebooks_do_not_count_against_the_language_gate(self) -> None:
+        # domokane/FinancePy: notebooks with saved outputs outweigh the library
+        # by bytes, and nothing generates Python from a notebook.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    languages={"Jupyter Notebook": 780000, "Python": 220000}
+                ),
+            )
+        gate = _named(record, "pure-python")
+
+        self.assertNotIn("pure-python", record["failed_gates"])
+        self.assertEqual(gate["data"]["python_share"], 1.0)
+
     def test_a_compiled_extension_fails_the_language_gate(self) -> None:
         # hummingbot/hummingbot is a Cython core, and this host has no compiler.
         with tempfile.TemporaryDirectory() as temporary:

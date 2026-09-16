@@ -98,6 +98,16 @@ SHARE_SAMPLE_MINIMUM = 8
 #: thrown away by the next build.
 MINIMUM_PYTHON_SHARE = 0.5
 
+#: Languages that cannot generate Python source and therefore do not count
+#: against the share. A notebook with saved outputs is mostly base64 images,
+#: and on `domokane/FinancePy` it made 22% of a pure-Python library. See
+#: https://github.com/wolfgang-aura/Mailman/issues/92.
+_NOT_SOURCE_LANGUAGES = frozenset({
+    "Jupyter Notebook", "HTML", "CSS", "SCSS", "Less", "TeX", "Markdown",
+    "reStructuredText", "Batchfile", "Shell", "PowerShell", "Dockerfile",
+    "Makefile", "CMake", "Roff", "Rich Text Format", "Jinja", "Smarty",
+})
+
 #: Names that mean a workflow step ran a test suite, rather than publishing a
 #: wheel or running a linter. Deliberately wide: a false negative here rejects a
 #: good candidate, which is the expensive mistake. `ccxt/ccxt` runs its Python
@@ -534,8 +544,13 @@ def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     """Gate 3. Is this Python we can build, and Python that is not generated?"""
     languages = gh.json(f"repos/{slug}/languages")
     languages = languages if isinstance(languages, dict) else {}
-    total = sum(value for value in languages.values() if isinstance(value, (int, float)))
-    python_share = (languages.get("Python", 0) / total) if total else 0.0
+    source = {
+        name: value
+        for name, value in languages.items()
+        if isinstance(value, (int, float)) and name not in _NOT_SOURCE_LANGUAGES
+    }
+    total = sum(source.values())
+    python_share = (source.get("Python", 0) / total) if total else 0.0
     compiled = {
         name: languages[name] for name in _COMPILED_LANGUAGES if name in languages
     }
@@ -564,7 +579,7 @@ def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         "environment_plan": None,
     }
     if total and python_share < MINIMUM_PYTHON_SHARE:
-        dominant = max(languages, key=languages.get)
+        dominant = max(source, key=source.get)
         return _gate(
             "pure-python",
             passed=False,
