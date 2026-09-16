@@ -18,7 +18,12 @@ from mailman.hunt import create_hunt, hunt_path, save
 from mailman.prescreen import (
     DECIDABLE,
     PRESCREEN_HOURS,
+    TRIVIAL,
+    TRIVIAL_FIX,
+    TRIVIAL_FIX_DIRECT_PUSH,
+    UNKNOWN,
     check,
+    estimate_fix_size,
     is_fresh,
     issue_reference,
     load_prescreen,
@@ -26,6 +31,7 @@ from mailman.prescreen import (
     prescreen_issue,
     prescreen_path,
 )
+from mailman.screen import screen_path
 from mailman.targeting import (
     NO_REPRODUCTION,
     NO_TARGET_INTEL,
@@ -47,6 +53,57 @@ class IssueReferenceTests(unittest.TestCase):
     def test_refuses_a_repository_without_an_issue(self) -> None:
         with self.assertRaises(ValueError):
             issue_reference("pdm-project/pdm")
+
+
+class FixSizeTests(unittest.TestCase):
+    """What the issue says it wants, read for how long the change would take.
+
+    https://github.com/wolfgang-aura/Mailman/issues/79
+    """
+
+    def test_a_documentation_typo_reads_as_trivial(self) -> None:
+        estimate, reason = estimate_fix_size("Typo in the README", "", [])
+        self.assertEqual(estimate, TRIVIAL)
+        self.assertIn("typo", reason)
+
+    def test_documentation_that_contradicts_the_code_reads_as_trivial(self) -> None:
+        # pdm-project/pdm#3877, the issue behind the wasted run: one line in
+        # docs/reference/pep621.md.
+        estimate, reason = estimate_fix_size(
+            "pep621 reference is outdated",
+            "The documentation says the field is `project.name`, which is wrong.",
+            [],
+        )
+        self.assertEqual(estimate, TRIVIAL)
+        self.assertIn("documentation wording", reason)
+
+    def test_a_wrong_error_message_reads_as_trivial(self) -> None:
+        estimate, _ = estimate_fix_size(
+            "Error message for an empty path is misleading", "", []
+        )
+        self.assertEqual(estimate, TRIVIAL)
+
+    def test_a_version_pin_bump_reads_as_trivial(self) -> None:
+        estimate, _ = estimate_fix_size(
+            "Relax the upper bound on the packaging requirement", "", []
+        )
+        self.assertEqual(estimate, TRIVIAL)
+
+    def test_a_typo_label_is_enough_on_its_own(self) -> None:
+        estimate, reason = estimate_fix_size("Something is off", "", ["Typo"])
+        self.assertEqual(estimate, TRIVIAL)
+        self.assertEqual(reason, "labelled typo")
+
+    def test_an_ordinary_defect_is_left_unknown(self) -> None:
+        # The estimate never claims a change is large. It only names the ones
+        # it can see are small.
+        estimate, reason = estimate_fix_size(
+            "Crash on empty input",
+            "The parser raises IndexError when the file has no rows.",
+            ["bug"],
+        )
+        self.assertEqual(estimate, UNKNOWN)
+        self.assertIn("nothing in the issue", reason)
 
 
 class PrescreenTests(unittest.TestCase):
@@ -161,6 +218,116 @@ class PrescreenTests(unittest.TestCase):
             record["stages_skipped"], ["duplicate-search", "prior-art", "claims"]
         )
 
+    def record_direct_push_share(self, share: float) -> None:
+        """Write the screen record the pre-screen reads the habit out of."""
+        path = screen_path(self.root, "example/project")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "repository": "example/project",
+                    "success": True,
+                    "verdict": "pass",
+                    "gates": [
+                        {
+                            "name": "direct-push",
+                            "passed": True,
+                            "blocking": False,
+                            "detail": "",
+                            "data": {"direct_push_share": share},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def typo_issue(self) -> dict:
+        return {
+            "number": 7,
+            "title": "Typo in the installation docs",
+            "body": "`pip instal` should read `pip install`.",
+            "state": "OPEN",
+            "url": "https://github.com/example/project/issues/7",
+            "author": {"login": "reporter"},
+            "labels": [],
+            "createdAt": "2026-09-01T00:00:00Z",
+            "updatedAt": "2026-09-01T00:00:00Z",
+        }
+
+    def test_a_trivial_fix_where_the_maintainer_pushes_directly_is_rejected(
+        self) -> None:
+        self.record_direct_push_share(0.8)
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub("[]", self.typo_issue()),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertIn(TRIVIAL_FIX_DIRECT_PUSH, record["blocking"])
+        self.assertEqual(record["fix_size"]["estimate"], TRIVIAL)
+        self.assertEqual(record["fix_size"]["direct_push_share"], 0.8)
+        self.assertIn("before he reviews it", record["fix_size"]["detail"])
+        self.assertIn("before he reviews it", record["next"])
+        self.assertNotIn("duplicate_search", record)
+        self.assertEqual(
+            record["stages_skipped"], ["duplicate-search", "prior-art", "claims"]
+        )
+
+    def test_the_cli_exits_non_zero_on_a_trivial_fix_reject(self) -> None:
+        self.record_direct_push_share(0.8)
+        with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+            code = main(
+                [
+                    "prescreen",
+                    "example/project#7",
+                    "--executable",
+                    self.stub("[]", self.typo_issue()),
+                    "--data-root",
+                    str(self.root),
+                ]
+            )
+
+        self.assertEqual(code, 1)
+
+    def test_a_trivial_fix_in_a_reviewed_repository_is_only_a_warning(self) -> None:
+        self.record_direct_push_share(0.05)
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub("[]", self.typo_issue()),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(record["blocking"], [])
+        self.assertIn(TRIVIAL_FIX, record["warnings"])
+        self.assertEqual(record["fix_size"]["estimate"], TRIVIAL)
+        self.assertIn("reads as trivial", record["fix_size"]["detail"])
+
+    def test_an_unscreened_repository_leaves_the_habit_unknown(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub("[]", self.typo_issue()),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertIn(TRIVIAL_FIX, record["warnings"])
+        self.assertIsNone(record["fix_size"]["direct_push_share"])
+        self.assertIn("unrecorded", record["fix_size"]["detail"])
+
+    def test_an_ordinary_defect_records_an_unknown_fix_size(self) -> None:
+        self.record_direct_push_share(0.9)
+        record = prescreen_issue(
+            self.root, "example/project#7", executable=self.stub("[]")
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(record["warnings"], [])
+        self.assertEqual(record["fix_size"]["estimate"], UNKNOWN)
+        self.assertEqual(record["fix_size"]["direct_push_share"], 0.9)
+
     def test_the_verdict_lands_beside_the_repository_screens(self) -> None:
         prescreen_issue(self.root, "example/project#7", executable=self.stub("[]"))
         path = prescreen_path(self.root, "example/project", 7)
@@ -253,7 +420,7 @@ class PrescreenTests(unittest.TestCase):
         _, refusal = check(self.root, "example/project#7")
         self.assertIn("older than", refusal)
 
-    def test_check_refuses_a_pre_classification_schema(self) -> None:
+    def test_check_refuses_a_superseded_schema(self) -> None:
         prescreen_issue(self.root, "example/project#7", executable=self.stub("[]"))
         path = prescreen_path(self.root, "example/project", 7)
         stored = json.loads(path.read_text(encoding="utf-8"))
@@ -262,7 +429,7 @@ class PrescreenTests(unittest.TestCase):
 
         _, refusal = check(self.root, "example/project#7")
 
-        self.assertIn("predates issue classification", refusal)
+        self.assertIn("predates a screening question", refusal)
 
     def test_check_clears_a_fresh_pass(self) -> None:
         prescreen_issue(self.root, "example/project#7", executable=self.stub("[]"))

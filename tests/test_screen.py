@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from mailman.screen import (
+    direct_push_share,
     load_screen,
     render_screen,
     screen_repository,
@@ -87,6 +88,12 @@ class FakeGitHub:
             ],
         )
         self.open_pulls = overrides.pop("open_pulls", [])
+        self.commits = overrides.pop(
+            "commits", [{"sha": f"c{index}"} for index in range(12)]
+        )
+        #: The shas the repository pushed straight to the default branch, which
+        #: the API answers for by naming no pull request.
+        self.direct_pushes = set(overrides.pop("direct_pushes", ()))
         self.issues = overrides.pop("issues", [_issue(10), _issue(11)])
         self.issue_comments = overrides.pop("issue_comments", {})
         self.languages = overrides.pop("languages", {"Python": 100000})
@@ -140,6 +147,11 @@ class FakeGitHub:
             return {"message": "Not Found"}
         if base.endswith("/contents"):
             return self.root
+        if "/commits/" in base and base.endswith("/pulls"):
+            sha = base.rsplit("/", 2)[-2]
+            return [] if sha in self.direct_pushes else [{"number": 1}]
+        if base.endswith("/commits"):
+            return self.commits if "page=1" in path or "page=" not in path else []
         if "/pulls" in base:
             rows = self.open_pulls if "state=open" in path else self.closed_pulls
             return rows if "page=1" in path or "page=" not in path else []
@@ -822,6 +834,61 @@ class ScreenTests(unittest.TestCase):
             gate["detail"],
         )
 
+    def test_a_reviewed_repository_records_a_low_direct_push_share(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), FakeGitHub())
+        gate = _named(record, "direct-push")
+
+        self.assertTrue(gate["passed"])
+        self.assertFalse(gate["blocking"])
+        self.assertEqual(gate["data"]["commits_sampled"], 12)
+        self.assertEqual(gate["data"]["direct_push_share"], 0.0)
+        self.assertEqual(direct_push_share(record), 0.0)
+
+    def test_commits_that_skip_a_pull_request_are_counted_and_warned_about(
+        self) -> None:
+        # pdm-project/pdm#3884: the maintainer fixed the issue directly on main
+        # in dc4e314 while our correct pull request sat unreviewed.
+        # https://github.com/wolfgang-aura/Mailman/issues/79
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(direct_pushes={f"c{index}" for index in range(8)}),
+            )
+        gate = _named(record, "direct-push")
+
+        self.assertFalse(gate["passed"])
+        self.assertFalse(gate["blocking"])
+        self.assertEqual(record["verdict"], "pass")
+        self.assertNotIn("direct-push", record["failed_gates"])
+        self.assertEqual(gate["data"]["direct_pushes"], 8)
+        self.assertEqual(gate["data"]["through_pull_request"], 4)
+        self.assertEqual(gate["data"]["direct_push_share"], 0.67)
+        self.assertEqual(gate["data"]["default_branch"], "main")
+        self.assertIn("outside a pull request", gate["detail"])
+        self.assertEqual(direct_push_share(record), 0.67)
+
+    def test_a_short_history_does_not_carry_a_direct_push_habit(self) -> None:
+        # A share computed over four commits is arithmetic, not a habit.
+        commits = [{"sha": f"c{index}"} for index in range(4)]
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    commits=commits,
+                    direct_pushes={commit["sha"] for commit in commits},
+                ),
+            )
+        gate = _named(record, "direct-push")
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["data"]["commits_sampled"], 4)
+        self.assertEqual(gate["data"]["direct_push_share"], 1.0)
+
+    def test_a_screen_without_the_gate_reports_an_unknown_share(self) -> None:
+        self.assertIsNone(direct_push_share(None))
+        self.assertIsNone(direct_push_share({"gates": []}))
+
     def test_stars_never_decide_the_verdict(self) -> None:
         # Provenance reads stars too, so the contributor route has to carry this
         # repository instead. Otherwise the fixture would be testing provenance.
@@ -970,7 +1037,10 @@ class ScreenTests(unittest.TestCase):
             record = _screen(Path(temporary), FakeGitHub())
         rendered = render_screen(record)
 
-        for name in ("freshness", "ci", "pure-python", "policy", "saturation", "stars"):
+        for name in (
+            "freshness", "ci", "pure-python", "policy", "saturation",
+            "direct-push", "stars",
+        ):
             with self.subTest(gate=name):
                 self.assertIn(name, rendered)
 

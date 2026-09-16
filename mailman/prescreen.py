@@ -13,6 +13,7 @@ the repository screens. https://github.com/wolfgang-aura/Mailman/issues/75
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,6 +22,7 @@ from typing import Any
 from mailman.claims import read_claims
 from mailman.issue import capture_issue_from_github
 from mailman.prior_art import collect_prior_art
+from mailman.screen import DIRECT_PUSH_LIMIT, direct_push_share, load_screen
 from mailman.submission import (
     partition_duplicates,
     record_duplicate_search,
@@ -37,7 +39,7 @@ from mailman.targeting import (
     assess_target,
 )
 
-PRESCREEN_SCHEMA_VERSION = 2
+PRESCREEN_SCHEMA_VERSION = 3
 ISSUE_SCREENS = "issue-screens"
 #: A pre-screen filters a shortlist; it is not the filing gate. The run stage
 #: still re-runs the duplicate search under its own one-hour limit, and
@@ -47,6 +49,60 @@ PRESCREEN_HOURS = 24
 ISSUE_UNREADABLE = "issue-unreadable"
 ISSUE_NOT_OPEN = "issue-not-open"
 ISSUE_NOT_BOUNDED_FIX = "issue-not-bounded-fix"
+#: The fix is small enough that the maintainer writes it rather than reviews it,
+#: in a repository whose maintainers push to the default branch. Blocking.
+TRIVIAL_FIX_DIRECT_PUSH = "trivial-fix-direct-push-repository"
+#: The fix looks trivial but the repository reviews what it merges. A warning:
+#: a typo in a project that runs everything through a pull request is still a
+#: pull request somebody has to open.
+TRIVIAL_FIX = "trivial-fix"
+TRIVIAL = "trivial"
+UNKNOWN = "unknown"
+#: Labels that name the size of the change rather than its subject.
+_TRIVIAL_LABELS = frozenset({"typo", "typos"})
+#: Wordings that describe a change a maintainer writes in less time than he
+#: spends reading a stranger's patch for it. Each carries the reason it is
+#: recorded under, because a rejection nobody can read is a rejection nobody
+#: trusts. `[^\n]` rather than `.` keeps a match inside one sentence.
+#: https://github.com/wolfgang-aura/Mailman/issues/79
+_TRIVIAL_SIGNALS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("a typo", re.compile(r"\btypos?\b|\bmis-?spell(?:ed|ing|s)?\b", re.I)),
+    (
+        "a documentation wording change",
+        re.compile(
+            r"\b(?:docs?|documentation|docstring|readme|changelog)\b[^\n]{0,60}"
+            r"\b(?:says?|reads?|wrong|incorrect|outdated|stale|"
+            r"should (?:say|read|be))\b",
+            re.I,
+        ),
+    ),
+    (
+        "a one-line message or wording change",
+        re.compile(
+            r"\b(?:error|warning|log|help|deprecation)\s+messages?\b[^\n]{0,60}"
+            r"\b(?:wrong|incorrect|misleading|confusing|typo|"
+            r"should (?:say|read|be))\b",
+            re.I,
+        ),
+    ),
+    (
+        "a version-pin bump",
+        re.compile(
+            r"\b(?:bump|pin|unpin|relax|loosen|widen|raise|drop)\b[^\n]{0,60}"
+            r"\b(?:version|requirement|constraint|upper bound|"
+            r"dependency|dependencies|pin)\b",
+            re.I,
+        ),
+    ),
+    (
+        "a change the reporter calls one line",
+        re.compile(
+            r"\bone[- ]?liners?\b|\bone[- ]line\b|\bsingle[- ]line\b"
+            r"|\btrivial (?:fix|change|patch)\b",
+            re.I,
+        ),
+    ),
+)
 _NON_FIX_LABELS = frozenset(
     {
         "enhancement",
@@ -132,6 +188,69 @@ def _issue_blocking(captured: dict[str, Any]) -> list[str]:
     return blocking
 
 
+def _captured_body(directory: Path) -> str:
+    """The issue body out of the `issue.md` the capture already wrote.
+
+    The capture record counts the body's characters but does not keep the text,
+    and re-reading the issue to classify it would double the API cost of a
+    stage that exists to be cheap.
+    """
+    path = directory / "issue.md"
+    if not path.is_file():
+        return ""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    _, _, after = text.partition("## Issue body")
+    body, _, _ = after.partition("## Capture boundary")
+    return body.strip()
+
+
+def estimate_fix_size(
+    title: str | None, body: str | None, labels: Sequence[Any] = ()
+) -> tuple[str, str]:
+    """Guess how big the change is, from what the issue says it wants.
+
+    Two answers only, `trivial` and `unknown`, because that is as much as the
+    issue text can carry. `trivial` means the maintainer plausibly writes this
+    himself in the time it takes to open the review tab: a documentation typo,
+    one wrong message, a version pin. Everything else is `unknown`; this never
+    claims a change is large.
+
+    The reason travels with the answer. A run refused on a guess has to say
+    which words produced the guess. See
+    https://github.com/wolfgang-aura/Mailman/issues/79.
+    """
+    spellings = {str(label).strip().lower() for label in labels or []}
+    named = sorted(spellings & _TRIVIAL_LABELS)
+    if named:
+        return TRIVIAL, f"labelled {named[0]}"
+    text = f"{title or ''}\n{body or ''}"
+    for reason, pattern in _TRIVIAL_SIGNALS:
+        found = pattern.search(text)
+        if found:
+            return TRIVIAL, f"{reason}, from {found.group(0).strip()!r}"
+    return UNKNOWN, "nothing in the issue names a one-line change"
+
+
+def _fix_size_detail(estimate: str, reason: str, share: float | None) -> str:
+    """One readable line, because a number in a record decides nothing by itself."""
+    habit = (
+        "the repository's direct-push share is unrecorded; screen it with "
+        "`mailman screen-target`"
+        if share is None
+        else f"{share} of its recent default-branch commits arrived outside a "
+        "pull request"
+    )
+    if estimate != TRIVIAL:
+        return f"fix size unknown: {reason}; {habit}"
+    if share is not None and share >= DIRECT_PUSH_LIMIT:
+        return (
+            f"the fix reads as trivial ({reason}) and {habit}, at or above the "
+            f"{DIRECT_PUSH_LIMIT} limit: the maintainer will write this before "
+            "he reviews it"
+        )
+    return f"the fix reads as trivial ({reason}), but {habit}"
+
+
 def is_fresh(record: dict[str, Any], *, hours: int = PRESCREEN_HOURS) -> bool:
     try:
         screened = datetime.fromisoformat(record["screened_at"])
@@ -176,15 +295,40 @@ def prescreen_issue(
         },
     }
     issue_blocking = _issue_blocking(captured)
+    # Asked before the duplicate search, because it is the cheaper question and
+    # it can end the screen on its own. A fix small enough to write is a wasted
+    # run in a repository where the maintainer writes rather than reviews.
+    estimate, reason = estimate_fix_size(
+        captured.get("title"), _captured_body(directory), captured.get("labels") or []
+    )
+    share = direct_push_share(load_screen(data_root, slug))
+    warnings: list[str] = []
+    if estimate == TRIVIAL:
+        if share is not None and share >= DIRECT_PUSH_LIMIT:
+            issue_blocking.append(TRIVIAL_FIX_DIRECT_PUSH)
+        else:
+            warnings.append(TRIVIAL_FIX)
+    record["fix_size"] = {
+        "estimate": estimate,
+        "reason": reason,
+        "direct_push_share": share,
+        "direct_push_limit": DIRECT_PUSH_LIMIT,
+        "detail": _fix_size_detail(estimate, reason, share),
+    }
     if issue_blocking:
         record.update(
             {
                 "blocking": issue_blocking,
-                "warnings": [],
+                "warnings": warnings,
                 "verdict": "reject",
                 "stages_skipped": ["duplicate-search", "prior-art", "claims"],
                 "next": f"Do not open a run on {slug}#{number}: "
-                + "; ".join(issue_blocking),
+                + "; ".join(issue_blocking)
+                + (
+                    f". {record['fix_size']['detail']}"
+                    if TRIVIAL_FIX_DIRECT_PUSH in issue_blocking
+                    else ""
+                ),
             }
         )
         _store_prescreen(data_root, slug, number, record)
@@ -245,7 +389,9 @@ def prescreen_issue(
     assessment = assess_target(directory)
     blocking = [code for code in assessment.blocking if code in DECIDABLE]
     record["blocking"] = blocking
-    record["warnings"] = [code for code in assessment.warnings if code in DECIDABLE]
+    record["warnings"] = warnings + [
+        code for code in assessment.warnings if code in DECIDABLE
+    ]
     record["open_attempts"] = [row.get("number") for row in assessment.open_attempts]
     record["merged_attempts"] = [row.get("number") for row in assessment.merged_attempts]
     record["closed_attempts"] = [row.get("number") for row in assessment.closed_attempts]
@@ -273,8 +419,8 @@ def check(data_root: Path, issue: str) -> tuple[dict[str, Any] | None, str | Non
         )
     if record.get("schema_version") != PRESCREEN_SCHEMA_VERSION:
         return record, (
-            f"the pre-screen for {slug}#{number} predates issue classification; "
-            f"run `mailman prescreen {slug}#{number}` again"
+            f"the pre-screen for {slug}#{number} predates a screening question "
+            f"it never answered; run `mailman prescreen {slug}#{number}` again"
         )
     if record.get("verdict") != "pass":
         return record, (

@@ -103,6 +103,22 @@ SHARE_SAMPLE_MINIMUM = 8
 #: issues. See https://github.com/wolfgang-aura/Mailman/issues/95.
 ISSUE_WINDOW_DAYS = 90
 
+#: How many recent default-branch commits to trace back to a pull request. Each
+#: one costs an API call, so the sample is small and is recorded next to the
+#: share it produced. A share computed over four commits is arithmetic.
+DIRECT_PUSH_SAMPLE = 20
+
+#: Above this share of direct pushes, the maintainer's habit is to write the
+#: change himself on the default branch rather than review one. pdm-project/pdm
+#: closed our correct one-line documentation pull request after Frost Ming made
+#: the same change directly in `dc4e314`. The share decides nothing on its own;
+#: `prescreen` reads it together with the size of the fix. See
+#: https://github.com/wolfgang-aura/Mailman/issues/79.
+DIRECT_PUSH_LIMIT = 0.5
+
+#: Below this many readable commits the share is not evidence of a habit.
+DIRECT_PUSH_SAMPLE_MINIMUM = 10
+
 #: Python has to be the language the repository is actually written in. On
 #: `ccxt/ccxt` the Python is generated from TypeScript, and a patch to it is
 #: thrown away by the next build.
@@ -1025,6 +1041,95 @@ def _saturation_gate(
     )
 
 
+def _direct_push_gate(gh: _Gh, slug: str, meta: dict[str, Any]) -> dict[str, Any]:
+    """Gate 7. How often does a change reach this branch without a review?
+
+    Reported, never blocking on its own. A maintainer who pushes most of his
+    commits straight to the default branch will fix a one-line issue himself
+    faster than he will read a stranger's pull request for it, and our run is
+    spent either way. `prescreen` is where the two halves meet: this share and
+    the estimated size of the fix. See
+    https://github.com/wolfgang-aura/Mailman/issues/79.
+    """
+    branch = str(meta.get("default_branch") or "")
+    commits = gh.pages(
+        f"repos/{slug}/commits?sha={quote(branch, safe='')}", pages=1
+    )[:DIRECT_PUSH_SAMPLE]
+    direct = 0
+    reviewed = 0
+    unread = 0
+    for commit in commits:
+        sha = str(commit.get("sha") or "")
+        if not sha:
+            unread += 1
+            continue
+        pulls = gh.json(f"repos/{slug}/commits/{sha}/pulls")
+        if not isinstance(pulls, list):
+            unread += 1
+        elif pulls:
+            reviewed += 1
+        else:
+            direct += 1
+    sample = direct + reviewed
+    share = round(direct / sample, 2) if sample else None
+    data = {
+        "default_branch": branch,
+        "commits_sampled": sample,
+        "commits_unread": unread,
+        "direct_pushes": direct,
+        "through_pull_request": reviewed,
+        "direct_push_share": share,
+        "direct_push_limit": DIRECT_PUSH_LIMIT,
+        "sample_minimum": DIRECT_PUSH_SAMPLE_MINIMUM,
+    }
+    if share is None:
+        return _gate(
+            "direct-push",
+            passed=True,
+            blocking=False,
+            detail=f"no commit on {branch or 'the default branch'} could be read",
+            data=data,
+        )
+    if sample >= DIRECT_PUSH_SAMPLE_MINIMUM and share >= DIRECT_PUSH_LIMIT:
+        return _gate(
+            "direct-push",
+            passed=False,
+            blocking=False,
+            detail=(
+                f"{direct} of {sample} recent commit(s) on {branch} arrived "
+                f"outside a pull request, a share of {share}; a small fix here "
+                "is likely to be written rather than reviewed"
+            ),
+            data=data,
+        )
+    return _gate(
+        "direct-push",
+        passed=True,
+        blocking=False,
+        detail=(
+            f"{direct} of {sample} recent commit(s) on {branch} arrived outside "
+            f"a pull request, a share of {share}"
+        ),
+        data=data,
+    )
+
+
+def direct_push_share(record: dict[str, Any] | None) -> float | None:
+    """The share a recorded screen measured, for a stage that has no API budget.
+
+    `prescreen` needs the number and must not re-read the repository to get it.
+    A repository with no screen, or a screen written before this gate existed,
+    returns `None` and the caller treats the habit as unknown.
+    """
+    if not isinstance(record, dict):
+        return None
+    for gate in record.get("gates") or []:
+        if isinstance(gate, dict) and gate.get("name") == "direct-push":
+            share = (gate.get("data") or {}).get("direct_push_share")
+            return share if isinstance(share, int | float) else None
+    return None
+
+
 def _stars_gate(meta: dict[str, Any]) -> dict[str, Any]:
     """Gate 6. Reported, never decisive. It runs last because it decides nothing."""
     stars = meta.get("stargazers_count")
@@ -1120,6 +1225,7 @@ def screen_repository(
         _policy_gate(gh, slug),
         _assignment_gate(gh, slug),
         _saturation_gate(gh, slug, window_days, issue_window_days),
+        _direct_push_gate(gh, slug, meta),
         _stars_gate(meta),
     ]
     failed = [

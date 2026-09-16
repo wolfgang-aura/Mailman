@@ -324,7 +324,7 @@ Judge a repository before any run is spent on it:
 mailman screen-target OWNER/REPO
 ```
 
-Seven gates, in the order a candidate actually dies in. Freshness runs first
+The gates run in the order a candidate actually dies in. Freshness runs first
 because it kills most of them for two API calls. Stars run last because they
 have never changed a decision: `OpenBB-finance/OpenBB` has 72.6k of them and has
 merged nothing from outside in six weeks.
@@ -367,8 +367,16 @@ merged nothing from outside in six weeks.
    that said so. Matched narrowly on purpose, because "AI" appears in every
    model library's guide.
 6. **Saturation.** How many unassigned open issues have no open pull request
-   naming them, and how old they are.
-7. **Stars.** Reported, never decisive.
+   naming them, and how old they are. Age is capped by `--issue-window-days`,
+   default 90, which is not the merge window and must not be set from it. A
+   fortnight's cap read a normal three-week backlog as a closed door and
+   rejected eighteen repositories that failed nothing else.
+7. **Direct push.** What share of recent default-branch commits arrived outside
+   a pull request. Warns above 0.5 and blocks nothing: a maintainer who pushes
+   his own fixes will write a one-line change faster than he will review one,
+   which is what closed our correct `pdm-project/pdm` pull request. `prescreen`
+   is where the share meets the estimated size of the fix and refuses.
+8. **Stars.** Reported, never decisive.
 
 Every gate prints its numbers next to the threshold that judged them, and the
 verdict is written to `screens/OWNER__REPO.json` under the data root so a
