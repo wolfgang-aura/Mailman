@@ -810,6 +810,22 @@ class CliTests(unittest.TestCase):
 
         self.assertIn(b"done", console.buffer.getvalue())
 
+    def test_main_prints_an_astral_character_on_a_cp1252_console(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/101"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "\U0001f4ca runs"
+            data_root.mkdir()
+            raw = io.BytesIO()
+            console = io.TextIOWrapper(raw, encoding="cp1252", write_through=True)
+            with redirect_stdout(console):
+                exit_code = main(["show", "--data-root", str(data_root)])
+            console.flush()
+            printed = raw.getvalue().decode("utf-8")
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("no runs recorded under", printed)
+        self.assertIn("\U0001f4ca", printed)
+
     def test_show_rejects_a_run_id_that_escapes_the_data_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_root = Path(temporary_directory) / "runs"

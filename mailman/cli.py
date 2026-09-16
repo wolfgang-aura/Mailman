@@ -2735,7 +2735,30 @@ def _command_hunt(arguments: argparse.Namespace) -> dict | None:
     return None
 
 
+def _utf8_console() -> None:
+    """Make stdout and stderr accept everything the records hold.
+
+    Every file Mailman writes is UTF-8, and a piped console on this Windows
+    host is cp1252. Any subcommand that prints a record with an emoji from a
+    contributing guide, or an arrow from a search title, died with
+    `UnicodeEncodeError` unless the operator remembered `PYTHONIOENCODING`.
+    Issue #101. A replaced stream in a test has no `reconfigure`; leave it be.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+        if encoding == "utf8":
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
 def main(arguments: list[str] | None = None) -> int:
+    _utf8_console()
     raw_arguments = list(arguments if arguments is not None else sys.argv[1:])
     verification_command: list[str] | None = None
     passthrough = (
