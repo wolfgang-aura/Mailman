@@ -335,3 +335,80 @@ class TaskPromptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StaleAttemptPromptTests(unittest.TestCase):
+    """The attempt that cleared the target has to reach both agents."""
+
+    def _run_with_stale_attempt(self, root: Path):
+        run, run_directory = make_run(root / "runs")
+        (run_directory / "issue.md").write_text(
+            "# example/project#7: Crash on empty input", encoding="utf-8"
+        )
+        (run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "complete": True,
+                    "issue_number": 7,
+                    "matches": [
+                        {
+                            "number": 4102,
+                            "title": "Guard the empty-input path",
+                            "state": "OPEN",
+                            "url": "https://github.com/example/project/pull/4102",
+                            "pull_request": True,
+                            "updated_at": "2024-01-01T00:00:00Z",
+                            "created_at": "2023-12-01T00:00:00Z",
+                            "author_association": "CONTRIBUTOR",
+                            "matched_by": ["search", "#7"],
+                            "methods": ["search"],
+                            "references_issue": True,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return run, run_directory
+
+    def test_both_prompts_name_the_stale_attempt_and_ask_to_supersede_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, run_directory = self._run_with_stale_attempt(
+                Path(temporary_directory)
+            )
+
+            primary_path, reviewer_path = write_task_prompts(
+                run, run_directory, verification_command=["python", "-m", "pytest"]
+            )
+
+            primary = primary_path.read_text(encoding="utf-8")
+            reviewer = reviewer_path.read_text(encoding="utf-8")
+            order = json.loads(
+                (run_directory / "work-order.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(
+            [row["number"] for row in order["stale_attempts"]], [4102]
+        )
+        for text in (primary, reviewer):
+            self.assertIn("no longer claim this issue", text)
+            self.assertIn("#4102", text)
+            self.assertIn("https://github.com/example/project/pull/4102", text)
+        self.assertIn("review comments before you start", primary)
+        self.assertIn("supersedes", primary)
+        self.assertIn("supersedes", reviewer)
+
+    def test_a_run_with_no_stale_attempt_gets_no_section(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, run_directory = make_run(Path(temporary_directory) / "runs")
+            (run_directory / "issue.md").write_text(
+                "# example/project#7: Crash on empty input", encoding="utf-8"
+            )
+
+            primary_path, _ = write_task_prompts(
+                run, run_directory, verification_command=["python", "-m", "pytest"]
+            )
+            primary = primary_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("no longer claim this issue", primary)

@@ -8,6 +8,11 @@ from typing import Any
 
 from mailman.executor import CommandResult, execute
 from mailman.redaction import redact
+from mailman.targeting import (
+    attempt_is_dormant,
+    is_stale_attempt,
+    stale_attempt_row,
+)
 from mailman.toolchain import resolve_tool
 
 
@@ -18,11 +23,14 @@ PRIOR_ART_MARKDOWN = "prior-art.md"
 #: duplicate search so a rejection can be read back: which reference, in which
 #: repository, in what state.
 CITED_PULL_REQUESTS_FILENAME = "cited-pull-requests.json"
-_CITED_FIELDS = "number,state,mergedAt,mergeCommit,title,url"
+# `updatedAt` is what says whether an open attempt is still moving, and
+# `isDraft` is what a reader needs to judge one that is not. Both are cheap;
+# neither was asked for while an open attempt was a flat refusal.
+_CITED_FIELDS = "number,state,mergedAt,mergeCommit,title,url,createdAt,updatedAt,isDraft"
 
 _PULL_REQUEST_FIELDS = (
-    "number,title,state,url,body,author,createdAt,closedAt,mergedAt,"
-    "mergeCommit,files,comments,reviews"
+    "number,title,state,url,body,author,createdAt,updatedAt,closedAt,mergedAt,"
+    "mergeCommit,isDraft,files,comments,reviews"
 )
 
 # GitHub's author association for someone who can merge. A comment from one of
@@ -98,7 +106,11 @@ def summarize_pull_request(payload: dict[str, Any]) -> dict[str, Any]:
         "outcome": outcome,
         "author": author.get("login") if isinstance(author, dict) else None,
         "created_at": payload.get("createdAt"),
+        # The last activity, which is what decides whether an open attempt
+        # still claims the issue. See targeting.STALE_ATTEMPT_DAYS.
+        "updated_at": payload.get("updatedAt"),
         "closed_at": payload.get("closedAt"),
+        "is_draft": payload.get("isDraft"),
         "withheld": outcome == "merged",
     }
     if outcome == "merged":
@@ -144,12 +156,15 @@ def render_prior_art(record: dict[str, Any]) -> str:
         return "\n".join(lines)
     open_attempts = [item for item in attempts if item["outcome"] == "open"]
     closed = [item for item in attempts if item["outcome"] == "closed unmerged"]
+    # An attempt nobody has touched in months does not claim anything, so it
+    # must not be announced as a reason to stop writing.
+    live = [item for item in open_attempts if not is_stale_attempt(item)]
     lines.append(
         f"{len(attempts)} related pull request(s): {len(open_attempts)} open, "
         f"{len(closed)} closed without merging."
     )
     lines.append("")
-    if open_attempts:
+    if live:
         lines.extend(
             [
                 "**An open pull request already claims this issue.** Nothing below",
@@ -201,11 +216,21 @@ def render_prior_art(record: dict[str, Any]) -> str:
                     "",
                 ]
             )
-        if item["outcome"] == "open":
+        if item["outcome"] == "open" and item in live:
             lines.extend(
                 [
                     "This one is still open, so someone is already working on this",
                     "issue. A second pull request would be a duplicate.",
+                    "",
+                ]
+            )
+        elif item["outcome"] == "open":
+            lines.extend(
+                [
+                    "This one is open but dormant: nobody has touched it for months.",
+                    "It is a prior attempt, not a claim. Read its diff and its review",
+                    "comments before you start, and say in your pull request body that",
+                    "yours supersedes it.",
                     "",
                 ]
             )
@@ -289,6 +314,7 @@ def resolve_cited_pull_requests(
     references: Sequence[dict[str, Any]],
     executable: str | None = None,
     timeout_seconds: float = 60,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Ask GitHub what each reference the issue names actually is.
 
@@ -300,16 +326,21 @@ def resolve_cited_pull_requests(
     clone, so it cannot ask whether the merge commit is already an ancestor of
     a base commit the way `check-target` can; the merge commit is recorded so a
     later stage can. See https://github.com/wolfgang-aura/Mailman/issues/98.
+
+    An open attempt that has not moved for `STALE_ATTEMPT_DAYS`, and one closed
+    without merging, is recorded under `stale` rather than `open`: it is a
+    prior attempt to read, not a claim on the issue.
     """
     command_executable = executable or resolve_tool(run_directory, "gh")
     record: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "collected_at": datetime.now(UTC).isoformat(),
         "references": list(references),
         "resolved": [],
         "skipped": [],
         "open": [],
         "merged": [],
+        "stale": [],
         "decided_by": None,
         "commands": [],
         "success": True,
@@ -363,12 +394,31 @@ def resolve_cited_pull_requests(
             "title": payload.get("title"),
             "url": payload.get("url"),
             "merged_at": payload.get("mergedAt"),
+            "created_at": payload.get("createdAt"),
+            "updated_at": payload.get("updatedAt"),
+            "is_draft": payload.get("isDraft"),
+            "author_association": None,
             "merge_commit": (
                 merge_commit.get("oid") if isinstance(merge_commit, dict) else None
             ),
         }
+        if attempt_is_dormant(row, now=now):
+            # Only now, and only for an attempt that has already stopped
+            # moving. `gh pr view` has no author association at all, so this
+            # costs one extra call — on the handful of references that are
+            # about to stop blocking, never on the ones that already do.
+            row["author_association"] = _author_association(
+                run_directory,
+                executable=command_executable,
+                slug=slug,
+                number=row["number"],
+                timeout_seconds=timeout_seconds,
+                commands=record["commands"],
+            )
         record["resolved"].append(row)
-        if row["state"] == "OPEN":
+        if is_stale_attempt(row, now=now):
+            record["stale"].append(stale_attempt_row(row, now=now))
+        elif row["state"] == "OPEN":
             record["open"].append(row)
         elif row["state"] == "MERGED":
             record["merged"].append(row)
@@ -380,13 +430,66 @@ def resolve_cited_pull_requests(
     return record
 
 
+def _author_association(
+    run_directory: Path,
+    *,
+    executable: str,
+    slug: str,
+    number: Any,
+    timeout_seconds: float,
+    commands: list[dict[str, Any]],
+) -> str | None:
+    """Who the attempt's author is to this repository, in GitHub's own word.
+
+    `gh pr view` does not carry the author association at all, so the REST
+    endpoint is the only place to read it. A dormant attempt written by an
+    OWNER or a MEMBER is a maintainer's own work in progress and still claims
+    the issue; one written by anybody else has stopped claiming it.
+    """
+    if not isinstance(number, int):
+        return None
+    result: CommandResult = execute(
+        [
+            executable,
+            "api",
+            f"repos/{slug}/pulls/{number}",
+            "--jq",
+            ".author_association",
+        ],
+        working_directory=run_directory,
+        timeout_seconds=timeout_seconds,
+    )
+    commands.append(result.to_dict())
+    if result.timed_out or result.exit_code != 0:
+        return None
+    association = (result.stdout or "").strip().strip('"').upper()
+    return association or None
+
+
 def _cited_detail(record: dict[str, Any]) -> str:
     """One line naming the reference that decided it, in the words it was written."""
     decided = record.get("decided_by")
+    stale = record.get("stale") or []
     if not decided:
-        return (
+        base = (
             f"{len(record.get('references') or [])} reference(s) read from the "
             "issue, none of them an open or merged pull request"
+        )
+        if not stale:
+            return base
+        named = ", ".join(
+            f"{row.get('repository')}#{row.get('number')} ({row.get('state')}"
+            + (
+                f", {row['days_stale']} days since its last activity)"
+                if row.get("days_stale") is not None
+                else ")"
+            )
+            for row in stale
+        )
+        return (
+            f"{base}. {len(stale)} stale prior attempt(s) the issue names: "
+            f"{named}. Read each one before starting, and say in the pull "
+            "request body that yours supersedes it"
         )
     state = "is open" if decided["state"] == "OPEN" else "was merged"
     tail = (

@@ -433,7 +433,43 @@ def _policy_findings(
     # A superseded row is neither a rival nor a fix. Leaving it here reported a
     # merged pull request as open and blocked the run the evidence just
     # cleared. See https://github.com/wolfgang-aura/Mailman/issues/46.
-    open_rivals = [row for row in strong if row not in merged and row not in superseded]
+    #
+    # Imported here rather than at the top: `targeting` reads this module's
+    # duplicate helpers, so the dependency only goes one way at import time.
+    from mailman.targeting import (
+        STALE_ATTEMPT_DAYS,
+        is_stale_attempt,
+        stale_attempt_row,
+    )
+
+    rivals = [row for row in strong if row not in merged and row not in superseded]
+    # The same rule `check-target` applied hours earlier. A run cleared to
+    # start against a dormant attempt must not be refused at the filing gate by
+    # that same attempt. See targeting.STALE_ATTEMPT_DAYS.
+    stale = [row for row in rivals if is_stale_attempt(row)]
+    open_rivals = [row for row in rivals if row not in stale]
+    if stale:
+        named = ", ".join(
+            f"{_duplicate_key(row)} ({summary['state']}"
+            + (
+                f", {summary['days_stale']} days since its last activity)"
+                if summary["days_stale"] is not None
+                else ")"
+            )
+            for row, summary in ((row, stale_attempt_row(row)) for row in stale)
+        )
+        findings.append(
+            Finding(
+                code="stale-prior-attempt",
+                blocking=False,
+                detail=(
+                    f"{len(stale)} earlier pull request(s) stopped claiming this "
+                    "issue: open and untouched for at least "
+                    f"{STALE_ATTEMPT_DAYS} days, or closed without merging. The "
+                    "pull request body must say it supersedes them: " + named
+                ),
+            )
+        )
     if open_rivals:
         findings.append(
             Finding(
@@ -1011,12 +1047,27 @@ def record_duplicate_acknowledgement(
 
 # `gh pr list --search` is repo-scoped and works where the global `gh search`
 # index refuses a repository, which it does for encode/starlette.
-_SEARCH_FIELDS = "number,title,state,url,createdAt"
+#
+# The field sets differ by subcommand, so they are written out per subcommand
+# rather than shared: `gh pr list` has no author association and `gh issue
+# list` has neither that nor `isDraft`, and asking either for a field it does
+# not know makes it refuse the whole call. `updatedAt` is what decides whether
+# an open attempt still claims the issue; see targeting.STALE_ATTEMPT_DAYS.
+_SEARCH_FIELDS = {
+    "pr": "number,title,state,url,createdAt,updatedAt,isDraft",
+    "issue": "number,title,state,url,createdAt,updatedAt",
+}
+# `gh search prs` and `gh search issues` are the only two that carry the author
+# association, which is what keeps a maintainer's own dormant branch blocking.
+_INDEX_FIELDS = {
+    "pr": "number,title,state,url,createdAt,updatedAt,isDraft,authorAssociation",
+    "issue": "number,title,state,url,createdAt,updatedAt,authorAssociation",
+}
 # The unfiltered listing needs the text a local match reads. An issue has no
 # head ref, and asking for one makes `gh issue list` refuse the whole call.
 _LISTING_FIELDS = {
-    "pr": "number,title,state,url,createdAt,body,headRefName",
-    "issue": "number,title,state,url,createdAt,body",
+    "pr": "number,title,state,url,createdAt,updatedAt,isDraft,body,headRefName",
+    "issue": "number,title,state,url,createdAt,updatedAt,body",
 }
 _MINIMUM_TERM_LENGTH = 4
 
@@ -1044,6 +1095,12 @@ def _match_rows(
                 "state": entry.get("state"),
                 "url": entry.get("url"),
                 "created_at": entry.get("createdAt"),
+                # What the staleness rule reads. `updatedAt` is the last
+                # activity; the association says whether a dormant branch
+                # belongs to somebody who speaks for the project.
+                "updated_at": entry.get("updatedAt"),
+                "is_draft": entry.get("isDraft"),
+                "author_association": entry.get("authorAssociation"),
                 "pull_request": pull_request,
                 "matched_by": list(reasons or ["search"]),
                 # How a row was found decides what it is worth. GitHub's index
@@ -1208,7 +1265,7 @@ def record_duplicate_search(
                         "--limit",
                         str(limit),
                         "--json",
-                        _SEARCH_FIELDS,
+                        _SEARCH_FIELDS[kind],
                     ],
                     terms,
                 )
@@ -1228,7 +1285,7 @@ def record_duplicate_search(
                     "--limit",
                     str(limit),
                     "--json",
-                    _SEARCH_FIELDS,
+                    _INDEX_FIELDS[kind],
                 ],
                 None,
             ),
@@ -1247,7 +1304,7 @@ def record_duplicate_search(
                     "--limit",
                     str(limit),
                     "--json",
-                    _SEARCH_FIELDS,
+                    _SEARCH_FIELDS[kind],
                 ],
                 None,
             ),
@@ -1353,6 +1410,12 @@ def record_duplicate_search(
                         item for item in row.get(field) or [] if item not in merged
                     )
                     existing[field] = merged
+                # Only `gh search` returns an author association, and only the
+                # pull request methods return `isDraft`, so the row that got
+                # here first may be missing what the staleness rule needs.
+                for field_name in ("updated_at", "is_draft", "author_association"):
+                    if existing.get(field_name) is None:
+                        existing[field_name] = row.get(field_name)
                 existing["term_count"] = max(
                     existing.get("term_count") or 0, row.get("term_count") or 0
                 )

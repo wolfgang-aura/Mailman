@@ -75,10 +75,19 @@ own without a domain narrowing the pool before they see it.
    stage runs, writes the verdict beside the repository screens, and exits
    non-zero on a reject. The thread is read before the search: every pull
    request the issue's body, comments and timeline name is resolved with one
-   `gh pr view` each, in whatever repository it lives in, and an open one is
-   `open-pull-request` while a merged one is `already-fixed-upstream`. The
+   `gh pr view` each, in whatever repository it lives in, and a live open one
+   is `open-pull-request` while a merged one is `already-fixed-upstream`. The
    record names the reference that decided it under `cited_pull_requests`.
    A reference that turns out to be an issue is skipped without comment.
+   An open pull request untouched for 60 days or more, and one closed without
+   being merged, is a stale prior attempt rather than a claim: it lands in
+   `stale_attempts` with the warning `stale-prior-attempt`, and the target
+   passes. A dormant attempt by an OWNER or MEMBER still blocks, because that
+   is a maintainer's own work in progress. Every stage reads the same rule, so
+   `check-target`, `hunt status`, `hunt finish` and `prepare-submission` cannot
+   disagree with the pre-screen about which attempts are dormant. A stale
+   attempt is prior art you owe work: read its diff and its review comments
+   before starting, and carry it into step 13.
    Closed issues and issues labelled as features,
    enhancements, questions, projects or tracking work stop after the issue
    read; do not spend search or agent work on them. Most targets fail here. One
@@ -204,6 +213,11 @@ own without a domain narrowing the pool before they see it.
     actual verification results. Follow docs/pull-request-standard.md and the
     target's template. Remove placeholders and claims that only the human can
     make true. Include required AI disclosure. Do not invent human testing.
+    When the run carries a `stale-prior-attempt`, the body must name the
+    attempt it supersedes, link it, and say in one sentence how this change
+    differs from it. `prepare-submission` records the attempts under
+    `stale-prior-attempt` as a non-blocking finding; a body that ignores them
+    reads to a maintainer as a second contributor racing the first.
 14. Write decision.json using `decision --init` and the schema in
     docs/review-page-standard.md. Keep evidence classes distinct. Questions
     must be genuine user choices, never tasks you can do. Use [] otherwise.

@@ -189,6 +189,67 @@ def _comparison_section(comparisons: Sequence[str], *, audience: str) -> str:
 """
 
 
+def stale_attempts(run_directory: Path) -> list[dict[str, object]]:
+    """The earlier pull requests that stopped claiming this issue.
+
+    Read from the assessment rather than from a file the orchestrator happens
+    to have written, so `build-prompts` cannot disagree with `check-target`
+    about which attempts are dormant. Imported here because `targeting` reads
+    the submission helpers and this module is built on top of both.
+    """
+    from mailman.targeting import assess_target
+
+    return list(assess_target(run_directory).stale_attempts)
+
+
+def _stale_attempt_section(attempts: object, *, audience: str) -> str:
+    """Put the dormant attempts in front of the agent, with what to do about them.
+
+    A stale attempt is the reason this target passed its gates at all. It is
+    also the single best description of what was already tried and how far it
+    got, and a pull request that does not say it supersedes one reads to a
+    maintainer as a second person racing the first.
+    """
+    rows = [row for row in attempts or [] if isinstance(row, dict)]
+    if not rows:
+        return ""
+    listed = []
+    for row in rows:
+        days = row.get("days_stale")
+        age = f", {days} days since its last activity" if days is not None else ""
+        draft = ", a draft" if row.get("is_draft") else ""
+        listed.append(
+            f"- #{row.get('number')} {row.get('title') or ''} "
+            f"({row.get('state')}{age}{draft}): {row.get('url') or ''}"
+        )
+    quoted = "\n".join(listed)
+    if audience == "reviewer":
+        ask = (
+            "Check that the candidate read these before it was written: it must "
+            "not repeat a mistake one of them was already told about, and it "
+            "must not silently re-derive one of them. Require the pull request "
+            "body to name the attempt it supersedes."
+        )
+    else:
+        ask = (
+            "Read each one's diff and its review comments before you start. "
+            "They are not competition; they are the record of what was tried "
+            "and what a maintainer said about it. Say in your report which of "
+            "them yours supersedes and how it differs, so the pull request body "
+            "can state it."
+        )
+    return f"""
+## Earlier attempts that no longer claim this issue
+
+These pull requests stopped claiming the issue: open and untouched for months,
+or closed without being merged. That is why this target was cleared.
+
+{quoted}
+
+{ask}
+"""
+
+
 def _work_order(
     run_directory: Path,
     issue_markdown: str,
@@ -221,11 +282,15 @@ def _work_order(
             if resolved.is_relative_to(root) and resolved.is_file():
                 found.add(resolved.relative_to(root).as_posix())
     order: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "start_files": sorted(found),
         "symbols": [str(item) for item in prescreen.get("symbols") or [] if str(item)],
         "verification_command": list(verification_command or []),
         "comparisons": issue_comparisons(issue_markdown),
+        # The attempts that stopped claiming the issue. They are the reason the
+        # target passed its gates, so the agent has to read them and the pull
+        # request body has to say it supersedes them.
+        "stale_attempts": stale_attempts(run_directory),
     }
     (run_directory / WORK_ORDER_FILENAME).write_text(
         json.dumps(order, indent=2) + "\n", encoding="utf-8"
@@ -367,6 +432,7 @@ def build_primary_prompt(
     reproduction: str = "",
     work_order: str = "",
     comparisons: str = "",
+    stale: str = "",
 ) -> str:
     return f"""# Primary engineering task
 
@@ -396,7 +462,7 @@ instructions before editing, and follow its existing conventions.
 ## Issue
 
 {issue_markdown.strip()}
-{_prior_art_section(prior_art, audience="primary")}{_maintainer_review_section(maintainer_review, audience="primary")}"""
+{_prior_art_section(prior_art, audience="primary")}{stale}{_maintainer_review_section(maintainer_review, audience="primary")}"""
 
 
 def build_reviewer_prompt(
@@ -410,6 +476,7 @@ def build_reviewer_prompt(
     reproduction: str = "",
     work_order: str = "",
     comparisons: str = "",
+    stale: str = "",
 ) -> str:
     return f"""# Reviewer task
 
@@ -438,7 +505,7 @@ workspace. List every required change as a short bullet above your verdict.
 ## Issue
 
 {issue_markdown.strip()}
-{_prior_art_section(prior_art, audience="reviewer")}{_maintainer_review_section(maintainer_review, audience="reviewer")}"""
+{_prior_art_section(prior_art, audience="reviewer")}{stale}{_maintainer_review_section(maintainer_review, audience="reviewer")}"""
 
 
 def write_task_prompts(
@@ -489,6 +556,9 @@ def write_task_prompts(
             comparisons=_comparison_section(
                 work_order["comparisons"], audience="primary"
             ),
+            stale=_stale_attempt_section(
+                work_order["stale_attempts"], audience="primary"
+            ),
         ),
         encoding="utf-8",
     )
@@ -504,6 +574,9 @@ def write_task_prompts(
             work_order=work_order_section,
             comparisons=_comparison_section(
                 work_order["comparisons"], audience="reviewer"
+            ),
+            stale=_stale_attempt_section(
+                work_order["stale_attempts"], audience="reviewer"
             ),
         ),
         encoding="utf-8",

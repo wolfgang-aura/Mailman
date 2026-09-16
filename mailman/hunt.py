@@ -18,7 +18,11 @@ from mailman.orchestrator import orchestration_step_names
 from mailman.review_decision import DecisionError, load_decision
 from mailman.screen import load_screen
 from mailman.target_intel import repository_slug
-from mailman.targeting import UNACKNOWLEDGED_ATTEMPTS, assess_target
+from mailman.targeting import (
+    STALE_PRIOR_ATTEMPT,
+    UNACKNOWLEDGED_ATTEMPTS,
+    assess_target,
+)
 
 PROCEDURE = Path(__file__).with_name("procedure.md")
 #: How long one coordinator owns a hunt before another may take it over
@@ -33,6 +37,12 @@ DROP_CODES = {
     "already-fixed-upstream", "bug-not-reproduced", "fails-freshness-bar",
     "reproduction-not-machine-checked", "no-maintainer-reply",
 }
+#: Codes a target's assessment raises as a warning. They neither replace the
+#: candidate nor send the coordinator back to a stage; they travel with the run
+#: so the work order and the pull request body can answer them.
+#: `stale-prior-attempt` is here and deliberately not in DROP_CODES: an attempt
+#: nobody has touched in months is prior art, not a rival in flight.
+WARNING_CODES = {STALE_PRIOR_ATTEMPT}
 #: A hunt in one of these states is history. Its record answers "what did we
 #: file, and on what evidence", and nothing may rewrite that answer.
 TERMINAL_STATUSES = ("FILED", "ABANDONED")
@@ -498,10 +508,18 @@ def require_lease(record: dict, owner: str | None) -> None:
 def next_action(directory: Path) -> dict:
     run, _ = load_run(directory.name, directory.parent)
 
+    # Filled once the target has been assessed, and carried by every row after
+    # it. Left out while empty, because a key on every row costs the
+    # coordinator context on every later turn.
+    warnings: list[str] = []
+
     def action(stage: str, command: str, detail: str = "", disposition: str = "REPAIR") -> dict:
-        return {"run_id": run.run_id, "ready": False, "stage": stage,
-                "action": command, "detail": detail, "disposition": disposition,
-                "human_required": False}
+        row = {"run_id": run.run_id, "ready": False, "stage": stage,
+               "action": command, "detail": detail, "disposition": disposition,
+               "human_required": False}
+        if warnings:
+            row["warnings"] = list(warnings)
+        return row
 
     screen = load_screen(directory.parent, repository_slug(run.repository)) or {}
     if screen.get("verdict") != "pass" or not screen.get("success"):
@@ -539,6 +557,7 @@ def next_action(directory: Path) -> dict:
         and current_closed <= recorded_closed
     )
     assessment = assess_target(directory, acknowledged=acknowledged)
+    warnings.extend(sorted(set(assessment.warnings) & WARNING_CODES))
     if assessment.blocking:
         code = assessment.blocking[0]
         return action("target", f"mailman check-target {run.run_id}", "; ".join(assessment.blocking),
@@ -590,9 +609,12 @@ def next_action(directory: Path) -> dict:
     checked = check_handoff(directory)
     if not checked["ok"]:
         return action("handoff", f"mailman handoff-check {run.run_id}", checked["detail"])
-    return {"run_id": run.run_id, "ready": True, "stage": "filing-approval",
-            "disposition": "READY", "human_required": False,
-            "action": "Include in the final approval packet."}
+    ready = {"run_id": run.run_id, "ready": True, "stage": "filing-approval",
+             "disposition": "READY", "human_required": False,
+             "action": "Include in the final approval packet."}
+    if warnings:
+        ready["warnings"] = list(warnings)
+    return ready
 
 
 #: Longest evidence or detail string the printed view keeps per row.

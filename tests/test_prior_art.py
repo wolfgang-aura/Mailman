@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import UTC, datetime, timedelta
 
 from mailman.models import AgentConfig, RunRecord
 from mailman.prior_art import render_prior_art, summarize_pull_request
@@ -49,6 +50,11 @@ MERGED_PULL_REQUEST = {
     "reviews": [],
 }
 
+#: Written relative to today, because whether an open attempt still claims the
+#: issue is a question about its age. See targeting.STALE_ATTEMPT_DAYS.
+_RECENTLY = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+_LONG_AGO = (datetime.now(UTC) - timedelta(days=400)).isoformat()
+
 OPEN_PULL_REQUEST = {
     "number": 14668,
     "title": "Handle RaisesGroup check errors during suggestions",
@@ -57,12 +63,16 @@ OPEN_PULL_REQUEST = {
     "body": "## Summary\nprevent the speculative check",
     "author": {"login": "someone"},
     "createdAt": "2026-07-01T00:00:00Z",
+    "updatedAt": _RECENTLY,
     "closedAt": None,
     "mergedAt": None,
     "files": [{"path": "src/_pytest/raises.py"}],
     "comments": [],
     "reviews": [],
 }
+
+#: The same attempt, untouched for over a year.
+DORMANT_PULL_REQUEST = {**OPEN_PULL_REQUEST, "updatedAt": _LONG_AGO}
 
 
 def _run() -> RunRecord:
@@ -140,6 +150,15 @@ class RenderTests(unittest.TestCase):
     def test_an_open_attempt_leads_with_a_warning(self) -> None:
         rendered = render_prior_art(self._record(OPEN_PULL_REQUEST))
         self.assertIn("already claims this issue", rendered)
+
+    def test_a_dormant_open_attempt_is_not_announced_as_a_claim(self) -> None:
+        # An attempt nobody has touched in over a year does not stop the work.
+        # It is the record of what was tried, and the pull request body has to
+        # say it supersedes it. See targeting.STALE_ATTEMPT_DAYS.
+        rendered = render_prior_art(self._record(DORMANT_PULL_REQUEST))
+        self.assertNotIn("already claims this issue", rendered)
+        self.assertIn("open but dormant", rendered)
+        self.assertIn("supersedes it", rendered)
 
     def test_no_attempts_says_so_without_reassurance(self) -> None:
         rendered = render_prior_art(self._record())

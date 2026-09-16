@@ -40,6 +40,7 @@ from mailman.targeting import (
     NO_DUPLICATE_SEARCH,
     NO_MAINTAINER_REPLY,
     OPEN_PULL_REQUEST,
+    STALE_PRIOR_ATTEMPT,
     UNACKNOWLEDGED_ATTEMPTS,
     UNACKNOWLEDGED_CLAIM,
     WORK_HANDED_OVER,
@@ -48,9 +49,10 @@ from mailman.targeting import (
 )
 
 #: 4 reads the pull requests the issue's own thread names; 5 asks whether the
-#: repository requires a maintainer reply before a pull request exists. A screen
-#: written before either never asked the question, so `check` sends it back.
-PRESCREEN_SCHEMA_VERSION = 5
+#: repository requires a maintainer reply before a pull request exists; 6 asks
+#: how long each cited attempt has been dormant. A screen written before any of
+#: them never asked the question, so `check` sends it back.
+PRESCREEN_SCHEMA_VERSION = 6
 ISSUE_SCREENS = "issue-screens"
 #: A pre-screen filters a shortlist; it is not the filing gate. The run stage
 #: still re-runs the duplicate search under its own one-hour limit, and
@@ -137,6 +139,7 @@ DECIDABLE = (
     ISSUE_ASSIGNED,
     WORK_HANDED_OVER,
     UNACKNOWLEDGED_CLAIM,
+    STALE_PRIOR_ATTEMPT,
 )
 
 
@@ -365,6 +368,7 @@ def prescreen_issue(
         "issue_number": number,
         "symbols": [symbol for symbol in symbols if symbol.strip()],
         "workspace": str(directory),
+        "stale_attempts": [],
         "issue": {
             "success": captured.get("success"),
             "state": captured.get("state"),
@@ -441,9 +445,15 @@ def prescreen_issue(
         "skipped": cited["skipped"],
         "open": [row["number"] for row in cited["open"]],
         "merged": [row["number"] for row in cited["merged"]],
+        "stale": [row["number"] for row in cited["stale"]],
         "decided_by": cited["decided_by"],
         "detail": cited["detail"],
     }
+    # A dormant attempt is prior art the run carries, not a reason to refuse
+    # the target. `cited["open"]` already excludes them.
+    record["stale_attempts"] = list(cited["stale"])
+    if cited["stale"]:
+        warnings.append(STALE_PRIOR_ATTEMPT)
     # Whether we may file here at all, before whether this issue is worth it.
     # getsentry/sentry-python closes a pull request whose issue no maintainer
     # answered, automatically, and labels it a guideline violation: the patch
@@ -543,9 +553,15 @@ def prescreen_issue(
     assessment = assess_target(directory)
     blocking = [code for code in assessment.blocking if code in DECIDABLE]
     record["blocking"] = blocking
-    record["warnings"] = warnings + [
+    combined = warnings + [
         code for code in assessment.warnings if code in DECIDABLE
     ]
+    record["warnings"] = list(dict.fromkeys(combined))
+    # The search and the issue's own thread can name the same dormant attempt.
+    known = {row.get("number") for row in record["stale_attempts"]}
+    record["stale_attempts"].extend(
+        row for row in assessment.stale_attempts if row.get("number") not in known
+    )
     record["open_attempts"] = [row.get("number") for row in assessment.open_attempts]
     record["merged_attempts"] = [
         row.get("number") for row in assessment.merged_attempts

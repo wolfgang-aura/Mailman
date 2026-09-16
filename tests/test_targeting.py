@@ -4,10 +4,12 @@ import json
 import subprocess
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
+    STALE_PRIOR_ATTEMPT,
     BUG_NOT_REPRODUCED,
     ISSUE_ASSIGNED,
     MERGED_FIX_ALREADY_IN_BASE,
@@ -104,6 +106,9 @@ _CLOSED = {
     "outcome": "closed unmerged",
     "url": "https://github.com/pytest-dev/pytest/pull/14502",
 }
+#: The same attempt, written by somebody who speaks for the project. A
+#: maintainer's own closed branch still has to be read and acknowledged.
+_CLOSED_BY_MAINTAINER = {**_CLOSED, "author_association": "MEMBER"}
 _MERGED = {
     "number": 14098,
     "title": "fix #14004 - connect conftests to nodeids/nodes",
@@ -220,7 +225,7 @@ class AssessTargetTests(unittest.TestCase):
         self.assertNotIn(OPEN_PULL_REQUEST, assessment.blocking)
         self.assertEqual(assessment.open_attempts, [])
 
-    def test_a_closed_search_match_requires_prior_art_without_its_record(self) -> None:
+    def test_a_maintainers_closed_search_match_needs_prior_art_read(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _record(Path(temporary), attempts=None)
             (root / "duplicate-search.json").write_text(
@@ -235,6 +240,7 @@ class AssessTargetTests(unittest.TestCase):
                                 "state": "CLOSED",
                                 "url": "https://github.com/example/project/pull/13534",
                                 "pull_request": True,
+                                "author_association": "OWNER",
                                 "matched_by": ["search", "#4775"],
                                 "methods": ["search"],
                                 "references_issue": True,
@@ -267,9 +273,11 @@ class AssessTargetTests(unittest.TestCase):
         self.assertFalse(assessment.may_start)
         self.assertIn(OPEN_PULL_REQUEST, assessment.blocking)
 
-    def test_closed_attempts_stop_a_run_until_someone_has_read_them(self) -> None:
+    def test_a_maintainers_closed_attempt_stops_a_run_until_it_is_read(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            assessment = assess_target(_record(Path(temporary), attempts=[_CLOSED]))
+            assessment = assess_target(
+                _record(Path(temporary), attempts=[_CLOSED_BY_MAINTAINER])
+            )
 
         self.assertFalse(assessment.may_start)
         self.assertIn(UNACKNOWLEDGED_ATTEMPTS, assessment.blocking)
@@ -278,7 +286,8 @@ class AssessTargetTests(unittest.TestCase):
     def test_acknowledged_closed_attempts_may_start_and_stay_on_the_record(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             assessment = assess_target(
-                _record(Path(temporary), attempts=[_CLOSED]), acknowledged=True
+                _record(Path(temporary), attempts=[_CLOSED_BY_MAINTAINER]),
+                acknowledged=True,
             )
 
         self.assertTrue(assessment.may_start)
@@ -291,7 +300,7 @@ class AssessTargetTests(unittest.TestCase):
         # refused before a workspace was ever cloned.
         with tempfile.TemporaryDirectory() as temporary:
             assessment = assess_target(
-                _record(Path(temporary), attempts=[_CLOSED, _OPEN]),
+                _record(Path(temporary), attempts=[_CLOSED_BY_MAINTAINER, _OPEN]),
                 acknowledged=True,
             )
 
@@ -340,7 +349,9 @@ class AssessTargetTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             assessment = assess_target(
-                _record(Path(temporary), attempts=[_MERGED, _CLOSED]),
+                _record(
+                    Path(temporary), attempts=[_MERGED, _CLOSED_BY_MAINTAINER]
+                ),
                 acknowledged=True,
             )
         summary = assessment.summary()
@@ -348,7 +359,7 @@ class AssessTargetTests(unittest.TestCase):
         self.assertFalse(assessment.may_start)
         self.assertIn(ALREADY_FIXED_UPSTREAM, assessment.blocking)
         self.assertEqual(assessment.merged_attempts, [_MERGED])
-        self.assertEqual(assessment.closed_attempts, [_CLOSED])
+        self.assertEqual(assessment.closed_attempts, [_CLOSED_BY_MAINTAINER])
         self.assertIn("merged    #14098", summary)
         self.assertIn("closed    #14502", summary)
         self.assertIn("rejected the approach", summary)
@@ -485,6 +496,128 @@ def _git(workspace: Path, *arguments: str) -> str:
         check=True,
     )
     return completed.stdout.strip()
+
+
+#: Every staleness test measures against this instant, so the verdicts do not
+#: change with the calendar.
+_NOW = datetime(2026, 9, 17, 12, 0, tzinfo=UTC)
+
+
+def _open_attempt(*, days_since_activity: float, **extra: object) -> dict:
+    """An open pull request last touched this many days before `_NOW`."""
+    last = _NOW - timedelta(days=days_since_activity)
+    return {
+        "number": 14668,
+        "title": "Handle RaisesGroup check errors during suggestions",
+        "outcome": "open",
+        "url": "https://github.com/pytest-dev/pytest/pull/14668",
+        "created_at": (last - timedelta(days=30)).isoformat(),
+        "updated_at": last.isoformat(),
+        **extra,
+    }
+
+
+class StaleAttemptTests(unittest.TestCase):
+    """An attempt that stopped moving is prior art, not a claim.
+
+    Decided by the operator on 2026-09-17, after a hunt lost 40 of 66
+    pre-screens to `open-pull-request`.
+    """
+
+    def _assess(self, attempts: list[dict]):
+        with tempfile.TemporaryDirectory() as temporary:
+            return assess_target(
+                _record(Path(temporary), attempts=attempts), now=_NOW
+            )
+
+    def test_an_open_attempt_at_sixty_one_days_is_stale(self) -> None:
+        assessment = self._assess([_open_attempt(days_since_activity=61)])
+
+        self.assertTrue(assessment.may_start)
+        self.assertNotIn(OPEN_PULL_REQUEST, assessment.blocking)
+        self.assertIn(STALE_PRIOR_ATTEMPT, assessment.warnings)
+        self.assertEqual(assessment.open_attempts, [])
+        self.assertEqual(len(assessment.stale_attempts), 1)
+        row = assessment.stale_attempts[0]
+        self.assertEqual(row["number"], 14668)
+        self.assertEqual(row["state"], "open")
+        self.assertEqual(row["days_stale"], 61.0)
+        self.assertEqual(
+            row["url"], "https://github.com/pytest-dev/pytest/pull/14668"
+        )
+        self.assertIn("supersedes it", assessment.summary())
+
+    def test_an_open_attempt_at_fifty_nine_days_still_claims_the_issue(self) -> None:
+        assessment = self._assess([_open_attempt(days_since_activity=59)])
+
+        self.assertFalse(assessment.may_start)
+        self.assertIn(OPEN_PULL_REQUEST, assessment.blocking)
+        self.assertEqual(assessment.stale_attempts, [])
+
+    def test_exactly_sixty_days_is_already_stale(self) -> None:
+        assessment = self._assess([_open_attempt(days_since_activity=60)])
+
+        self.assertTrue(assessment.may_start)
+        self.assertIn(STALE_PRIOR_ATTEMPT, assessment.warnings)
+
+    def test_an_open_attempt_with_no_timestamp_still_claims_the_issue(self) -> None:
+        # Dormancy that cannot be proved is not dormancy. Silence in the
+        # record must read as a live claim.
+        assessment = self._assess([_OPEN])
+
+        self.assertFalse(assessment.may_start)
+        self.assertIn(OPEN_PULL_REQUEST, assessment.blocking)
+
+    def test_a_pull_request_closed_without_merging_is_stale(self) -> None:
+        assessment = self._assess([_CLOSED])
+
+        self.assertTrue(assessment.may_start)
+        self.assertNotIn(UNACKNOWLEDGED_ATTEMPTS, assessment.blocking)
+        self.assertIn(STALE_PRIOR_ATTEMPT, assessment.warnings)
+        self.assertEqual(assessment.closed_attempts, [])
+        self.assertEqual(assessment.stale_attempts[0]["state"], "closed unmerged")
+
+    def test_a_merged_attempt_is_never_stale(self) -> None:
+        assessment = self._assess([_MERGED])
+
+        self.assertFalse(assessment.may_start)
+        self.assertIn(ALREADY_FIXED_UPSTREAM, assessment.blocking)
+        self.assertEqual(assessment.stale_attempts, [])
+
+    def test_a_maintainers_dormant_attempt_still_blocks(self) -> None:
+        # An OWNER or MEMBER branch is the project's own work in progress,
+        # however long it has sat there.
+        assessment = self._assess(
+            [_open_attempt(days_since_activity=400, author_association="MEMBER")]
+        )
+
+        self.assertFalse(assessment.may_start)
+        self.assertIn(OPEN_PULL_REQUEST, assessment.blocking)
+        self.assertEqual(assessment.stale_attempts, [])
+
+    def test_an_outside_contributors_dormant_attempt_does_not_block(self) -> None:
+        assessment = self._assess(
+            [_open_attempt(days_since_activity=400, author_association="CONTRIBUTOR")]
+        )
+
+        self.assertTrue(assessment.may_start)
+        self.assertIn(STALE_PRIOR_ATTEMPT, assessment.warnings)
+
+    def test_created_at_stands_in_when_there_is_no_update(self) -> None:
+        assessment = self._assess(
+            [
+                {
+                    "number": 14668,
+                    "outcome": "open",
+                    "title": "Handle RaisesGroup check errors",
+                    "url": "https://github.com/pytest-dev/pytest/pull/14668",
+                    "created_at": (_NOW - timedelta(days=200)).isoformat(),
+                }
+            ]
+        )
+
+        self.assertTrue(assessment.may_start)
+        self.assertEqual(assessment.stale_attempts[0]["days_stale"], 200.0)
 
 
 class MergedFixAlreadyInBaseTests(unittest.TestCase):

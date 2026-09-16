@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,140 @@ UNACKNOWLEDGED_ATTEMPTS = "unacknowledged-prior-attempts"
 # both the repository screen and the issue's own thread.
 # https://github.com/wolfgang-aura/Mailman/issues/99
 NO_MAINTAINER_REPLY = "no-maintainer-reply"
+#: An earlier pull request that is no longer a claim on the issue: open and
+#: untouched for a long time, or closed without being merged. A warning, never
+#: a block. The stale attempt is prior art the agent has to read and the pull
+#: request body has to supersede.
+STALE_PRIOR_ATTEMPT = "stale-prior-attempt"
+
+#: How long an open pull request may sit untouched before it stops claiming the
+#: issue. Decided by the operator on 2026-09-17: the last hunt lost 40 of 66
+#: pre-screens to `open-pull-request`, most of them against attempts nobody had
+#: touched in months. A dormant attempt is prior art, not a rival in flight.
+#: One constant, read in one place, so `prescreen`, `check-target`, `hunt
+#: status`, `hunt finish`, the orchestrator and `prepare-submission` cannot
+#: disagree about what counts as claimed.
+STALE_ATTEMPT_DAYS = 60
+
+#: Author associations that speak for the project. A dormant branch belonging
+#: to one of these is a maintainer's own work in progress, and opening a second
+#: pull request over it is the same offence as racing a live one.
+_MAINTAINER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER"})
+
+
+def _first(row: dict[str, Any], *names: str) -> Any:
+    """The first of these keys the row actually carries.
+
+    Rows reach this module in three spellings: the duplicate search's
+    `created_at`, `gh`'s own `createdAt`, and prior art's summary. Reading all
+    of them here keeps every caller from having to normalize first.
+    """
+    for name in names:
+        value = row.get(name)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def attempt_last_activity(row: dict[str, Any]) -> datetime | None:
+    """When this pull request was last touched, by its own record."""
+    return _timestamp(_first(row, "updated_at", "updatedAt")) or _timestamp(
+        _first(row, "created_at", "createdAt")
+    )
+
+
+def attempt_age_days(
+    row: dict[str, Any], *, now: datetime | None = None
+) -> float | None:
+    """Days since the last activity, or None when the row records none."""
+    last = attempt_last_activity(row)
+    if last is None:
+        return None
+    return ((now or datetime.now(UTC)) - last).total_seconds() / 86400.0
+
+
+def attempt_is_merged(row: dict[str, Any]) -> bool:
+    if str(row.get("outcome") or "").lower() == "merged":
+        return True
+    if str(row.get("state") or "").upper() == "MERGED":
+        return True
+    return bool(_first(row, "merged_at", "mergedAt"))
+
+
+def attempt_is_closed_unmerged(row: dict[str, Any]) -> bool:
+    if attempt_is_merged(row):
+        return False
+    outcome = str(row.get("outcome") or "").lower()
+    if outcome:
+        return outcome != "open"
+    return str(row.get("state") or "").upper() == "CLOSED" or bool(
+        _first(row, "closed_at", "closedAt")
+    )
+
+
+def attempt_is_maintainers(row: dict[str, Any]) -> bool:
+    association = str(
+        _first(row, "author_association", "authorAssociation") or ""
+    ).upper()
+    return association in _MAINTAINER_ASSOCIATIONS
+
+
+def attempt_is_dormant(
+    row: dict[str, Any], *, now: datetime | None = None
+) -> bool:
+    """Whether the attempt itself has stopped moving, whoever wrote it.
+
+    Separate from `is_stale_attempt` because the author association costs an
+    extra call on some paths, and this is the question that decides whether
+    paying for it is worth it.
+    """
+    if not isinstance(row, dict) or attempt_is_merged(row):
+        return False
+    if attempt_is_closed_unmerged(row):
+        return True
+    age = attempt_age_days(row, now=now)
+    # No timestamp at all means dormancy cannot be proved, and an unproved
+    # dormancy has to read as a live claim. Silence is not evidence.
+    return age is not None and age >= STALE_ATTEMPT_DAYS
+
+
+def is_stale_attempt(row: dict[str, Any], *, now: datetime | None = None) -> bool:
+    """Whether this pull request is a dormant prior attempt, not a claim.
+
+    A merged pull request is never stale: it is what the repository ships, and
+    `already-fixed-upstream` answers it. A maintainer's own attempt is never
+    stale either, however long it has sat there.
+    """
+    return attempt_is_dormant(row, now=now) and not attempt_is_maintainers(row)
+
+
+def stale_attempt_row(
+    row: dict[str, Any], *, now: datetime | None = None
+) -> dict[str, Any]:
+    """The stale attempt as the assessment, the prompts and the record carry it."""
+    age = attempt_age_days(row, now=now)
+    last = attempt_last_activity(row)
+    return {
+        "number": row.get("number"),
+        "repository": _first(row, "repository", "repo"),
+        "url": row.get("url"),
+        "title": row.get("title"),
+        "state": "closed unmerged" if attempt_is_closed_unmerged(row) else "open",
+        "updated_at": last.isoformat() if last else None,
+        "days_stale": round(age, 1) if age is not None else None,
+        "is_draft": _first(row, "is_draft", "isDraft"),
+        "author_association": _first(row, "author_association", "authorAssociation"),
+    }
 
 
 @dataclass(frozen=True)
@@ -67,6 +202,7 @@ class TargetAssessment:
     merged_attempts: list[dict[str, Any]] = field(default_factory=list)
     superseded_attempts: list[dict[str, Any]] = field(default_factory=list)
     closed_attempts: list[dict[str, Any]] = field(default_factory=list)
+    stale_attempts: list[dict[str, Any]] = field(default_factory=list)
     blocking: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -85,6 +221,7 @@ class TargetAssessment:
             "merged_attempts": self.merged_attempts,
             "superseded_attempts": self.superseded_attempts,
             "closed_attempts": self.closed_attempts,
+            "stale_attempts": self.stale_attempts,
             "blocking": self.blocking,
             "warnings": self.warnings,
             "may_start": self.may_start,
@@ -231,6 +368,20 @@ class TargetAssessment:
                 f"closed    #{attempt.get('number')} {attempt.get('title', '')} "
                 f"({attempt.get('url', '')})"
             )
+        for attempt in self.stale_attempts:
+            days = attempt.get("days_stale")
+            age = f", {days} days since its last activity" if days is not None else ""
+            lines.append(
+                f"stale     #{attempt.get('number')} {attempt.get('title', '')} "
+                f"({attempt.get('state')}{age}) {attempt.get('url', '')}"
+            )
+        if self.stale_attempts:
+            lines.append(
+                f"A pull request open and untouched for {STALE_ATTEMPT_DAYS} days, "
+                "or closed without merging, is a prior attempt rather than a "
+                "claim. Read its diff and its review comments before you start, "
+                "and say in the pull request body that yours supersedes it."
+            )
         if self.open_attempts:
             lines.append(
                 "An open pull request means someone is already on this. A "
@@ -279,6 +430,7 @@ class TargetAssessment:
             and not self.merged_attempts
             and not self.superseded_attempts
             and not self.closed_attempts
+            and not self.stale_attempts
             and not (self.claims.get("claims") or self.claims.get("assignments"))
             and not self.claims.get("assignees")
         ):
@@ -325,8 +477,13 @@ def assess_target(
     *,
     acknowledged: bool = False,
     acknowledged_claims: bool = False,
+    now: datetime | None = None,
 ) -> TargetAssessment:
-    """Judge a target from the searches already recorded in the run."""
+    """Judge a target from the searches already recorded in the run.
+
+    `now` is the instant the staleness of an earlier attempt is measured
+    against. It exists so a test can freeze it; nothing else passes it.
+    """
     duplicate_search = _read(run_directory / DUPLICATE_SEARCH_FILENAME)
     prior_art = _read(run_directory / PRIOR_ART_FILENAME)
     intel = _read(run_directory / TARGET_INTEL_FILENAME)
@@ -394,10 +551,20 @@ def assess_target(
             continue
         attempts_by_number[number] = {**match, "outcome": "closed unmerged"}
     attempts = list(attempts_by_number.values())
+    # A dormant attempt is sorted out before anything else reads these lists,
+    # so every stage that asks whether the issue is claimed gets one answer.
+    stale_attempts = [
+        stale_attempt_row(attempt, now=now)
+        for attempt in attempts
+        if isinstance(attempt, dict) and is_stale_attempt(attempt, now=now)
+    ]
+    stale_numbers = {row["number"] for row in stale_attempts}
     open_attempts = [
         attempt
         for attempt in attempts
-        if isinstance(attempt, dict) and attempt.get("outcome") == "open"
+        if isinstance(attempt, dict)
+        and attempt.get("outcome") == "open"
+        and attempt.get("number") not in stale_numbers
     ]
     all_merged = [
         attempt
@@ -420,6 +587,7 @@ def assess_target(
         for attempt in attempts
         if isinstance(attempt, dict)
         and attempt.get("outcome") not in ("open", "merged")
+        and attempt.get("number") not in stale_numbers
     ]
 
     blocking: list[str] = []
@@ -469,6 +637,12 @@ def assess_target(
             warnings.append(UNACKNOWLEDGED_CLAIM)
         else:
             blocking.append(UNACKNOWLEDGED_CLAIM)
+    if stale_attempts:
+        # Never a block. The operator decided on 2026-09-17 that an attempt
+        # nobody has touched for STALE_ATTEMPT_DAYS, or one closed without
+        # merging, has stopped claiming the issue. It is still prior art, so
+        # it travels into both prompts and into the pull request body.
+        warnings.append(STALE_PRIOR_ATTEMPT)
     if open_attempts:
         # Deliberately not overridable. Every escape hatch here is one someone
         # takes at the wrong moment, and `run-agent` still exists for a
@@ -500,6 +674,7 @@ def assess_target(
         merged_attempts=merged_attempts,
         superseded_attempts=superseded_attempts,
         closed_attempts=closed_attempts,
+        stale_attempts=stale_attempts,
         blocking=blocking,
         warnings=warnings,
     )

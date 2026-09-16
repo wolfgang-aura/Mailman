@@ -36,6 +36,7 @@ from mailman.screen import screen_path
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
     NO_MAINTAINER_REPLY,
+    STALE_PRIOR_ATTEMPT,
     NO_REPRODUCTION,
     NO_TARGET_INTEL,
     OPEN_PULL_REQUEST,
@@ -162,6 +163,8 @@ if ARGUMENTS[:1] == ["api"]:
         emit("comments.json")
     if "/timeline" in path:
         emit("timeline.json")
+    if "/pulls/" in path:
+        emit("pr-association-" + path.rsplit("/", 1)[-1] + ".json")
     emit("issue-api.json")
 emit("payload.json")
 '''
@@ -224,6 +227,12 @@ class PrescreenTests(unittest.TestCase):
         for reference, pull in (pull_requests or {}).items():
             slug, _, number = reference.rpartition("#")
             fixtures[f"pr-{slug.replace('/', '__')}-{number}.json"] = json.dumps(pull)
+            # `gh pr view` carries no author association, so a dormant attempt
+            # costs one `gh api repos/.../pulls/N` call. Answer it from the
+            # same fixture.
+            fixtures[f"pr-association-{number}.json"] = json.dumps(
+                pull.get("authorAssociation", "CONTRIBUTOR")
+            )
         for name, text in fixtures.items():
             (directory / name).write_text(text, encoding="utf-8")
         (directory / "gh.py").write_text(_GH_FIXTURE_SERVER, encoding="utf-8")
@@ -820,6 +829,121 @@ class CitedPullRequestTests(PrescreenTests):
         self.assertEqual(record["cited_pull_requests"]["references"], [])
         self.assertIn("none of them", record["cited_pull_requests"]["detail"])
         self.assertTrue(record["duplicate_search"]["success"])
+
+
+class StalePriorAttemptTests(PrescreenTests):
+    """A dormant attempt is prior art, not a claim on the issue.
+
+    The operator decided this on 2026-09-17, after a hunt lost 40 of 66
+    pre-screens to `open-pull-request`.
+    """
+
+    def issue(self, number: int = 7) -> dict:
+        return {
+            "number": number,
+            "title": "Crash on empty input",
+            "body": (
+                "The command crashes on empty input. See "
+                f"[#{number + 1}](https://github.com/example/project/pull/"
+                f"{number + 1})."
+            ),
+            "state": "OPEN",
+            "url": f"https://github.com/example/project/issues/{number}",
+            "author": {"login": "reporter"},
+            "labels": [],
+            "createdAt": "2026-09-01T00:00:00Z",
+            "updatedAt": "2026-09-01T00:00:00Z",
+        }
+
+    def cited(self, *, days_old: int, association: str = "CONTRIBUTOR") -> dict:
+        touched = datetime.now(UTC) - timedelta(days=days_old)
+        return {
+            "number": 8,
+            "state": "OPEN",
+            "title": "Guard the empty-input path",
+            "url": "https://github.com/example/project/pull/8",
+            "mergedAt": None,
+            "mergeCommit": None,
+            "createdAt": (touched - timedelta(days=5)).isoformat(),
+            "updatedAt": touched.isoformat(),
+            "isDraft": False,
+            "authorAssociation": association,
+        }
+
+    def test_a_cited_attempt_untouched_for_months_no_longer_claims_it(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                self.issue(),
+                pull_requests={"example/project#8": self.cited(days_old=200)},
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertNotIn(OPEN_PULL_REQUEST, record["blocking"])
+        self.assertIn(STALE_PRIOR_ATTEMPT, record["warnings"])
+        self.assertEqual(record["cited_pull_requests"]["open"], [])
+        self.assertEqual(record["cited_pull_requests"]["stale"], [8])
+        stale = record["stale_attempts"][0]
+        self.assertEqual(stale["number"], 8)
+        self.assertEqual(stale["state"], "open")
+        self.assertGreaterEqual(stale["days_stale"], 199)
+        self.assertIn("supersedes it", record["cited_pull_requests"]["detail"])
+
+    def test_a_cited_attempt_still_moving_rejects_the_issue(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                self.issue(),
+                pull_requests={"example/project#8": self.cited(days_old=30)},
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [OPEN_PULL_REQUEST])
+        self.assertEqual(record["cited_pull_requests"]["stale"], [])
+
+    def test_a_maintainers_dormant_branch_still_rejects_the_issue(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                self.issue(),
+                pull_requests={
+                    "example/project#8": self.cited(
+                        days_old=400, association="MEMBER"
+                    )
+                },
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [OPEN_PULL_REQUEST])
+
+    def test_a_cited_attempt_closed_without_merging_is_stale(self) -> None:
+        closed = {
+            **self.cited(days_old=3),
+            "state": "CLOSED",
+            "title": "An attempt the maintainers closed",
+        }
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]", self.issue(), pull_requests={"example/project#8": closed}
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertIn(STALE_PRIOR_ATTEMPT, record["warnings"])
+        self.assertEqual(
+            record["stale_attempts"][0]["state"], "closed unmerged"
+        )
 
 
 class PriorDiscussionTests(PrescreenTests):

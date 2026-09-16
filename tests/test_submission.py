@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import unittest
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -485,6 +486,44 @@ class PrepareSubmissionTests(unittest.TestCase):
         record = self._prepare()
         self.assertFalse(record["ready"])
         self.assertIn("possible-duplicate", record["blocking_codes"])
+
+    def test_a_dormant_rival_does_not_refuse_the_filing(self) -> None:
+        # The same rule `check-target` applied hours earlier. A run cleared to
+        # start against a dormant attempt must not be refused by that attempt
+        # at the filing gate. See targeting.STALE_ATTEMPT_DAYS.
+        touched = datetime.now(UTC) - timedelta(days=200)
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-02T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [
+                        {
+                            "number": 3485,
+                            "title": "Delay background task execution",
+                            "state": "OPEN",
+                            "pull_request": True,
+                            "matched_by": ["#3458"],
+                            "updated_at": touched.isoformat(),
+                            "author_association": "CONTRIBUTOR",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        record = self._prepare()
+        self.assertNotIn("possible-duplicate", record["blocking_codes"])
+        codes = [finding["code"] for finding in record["findings"]]
+        self.assertIn("stale-prior-attempt", codes)
+        detail = next(
+            finding["detail"]
+            for finding in record["findings"]
+            if finding["code"] == "stale-prior-attempt"
+        )
+        self.assertIn("pr#3485", detail)
+        self.assertIn("supersedes", detail)
 
     def test_a_failed_duplicate_search_does_not_count_as_one(self) -> None:
         policy = _policy(requires_duplicate_search=True)
