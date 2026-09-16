@@ -560,7 +560,13 @@ def next_action(directory: Path) -> dict:
     warnings.extend(sorted(set(assessment.warnings) & WARNING_CODES))
     if assessment.blocking:
         code = assessment.blocking[0]
-        return action("target", f"mailman check-target {run.run_id}", "; ".join(assessment.blocking),
+        detail = "; ".join(assessment.blocking)
+        if assessment.base_snippets.get("already_fixed"):
+            # Name the line that decided it. `already-fixed-upstream` with no
+            # merged attempt behind it reads as a mistake until the snippet is
+            # printed. https://github.com/wolfgang-aura/Mailman/issues/103
+            detail += f". {assessment.base_snippets.get('detail')}"
+        return action("target", f"mailman check-target {run.run_id}", detail,
                       "REPLACE" if code in DROP_CODES else "REPAIR")
     if not read_object(directory / "prompts.json").get("verification_command"):
         return action("prompts", f"mailman build-prompts {run.run_id} -- EXECUTABLE ARG ...")

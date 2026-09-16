@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from mailman.base_snippets import BASE_SNIPPET_CHECK_FILENAME
 from mailman.claims import CLAIMS_FILENAME
 from mailman.issue import load_issue_record
 from mailman.provenance import load_provenance
@@ -198,6 +199,7 @@ class TargetAssessment:
     intel: dict[str, Any] = field(default_factory=dict)
     reproduction: dict[str, Any] = field(default_factory=dict)
     claims: dict[str, Any] = field(default_factory=dict)
+    base_snippets: dict[str, Any] = field(default_factory=dict)
     open_attempts: list[dict[str, Any]] = field(default_factory=list)
     merged_attempts: list[dict[str, Any]] = field(default_factory=list)
     superseded_attempts: list[dict[str, Any]] = field(default_factory=list)
@@ -217,6 +219,7 @@ class TargetAssessment:
             "intel": self.intel,
             "reproduction": self.reproduction,
             "claims": self.claims,
+            "base_snippets": self.base_snippets,
             "open_attempts": self.open_attempts,
             "merged_attempts": self.merged_attempts,
             "superseded_attempts": self.superseded_attempts,
@@ -348,6 +351,9 @@ class TargetAssessment:
             lines.append(self._intel_summary())
         lines.extend(self._reproduction_summary())
         lines.extend(self._claims_summary())
+        if self.base_snippets.get("success"):
+            prefix = "at base   " if self.base_snippets.get("already_fixed") else "snippets  "
+            lines.append(prefix + str(self.base_snippets.get("detail", "")))
         for attempt in self.open_attempts:
             lines.append(
                 f"open      #{attempt.get('number')} {attempt.get('title', '')} "
@@ -489,6 +495,7 @@ def assess_target(
     intel = _read(run_directory / TARGET_INTEL_FILENAME)
     reproduction = _read(run_directory / REPRODUCTION_FILENAME)
     claims = _read(run_directory / CLAIMS_FILENAME)
+    base_snippets = _read(run_directory / BASE_SNIPPET_CHECK_FILENAME)
     searched = duplicate_search.get("success") is True
     target_read = intel.get("success") is True
 
@@ -648,7 +655,14 @@ def assess_target(
         # takes at the wrong moment, and `run-agent` still exists for a
         # deliberate run against a claimed issue.
         blocking.append(OPEN_PULL_REQUEST)
-    if merged_attempts:
+    if base_snippets.get("already_fixed") is True:
+        # The issue quotes the line it is about, that line is gone from the
+        # base tree, and the file it came from is still there. Upstream changed
+        # it. No prior art links a merged pull request to this issue, which is
+        # exactly why nothing else saw it.
+        # https://github.com/wolfgang-aura/Mailman/issues/103
+        blocking.append(ALREADY_FIXED_UPSTREAM)
+    if merged_attempts and ALREADY_FIXED_UPSTREAM not in blocking:
         # Not overridable. `--acknowledge-prior-attempts` answers "the
         # maintainers closed an attempt"; it has no answer for "upstream
         # already ships this", and `prepare-submission` blocks the same case
@@ -670,6 +684,7 @@ def assess_target(
         intel=intel,
         reproduction=reproduction,
         claims=claims,
+        base_snippets=base_snippets,
         open_attempts=open_attempts,
         merged_attempts=merged_attempts,
         superseded_attempts=superseded_attempts,

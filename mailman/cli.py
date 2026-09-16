@@ -23,6 +23,7 @@ from mailman.artifacts import (
     load_run,
     write_run,
 )
+from mailman.base_snippets import check_base_snippets
 from mailman.claims import read_claims, render_claims
 from mailman.doctor import run_checks
 from mailman.environment import (
@@ -2035,6 +2036,17 @@ def _prepare_workspace(arguments: argparse.Namespace) -> int:
     }
     if record.get("detail"):
         summary["detail"] = record["detail"]
+    if record["success"]:
+        # The first moment there is a base tree to ask. An issue that quotes
+        # the line it is about answers whether that line survived, and no gate
+        # before this one can see a fix that shipped without citing the issue.
+        # https://github.com/wolfgang-aura/Mailman/issues/103
+        snippets = check_base_snippets(run_directory, base_commit=run.base_commit)
+        summary["base_snippets"] = {
+            "checked": len(snippets.get("snippets") or []),
+            "already_fixed": snippets.get("already_fixed"),
+            "detail": snippets.get("detail"),
+        }
     print(json.dumps(summary, indent=2))
     if record["success"]:
         return 0
