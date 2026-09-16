@@ -245,6 +245,10 @@ opening the local packet URL during this session; visual state is unverified.
   (`issue-closed`); `handoff` prints `UNTRIAGED ISSUE` for an outside report no maintainer has
   answered. Live check: the pdm run's real `claims.json` refuses with `issue-closed`. 871 unit
   tests. Run records 0010 and 0011 hold the four closed cases.
+- Second upstream merge, 2026-09-16: securo-finance/securo#875 (run `20260909T023511Z-2177ae`,
+  Luna primary and reviewer) merged as `651a238` from the user-owned fork, one commit, no
+  maintainer change. Provenance reads `MERGED`; fork deleted. Record 0013. Issue #91 filed on
+  `target-intel` counting CodeRabbit layout markers as rules.
 
 ### Reproduce gate, live-verified 2026-09-04
 
