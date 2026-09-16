@@ -210,6 +210,8 @@ class TargetPolicyTests(unittest.TestCase):
                 "langchain.json",
                 "pytest.json",
                 "starlette.json",
+                "tqdm.json",
+                "urllib3.json",
             ],
         )
         for path in directory.glob("*.json"):
