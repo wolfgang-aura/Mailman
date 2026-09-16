@@ -249,6 +249,10 @@ opening the local packet URL during this session; visual state is unverified.
   Luna primary and reviewer) merged as `651a238` from the user-owned fork, one commit, no
   maintainer change. Provenance reads `MERGED`; fork deleted. Record 0013. Issue #91 filed on
   `target-intel` counting CodeRabbit layout markers as rules.
+- Layout-marker deployment: commit `9e88f27` passed GitHub Actions in run `35091538516`. It
+  carries #91: `enforcement_markers` drops a `foo_start`/`foo_end` pair and a hash-stamped
+  marker before counting. Live check: the real CodeRabbit body on securo#875 now yields zero
+  rules. 878 unit tests, up from 871.
 
 ### Reproduce gate, live-verified 2026-09-04
 
