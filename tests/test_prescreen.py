@@ -26,6 +26,7 @@ from mailman.prescreen import (
     estimate_fix_size,
     is_fresh,
     issue_reference,
+    issue_symbols,
     load_prescreen,
     prescreen_directory,
     prescreen_issue,
@@ -104,6 +105,32 @@ class FixSizeTests(unittest.TestCase):
         )
         self.assertEqual(estimate, UNKNOWN)
         self.assertIn("nothing in the issue", reason)
+
+
+class IssueSymbolTests(unittest.TestCase):
+    def test_reads_backticked_names_dotted_paths_and_files(self) -> None:
+        body = (
+            "The pipeline calls {b}_handle_upserts{b} and {b}_ahandle_upserts{b} in "
+            "llama_index/core/ingestion/pipeline.py; {b}docstore{b} is a word. "
+            "See {b}IngestionPipeline.run(){b} and {b}x{b}, then {b}a_b{b}."
+        ).format(b="`")
+        self.assertEqual(
+            issue_symbols(body),
+            [
+                "_handle_upserts",
+                "_ahandle_upserts",
+                "IngestionPipeline.run",
+                "a_b",
+                "pipeline.py",
+            ],
+        )
+
+    def test_the_count_is_capped_so_the_narrow_query_stays_short(self) -> None:
+        body = " ".join(f"`name_{index}`" for index in range(20))
+        self.assertEqual(len(issue_symbols(body)), 6)
+
+    def test_prose_between_two_short_tokens_is_not_a_name(self) -> None:
+        self.assertEqual(issue_symbols("`x` and `y` then `real_one`"), ["real_one"])
 
 
 class PrescreenTests(unittest.TestCase):
@@ -256,7 +283,8 @@ class PrescreenTests(unittest.TestCase):
         }
 
     def test_a_trivial_fix_where_the_maintainer_pushes_directly_is_rejected(
-        self) -> None:
+        self,
+    ) -> None:
         self.record_direct_push_share(0.8)
         record = prescreen_issue(
             self.root,
@@ -327,6 +355,47 @@ class PrescreenTests(unittest.TestCase):
         self.assertEqual(record["warnings"], [])
         self.assertEqual(record["fix_size"]["estimate"], UNKNOWN)
         self.assertEqual(record["fix_size"]["direct_push_share"], 0.9)
+
+    def test_symbols_named_in_the_issue_body_reach_the_narrow_search(self) -> None:
+        # llama_index#22639: the body named the functions, two open rivals
+        # carried them, neither mentioned the issue number, and the typed
+        # symbols were prose words. The narrow query has to read the body.
+        issue = {
+            "number": 7,
+            "title": "Docstore delete fails on failed runs",
+            "body": "`_handle_upserts` and `_ahandle_upserts` skip the delete.",
+            "state": "OPEN",
+            "url": "https://github.com/example/project/issues/7",
+            "author": {"login": "reporter"},
+            "labels": [],
+            "createdAt": "2026-09-01T00:00:00Z",
+            "updatedAt": "2026-09-01T00:00:00Z",
+        }
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            symbols=["docstore"],
+            executable=self.stub("[]", issue),
+        )
+        self.assertEqual(record["symbols"], ["docstore"])
+        self.assertEqual(
+            record["issue_symbols"], ["_handle_upserts", "_ahandle_upserts"]
+        )
+        directory = prescreen_directory(self.root, "example/project", 7)
+        search = json.loads(
+            (directory / "duplicate-search.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            search["symbols"], ["docstore", "_handle_upserts", "_ahandle_upserts"]
+        )
+        narrow = [
+            command for command in search["commands"] if command["method"] == "narrow"
+        ]
+        self.assertTrue(narrow)
+        for command in narrow:
+            argv = command["command"]
+            query = argv[argv.index("--search") + 1]
+            self.assertEqual(query, "#7 docstore _handle_upserts _ahandle_upserts")
 
     def test_the_verdict_lands_beside_the_repository_screens(self) -> None:
         prescreen_issue(self.root, "example/project#7", executable=self.stub("[]"))

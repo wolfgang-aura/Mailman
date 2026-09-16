@@ -10,6 +10,7 @@ in its own context, to learn something a single query could have told it. This
 runs the same checks against an `OWNER/REPO#N` and writes the verdict beside
 the repository screens. https://github.com/wolfgang-aura/Mailman/issues/75
 """
+
 from __future__ import annotations
 
 import json
@@ -66,14 +67,14 @@ _TRIVIAL_LABELS = frozenset({"typo", "typos"})
 #: trusts. `[^\n]` rather than `.` keeps a match inside one sentence.
 #: https://github.com/wolfgang-aura/Mailman/issues/79
 _TRIVIAL_SIGNALS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("a typo", re.compile(r"\btypos?\b|\bmis-?spell(?:ed|ing|s)?\b", re.I)),
+    ("a typo", re.compile(r"\btypos?\b|\bmis-?spell(?:ed|ing|s)?\b", re.IGNORECASE)),
     (
         "a documentation wording change",
         re.compile(
             r"\b(?:docs?|documentation|docstring|readme|changelog)\b[^\n]{0,60}"
             r"\b(?:says?|reads?|wrong|incorrect|outdated|stale|"
             r"should (?:say|read|be))\b",
-            re.I,
+            re.IGNORECASE,
         ),
     ),
     (
@@ -82,7 +83,7 @@ _TRIVIAL_SIGNALS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"\b(?:error|warning|log|help|deprecation)\s+messages?\b[^\n]{0,60}"
             r"\b(?:wrong|incorrect|misleading|confusing|typo|"
             r"should (?:say|read|be))\b",
-            re.I,
+            re.IGNORECASE,
         ),
     ),
     (
@@ -91,7 +92,7 @@ _TRIVIAL_SIGNALS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"\b(?:bump|pin|unpin|relax|loosen|widen|raise|drop)\b[^\n]{0,60}"
             r"\b(?:version|requirement|constraint|upper bound|"
             r"dependency|dependencies|pin)\b",
-            re.I,
+            re.IGNORECASE,
         ),
     ),
     (
@@ -99,7 +100,7 @@ _TRIVIAL_SIGNALS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(
             r"\bone[- ]?liners?\b|\bone[- ]line\b|\bsingle[- ]line\b"
             r"|\btrivial (?:fix|change|patch)\b",
-            re.I,
+            re.IGNORECASE,
         ),
     ),
 )
@@ -168,7 +169,9 @@ def load_prescreen(data_root: Path, slug: str, number: int) -> dict[str, Any] | 
     return loaded if isinstance(loaded, dict) else None
 
 
-def _store_prescreen(data_root: Path, slug: str, number: int, record: dict[str, Any]) -> None:
+def _store_prescreen(
+    data_root: Path, slug: str, number: int, record: dict[str, Any]
+) -> None:
     path = prescreen_path(data_root, slug, number)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".json.tmp")
@@ -202,6 +205,42 @@ def _captured_body(directory: Path) -> str:
     _, _, after = text.partition("## Issue body")
     body, _, _ = after.partition("## Capture boundary")
     return body.strip()
+
+
+# Identifiers a reporter writes into an issue body: a backticked name, a dotted
+# path, or a Python file. Prose words are not identifiers, so a backticked token
+# has to carry an underscore, a dot, a call or a file suffix to count.
+_BACKTICK_RE = re.compile(r"`([^`\s][^`\n]{0,79})`")
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][\w.]*(?:\(\))?$")
+_PY_FILE_RE = re.compile(r"\b[\w/-]+\.py\b")
+ISSUE_SYMBOL_LIMIT = 6
+
+
+def issue_symbols(body: str, *, limit: int = ISSUE_SYMBOL_LIMIT) -> list[str]:
+    """Identifier-looking tokens from the issue body, first mention first.
+
+    llama_index#22639 named `_handle_upserts` in its first paragraph and both
+    open rival pull requests carried it, but neither mentioned the issue
+    number, so a narrow search built only from the symbols the coordinator
+    typed passed the issue. The body already holds the query; this reads it.
+    The count is capped because the narrow search joins every term into one
+    query, and a long query finds nothing.
+    """
+    found: list[str] = []
+    for match in _BACKTICK_RE.finditer(body):
+        token = match.group(1).strip()
+        if not _IDENTIFIER_RE.match(token):
+            continue
+        name = token.removesuffix("()").rstrip(".")
+        if not ("_" in name or "." in name or token.endswith("()")):
+            continue
+        if name not in found:
+            found.append(name)
+    for match in _PY_FILE_RE.finditer(body):
+        name = match.group(0).rsplit("/", 1)[-1]
+        if name not in found:
+            found.append(name)
+    return found[:limit]
 
 
 def estimate_fix_size(
@@ -333,12 +372,22 @@ def prescreen_issue(
         )
         _store_prescreen(data_root, slug, number, record)
         return record
+    # The narrow search is only as good as its terms. The typed symbols come
+    # first; the ones read out of the issue body follow, so the query no
+    # longer depends on the coordinator guessing the right name.
+    typed = [symbol for symbol in symbols if symbol.strip()]
+    from_body = [
+        symbol
+        for symbol in issue_symbols(_captured_body(directory))
+        if symbol not in typed
+    ]
+    record["issue_symbols"] = from_body
     search = record_duplicate_search(
         directory,
         repository=slug,
         query=query or str(captured.get("title") or f"#{number}"),
         issue_number=number,
-        symbols=symbols,
+        symbols=[*typed, *from_body],
         executable=executable,
         timeout_seconds=timeout_seconds,
     )
@@ -393,8 +442,12 @@ def prescreen_issue(
         code for code in assessment.warnings if code in DECIDABLE
     ]
     record["open_attempts"] = [row.get("number") for row in assessment.open_attempts]
-    record["merged_attempts"] = [row.get("number") for row in assessment.merged_attempts]
-    record["closed_attempts"] = [row.get("number") for row in assessment.closed_attempts]
+    record["merged_attempts"] = [
+        row.get("number") for row in assessment.merged_attempts
+    ]
+    record["closed_attempts"] = [
+        row.get("number") for row in assessment.closed_attempts
+    ]
     record["verdict"] = "reject" if blocking else "pass"
     if blocking:
         record["next"] = f"Do not open a run on {slug}#{number}: " + "; ".join(blocking)
