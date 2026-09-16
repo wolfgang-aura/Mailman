@@ -1134,6 +1134,7 @@ def record_duplicate_search(
     limit: int = 30,
     listing_limit: int = 100,
     symbols: Sequence[str] = (),
+    issue_symbols: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Search a target's pull requests and issues, and record what came back.
 
@@ -1158,6 +1159,7 @@ def record_duplicate_search(
         "success": False,
         "complete": False,
         "symbols": list(symbols),
+        "issue_symbols": list(issue_symbols),
         "decided_by": None,
         "matches": [],
         "methods": {},
@@ -1173,35 +1175,45 @@ def record_duplicate_search(
         # is the expensive one. Ordering them this way is what stops discovery
         # paying full price on a target it is about to reject.
         # https://github.com/wolfgang-aura/Mailman/issues/68
+        issue_term = [f"#{issue_number}"] if issue_number is not None else []
         narrow_terms = [
-            *([f"#{issue_number}"] if issue_number is not None else []),
+            *issue_term,
             *[symbol for symbol in symbols if symbol.strip()],
         ]
-        attempts = [
-            *(
-                [
-                    (
-                        "narrow",
-                        [
-                            command_executable,
-                            kind,
-                            "list",
-                            "--repo",
-                            slug,
-                            "--search",
-                            " ".join(narrow_terms),
-                            "--state",
-                            "all",
-                            "--limit",
-                            str(limit),
-                            "--json",
-                            _SEARCH_FIELDS,
-                        ],
-                    )
-                ]
-                if narrow_terms
-                else []
-            ),
+        # GitHub joins search terms with AND, so the symbols read out of the
+        # issue body each get their own query rather than lengthening this
+        # one: on llama_index#22639 a seven-term query found nothing while
+        # `_handle_upserts` alone found both open rivals. Pull requests only;
+        # a rival is a pull request, and each query is a search API call.
+        # https://github.com/wolfgang-aura/Mailman/issues/96
+        narrow_queries = [narrow_terms] if narrow_terms else []
+        if kind == "pr":
+            narrow_queries.extend(
+                [*issue_term, symbol] for symbol in issue_symbols if symbol.strip()
+            )
+        attempts: list[tuple[str, list[str], list[str] | None]] = [
+            *[
+                (
+                    "narrow",
+                    [
+                        command_executable,
+                        kind,
+                        "list",
+                        "--repo",
+                        slug,
+                        "--search",
+                        " ".join(terms),
+                        "--state",
+                        "all",
+                        "--limit",
+                        str(limit),
+                        "--json",
+                        _SEARCH_FIELDS,
+                    ],
+                    terms,
+                )
+                for terms in narrow_queries
+            ],
             (
                 "search",
                 [
@@ -1218,6 +1230,7 @@ def record_duplicate_search(
                     "--json",
                     _SEARCH_FIELDS,
                 ],
+                None,
             ),
             (
                 "list",
@@ -1236,6 +1249,7 @@ def record_duplicate_search(
                     "--json",
                     _SEARCH_FIELDS,
                 ],
+                None,
             ),
             (
                 "listing",
@@ -1252,13 +1266,14 @@ def record_duplicate_search(
                     "--json",
                     _LISTING_FIELDS[kind],
                 ],
+                None,
             ),
         ]
         # Every method runs. Stopping at the first that exits zero is what let a
         # `--search` fallback return `[]` and stand in for a search that never
         # happened. See issue #30.
         succeeded: list[str] = []
-        for method, command in attempts:
+        for method, command, terms in attempts:
             result: CommandResult = execute(
                 command,
                 working_directory=run_directory,
@@ -1302,8 +1317,8 @@ def record_duplicate_search(
                     pull_request=kind == "pr",
                     method="narrow",
                     reasons=["narrow"],
-                    matched_terms=list(narrow_terms),
-                    term_count=len(narrow_terms),
+                    matched_terms=list(terms or []),
+                    term_count=len(terms or []),
                     references_issue=issue_number is not None,
                 )
             else:

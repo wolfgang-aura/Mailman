@@ -208,12 +208,13 @@ def _captured_body(directory: Path) -> str:
 
 
 # Identifiers a reporter writes into an issue body: a backticked name, a dotted
-# path, or a Python file. Prose words are not identifiers, so a backticked token
-# has to carry an underscore, a dot, a call or a file suffix to count.
+# path, or a Python file. Prose words are not identifiers, so a backticked name
+# has to carry an underscore to count, and a dotted path is reduced to its last
+# segment, which is the token a pull request title or body repeats.
 _BACKTICK_RE = re.compile(r"`([^`\s][^`\n]{0,79})`")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][\w.]*(?:\(\))?$")
 _PY_FILE_RE = re.compile(r"\b[\w/-]+\.py\b")
-ISSUE_SYMBOL_LIMIT = 6
+ISSUE_SYMBOL_LIMIT = 4
 
 
 def issue_symbols(body: str, *, limit: int = ISSUE_SYMBOL_LIMIT) -> list[str]:
@@ -223,16 +224,17 @@ def issue_symbols(body: str, *, limit: int = ISSUE_SYMBOL_LIMIT) -> list[str]:
     open rival pull requests carried it, but neither mentioned the issue
     number, so a narrow search built only from the symbols the coordinator
     typed passed the issue. The body already holds the query; this reads it.
-    The count is capped because the narrow search joins every term into one
-    query, and a long query finds nothing.
+    Each symbol becomes its own narrow query, because GitHub's search joins
+    terms with AND and a seven-term query returned nothing on the same issue.
+    The count is capped because each one is a search API call.
     """
     found: list[str] = []
     for match in _BACKTICK_RE.finditer(body):
         token = match.group(1).strip()
         if not _IDENTIFIER_RE.match(token):
             continue
-        name = token.removesuffix("()").rstrip(".")
-        if not ("_" in name or "." in name or token.endswith("()")):
+        name = token.removesuffix("()").rstrip(".").rsplit(".", 1)[-1]
+        if "_" not in name:
             continue
         if name not in found:
             found.append(name)
@@ -372,9 +374,9 @@ def prescreen_issue(
         )
         _store_prescreen(data_root, slug, number, record)
         return record
-    # The narrow search is only as good as its terms. The typed symbols come
-    # first; the ones read out of the issue body follow, so the query no
-    # longer depends on the coordinator guessing the right name.
+    # The narrow search is only as good as its terms. The typed symbols make
+    # one query; each symbol read out of the issue body makes its own, so the
+    # search no longer depends on the coordinator guessing the right name.
     typed = [symbol for symbol in symbols if symbol.strip()]
     from_body = [
         symbol
@@ -387,7 +389,8 @@ def prescreen_issue(
         repository=slug,
         query=query or str(captured.get("title") or f"#{number}"),
         issue_number=number,
-        symbols=[*typed, *from_body],
+        symbols=typed,
+        issue_symbols=from_body,
         executable=executable,
         timeout_seconds=timeout_seconds,
     )

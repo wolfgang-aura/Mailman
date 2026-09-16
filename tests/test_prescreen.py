@@ -112,22 +112,19 @@ class IssueSymbolTests(unittest.TestCase):
         body = (
             "The pipeline calls {b}_handle_upserts{b} and {b}_ahandle_upserts{b} in "
             "llama_index/core/ingestion/pipeline.py; {b}docstore{b} is a word. "
-            "See {b}IngestionPipeline.run(){b} and {b}x{b}, then {b}a_b{b}."
+            "See {b}IngestionPipeline.run(){b}, {b}Pipeline._handle_upserts{b} "
+            "and {b}x{b}, then {b}a_b{b}."
         ).format(b="`")
+        # A dotted path reduces to its last segment, so the same function named
+        # two ways is one symbol, and a plain word like `run` is not one.
         self.assertEqual(
             issue_symbols(body),
-            [
-                "_handle_upserts",
-                "_ahandle_upserts",
-                "IngestionPipeline.run",
-                "a_b",
-                "pipeline.py",
-            ],
+            ["_handle_upserts", "_ahandle_upserts", "a_b", "pipeline.py"],
         )
 
-    def test_the_count_is_capped_so_the_narrow_query_stays_short(self) -> None:
+    def test_the_count_is_capped_because_each_symbol_is_a_search_call(self) -> None:
         body = " ".join(f"`name_{index}`" for index in range(20))
-        self.assertEqual(len(issue_symbols(body)), 6)
+        self.assertEqual(len(issue_symbols(body)), 4)
 
     def test_prose_between_two_short_tokens_is_not_a_name(self) -> None:
         self.assertEqual(issue_symbols("`x` and `y` then `real_one`"), ["real_one"])
@@ -356,10 +353,12 @@ class PrescreenTests(unittest.TestCase):
         self.assertEqual(record["fix_size"]["estimate"], UNKNOWN)
         self.assertEqual(record["fix_size"]["direct_push_share"], 0.9)
 
-    def test_symbols_named_in_the_issue_body_reach_the_narrow_search(self) -> None:
+    def test_each_symbol_in_the_issue_body_gets_its_own_narrow_search(self) -> None:
         # llama_index#22639: the body named the functions, two open rivals
         # carried them, neither mentioned the issue number, and the typed
-        # symbols were prose words. The narrow query has to read the body.
+        # symbols were prose words. One joined query of every term found
+        # nothing, because GitHub ANDs the terms; one query per symbol found
+        # both rivals. Mailman #96.
         issue = {
             "number": 7,
             "title": "Docstore delete fails on failed runs",
@@ -385,17 +384,21 @@ class PrescreenTests(unittest.TestCase):
         search = json.loads(
             (directory / "duplicate-search.json").read_text(encoding="utf-8")
         )
+        self.assertEqual(search["symbols"], ["docstore"])
         self.assertEqual(
-            search["symbols"], ["docstore", "_handle_upserts", "_ahandle_upserts"]
+            search["issue_symbols"], ["_handle_upserts", "_ahandle_upserts"]
         )
-        narrow = [
-            command for command in search["commands"] if command["method"] == "narrow"
-        ]
-        self.assertTrue(narrow)
-        for command in narrow:
+        queries = {}
+        for command in search["commands"]:
+            if command["method"] != "narrow":
+                continue
             argv = command["command"]
-            query = argv[argv.index("--search") + 1]
-            self.assertEqual(query, "#7 docstore _handle_upserts _ahandle_upserts")
+            queries.setdefault(argv[1], []).append(argv[argv.index("--search") + 1])
+        self.assertEqual(
+            queries["pr"],
+            ["#7 docstore", "#7 _handle_upserts", "#7 _ahandle_upserts"],
+        )
+        self.assertEqual(queries["issue"], ["#7 docstore"])
 
     def test_the_verdict_lands_beside_the_repository_screens(self) -> None:
         prescreen_issue(self.root, "example/project#7", executable=self.stub("[]"))
