@@ -97,6 +97,12 @@ class ClassifyCommentTests(unittest.TestCase):
             "I have a patch ready for this",
             "Taking this up, will send a PR shortly",
             "I would like to contribute a fix here",
+            # domokane/FinancePy#266, #262, #267, #264: a reporter who has
+            # the fix and offers it. See wolfgang-aura/Mailman#93.
+            "I would be glad to prepare a focused PR and discuss a contract.",
+            "whether the attached candidate is suitable for a PR?",
+            "Proposed correction in `financepy/products/bonds/bond_zero.py`:",
+            "I would be happy to help take this from a report to a fix",
         ):
             with self.subTest(body=body):
                 self.assertEqual(classify_comment(_comment(body)), "claim")
@@ -191,6 +197,35 @@ class ReadClaimsTests(unittest.TestCase):
         self.assertEqual(record["assignments"], [])
         self.assertEqual(record["assignees"], [])
         self.assertIn("work on this issue", record["claims"][0]["quote"])
+
+    def test_a_claim_in_the_issue_body_is_recorded(self) -> None:
+        # domokane/FinancePy#267: the report carries the diff and nobody has
+        # commented, and the reporter has still claimed the work.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._run(Path(temporary))
+            record = read_claims(
+                root,
+                executable="gh",
+                execute=_FakeGh(
+                    {
+                        "number": 267,
+                        "assignees": [],
+                        "user": {"login": "reporter"},
+                        "author_association": "CONTRIBUTOR",
+                        "body": (
+                            "Proposed correction in `bond_zero.py`: "
+                            "```diff -  md = dd / fp * 10000 +  md = dd / fp```"
+                        ),
+                    },
+                    [],
+                ),
+            )
+
+        self.assertTrue(record["success"])
+        self.assertEqual(record["comments_read"], 0)
+        self.assertEqual(len(record["claims"]), 1)
+        self.assertEqual(record["claims"][0]["author"], "reporter")
+        self.assertIn("Proposed correction", record["claims"][0]["quote"])
 
     def test_an_assigned_issue_records_its_assignee(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

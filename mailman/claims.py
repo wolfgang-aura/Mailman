@@ -78,6 +78,15 @@ _CLAIM = re.compile(
     r"|on it\b"
     r"|i(?:'m|m| am) on (?:this|it)\b"
     r"|working on (?:this|it) (?:now|already)"
+    # A reporter who already wrote the fix. domokane/FinancePy#262 to #268
+    # each carried a candidate patch and an offer to turn it into a pull
+    # request, and the gate read them as unclaimed. See
+    # https://github.com/wolfgang-aura/Mailman/issues/93.
+    r"|i(?:'d| would) be (?:glad|happy|pleased) to "
+    r"(?:prepare|open|submit|send|raise|help|take|work|fix|make|turn|contribute)"
+    r"|(?:attached|linked|local|my) candidate"
+    r"|candidate (?:patch|fix|source|diff|change)"
+    r"|proposed (?:correction|fix|patch|change|diff)"
     r")",
     re.IGNORECASE,
 )
@@ -296,7 +305,18 @@ def read_claims(
         if len(got) < 100:
             break
 
-    for comment in comments:
+    # The report itself is the reporter's first comment. A reporter who says
+    # "proposed correction" and pastes the diff has claimed the work as surely
+    # as one who comments "I'll open a PR" later.
+    report = {
+        "id": payload.get("id"),
+        "user": payload.get("user"),
+        "author_association": payload.get("author_association"),
+        "body": payload.get("body"),
+        "created_at": payload.get("created_at"),
+        "html_url": payload.get("html_url"),
+    }
+    for comment in [report, *comments]:
         kind = classify_comment(comment)
         if kind == "claim":
             record["claims"].append(_row(comment))
