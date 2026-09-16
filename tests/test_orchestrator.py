@@ -624,6 +624,57 @@ class OrchestrationTests(OrchestratorHarness):
         self.assertEqual(outcome.review_cycles, 1)
         return primary
 
+    def test_a_long_run_budget_still_needs_a_reason(self) -> None:
+        """A per-run budget above two hours is the coordinator's own choice."""
+        run, directory = self.make_run()
+        primary = ScriptedAgent(
+            "codex", [{"report": "candidate", "touch": ("fix.txt", "fixed")}]
+        )
+        reviewer = ScriptedAgent("claude", [{"report": APPROVED}])
+        agents = {"codex": primary, "claude": reviewer}
+
+        with self.assertRaisesRegex(ValueError, "above two hours"):
+            orchestrate(
+                run=run,
+                run_directory=directory,
+                workspace=self.workspace,
+                primary_prompt=self.primary_prompt,
+                reviewer_prompt=self.reviewer_prompt,
+                verification_command=[sys.executable, "-c", PASSING_CHECK],
+                agent_factory=lambda name, model: agents[name],
+                run_time_budget_seconds=DEFAULT_RUN_TIME_BUDGET_SECONDS * 3,
+            )
+
+    def test_a_hunt_clock_longer_than_two_hours_needs_no_reason(self) -> None:
+        """`hunt init --time-budget-hours 6` must be orchestratable.
+
+        The hunt's clock is set once by the operator and every candidate spends
+        the same deadline. An attached run is refused
+        `--time-budget-override-reason`, so demanding one here left a hunt over
+        two hours with no way to run a candidate at all.
+        """
+        run, directory = self.make_run()
+        primary = ScriptedAgent(
+            "codex", [{"report": "candidate", "touch": ("fix.txt", "fixed")}]
+        )
+        reviewer = ScriptedAgent("claude", [{"report": APPROVED}])
+        agents = {"codex": primary, "claude": reviewer}
+
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: agents[name],
+            run_time_budget_seconds=DEFAULT_RUN_TIME_BUDGET_SECONDS * 3,
+            time_budget_name="hunt",
+        )
+
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
+        self.assertIsNone(outcome.budget_override_reason)
+
     def test_resume_review_cannot_raise_the_time_budget_without_a_reason(self) -> None:
         """https://github.com/wolfgang-aura/Mailman/issues/81
 

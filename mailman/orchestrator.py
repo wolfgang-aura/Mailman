@@ -1054,6 +1054,12 @@ class _Orchestration:
         if (
             self.run_time_budget_seconds > DEFAULT_RUN_TIME_BUDGET_SECONDS
             and not self.budget_override_reason
+            # A hunt-wide clock is not a per-run extension: the operator set it
+            # once at `hunt init --time-budget-hours`, an attached run is
+            # forbidden from passing --time-budget-override-reason, and every
+            # candidate spends that same deadline. Demanding a reason here made
+            # any hunt longer than two hours impossible to orchestrate at all.
+            and self.time_budget_name != "hunt"
         ):
             raise ValueError(
                 "a run time budget above two hours requires an override reason"
