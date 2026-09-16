@@ -733,7 +733,7 @@ class ScreenTests(unittest.TestCase):
                 FakeGitHub(
                     issues=[
                         _issue(10, days_old=1, labels=["enhancement"]),
-                        _issue(11, days_old=40),
+                        _issue(11, days_old=400),
                         _issue(12, days_old=2, labels=["feature-request"]),
                     ],
                     issue_comments={11: []},
@@ -746,6 +746,54 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(gate["data"]["workable"], 0)
         self.assertIn("none is workable", gate["detail"])
         self.assertIn("enhancement-labelled", gate["detail"])
+        self.assertIn("older than the 90-day issue window", gate["detail"])
+
+    def test_a_three_week_old_backlog_is_workable_under_a_fresh_window(self) -> None:
+        # The eighteen repositories that failed nothing but saturation, among
+        # them fsspec/filesystem_spec with 282 unclaimed issues: outside work
+        # merges every week, and every unclaimed bug is older than a fortnight.
+        # https://github.com/wolfgang-aura/Mailman/issues/95
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    closed_pulls=[
+                        _pull(1, author="alice", merged_days_ago=2),
+                        _pull(2, author="bob", merged_days_ago=5),
+                    ],
+                    issues=[_issue(10, days_old=30), _issue(11, days_old=30)],
+                    issue_comments={10: [], 11: []},
+                ),
+            )
+        gate = _named(record, "saturation")
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertNotIn("saturation", record["failed_gates"])
+        self.assertEqual(gate["data"]["workable"], 2)
+        self.assertEqual(gate["data"]["stale_beyond_window"], 0)
+        self.assertEqual(gate["data"]["median_workable_age_days"], 30)
+        self.assertEqual(gate["data"]["window_days"], 14)
+        self.assertEqual(gate["data"]["issue_window_days"], 90)
+        self.assertEqual(record["issue_window_days"], 90)
+
+    def test_the_issue_window_is_set_apart_from_the_merge_window(self) -> None:
+        # Passing the merge window as the age cap is the defect itself, so the
+        # two have to be settable apart.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    issues=[_issue(10, days_old=30)],
+                    issue_comments={10: []},
+                ),
+                issue_window_days=14,
+            )
+        gate = _named(record, "saturation")
+
+        self.assertIn("saturation", record["failed_gates"])
+        self.assertEqual(gate["data"]["stale_beyond_window"], 1)
+        self.assertIn("older than the 14-day issue window", gate["detail"])
+        self.assertIn("counted over 14 days", gate["detail"])
 
     def test_the_workable_count_excludes_labels_and_staleness_from_the_median(
         self) -> None:
@@ -755,7 +803,7 @@ class ScreenTests(unittest.TestCase):
                 FakeGitHub(
                     issues=[
                         _issue(10, days_old=3),
-                        _issue(11, days_old=30),
+                        _issue(11, days_old=400),
                         _issue(12, days_old=1, labels=["enhancement"]),
                     ],
                     issue_comments={10: []},

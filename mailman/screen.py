@@ -93,6 +93,16 @@ WINDOW_SINGLE_AUTHOR_SHARE = 0.35
 #: outside merges in the pattern window, the single-author rule does not apply.
 SHARE_SAMPLE_MINIMUM = 8
 
+#: How old an unclaimed issue may be and still count as work. This is not the
+#: freshness window and must not be set from it. Freshness asks whether the
+#: maintainers merge outside work now, and answers it from merges. Issue age
+#: answers a different question badly: a three-week-old bug in a repository that
+#: merged outside work last Tuesday is a normal backlog, not a closed door.
+#: Reading the merge window as an age cap rejected eighteen repositories that
+#: failed nothing else, among them `fsspec/filesystem_spec` with 282 unclaimed
+#: issues. See https://github.com/wolfgang-aura/Mailman/issues/95.
+ISSUE_WINDOW_DAYS = 90
+
 #: Python has to be the language the repository is actually written in. On
 #: `ccxt/ccxt` the Python is generated from TypeScript, and a patch to it is
 #: thrown away by the next build.
@@ -890,7 +900,9 @@ def _comment_claims(gh: _Gh, slug: str, number: str) -> bool:
     )
 
 
-def _saturation_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
+def _saturation_gate(
+    gh: _Gh, slug: str, window_days: int, issue_window_days: int
+) -> dict[str, Any]:
     """Gate 5. Is there any unclaimed work left, or has the tracker been mined?
 
     A claim is counted from three sources, because no one of them covers the
@@ -903,6 +915,11 @@ def _saturation_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
     mentioned the issue in prose, which GitHub does not treat as a claim and a
     maintainer does. See
     https://github.com/wolfgang-aura/Mailman/issues/53.
+
+    `window_days` is the merge window and is used here only to be recorded
+    beside the answer. Issue age is capped by `issue_window_days`, which is a
+    separate and much longer window, because the two measure different things.
+    See https://github.com/wolfgang-aura/Mailman/issues/95.
     """
     issues = gh.pages(
         f"repos/{slug}/issues?state=open&sort=created&direction=desc", pages=4
@@ -932,10 +949,11 @@ def _saturation_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
     ]
     now = datetime.now(UTC)
     # Unclaimed is not the same as workable. An enhancement request is not a
-    # bug run, and an issue nobody has touched since before the freshness
-    # window is not evidence of current capacity either; letting either into
-    # the median age turned nine nominal openings into one real one on
-    # openai/openai-agents-python.
+    # bug run, and an issue nobody has opened in years is a different kind of
+    # backlog; letting either into the median age turned nine nominal openings
+    # into one real one on openai/openai-agents-python. The age cap is the
+    # issue window, not the merge window: whether an old bug is still real is
+    # decided later, by `prescreen` and by `reproduce` at the base commit.
     workable = []
     enhancement_labelled = 0
     stale_beyond_window = 0
@@ -944,7 +962,7 @@ def _saturation_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
             enhancement_labelled += 1
             continue
         age = _age_in_days(row, now)
-        if age is None or age > window_days:
+        if age is None or age > issue_window_days:
             stale_beyond_window += 1
             continue
         workable.append(age)
@@ -967,6 +985,7 @@ def _saturation_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
             round(1 - len(unclaimed) / len(unassigned), 2) if unassigned else None
         ),
         "window_days": window_days,
+        "issue_window_days": issue_window_days,
     }
     if not unclaimed:
         return _gate(
@@ -987,7 +1006,9 @@ def _saturation_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
             detail=(
                 f"{len(unclaimed)} issue(s) carry no claim of any kind, but "
                 f"none is workable: {enhancement_labelled} enhancement-labelled, "
-                f"{stale_beyond_window} older than the {window_days}-day window"
+                f"{stale_beyond_window} older than the {issue_window_days}-day "
+                f"issue window (outside merges are counted over "
+                f"{window_days} days)"
             ),
             data=data,
         )
@@ -1046,6 +1067,7 @@ def screen_repository(
     *,
     data_root: Path,
     window_days: int = 14,
+    issue_window_days: int = ISSUE_WINDOW_DAYS,
     executable: str | None = None,
     timeout_seconds: float = 120,
     working_directory: Path | None = None,
@@ -1063,6 +1085,7 @@ def screen_repository(
         "repository": slug,
         "screened_at": datetime.now(UTC).isoformat(),
         "window_days": window_days,
+        "issue_window_days": issue_window_days,
         "gates": [],
         "success": False,
     }
@@ -1096,7 +1119,7 @@ def screen_repository(
         _python_gate(gh, slug),
         _policy_gate(gh, slug),
         _assignment_gate(gh, slug),
-        _saturation_gate(gh, slug, window_days),
+        _saturation_gate(gh, slug, window_days, issue_window_days),
         _stars_gate(meta),
     ]
     failed = [
