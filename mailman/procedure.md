@@ -63,6 +63,11 @@ own without a domain narrowing the pool before they see it.
    Reject a failed screen.
    Human-only authorship declarations, assignment requirements and bans on
    generated descriptions are reasons to pick another target for this flow.
+   A refusal phrased as an outcome fails the gate too: "we won't review
+   AI-generated PRs" closes the door as firmly as "no AI-generated code". A
+   guide that requires a maintainer to have answered the issue first is
+   recorded as the `prior-discussion` constraint, and `prescreen` then refuses
+   any issue nobody from the project has replied on, under `no-maintainer-reply`.
 2. Pre-screen every issue on the shortlist before opening a run on any of
    them: `mailman prescreen OWNER/REPO#N --symbols NAME NAME --hunt HUNT_ID
    --owner TOKEN`. It runs the same

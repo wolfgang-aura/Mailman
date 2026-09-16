@@ -45,6 +45,13 @@ ALREADY_FIXED_UPSTREAM = "already-fixed-upstream"
 # defect survived it, so this is a warning to read rather than a refusal.
 MERGED_FIX_ALREADY_IN_BASE = "merged-fix-already-in-base"
 UNACKNOWLEDGED_ATTEMPTS = "unacknowledged-prior-attempts"
+# The repository's guide requires a maintainer to have answered the issue
+# before a pull request exists, and nobody has. getsentry/sentry-python closes
+# these automatically and labels them `violating-contribution-guidelines`, so
+# the patch is never read however good it is. Decided by `prescreen`, which has
+# both the repository screen and the issue's own thread.
+# https://github.com/wolfgang-aura/Mailman/issues/99
+NO_MAINTAINER_REPLY = "no-maintainer-reply"
 
 
 @dataclass(frozen=True)

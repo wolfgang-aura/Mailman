@@ -202,6 +202,64 @@ _POLICY_BANS = re.compile(
     re.IGNORECASE,
 )
 
+#: A refusal phrased as what happens to the pull request rather than as a ban
+#: on writing it. `getsentry/sentry-python` says "we won't review visibly
+#: AI-generated PRs from an agent instructed to look for and "fix" open issues
+#: in the repo", which is this project described exactly, and passed the gate
+#: with `constraints: []`. See https://github.com/wolfgang-aura/Mailman/issues/99.
+_REFUSAL_OUTCOME = re.compile(
+    r"(?:"
+    r"(?:wo|will|would|do|does|did)\s?n[o']?t\s+(?:be\s+)?"
+    r"(?:review|accept|merge|consider|look at)"
+    r"|will\s+(?:be\s+)?close(?:d)?"
+    r"|(?:are|is|get|gets)\s+(?:automatically\s+)?closed"
+    r"|automatically\s+closed"
+    r"|clos(?:e|ed|ing)\s+(?:them\s+|it\s+|the\s+pr\s+)?outright"
+    r"|closed\s+without\s+review"
+    r")",
+    re.IGNORECASE,
+)
+
+#: What the refusal has to be about before it counts. "We will close stale PRs"
+#: is every repository on GitHub; "we won't review AI-generated PRs" is this
+#: project.
+_AI_SUBJECT = re.compile(
+    r"\b(?:ai|a\.i\.|llms?|agents?|agentic|copilot|chatgpt|generated|"
+    r"machine[- ]written)\b",
+    re.IGNORECASE,
+)
+
+#: A guide that declines to review the *tool* is talking about who is
+#: accountable for the patch, not refusing the patch. `securo-finance/securo`
+#: says "We don't review the AI, we review you", and reading that as a ban
+#: would quote a sentence that says the opposite of the rejection.
+_REFUSES_THE_TOOL = re.compile(
+    r"\s*(?:the\s+)?(?:ai|a\.i\.|llms?|models?|agents?|tools?|bots?)\b",
+    re.IGNORECASE,
+)
+
+#: The constraint kind that is a gate on filing rather than a rule about how the
+#: submission is written. Recorded as `requires_prior_discussion` in the gate's
+#: data, which is what `prescreen` reads.
+PRIOR_DISCUSSION = "prior-discussion"
+
+#: A guide that requires the maintainers to have answered the issue before a
+#: pull request exists. This is not a rule about how the patch is written, which
+#: is what #43 added; it decides whether we may file at all.
+_POLICY_PRIOR_DISCUSSION = re.compile(
+    r"(?:"
+    r"prior discussion required"
+    r"|must show a conversation between you and a maintainer"
+    r"|a maintainer must have (?:also )?responded"
+    r"|(?:discuss|discussion)\s+(?:it\s+|this\s+)?"
+    r"(?:with|in)\s+(?:a\s+|the\s+)?(?:maintainers?|issue)[^.]{0,60}"
+    r"before\s+(?:opening|submitting|filing|raising|sending)"
+    r"|(?:wait|waiting)\s+for\s+(?:a\s+)?maintainer[^.]{0,40}"
+    r"(?:repl(?:y|ies)|respon(?:se|ds?)|confirm)"
+    r")",
+    re.IGNORECASE,
+)
+
 #: A policy that allows the work but requires it to be declared.
 _POLICY_DISCLOSURE = re.compile(
     r"(?:"
@@ -263,6 +321,34 @@ def _gate(
         "detail": detail,
         "data": data or {},
     }
+
+
+def _sentence(flat: str, start: int, end: int, *, limit: int = 400) -> str:
+    """The sentence a match sits in, so the record quotes a readable claim."""
+    left = flat.rfind(". ", 0, start)
+    opening = 0 if left == -1 else left + 2
+    right = flat.find(". ", end)
+    closing = len(flat) if right == -1 else right + 1
+    return flat[opening:closing].strip()[:limit]
+
+
+def _outcome_refusal(flat: str) -> str | None:
+    """A refusal stated as what happens to the pull request, about AI work.
+
+    One sentence, not a window. Read against the 121 contributing guides this
+    hunt has screened, a 200-character window around the refusal found one more
+    repository and it was a false one: `agronholm/anyio` closes a pull request
+    that erases the template, two sentences from an unrelated mention of AI.
+    Every real refusal among those guides names its subject in its own
+    sentence, sentry's included.
+    """
+    for match in _REFUSAL_OUTCOME.finditer(flat):
+        if _REFUSES_THE_TOOL.match(flat, match.end()):
+            continue
+        sentence = _sentence(flat, match.start(), match.end())
+        if _AI_SUBJECT.search(sentence):
+            return sentence
+    return None
 
 
 def _decoded(payload: Any) -> str:
@@ -675,13 +761,18 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
             continue
         flat = " ".join(body.split())
         ban = _POLICY_BANS.search(flat)
-        if ban:
+        # A ban is written two ways: as a rule about what may be submitted, and
+        # as a statement of what will happen to it. The second is the one
+        # sentry-python uses, and reading only the first spent a whole hunt on
+        # a patch its automation closes on arrival. Mailman #99.
+        refusal = ban.group(0) if ban else _outcome_refusal(flat)
+        if refusal:
             return _gate(
                 "policy",
                 passed=False,
                 blocking=True,
-                detail=f"{relative} refuses AI-assisted work: {ban.group(0)!r}",
-                data={"source": relative, "quote": ban.group(0)},
+                detail=f"{relative} refuses AI-assisted work: {refusal!r}",
+                data={"source": relative, "quote": refusal},
             )
         # Three separate questions, not one. A project can permit the code and
         # still refuse a model-written body or a commit under a tool's account,
@@ -690,12 +781,21 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         disclosure = _POLICY_DISCLOSURE.search(flat)
         own_words = _POLICY_OWN_WORDS.search(flat)
         human_account = _POLICY_HUMAN_ACCOUNT.search(flat)
+        prior_discussion = _POLICY_PRIOR_DISCUSSION.search(flat)
         constraints = [
-            {"kind": kind, "quote": match.group(0)}
+            {
+                "kind": kind,
+                "quote": (
+                    _sentence(flat, match.start(), match.end())
+                    if kind == PRIOR_DISCUSSION
+                    else match.group(0)
+                ),
+            }
             for kind, match in (
                 ("disclosure", disclosure),
                 ("own-words", own_words),
                 ("human-account", human_account),
+                (PRIOR_DISCUSSION, prior_discussion),
             )
             if match
         ]
@@ -709,6 +809,12 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
                     ". Set `requires_own_words` in the target policy so "
                     "prepare-submission refuses a generated body."
                 )
+            if prior_discussion:
+                detail += (
+                    " A maintainer has to have answered the issue before a "
+                    "pull request exists here, so `prescreen` refuses an "
+                    "unanswered one."
+                )
         else:
             detail = f"{relative} says nothing that closes AI-assisted work"
         return _gate(
@@ -721,6 +827,7 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
                 "requires_disclosure": bool(disclosure),
                 "requires_own_words": bool(own_words),
                 "requires_human_account": bool(human_account),
+                "requires_prior_discussion": bool(prior_discussion),
                 "constraints": constraints,
                 "quote": disclosure.group(0) if disclosure else None,
             },
@@ -1127,6 +1234,29 @@ def direct_push_share(record: dict[str, Any] | None) -> float | None:
         if isinstance(gate, dict) and gate.get("name") == "direct-push":
             share = (gate.get("data") or {}).get("direct_push_share")
             return share if isinstance(share, int | float) else None
+    return None
+
+
+def requires_prior_discussion(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The constraint, when the guide wants a maintainer to answer first.
+
+    `prescreen` has the claims record and no API budget to re-read the guide,
+    exactly as with `direct_push_share`. A repository with no screen, or one
+    written before this constraint existed, returns `None`: unknown, not clear.
+    See https://github.com/wolfgang-aura/Mailman/issues/99.
+    """
+    if not isinstance(record, dict):
+        return None
+    for gate in record.get("gates") or []:
+        if not isinstance(gate, dict) or gate.get("name") != "policy":
+            continue
+        data = gate.get("data") or {}
+        if not data.get("requires_prior_discussion"):
+            return None
+        for entry in data.get("constraints") or []:
+            if isinstance(entry, dict) and entry.get("kind") == PRIOR_DISCUSSION:
+                return entry
+        return {"kind": PRIOR_DISCUSSION, "quote": None}
     return None
 
 

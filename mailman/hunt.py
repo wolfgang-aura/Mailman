@@ -31,7 +31,7 @@ HUMAN_REASONS = ("authentication", "budget", "scope", "conflicting-instructions"
 DROP_CODES = {
     "issue-assigned", "work-handed-over", "open-pull-request",
     "already-fixed-upstream", "bug-not-reproduced", "fails-freshness-bar",
-    "reproduction-not-machine-checked",
+    "reproduction-not-machine-checked", "no-maintainer-reply",
 }
 #: A hunt in one of these states is history. Its record answers "what did we
 #: file, and on what evidence", and nothing may rewrite that answer.

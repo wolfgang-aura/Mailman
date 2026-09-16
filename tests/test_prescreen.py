@@ -35,6 +35,7 @@ from mailman.prescreen import (
 from mailman.screen import screen_path
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
+    NO_MAINTAINER_REPLY,
     NO_REPRODUCTION,
     NO_TARGET_INTEL,
     OPEN_PULL_REQUEST,
@@ -819,6 +820,110 @@ class CitedPullRequestTests(PrescreenTests):
         self.assertEqual(record["cited_pull_requests"]["references"], [])
         self.assertIn("none of them", record["cited_pull_requests"]["detail"])
         self.assertTrue(record["duplicate_search"]["success"])
+
+
+class PriorDiscussionTests(PrescreenTests):
+    """A repository that closes a pull request whose issue nobody answered.
+
+    getsentry/sentry-python's automation does exactly that, and a hunt spent
+    its only run on a reviewer-approved patch for an issue in this state.
+    https://github.com/wolfgang-aura/Mailman/issues/99
+    """
+
+    QUOTE = (
+        "**Prior discussion required.** The referenced issue must show a "
+        "conversation between you and a maintainer."
+    )
+
+    def record_prior_discussion(self) -> None:
+        """The repository screen the pre-screen reads the rule out of."""
+        path = screen_path(self.root, "example/project")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "repository": "example/project",
+                    "success": True,
+                    "verdict": "pass",
+                    "gates": [
+                        {
+                            "name": "policy",
+                            "passed": True,
+                            "blocking": True,
+                            "detail": "",
+                            "data": {
+                                "requires_prior_discussion": True,
+                                "constraints": [
+                                    {
+                                        "kind": "prior-discussion",
+                                        "quote": self.QUOTE,
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_an_unanswered_issue_is_rejected_before_a_run_exists(self) -> None:
+        self.record_prior_discussion()
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                comments=[
+                    {
+                        "body": "I see this too on 3.12.",
+                        "author_association": "NONE",
+                        "created_at": "2026-09-02T00:00:00Z",
+                        "user": {"login": "another", "type": "User"},
+                    }
+                ],
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [NO_MAINTAINER_REPLY])
+        self.assertIn(NO_MAINTAINER_REPLY, DECIDABLE)
+        self.assertTrue(record["prior_discussion"]["required"])
+        self.assertEqual(record["prior_discussion"]["quote"], self.QUOTE)
+        self.assertFalse(record["prior_discussion"]["maintainer_replied"])
+        self.assertIn("Prior discussion required", record["next"])
+        self.assertNotIn("duplicate_search", record)
+
+    def test_a_maintainer_reply_clears_the_rule(self) -> None:
+        self.record_prior_discussion()
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                comments=[
+                    {
+                        "body": "Thanks, that is a bug. A fix is welcome.",
+                        "author_association": "MEMBER",
+                        "created_at": "2026-09-02T00:00:00Z",
+                        "user": {"login": "maintainer", "type": "User"},
+                    }
+                ],
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(record["blocking"], [])
+        self.assertTrue(record["prior_discussion"]["maintainer_replied"])
+
+    def test_a_repository_without_the_rule_does_not_need_a_reply(self) -> None:
+        record = prescreen_issue(
+            self.root, "example/project#7", executable=self.stub("[]")
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertFalse(record["prior_discussion"]["required"])
+        self.assertFalse(record["prior_discussion"]["maintainer_replied"])
 
 
 class InitRunGateTests(PrescreenTests):

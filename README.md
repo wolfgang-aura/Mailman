@@ -360,12 +360,16 @@ merged nothing from outside in six weeks.
    names the `source-tree` plan in `examples/environment-plans/`, which installs
    the dependencies and puts the workspace on the path without installing the
    package.
-5. **Policy.** Reads the contributing guide for three separate rules, because a
-   project can permit the code and still refuse the prose. A ban on AI-assisted
-   code fails the gate. A rule requiring the author's own words in descriptions,
-   or commits under a human account, passes it and is recorded with the sentence
-   that said so. Matched narrowly on purpose, because "AI" appears in every
-   model library's guide.
+5. **Policy.** Reads the contributing guide for several separate rules, because
+   a project can permit the code and still refuse the prose. A ban on
+   AI-assisted code fails the gate, whether it is written as a rule ("no
+   AI-generated code") or as an outcome ("we won't review AI-generated PRs").
+   A rule requiring the author's own words in descriptions, or commits under a
+   human account, passes it and is recorded with the sentence that said so. So
+   does a rule requiring a maintainer to have answered the issue before a pull
+   request exists, which `prescreen` then enforces per issue under
+   `no-maintainer-reply`. Matched narrowly on purpose, because "AI" appears in
+   every model library's guide.
 6. **Saturation.** How many unassigned open issues have no open pull request
    naming them, and how old they are. Age is capped by `--issue-window-days`,
    default 90, which is not the merge window and must not be set from it. A

@@ -23,7 +23,12 @@ from typing import Any
 from mailman.claims import read_claims
 from mailman.issue import capture_issue_from_github
 from mailman.prior_art import collect_prior_art, resolve_cited_pull_requests
-from mailman.screen import DIRECT_PUSH_LIMIT, direct_push_share, load_screen
+from mailman.screen import (
+    DIRECT_PUSH_LIMIT,
+    direct_push_share,
+    load_screen,
+    requires_prior_discussion,
+)
 from mailman.submission import (
     partition_duplicates,
     record_duplicate_search,
@@ -33,6 +38,7 @@ from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
     ISSUE_ASSIGNED,
     NO_DUPLICATE_SEARCH,
+    NO_MAINTAINER_REPLY,
     OPEN_PULL_REQUEST,
     UNACKNOWLEDGED_ATTEMPTS,
     UNACKNOWLEDGED_CLAIM,
@@ -41,9 +47,10 @@ from mailman.targeting import (
     own_pull_request,
 )
 
-#: 4 reads the pull requests the issue's own thread names. A screen written
-#: before that never asked the question, so `check` sends it back.
-PRESCREEN_SCHEMA_VERSION = 4
+#: 4 reads the pull requests the issue's own thread names; 5 asks whether the
+#: repository requires a maintainer reply before a pull request exists. A screen
+#: written before either never asked the question, so `check` sends it back.
+PRESCREEN_SCHEMA_VERSION = 5
 ISSUE_SCREENS = "issue-screens"
 #: A pre-screen filters a shortlist; it is not the filing gate. The run stage
 #: still re-runs the duplicate search under its own one-hour limit, and
@@ -123,6 +130,7 @@ _NON_FIX_LABELS = frozenset(
 #: Reproduction needs a clone, and target intel comes from `screen-target`.
 DECIDABLE = (
     NO_DUPLICATE_SEARCH,
+    NO_MAINTAINER_REPLY,
     OPEN_PULL_REQUEST,
     ALREADY_FIXED_UPSTREAM,
     UNACKNOWLEDGED_ATTEMPTS,
@@ -372,7 +380,8 @@ def prescreen_issue(
     estimate, reason = estimate_fix_size(
         captured.get("title"), _captured_body(directory), captured.get("labels") or []
     )
-    share = direct_push_share(load_screen(data_root, slug))
+    screen = load_screen(data_root, slug)
+    share = direct_push_share(screen)
     warnings: list[str] = []
     if estimate == TRIVIAL:
         if share is not None and share >= DIRECT_PUSH_LIMIT:
@@ -435,21 +444,43 @@ def prescreen_issue(
         "decided_by": cited["decided_by"],
         "detail": cited["detail"],
     }
-    cited_blocking: list[str] = []
+    # Whether we may file here at all, before whether this issue is worth it.
+    # getsentry/sentry-python closes a pull request whose issue no maintainer
+    # answered, automatically, and labels it a guideline violation: the patch
+    # is never read however good it is.
+    # https://github.com/wolfgang-aura/Mailman/issues/99
+    required = requires_prior_discussion(screen)
+    record["prior_discussion"] = {
+        "required": bool(required),
+        "quote": required.get("quote") if required else None,
+        "maintainer_replied": claims.get("maintainer_replied"),
+    }
+    thread_blocking: list[str] = []
+    if required and claims.get("maintainer_replied") is False:
+        thread_blocking.append(NO_MAINTAINER_REPLY)
     if cited["open"]:
-        cited_blocking.append(OPEN_PULL_REQUEST)
+        thread_blocking.append(OPEN_PULL_REQUEST)
     if cited["merged"]:
-        cited_blocking.append(ALREADY_FIXED_UPSTREAM)
-    if cited_blocking:
+        thread_blocking.append(ALREADY_FIXED_UPSTREAM)
+    if thread_blocking:
+        details = []
+        if NO_MAINTAINER_REPLY in thread_blocking:
+            details.append(
+                f"{slug} requires a maintainer to have answered the issue "
+                f"before a pull request exists ({required.get('quote')!r}), and "
+                "nobody who speaks for the project has replied on this one"
+            )
+        if cited["decided_by"]:
+            details.append(cited["detail"])
         record.update(
             {
-                "blocking": cited_blocking,
+                "blocking": thread_blocking,
                 "warnings": warnings,
                 "verdict": "reject",
                 "stages_skipped": ["duplicate-search", "prior-art"],
                 "next": f"Do not open a run on {slug}#{number}: "
-                + "; ".join(cited_blocking)
-                + f". {cited['detail']}",
+                + "; ".join(thread_blocking)
+                + (f". {'. '.join(details)}" if details else ""),
             }
         )
         _store_prescreen(data_root, slug, number, record)

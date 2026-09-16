@@ -19,6 +19,7 @@ from mailman.screen import (
     direct_push_share,
     load_screen,
     render_screen,
+    requires_prior_discussion,
     screen_repository,
 )
 
@@ -673,6 +674,137 @@ class ScreenTests(unittest.TestCase):
 
         self.assertNotIn("policy", record["failed_gates"])
         self.assertEqual(record["verdict"], "pass")
+
+    def test_sentrys_refusal_phrased_as_an_outcome_fails_the_gate(self) -> None:
+        # getsentry/sentry-python's "AI Use" section, verbatim. The gate passed
+        # it with `constraints: []` and a hunt spent its only run on a patch
+        # this paragraph describes and refuses.
+        # https://github.com/wolfgang-aura/Mailman/issues/99
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "CONTRIBUTING.md": (
+                            "### AI Use\n\nYou are welcome to use whatever tools "
+                            "you prefer for making a contribution. However, any "
+                            "changes you propose have to be reviewed and tested "
+                            "by you, a human, first, before you submit a pull "
+                            "request with them for the Sentry team to review. If "
+                            "we feel like that didn't happen, we will close the "
+                            "PR outright. For example, we won't review visibly "
+                            "AI-generated PRs from an agent instructed to look "
+                            'for and "fix" open issues in the repo.\n'
+                        )
+                    }
+                ),
+            )
+        gate = _named(record, "policy")
+
+        self.assertIn("policy", record["failed_gates"])
+        self.assertIn(
+            "we won't review visibly AI-generated PRs from an agent instructed "
+            "to look for and",
+            gate["data"]["quote"],
+        )
+
+    def test_a_required_maintainer_conversation_is_recorded_as_a_constraint(
+        self,
+    ) -> None:
+        # The "Automated Checks" section of the same guide. This one is not a
+        # rule about how the patch is written: it decides whether we may file.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "CONTRIBUTING.md": (
+                            "### Automated Checks\n\nTo maintain the quality of "
+                            "contributions, we use automated workflows that "
+                            "enforce the following rules for PRs from "
+                            "non-maintainers:\n\n"
+                            "- **Issue reference required.** Your PR body must "
+                            "reference a GitHub issue in the `getsentry` "
+                            "organization.\n"
+                            "- **Prior discussion required.** The referenced "
+                            "issue must show a conversation between you and a "
+                            "maintainer. Opening the issue counts as "
+                            "participation - but a maintainer must have also "
+                            "responded.\n\n"
+                            "PRs that don't meet these criteria are "
+                            "automatically closed and labeled "
+                            "`violating-contribution-guidelines`.\n"
+                        )
+                    }
+                ),
+            )
+        gate = _named(record, "policy")
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertTrue(gate["passed"])
+        self.assertTrue(gate["data"]["requires_prior_discussion"])
+        self.assertIn(
+            "prior-discussion",
+            [entry["kind"] for entry in gate["data"]["constraints"]],
+        )
+        quote = next(
+            entry["quote"]
+            for entry in gate["data"]["constraints"]
+            if entry["kind"] == "prior-discussion"
+        )
+        self.assertIn("Prior discussion required", quote)
+        self.assertIn("conversation between you and a maintainer", quote)
+        self.assertEqual(
+            requires_prior_discussion(record)["quote"],
+            quote,
+        )
+
+    def test_a_welcome_with_a_stale_pull_request_rule_is_not_a_refusal(self) -> None:
+        # Two rules about two different things, a sentence apart. Reading the
+        # closure rule as an answer to the AI rule would reject a repository
+        # that says the work is welcome.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "CONTRIBUTING.md": (
+                            "We use AI in review ourselves. AI-assisted "
+                            "contributions are welcome, and any AI-assisted "
+                            "contribution must be disclosed in the pull request "
+                            "body. Stale pull requests will be closed after 30 "
+                            "days of inactivity.\n"
+                        )
+                    }
+                ),
+            )
+        gate = _named(record, "policy")
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertNotIn("policy", record["failed_gates"])
+        self.assertTrue(gate["data"]["requires_disclosure"])
+        self.assertFalse(gate["data"]["requires_prior_discussion"])
+
+    def test_a_closure_rule_about_something_else_is_not_an_ai_refusal(self) -> None:
+        # Both sentences are real, from guides screened in this hunt. anyio
+        # closes a pull request that erases the template; securo declines to
+        # review the tool, which is a statement about who is accountable.
+        for guide in (
+            "Contributions written with AI assistance are welcome. Do not "
+            "erase or replace the template contents - PRs that do so will be "
+            "closed without review.",
+            "**We don't review the AI, we review you.** When a PR arrives, the "
+            "questions are the same as they have always been: does this person "
+            "understand what they are proposing?",
+        ):
+            with self.subTest(guide=guide[:40]):
+                with tempfile.TemporaryDirectory() as temporary:
+                    record = _screen(
+                        Path(temporary),
+                        FakeGitHub(policies={"CONTRIBUTING.md": guide}),
+                    )
+                self.assertEqual(record["verdict"], "pass")
+                self.assertNotIn("policy", record["failed_gates"])
 
     def test_a_fully_claimed_tracker_fails_the_saturation_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
