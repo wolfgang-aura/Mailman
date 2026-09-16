@@ -22,7 +22,7 @@ from typing import Any
 
 from mailman.claims import read_claims
 from mailman.issue import capture_issue_from_github
-from mailman.prior_art import collect_prior_art
+from mailman.prior_art import collect_prior_art, resolve_cited_pull_requests
 from mailman.screen import DIRECT_PUSH_LIMIT, direct_push_share, load_screen
 from mailman.submission import (
     partition_duplicates,
@@ -38,9 +38,12 @@ from mailman.targeting import (
     UNACKNOWLEDGED_CLAIM,
     WORK_HANDED_OVER,
     assess_target,
+    own_pull_request,
 )
 
-PRESCREEN_SCHEMA_VERSION = 3
+#: 4 reads the pull requests the issue's own thread names. A screen written
+#: before that never asked the question, so `check` sends it back.
+PRESCREEN_SCHEMA_VERSION = 4
 ISSUE_SCREENS = "issue-screens"
 #: A pre-screen filters a shortlist; it is not the filing gate. The run stage
 #: still re-runs the duplicate search under its own one-hour limit, and
@@ -292,6 +295,33 @@ def _fix_size_detail(estimate: str, reason: str, share: float | None) -> str:
     return f"the fix reads as trivial ({reason}), but {habit}"
 
 
+def _citable(
+    claims: dict[str, Any], *, slug: str, directory: Path
+) -> list[dict[str, Any]]:
+    """The references worth a `gh` call, minus the one we filed ourselves.
+
+    A filed run's own pull request cites the issue and is cited back by it, and
+    reading that as a rival is the defect commit 495b9e8 fixed for the
+    duplicate search. The same exclusion belongs here, for the same reason.
+    """
+    own = own_pull_request(directory)
+    references = [
+        reference
+        for reference in claims.get("references") or []
+        if isinstance(reference, dict)
+    ]
+    if own is None:
+        return references
+    return [
+        reference
+        for reference in references
+        if not (
+            str(reference.get("repository") or "").lower() == slug.lower()
+            and reference.get("number") == own
+        )
+    ]
+
+
 def is_fresh(record: dict[str, Any], *, hours: int = PRESCREEN_HOURS) -> bool:
     try:
         screened = datetime.fromisoformat(record["screened_at"])
@@ -374,6 +404,56 @@ def prescreen_issue(
         )
         _store_prescreen(data_root, slug, number, record)
         return record
+    # The thread is read before the search, because it answers the same
+    # question for less. An issue whose own body links the pull request that
+    # fixes it needs one `gh pr view`, not eighty-eight search results that
+    # rank it nowhere: deepset-ai/haystack#12777 passed this screen with its
+    # draft implementation linked in the last line of the body.
+    # https://github.com/wolfgang-aura/Mailman/issues/98
+    claims = read_claims(
+        directory, executable=executable, timeout_seconds=timeout_seconds
+    )
+    record["claims"] = {
+        "success": claims.get("success"),
+        "assignees": claims.get("assignees", []),
+        "assignments": len(claims.get("assignments", [])),
+        "claims": len(claims.get("claims", [])),
+        "maintainer_replied": claims.get("maintainer_replied"),
+    }
+    cited = resolve_cited_pull_requests(
+        directory,
+        references=_citable(claims, slug=slug, directory=directory),
+        executable=executable,
+        timeout_seconds=timeout_seconds,
+    )
+    record["cited_pull_requests"] = {
+        "references": cited["references"],
+        "resolved": cited["resolved"],
+        "skipped": cited["skipped"],
+        "open": [row["number"] for row in cited["open"]],
+        "merged": [row["number"] for row in cited["merged"]],
+        "decided_by": cited["decided_by"],
+        "detail": cited["detail"],
+    }
+    cited_blocking: list[str] = []
+    if cited["open"]:
+        cited_blocking.append(OPEN_PULL_REQUEST)
+    if cited["merged"]:
+        cited_blocking.append(ALREADY_FIXED_UPSTREAM)
+    if cited_blocking:
+        record.update(
+            {
+                "blocking": cited_blocking,
+                "warnings": warnings,
+                "verdict": "reject",
+                "stages_skipped": ["duplicate-search", "prior-art"],
+                "next": f"Do not open a run on {slug}#{number}: "
+                + "; ".join(cited_blocking)
+                + f". {cited['detail']}",
+            }
+        )
+        _store_prescreen(data_root, slug, number, record)
+        return record
     # The narrow search is only as good as its terms. The typed symbols make
     # one query; each symbol read out of the issue body makes its own, so the
     # search no longer depends on the coordinator guessing the right name.
@@ -429,15 +509,6 @@ def prescreen_issue(
             "requested": [],
             "detail": "no strong duplicate to read",
         }
-    claims = read_claims(
-        directory, executable=executable, timeout_seconds=timeout_seconds
-    )
-    record["claims"] = {
-        "success": claims.get("success"),
-        "assignees": claims.get("assignees", []),
-        "assignments": len(claims.get("assignments", [])),
-        "claims": len(claims.get("claims", [])),
-    }
     assessment = assess_target(directory)
     blocking = [code for code in assessment.blocking if code in DECIDABLE]
     record["blocking"] = blocking

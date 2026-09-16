@@ -66,9 +66,15 @@ own without a domain narrowing the pool before they see it.
 2. Pre-screen every issue on the shortlist before opening a run on any of
    them: `mailman prescreen OWNER/REPO#N --symbols NAME NAME --hunt HUNT_ID
    --owner TOKEN`. It runs the same
-   issue read, narrow duplicate search, prior-art read and claim check the run
+   issue read, claim check, narrow duplicate search and prior-art read the run
    stage runs, writes the verdict beside the repository screens, and exits
-   non-zero on a reject. Closed issues and issues labelled as features,
+   non-zero on a reject. The thread is read before the search: every pull
+   request the issue's body, comments and timeline name is resolved with one
+   `gh pr view` each, in whatever repository it lives in, and an open one is
+   `open-pull-request` while a merged one is `already-fixed-upstream`. The
+   record names the reference that decided it under `cited_pull_requests`.
+   A reference that turns out to be an issue is skipped without comment.
+   Closed issues and issues labelled as features,
    enhancements, questions, projects or tracking work stop after the issue
    read; do not spend search or agent work on them. Most targets fail here. One
    hunt opened 24 runs to file 3, and 14 of the 21 drops were "someone already

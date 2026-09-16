@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,12 @@ from mailman.toolchain import resolve_tool
 
 PRIOR_ART_FILENAME = "prior-art.json"
 PRIOR_ART_MARKDOWN = "prior-art.md"
+
+#: What a reference the issue thread names turned out to be. Written beside the
+#: duplicate search so a rejection can be read back: which reference, in which
+#: repository, in what state.
+CITED_PULL_REQUESTS_FILENAME = "cited-pull-requests.json"
+_CITED_FIELDS = "number,state,mergedAt,mergeCommit,title,url"
 
 _PULL_REQUEST_FIELDS = (
     "number,title,state,url,body,author,createdAt,closedAt,mergedAt,"
@@ -274,6 +281,127 @@ def collect_prior_art(
         render_prior_art(record), encoding="utf-8", newline="\n"
     )
     return record
+
+
+def resolve_cited_pull_requests(
+    run_directory: Path,
+    *,
+    references: Sequence[dict[str, Any]],
+    executable: str | None = None,
+    timeout_seconds: float = 60,
+) -> dict[str, Any]:
+    """Ask GitHub what each reference the issue names actually is.
+
+    One `gh pr view` per reference, in any repository. A reference that turns
+    out to be an issue, a heading anchor or a version number is skipped without
+    comment: `gh` exits non-zero and that is the whole answer.
+
+    A merged pull request is recorded as merged, full stop. This stage has no
+    clone, so it cannot ask whether the merge commit is already an ancestor of
+    a base commit the way `check-target` can; the merge commit is recorded so a
+    later stage can. See https://github.com/wolfgang-aura/Mailman/issues/98.
+    """
+    command_executable = executable or resolve_tool(run_directory, "gh")
+    record: dict[str, Any] = {
+        "schema_version": 1,
+        "collected_at": datetime.now(UTC).isoformat(),
+        "references": list(references),
+        "resolved": [],
+        "skipped": [],
+        "open": [],
+        "merged": [],
+        "decided_by": None,
+        "commands": [],
+        "success": True,
+    }
+    for reference in references:
+        slug = str(reference.get("repository") or "")
+        number = reference.get("number")
+        if not slug or not isinstance(number, int):
+            continue
+        result: CommandResult = execute(
+            [
+                command_executable,
+                "pr",
+                "view",
+                str(number),
+                "--repo",
+                slug,
+                "--json",
+                _CITED_FIELDS,
+            ],
+            working_directory=run_directory,
+            timeout_seconds=timeout_seconds,
+        )
+        record["commands"].append(result.to_dict())
+        if result.timed_out or result.exit_code != 0:
+            record["skipped"].append(
+                {
+                    **reference,
+                    "detail": "not a pull request, or not readable from here",
+                }
+            )
+            continue
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            record["skipped"].append(
+                {**reference, "detail": "the GitHub CLI returned unreadable JSON"}
+            )
+            continue
+        if not isinstance(payload, dict):
+            record["skipped"].append(
+                {**reference, "detail": "the GitHub CLI returned no pull request"}
+            )
+            continue
+        merge_commit = payload.get("mergeCommit")
+        row = {
+            "reference": reference.get("text"),
+            "repository": slug,
+            "number": payload.get("number", number),
+            "state": str(payload.get("state") or "").upper(),
+            "title": payload.get("title"),
+            "url": payload.get("url"),
+            "merged_at": payload.get("mergedAt"),
+            "merge_commit": (
+                merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+            ),
+        }
+        record["resolved"].append(row)
+        if row["state"] == "OPEN":
+            record["open"].append(row)
+        elif row["state"] == "MERGED":
+            record["merged"].append(row)
+    decided = (record["open"] or record["merged"] or [None])[0]
+    record["decided_by"] = decided
+    record["detail"] = _cited_detail(record)
+    path = run_directory / CITED_PULL_REQUESTS_FILENAME
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n")
+    return record
+
+
+def _cited_detail(record: dict[str, Any]) -> str:
+    """One line naming the reference that decided it, in the words it was written."""
+    decided = record.get("decided_by")
+    if not decided:
+        return (
+            f"{len(record.get('references') or [])} reference(s) read from the "
+            "issue, none of them an open or merged pull request"
+        )
+    state = "is open" if decided["state"] == "OPEN" else "was merged"
+    tail = (
+        ""
+        if decided["state"] == "OPEN"
+        else (
+            ". This stage has no clone, so whether that merge is already in a "
+            "base commit is not checked here"
+        )
+    )
+    return (
+        f"the issue names {decided['reference']} — "
+        f"{decided['repository']}#{decided['number']}, which {state}: "
+        f"{decided['url']}{tail}"
+    )
 
 
 def load_prior_art_markdown(run_directory: Path) -> str | None:

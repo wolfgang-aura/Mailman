@@ -17,6 +17,7 @@ from mailman.claims import (
     CLAIMS_FILENAME,
     classify_comment,
     load_claims,
+    pull_request_references,
     read_claims,
     render_claims,
 )
@@ -47,18 +48,35 @@ def _failing(arguments, **keywords):
 
 
 class _FakeGh:
-    """Answer the two API paths `read_claims` asks for, and nothing else."""
+    """Answer the three API paths `read_claims` asks for, and nothing else."""
 
-    def __init__(self, issue: dict, comments: list[dict]) -> None:
+    def __init__(
+        self,
+        issue: dict,
+        comments: list[dict],
+        timeline: list[dict] | None = None,
+    ) -> None:
         self.issue = issue
         self.comments = comments
+        self.timeline = timeline or []
         self.asked: list[str] = []
 
     def __call__(self, arguments, **keywords):
-        path = arguments[-1]
+        # `[gh, "api", PATH, ...query fields]`: the path is the third word,
+        # never the last one.
+        path = arguments[2]
         self.asked.append(path)
-        payload = self.comments if "/comments" in path else self.issue
+        if "/comments" in path:
+            payload: object = self.comments
+        elif "/timeline" in path:
+            payload = self.timeline
+        else:
+            payload = self.issue
         return _Result(json.dumps(payload))
+
+
+def _cross_reference(url: str) -> dict:
+    return {"event": "cross-referenced", "source": {"issue": {"html_url": url}}}
 
 
 class ClassifyCommentTests(unittest.TestCase):
@@ -361,3 +379,115 @@ class TriageFieldsTests(unittest.TestCase):
             self.assertTrue(record["maintainer_replied"])
             self.assertEqual(record["issue_state"], "closed")
             self.assertEqual(record["issue_closed_at"], "2026-09-08T09:27:46Z")
+
+
+class PullRequestReferenceTests(unittest.TestCase):
+    """Every way a thread names the pull request that already fixes the issue.
+
+    https://github.com/wolfgang-aura/Mailman/issues/98
+    """
+
+    def test_reads_a_bare_number_a_slug_and_a_url(self) -> None:
+        found = pull_request_references(
+            [
+                "Draft implementation: "
+                "[#12775](https://github.com/deepset-ai/haystack/pull/12775)",
+                "See also getsentry/sentry-python#4001 and #22722.",
+            ],
+            repository="deepset-ai/haystack",
+            exclude=[("deepset-ai/haystack", 12777)],
+        )
+
+        self.assertEqual(
+            [(row["repository"], row["number"]) for row in found],
+            [
+                ("deepset-ai/haystack", 12775),
+                ("getsentry/sentry-python", 4001),
+                ("deepset-ai/haystack", 22722),
+            ],
+        )
+        self.assertIn("12775", found[0]["text"])
+
+    def test_the_issues_own_number_is_never_resolved(self) -> None:
+        found = pull_request_references(
+            ["This is a duplicate of #1497, filed as #1497 again."],
+            repository="python-jsonschema/jsonschema",
+            exclude=[("python-jsonschema/jsonschema", 1497)],
+        )
+
+        self.assertEqual(found, [])
+
+    def test_the_same_pull_request_named_twice_is_one_reference(self) -> None:
+        found = pull_request_references(
+            [
+                "Fixed by #22722.",
+                "PR #22722 was merged on 2026-08-05.",
+                "https://github.com/PrefectHQ/prefect/pull/22722",
+            ],
+            repository="PrefectHQ/prefect",
+        )
+
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["number"], 22722)
+
+    def test_the_count_is_capped_because_each_reference_is_a_gh_call(self) -> None:
+        body = " ".join(f"#{index}" for index in range(100, 130))
+        self.assertEqual(len(pull_request_references([body], repository="a/b")), 10)
+
+
+class ReferenceRecordTests(unittest.TestCase):
+    """What `read_claims` writes down for `prescreen` to resolve."""
+
+    def _run(self, root: Path) -> Path:
+        return ReadClaimsTests._run(self, root)
+
+    def test_the_body_and_the_comments_are_both_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._run(Path(temporary))
+            record = read_claims(
+                root,
+                executable="gh",
+                execute=_FakeGh(
+                    {
+                        "number": 4775,
+                        "assignees": [],
+                        "body": "Draft implementation: #4800",
+                    },
+                    [_comment("Also fixed by openai/openai-python#900.")],
+                ),
+            )
+
+        self.assertEqual(
+            [(row["repository"], row["number"]) for row in record["references"]],
+            [
+                ("openai/openai-agents-python", 4800),
+                ("openai/openai-python", 900),
+            ],
+        )
+
+    def test_a_cross_referenced_pull_request_is_read_off_the_timeline(self) -> None:
+        # python-jsonschema/jsonschema#1497: the one comment says "the
+        # issue/PR in referencing" and names no number. GitHub linked it.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._run(Path(temporary))
+            record = read_claims(
+                root,
+                executable="gh",
+                execute=_FakeGh(
+                    {"number": 4775, "assignees": [], "body": "No numbers here."},
+                    [_comment("Please look at the issue/PR in referencing.")],
+                    [
+                        _cross_reference(
+                            "https://github.com/python-jsonschema/referencing/issues/366"
+                        ),
+                        _cross_reference(
+                            "https://github.com/python-jsonschema/referencing/pull/367"
+                        ),
+                    ],
+                ),
+            )
+
+        self.assertIn(
+            ("python-jsonschema/referencing", 367),
+            [(row["repository"], row["number"]) for row in record["references"]],
+        )

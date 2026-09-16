@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -121,6 +122,90 @@ def _flat(text: str | None) -> str:
 
 def _matchable(text: str) -> str:
     return text.translate(_APOSTROPHES)
+
+
+#: The three ways a pull request is named in an issue thread. A full URL and
+#: `owner/repo#N` can point anywhere; a bare `#N` means the repository the
+#: issue lives in. deepset-ai/haystack#12777 ends with
+#: "**Draft implementation:** [#12775](https://github.com/deepset-ai/haystack/pull/12775)"
+#: and the duplicate search never found it, because #12775 does not cite the
+#: issue back. See https://github.com/wolfgang-aura/Mailman/issues/98.
+_PULL_REQUEST_URL = re.compile(
+    r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/(\d+)",
+    re.IGNORECASE,
+)
+_HASH_REFERENCE = re.compile(
+    r"(?:\b([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+))?#(\d+)\b"
+)
+
+#: How many references one thread may hand to the resolver. Each one is a `gh`
+#: call, and a long thread quoting version numbers and colours would otherwise
+#: buy a page of them. First mention first: the reference that decides a screen
+#: is normally the one the reporter wrote into the body.
+REFERENCE_LIMIT = 10
+
+
+def pull_request_references(
+    texts: Sequence[str | None],
+    *,
+    repository: str,
+    exclude: Iterable[tuple[str, int]] = (),
+    limit: int = REFERENCE_LIMIT,
+) -> list[dict[str, Any]]:
+    """Every pull-request reference written in these texts, first mention first.
+
+    Nothing here decides whether the number is a pull request at all: `#12`
+    reads the same whether it names an issue, a pull request or a heading
+    anchor, and only `gh pr view` can tell them apart. This finds candidates
+    and records how each was written, so a rejection can quote the reference
+    that caused it rather than assert one.
+    """
+    skip = {(slug.lower(), number) for slug, number in exclude}
+    found: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for text in texts:
+        flat = _flat(text)
+        if not flat:
+            continue
+        for pattern in (_PULL_REQUEST_URL, _HASH_REFERENCE):
+            for match in pattern.finditer(flat):
+                owner, name, digits = match.groups()
+                slug = f"{owner}/{name}" if owner and name else repository
+                number = int(digits)
+                key = (slug.lower(), number)
+                if key in seen or key in skip or number <= 0:
+                    continue
+                seen.add(key)
+                found.append(
+                    {
+                        "text": match.group(0),
+                        "repository": slug,
+                        "number": number,
+                    }
+                )
+    return found[:limit]
+
+
+def _cross_referenced_urls(timeline: Any) -> list[str]:
+    """The pull requests GitHub itself linked to this issue.
+
+    python-jsonschema/jsonschema#1497 is the case text alone misses: its one
+    comment says "the issue/PR in referencing" without a number, and the open
+    cross-repository pull request, `python-jsonschema/referencing#367`, is on
+    the timeline instead. One more read of a page already being paged.
+    """
+    if not isinstance(timeline, list):
+        return []
+    urls: list[str] = []
+    for entry in timeline:
+        if not isinstance(entry, dict) or entry.get("event") != "cross-referenced":
+            continue
+        source = entry.get("source")
+        issue = source.get("issue") if isinstance(source, dict) else None
+        url = issue.get("html_url") if isinstance(issue, dict) else None
+        if isinstance(url, str) and url:
+            urls.append(url)
+    return urls
 
 
 def classify_comment(comment: dict[str, Any]) -> str | None:
@@ -254,9 +339,19 @@ def read_claims(
 
     command_executable = executable or resolve_tool(run_directory, "gh")
 
-    def api(path: str) -> Any | None:
+    def api(path: str, **query: int | str) -> Any | None:
+        # Query parameters go in as fields rather than in the path. `gh` adds
+        # them to the query string of a GET either way, and the recorded
+        # command then carries no `&`, which is a command separator to every
+        # Windows shell that ever re-runs it.
+        command = [command_executable, "api", path]
+        if query:
+            command.append("-X")
+            command.append("GET")
+            for key, value in query.items():
+                command += ["-f", f"{key}={value}"]
         result = execute(
-            [command_executable, "api", path],
+            command,
             working_directory=run_directory,
             timeout_seconds=timeout_seconds,
         )
@@ -291,7 +386,7 @@ def read_claims(
     comments: list[dict[str, Any]] = []
     for page in range(1, pages + 1):
         got = api(
-            f"repos/{slug}/issues/{number}/comments?per_page=100&page={page}"
+            f"repos/{slug}/issues/{number}/comments", per_page=100, page=page
         )
         if not isinstance(got, list):
             if page == 1:
@@ -323,6 +418,24 @@ def read_claims(
         elif kind == "assignment":
             record["assignments"].append(_row(comment))
     record["comments_read"] = len(comments)
+    # Every pull request the thread names, unresolved. Deciding what each one
+    # is costs a `gh pr view` per reference, so the read stops at collecting
+    # them and `prescreen` pays for the ones it wants.
+    # https://github.com/wolfgang-aura/Mailman/issues/98
+    timeline = api(f"repos/{slug}/issues/{number}/timeline", per_page=100)
+    record["references"] = pull_request_references(
+        [
+            payload.get("body"),
+            *(
+                comment.get("body")
+                for comment in comments
+                if isinstance(comment, dict)
+            ),
+            *_cross_referenced_urls(timeline),
+        ],
+        repository=slug,
+        exclude=[(slug, int(number))],
+    )
     record["maintainer_replied"] = any(
         comment.get("author_association") in MAINTAINER_ASSOCIATIONS
         for comment in comments

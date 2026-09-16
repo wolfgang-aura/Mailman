@@ -34,6 +34,7 @@ from mailman.prescreen import (
 )
 from mailman.screen import screen_path
 from mailman.targeting import (
+    ALREADY_FIXED_UPSTREAM,
     NO_REPRODUCTION,
     NO_TARGET_INTEL,
     OPEN_PULL_REQUEST,
@@ -130,6 +131,41 @@ class IssueSymbolTests(unittest.TestCase):
         self.assertEqual(issue_symbols("`x` and `y` then `real_one`"), ["real_one"])
 
 
+#: The stub `gh`, as a Python program rather than a shell script: it has to
+#: route by sub-command and by API path, and one of those paths carries an `&`.
+_GH_FIXTURE_SERVER = '''\
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ARGUMENTS = sys.argv[1:]
+
+
+def emit(name):
+    path = HERE / name
+    if not path.is_file():
+        sys.stderr.write("no fixture: " + name + "\\n")
+        raise SystemExit(1)
+    sys.stdout.write(path.read_text(encoding="utf-8"))
+    raise SystemExit(0)
+
+
+if ARGUMENTS[:2] == ["issue", "view"]:
+    emit("issue-payload.json")
+if ARGUMENTS[:2] == ["pr", "view"]:
+    slug = ARGUMENTS[ARGUMENTS.index("--repo") + 1] if "--repo" in ARGUMENTS else ""
+    emit("pr-" + slug.replace("/", "__") + "-" + ARGUMENTS[2] + ".json")
+if ARGUMENTS[:1] == ["api"]:
+    path = ARGUMENTS[1]
+    if "/comments" in path:
+        emit("comments.json")
+    if "/timeline" in path:
+        emit("timeline.json")
+    emit("issue-api.json")
+emit("payload.json")
+'''
+
+
 class PrescreenTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -137,10 +173,23 @@ class PrescreenTests(unittest.TestCase):
         self.root = Path(self.temporary.name) / "runs"
         self.root.mkdir(parents=True)
 
-    def stub(self, payload: str, issue_payload: dict | None = None) -> str:
+    def stub(
+        self,
+        payload: str,
+        issue_payload: dict | None = None,
+        *,
+        comments: list[dict] | None = None,
+        timeline: list[dict] | None = None,
+        pull_requests: dict[str, dict] | None = None,
+    ) -> str:
+        """A `gh` that answers from fixture files, one per question asked.
+
+        `pull_requests` is keyed `OWNER/REPO#N`. A number with no fixture is a
+        pull request `gh` cannot find, which is how an issue number and a
+        heading anchor arrive here.
+        """
         directory = Path(self.temporary.name) / "bin"
         directory.mkdir(exist_ok=True)
-        (directory / "payload.json").write_text(payload, encoding="utf-8")
         issue = issue_payload or {
             "number": 7,
             "title": "Crash on empty input",
@@ -152,23 +201,41 @@ class PrescreenTests(unittest.TestCase):
             "createdAt": "2026-09-01T00:00:00Z",
             "updatedAt": "2026-09-01T00:00:00Z",
         }
-        (directory / "issue-payload.json").write_text(
-            json.dumps(issue), encoding="utf-8"
-        )
+        fixtures = {
+            "payload.json": payload,
+            "issue-payload.json": json.dumps(issue),
+            "comments.json": json.dumps(comments or []),
+            "timeline.json": json.dumps(timeline or []),
+            "issue-api.json": json.dumps(
+                {
+                    "number": issue["number"],
+                    "assignees": [],
+                    "user": {"login": "reporter", "type": "User"},
+                    "author_association": "NONE",
+                    "body": issue.get("body", ""),
+                    "created_at": "2026-09-01T00:00:00Z",
+                    "html_url": issue.get("url"),
+                    "state": "open",
+                    "closed_at": None,
+                }
+            ),
+        }
+        for reference, pull in (pull_requests or {}).items():
+            slug, _, number = reference.rpartition("#")
+            fixtures[f"pr-{slug.replace('/', '__')}-{number}.json"] = json.dumps(pull)
+        for name, text in fixtures.items():
+            (directory / name).write_text(text, encoding="utf-8")
+        (directory / "gh.py").write_text(_GH_FIXTURE_SERVER, encoding="utf-8")
         if sys.platform == "win32":
             stub = directory / "gh.cmd"
             stub.write_text(
-                '@echo off\r\nif "%1"=="issue" if "%2"=="view" ('
-                'type "%~dp0issue-payload.json" & exit /b 0)\r\n'
-                'type "%~dp0payload.json"\r\n',
+                f'@echo off\r\n"{sys.executable}" "%~dp0gh.py" %*\r\n',
                 encoding="utf-8",
             )
             return str(stub)
         stub = directory / "gh.sh"
         stub.write_text(
-            '#!/bin/sh\nif [ "$1" = issue ] && [ "$2" = view ]; then '
-            'cat "$(dirname "$0")/issue-payload.json"; else '
-            'cat "$(dirname "$0")/payload.json"; fi\n',
+            f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/gh.py" "$@"\n',
             encoding="utf-8",
         )
         stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -508,6 +575,250 @@ class PrescreenTests(unittest.TestCase):
         record, refusal = check(self.root, "example/project#7")
         self.assertIsNone(refusal)
         self.assertEqual(record["verdict"], "pass")
+
+
+class CitedPullRequestTests(PrescreenTests):
+    """The fix is named in the issue's own thread, and the search never saw it.
+
+    Three real screens from hunt 20260916T165859Z-0d3481, one per way a thread
+    names a pull request. All three passed the pre-screen and all three died
+    when a person read the thread.
+    https://github.com/wolfgang-aura/Mailman/issues/98
+    """
+
+    def issue(self, number: int, slug: str, body: str, title: str) -> dict:
+        return {
+            "number": number,
+            "title": title,
+            "body": body,
+            "state": "OPEN",
+            "url": f"https://github.com/{slug}/issues/{number}",
+            "author": {"login": "reporter"},
+            "labels": [],
+            "createdAt": "2026-09-01T00:00:00Z",
+            "updatedAt": "2026-09-01T00:00:00Z",
+        }
+
+    def test_a_draft_implementation_linked_in_the_body_rejects_the_issue(self) -> None:
+        # deepset-ai/haystack#12777 ends with "**Draft implementation:**
+        # [#12775](https://github.com/deepset-ai/haystack/pull/12775)". The
+        # broad search ranked #12775 among 88 matches and the narrow one never
+        # found it, because #12775 does not cite the issue back.
+        issue = self.issue(
+            12777,
+            "deepset-ai/haystack",
+            "Run-time `generation_kwargs['tools']` overwrites the Agent's own "
+            "tools.\n\n**Draft implementation:** "
+            "[#12775](https://github.com/deepset-ai/haystack/pull/12775)",
+            "Agent drops its own tools when generation_kwargs carries tools",
+        )
+        record = prescreen_issue(
+            self.root,
+            "deepset-ai/haystack#12777",
+            executable=self.stub(
+                "[]",
+                issue,
+                pull_requests={
+                    "deepset-ai/haystack#12775": {
+                        "number": 12775,
+                        "state": "OPEN",
+                        "title": "fix: merge run-time tools with the agent's own",
+                        "url": "https://github.com/deepset-ai/haystack/pull/12775",
+                        "mergedAt": None,
+                        "mergeCommit": None,
+                    }
+                },
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [OPEN_PULL_REQUEST])
+        decided = record["cited_pull_requests"]["decided_by"]
+        self.assertEqual(decided["number"], 12775)
+        self.assertEqual(decided["repository"], "deepset-ai/haystack")
+        self.assertEqual(decided["state"], "OPEN")
+        self.assertIn("12775", decided["reference"])
+        # Nothing was searched. The thread had already answered the question.
+        self.assertNotIn("duplicate_search", record)
+        self.assertEqual(record["stages_skipped"], ["duplicate-search", "prior-art"])
+        self.assertIn("12775", record["next"])
+
+    def test_a_merged_pull_request_named_in_a_comment_rejects_the_issue(self) -> None:
+        # PrefectHQ/prefect#22956: both comments say the fix is on main as
+        # #22722, which closed #22721 and so never linked to this issue.
+        comment = {
+            "body": (
+                "This is already fixed on `main` - the fix just hasn't been "
+                "released yet. PR #22722 (closing #22721) was merged on "
+                "2026-08-05 in `fe0aa235f2c5a2fe6387e412aea67e57738f0ae3`."
+            ),
+            "author_association": "NONE",
+            "created_at": "2026-09-10T00:00:00Z",
+            "user": {"login": "someone", "type": "User"},
+        }
+        record = prescreen_issue(
+            self.root,
+            "PrefectHQ/prefect#22956",
+            executable=self.stub(
+                "[]",
+                self.issue(
+                    22956,
+                    "PrefectHQ/prefect",
+                    "`prefect-redis` reconnects forever with `no such key`.",
+                    "Redis consumer retries a missing stream forever",
+                ),
+                comments=[comment],
+                pull_requests={
+                    "PrefectHQ/prefect#22722": {
+                        "number": 22722,
+                        "state": "MERGED",
+                        "title": (
+                            "Don't treat a missing Redis stream as a connection "
+                            "error when trimming"
+                        ),
+                        "url": "https://github.com/PrefectHQ/prefect/pull/22722",
+                        "mergedAt": "2026-08-05T00:00:00Z",
+                        "mergeCommit": {
+                            "oid": "fe0aa235f2c5a2fe6387e412aea67e57738f0ae3"
+                        },
+                    }
+                },
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [ALREADY_FIXED_UPSTREAM])
+        decided = record["cited_pull_requests"]["decided_by"]
+        self.assertEqual(decided["number"], 22722)
+        self.assertEqual(decided["state"], "MERGED")
+        self.assertEqual(
+            decided["merge_commit"], "fe0aa235f2c5a2fe6387e412aea67e57738f0ae3"
+        )
+        # #22721 is an issue. `gh` says so by failing, and that is the whole
+        # answer: it is recorded as skipped and decides nothing.
+        self.assertEqual(
+            [row["number"] for row in record["cited_pull_requests"]["skipped"]],
+            [22721],
+        )
+        self.assertIn("no clone", record["cited_pull_requests"]["detail"])
+
+    def test_a_cross_repository_pull_request_rejects_the_issue(self) -> None:
+        # python-jsonschema/jsonschema#1497: the fix is open in the sibling
+        # repository, `python-jsonschema/referencing#367`, and nothing in the
+        # thread's text names a number.
+        record = prescreen_issue(
+            self.root,
+            "python-jsonschema/jsonschema#1497",
+            executable=self.stub(
+                "[]",
+                self.issue(
+                    1497,
+                    "python-jsonschema/jsonschema",
+                    "`$dynamicRef` ignores `$dynamicAnchor` overrides in a root "
+                    "schema with no `$id`.",
+                    "$dynamicRef doesn't find $dynamicAnchor overrides",
+                ),
+                comments=[
+                    {
+                        "body": (
+                            "Hi @Julian, can you please take a look at this issue "
+                            "and the issue/PR in referencing that address it."
+                        ),
+                        "author_association": "NONE",
+                        "created_at": "2026-09-10T00:00:00Z",
+                        "user": {"login": "someone", "type": "User"},
+                    }
+                ],
+                timeline=[
+                    {
+                        "event": "cross-referenced",
+                        "source": {
+                            "issue": {
+                                "html_url": (
+                                    "https://github.com/python-jsonschema/"
+                                    "referencing/issues/366"
+                                )
+                            }
+                        },
+                    },
+                    {
+                        "event": "cross-referenced",
+                        "source": {
+                            "issue": {
+                                "html_url": (
+                                    "https://github.com/python-jsonschema/"
+                                    "referencing/pull/367"
+                                )
+                            }
+                        },
+                    },
+                ],
+                pull_requests={
+                    "python-jsonschema/referencing#367": {
+                        "number": 367,
+                        "state": "OPEN",
+                        "title": "fix: resolve $dynamicRef for anonymous root schemas",
+                        "url": (
+                            "https://github.com/python-jsonschema/referencing/pull/367"
+                        ),
+                        "mergedAt": None,
+                        "mergeCommit": None,
+                    }
+                },
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [OPEN_PULL_REQUEST])
+        decided = record["cited_pull_requests"]["decided_by"]
+        self.assertEqual(decided["repository"], "python-jsonschema/referencing")
+        self.assertEqual(decided["number"], 367)
+
+    def test_the_pull_request_this_run_filed_is_not_a_rival(self) -> None:
+        # 495b9e8 taught the duplicate search that a filed run's own pull
+        # request answers its own search. The same exclusion, one stage up.
+        directory = prescreen_directory(self.root, "example/project", 7)
+        (directory / "submission").mkdir(parents=True)
+        (directory / "submission" / "provenance.json").write_text(
+            json.dumps({"pull_request": 4242}), encoding="utf-8"
+        )
+        issue = self.issue(
+            7,
+            "example/project",
+            "The command crashes on empty input. Filed as #4242.",
+            "Crash on empty input",
+        )
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                issue,
+                pull_requests={
+                    "example/project#4242": {
+                        "number": 4242,
+                        "state": "OPEN",
+                        "title": "fix: handle empty input",
+                        "url": "https://github.com/example/project/pull/4242",
+                        "mergedAt": None,
+                        "mergeCommit": None,
+                    }
+                },
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(record["cited_pull_requests"]["references"], [])
+
+    def test_a_thread_naming_nothing_leaves_the_search_to_decide(self) -> None:
+        record = prescreen_issue(
+            self.root, "example/project#7", executable=self.stub("[]")
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(record["cited_pull_requests"]["references"], [])
+        self.assertIn("none of them", record["cited_pull_requests"]["detail"])
+        self.assertTrue(record["duplicate_search"]["success"])
 
 
 class InitRunGateTests(PrescreenTests):
