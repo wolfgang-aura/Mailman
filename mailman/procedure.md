@@ -52,6 +52,12 @@ status check you did not act on is pure cost.
 
 ## Find and screen
 
+A hunt is a general Python hunt. Any recognizable, maintained Python project is
+a candidate, whatever field it serves. Finance is a preference, not a filter:
+order the shortlist so finance targets are screened and worked first, and drop
+no repository for sitting outside that field. The gates reject enough on their
+own without a domain narrowing the pool before they see it.
+
 1. Read the target's contributor instructions and AI policy. Run
    `mailman screen-target OWNER/REPO --refresh --hunt HUNT_ID --owner TOKEN`.
    Reject a failed screen.

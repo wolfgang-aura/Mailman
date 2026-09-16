@@ -368,6 +368,13 @@ change before a run starts. On 2026-09-02, three runs were spent on
 four pull requests against it, three closed unmerged and one open. An open issue
 is not an unclaimed issue. See `docs/runs/0006-pytest-14324-three-blocked-runs.md`.
 
+Scope, set by the repository owner on 2026-09-16: a hunt is a general Python
+hunt. Finance is a preference the coordinator orders candidates by, not a hard
+filter. Any recognizable, maintained Python project that passes `screen-target`
+is a valid target whatever field it serves; finance targets go first when the
+shortlist offers a choice. The recognizability rule set on 2026-09-02 is
+unchanged — obscure repositories are still out, in finance as anywhere else.
+
 Projects whose policies permit AI-assisted contributions, read on 2026-09-02:
 `pytest-dev/pytest` welcomes them with human accountability and appreciates a
 `Co-authored-by` trailer; `encode/starlette` permits them and makes a duplicate
