@@ -15,6 +15,7 @@ from typing import Any
 
 from mailman.claims import CLAIMS_FILENAME
 from mailman.issue import load_issue_record
+from mailman.provenance import load_provenance
 from mailman.reproduction import REPRODUCTION_FILENAME, merge_is_in_base
 from mailman.submission import (
     DUPLICATE_SEARCH_FILENAME,
@@ -288,6 +289,30 @@ def _read(path: Path) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def own_pull_request(run_directory: Path) -> int | None:
+    """The pull request this run became, once one has been filed.
+
+    A filed run answers its own duplicate search. The search asks who else is
+    working on the issue; the run's own pull request is open, it names the
+    issue, and it is a rival to nothing. Hunt 20260916T132927Z-c05183 refreshed
+    a run it had just filed, read edgartools#1329 as an open attempt against
+    the issue that #1329 fixes, and reported the candidate as replaceable.
+    https://github.com/wolfgang-aura/Mailman/issues/97
+    """
+    number = (load_provenance(run_directory) or {}).get("pull_request")
+    return number if isinstance(number, int) else None
+
+
+def _without_own_attempts(
+    rows: list[Any] | None, *, own: int | None
+) -> list[dict[str, Any]]:
+    """Drop the rows that are this run's own filed pull request."""
+    kept = [row for row in rows or [] if isinstance(row, dict)]
+    if own is None:
+        return kept
+    return [row for row in kept if row.get("number") != own]
+
+
 def assess_target(
     run_directory: Path,
     *,
@@ -303,8 +328,8 @@ def assess_target(
     searched = duplicate_search.get("success") is True
     target_read = intel.get("success") is True
 
-    attempts = prior_art.get("attempts")
-    attempts = attempts if isinstance(attempts, list) else []
+    own = own_pull_request(run_directory)
+    attempts = _without_own_attempts(prior_art.get("attempts"), own=own)
     # `prior-art` is deliberately a separate command because it reads the
     # bodies and maintainer responses of matched pull requests. It is not,
     # however, a prerequisite for refusing an already-claimed target. A run
@@ -321,7 +346,8 @@ def assess_target(
             else None
         )
     related_search = related_duplicates(
-        duplicate_search.get("matches"), issue_number=issue_number
+        _without_own_attempts(duplicate_search.get("matches"), own=own),
+        issue_number=issue_number,
     )
     strong_search, _ = partition_duplicates(
         related_search, issue_number=issue_number

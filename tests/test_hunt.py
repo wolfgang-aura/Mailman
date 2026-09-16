@@ -2,6 +2,7 @@ import copy
 import json
 import sys
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
@@ -36,6 +37,7 @@ from mailman.models import AgentConfig
 from mailman.provenance import ProvenanceError, unrecorded_submissions
 from mailman.screen import screen_path
 from mailman.submission import prepare_submission
+from mailman.targeting import OPEN_PULL_REQUEST, assess_target
 from tests.test_orchestrator import APPROVED, OrchestratorHarness, git
 from tests.test_review_decision import VALID
 from tests.test_submission import _policy
@@ -445,6 +447,83 @@ class FilingRecordTests(HuntTests):
         with self.assertRaises(ValueError) as caught:
             finish(self.data_root, record)
         self.assertIn("already open", str(caught.exception))
+
+    def partly_filed(self):
+        """A hunt of two: one candidate filed, one live and ready.
+
+        The filed candidate is a bare run on a second target. What matters is
+        that `status` never asks it what to do next, and nothing about it is
+        ready enough to answer.
+        """
+        record = self.new_hunt(2)
+        live = self.ready_run()
+        add_run(self.data_root, record, live.name)
+        run, filed_directory = self.make_run()
+        run.primary = AgentConfig("codex", "fixture-primary")
+        run.reviewer = AgentConfig("claude", "fixture-reviewer")
+        run.issue = "https://github.com/example/project/issues/2"
+        write_run(run, filed_directory)
+        add_run(self.data_root, record, run.run_id)
+        record_filing(self.data_root, record, run.run_id,
+                      pr_url="https://github.com/example/project/pull/42",
+                      provenance_recorder=lambda **_: None)
+        return record, filed_directory, live
+
+    def test_a_filed_candidate_counts_and_is_never_rechecked(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/97
+
+        Rechecking a filed run finds its own pull request and reports the
+        candidate as replaceable, so a two-PR hunt with one filed read
+        `ready 0, remaining 2`.
+        """
+        record, filed_directory, live = self.partly_filed()
+        import mailman.hunt as hunt_module
+        asked = []
+        original = hunt_module.next_action
+
+        def spy(directory):
+            asked.append(directory.name)
+            return original(directory)
+
+        with mock.patch.object(hunt_module, "next_action", spy):
+            result = status(self.data_root, record)
+
+        self.assertEqual(asked, [live.name])
+        self.assertEqual(result["ready"], 2)
+        self.assertEqual(result["remaining"], 0)
+        row = next(row for row in result["runs"]
+                   if row["run_id"] == filed_directory.name)
+        self.assertTrue(row["ready"])
+        self.assertEqual(row["disposition"], "FILED")
+        self.assertEqual(row["stage"], "filed")
+        self.assertEqual(row["filed"], "https://github.com/example/project/pull/42")
+
+    def test_the_packet_holds_only_the_candidate_still_to_be_filed(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/97"""
+        record, filed_directory, live = self.partly_filed()
+
+        result = finish(self.data_root, record)
+
+        self.assertTrue(result["complete"], result)
+        page = Path(result["packet"]).read_text(encoding="utf-8")
+        self.assertIn(live.name, page)
+        self.assertNotIn(filed_directory.name, page)
+
+    def test_a_run_does_not_match_its_own_filed_pull_request(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/97"""
+        _, directory, filed = self.file_one()
+        path = directory / "duplicate-search.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["matches"] = [{"number": filed["pr_number"], "state": "open",
+                               "pull_request": True, "title": "Fix synthetic fixture",
+                               "references_issue": True}]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        assessment = assess_target(directory)
+
+        self.assertEqual(assessment.open_attempts, [])
+        self.assertNotIn(OPEN_PULL_REQUEST, assessment.blocking)
+        self.assertTrue(next_action(directory)["ready"])
 
     def test_readiness_checks_accumulate_instead_of_replacing_each_other(self):
         record = self.new_hunt()

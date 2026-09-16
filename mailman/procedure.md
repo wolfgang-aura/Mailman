@@ -218,9 +218,11 @@ own without a domain narrowing the pool before they see it.
     Duplicate searches and claim reads expire in an hour, and refreshing them
     one at a time is how a hunt with two ready candidates reported zero.
 17. `mailman hunt finish HUNT_ID --owner TOKEN` must exit 0. It re-reads the
-    target for every candidate that is ready, because those are the ones about
-    to be pushed and a rival pull request has appeared 94 minutes after a run
-    finished. Pass `--no-refresh` only when you are offline. It counts only SEND decisions
+    target for every candidate still to be filed, because those are the ones
+    about to be pushed and a rival pull request has appeared 94 minutes after a
+    run finished. A candidate already filed counts toward the quota and is not
+    re-read: its pull request is open, and rechecking it finds that pull
+    request and calls the candidate replaceable. Pass `--no-refresh` only when you are offline. It counts only SEND decisions
     with passing filing checks and generates the existing packet format.
     Inspect that generated packet visually. Never hand-write review HTML.
     Present the packet and ask for approval of the exact filings once.

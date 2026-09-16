@@ -638,12 +638,26 @@ def status(root: Path, record: dict) -> dict:
             rows.append({**row, "ready": False, "disposition": "REPLACED", "human_required": False})
             continue
         run, directory = load_run(row["run_id"], root)
+        key = (repository_slug(run.repository), run.issue or run.defect_report)
+        if row.get("filed"):
+            # A filed candidate is finished, and rechecking it asks the
+            # readiness gate a question it cannot answer: the duplicate search
+            # now finds this run's own pull request, reads it as a rival, and
+            # tells the coordinator to replace the candidate it just filed.
+            # Hunt 20260916T132927Z-c05183 read `ready 0, remaining 2` with one
+            # of its two pull requests already open upstream.
+            # https://github.com/wolfgang-aura/Mailman/issues/97
+            rows.append({**row, "ready": True, "stage": "filed",
+                         "disposition": "FILED", "action": "",
+                         "detail": row["filed"]["pr_url"],
+                         "filed": row["filed"]["pr_url"], "human_required": False})
+            targets.add(key)
+            continue
         try:
             checked = next_action(directory)
         except (OSError, ValueError) as error:
             checked = {"run_id": run.run_id, "ready": False, "disposition": "REPAIR",
                        "human_required": False, "detail": str(error), "action": "Repair the named evidence record."}
-        key = (repository_slug(run.repository), run.issue or run.defect_report)
         if checked["ready"] and key in targets:
             checked.update(ready=False, disposition="REPLACE", detail="same target already counted")
         if checked["ready"]:
@@ -708,7 +722,12 @@ def write_checkpoint(root: Path, record: dict, result: dict) -> Path | None:
     from mailman.review_packet import write_packet_page
     from mailman.review_page import write_run_page
 
-    ready = [row["run_id"] for row in result["runs"] if row["ready"]]
+    # A filed candidate is ready and stays out of every packet: its pull
+    # request is already open upstream, so publishing it again asks the
+    # operator to approve something that has happened.
+    # https://github.com/wolfgang-aura/Mailman/issues/97
+    ready = [row["run_id"] for row in result["runs"]
+             if row["ready"] and not row.get("filed")]
     if not ready:
         return None
     if record.get("checkpoint_runs") == ready:
@@ -803,7 +822,22 @@ def finish(root: Path, record: dict) -> dict:
     result = status(root, record)
     if result["remaining"]:
         return {**result, "complete": False}
-    directories = [root / row["run_id"] for row in result["runs"] if row["ready"]][:record["requested"]]
+    # A filed row satisfies its slot without joining the packet. The packet is
+    # what the operator approves for filing, and its pull request is already
+    # open. https://github.com/wolfgang-aura/Mailman/issues/97
+    directories = [root / row["run_id"] for row in result["runs"]
+                   if row["ready"] and not row.get("filed")][:record["requested"]]
+    if not directories:
+        # Every requested slot is filled by a pull request that is already
+        # open. `hunt file` moves a hunt to FILED once the last requested
+        # filing is recorded, and `finish` refuses a terminal hunt above, so
+        # reaching here means the record was left behind. Say that rather than
+        # write a packet with nothing in it.
+        raise ValueError(
+            f"hunt {record['hunt_id']} has {result['filed']} filed pull "
+            f"request(s) and no unfiled candidate to package; record the "
+            "remaining filings with `hunt file` or add a candidate"
+        )
     for directory in directories:
         write_run_page(directory)
     packet = hunt_path(root, record["hunt_id"]).parent / "index.html"
