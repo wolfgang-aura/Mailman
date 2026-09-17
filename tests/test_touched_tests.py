@@ -70,6 +70,16 @@ class ModuleNameTests(unittest.TestCase):
             module_names("edgar/xbrl/xbrl.py"), ["edgar.xbrl.xbrl", "edgar.xbrl", "xbrl"]
         )
 
+    def test_a_deep_module_names_its_own_package_and_not_its_grandparents(
+        self,
+    ) -> None:
+        # zauberzeug/nicegui: `nicegui.elements` is imported by most of the
+        # suite, so naming it selected eight unrelated files.
+        self.assertEqual(
+            module_names("nicegui/elements/leaflet/leaflet.py"),
+            ["nicegui.elements.leaflet.leaflet", "nicegui.elements.leaflet", "leaflet"],
+        )
+
     def test_a_src_layout_prefix_is_not_part_of_the_import_path(self) -> None:
         self.assertEqual(module_names("src/thing.py"), ["thing"])
 
@@ -128,6 +138,22 @@ class SelectionTests(unittest.TestCase):
         selection = select_test_files(self.workspace, ["edgar/xbrl/xbrl.py"])
         self.assertEqual(selection["selected"][0]["path"], "tests/test_stem.py")
         self.assertIn("xbrl", selection["selected"][0]["matched"])
+
+    def test_a_testing_directory_inside_a_package_is_library_code(self) -> None:
+        # zauberzeug/nicegui: nicegui/testing/user_interaction.py is the User
+        # fixture; collecting it as a test file made the stage exit 2.
+        (self.workspace / "edgar" / "__init__.py").write_text("", encoding="utf-8")
+        self._test_file(
+            "edgar/testing/helpers.py", "from edgar.xbrl.xbrl import get_all_statements\n"
+        )
+        self._test_file(
+            "testing/test_top_level.py", "from edgar.xbrl.xbrl import get_all_statements\n"
+        )
+        selection = select_test_files(self.workspace, ["edgar/xbrl/xbrl.py"])
+        self.assertEqual(
+            [entry["path"] for entry in selection["selected"]],
+            ["testing/test_top_level.py"],
+        )
 
     def test_a_changed_test_file_is_not_a_touched_module(self) -> None:
         self._test_file("tests/test_other.py", "import os\n")

@@ -89,9 +89,12 @@ def module_names(path: str) -> list[str]:
     names: list[str] = []
     dotted = ".".join(segments)
     names.append(dotted)
-    # Parent packages down to, but not including, the top-level package.
-    for depth in range(len(segments) - 1, 1, -1):
-        names.append(".".join(segments[:depth]))
+    # The module's own package, never its grandparents: for
+    # `nicegui/elements/leaflet/leaflet.py`, `nicegui.elements` is imported by
+    # most of the test suite, and matching it ran eight unrelated files and
+    # not the one named after the module.
+    if len(segments) > 2:
+        names.append(".".join(segments[:-1]))
     stem = segments[-1]
     if stem not in names:
         names.append(stem)
@@ -119,8 +122,14 @@ def _test_files(workspace: Path) -> list[str]:
     """Every test file in the workspace, as a `/`-separated relative path."""
     found: list[str] = []
     for root, directories, files in os.walk(workspace):
+        # A `testing` directory inside a package is library code, not a test
+        # tree: `nicegui/testing/user_interaction.py` is the User fixture,
+        # and collecting it as a test file made the stage exit 2.
         directories[:] = sorted(
-            name for name in directories if name not in _SKIPPED_DIRECTORIES
+            name
+            for name in directories
+            if name not in _SKIPPED_DIRECTORIES
+            and not (name == "testing" and (Path(root) / "__init__.py").is_file())
         )
         relative_root = Path(root).relative_to(workspace)
         for name in sorted(files):
