@@ -68,6 +68,13 @@ STALE_PRIOR_ATTEMPT = "stale-prior-attempt"
 #: attempt there is the contribution they close without reading. A closed
 #: unmerged attempt is not a duplicate of anything and is unaffected.
 DUPLICATE_FORBIDDEN_OPEN_ATTEMPT = "duplicate-forbidden-open-attempt"
+#: An earlier attempt a maintainer closed. Not a stale attempt: somebody who
+#: speaks for the project read the change and said no, so there is nothing
+#: dormant to supersede. `prescreen` passed skfolio#307 and wagtail#14384 with
+#: a `stale-prior-attempt` warning, and both pull requests had been closed by
+#: maintainers rejecting the change. tqdm#1816 and #1818 were closed by their
+#: own authors, which is the shape the stale rule is for.
+MAINTAINER_CLOSED_ATTEMPT = "maintainer-closed-attempt"
 
 #: How long an open pull request may sit untouched before it stops claiming the
 #: issue. Decided by the operator on 2026-09-17: the last hunt lost 40 of 66
@@ -170,14 +177,35 @@ def attempt_is_dormant(
     return age is not None and age >= STALE_ATTEMPT_DAYS
 
 
+def attempt_is_maintainer_closed(row: dict[str, Any]) -> bool:
+    """Whether somebody who speaks for the project closed this attempt.
+
+    Written by whichever stage fetched the attempt, because the closing actor
+    is an extra API read and this module has no API budget. A record with no
+    answer reads as `False`: unknown, and the caller notes that it is unknown
+    rather than claiming the author withdrew it.
+    """
+    if not isinstance(row, dict):
+        return False
+    closed_by = row.get("closed_by")
+    if isinstance(closed_by, dict) and closed_by.get("maintainer"):
+        return True
+    return bool(row.get("maintainer_closed"))
+
+
 def is_stale_attempt(row: dict[str, Any], *, now: datetime | None = None) -> bool:
     """Whether this pull request is a dormant prior attempt, not a claim.
 
     A merged pull request is never stale: it is what the repository ships, and
     `already-fixed-upstream` answers it. A maintainer's own attempt is never
-    stale either, however long it has sat there.
+    stale either, however long it has sat there, and neither is one a
+    maintainer closed: that is a decision about the change.
     """
-    return attempt_is_dormant(row, now=now) and not attempt_is_maintainers(row)
+    return (
+        attempt_is_dormant(row, now=now)
+        and not attempt_is_maintainers(row)
+        and not attempt_is_maintainer_closed(row)
+    )
 
 
 def stale_attempt_row(
@@ -196,6 +224,10 @@ def stale_attempt_row(
         "days_stale": round(age, 1) if age is not None else None,
         "is_draft": _first(row, "is_draft", "isDraft"),
         "author_association": _first(row, "author_association", "authorAssociation"),
+        # Who closed it, when the stage that fetched the row found out. `None`
+        # means nobody asked or GitHub did not say, which the reader has to be
+        # able to tell from "the author withdrew it".
+        "closed_by": row.get("closed_by"),
     }
 
 
@@ -232,6 +264,7 @@ class TargetAssessment:
     closed_attempts: list[dict[str, Any]] = field(default_factory=list)
     stale_attempts: list[dict[str, Any]] = field(default_factory=list)
     duplicate_blocked_attempts: list[dict[str, Any]] = field(default_factory=list)
+    maintainer_closed_attempts: list[dict[str, Any]] = field(default_factory=list)
     blocking: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -253,6 +286,7 @@ class TargetAssessment:
             "closed_attempts": self.closed_attempts,
             "stale_attempts": self.stale_attempts,
             "duplicate_blocked_attempts": self.duplicate_blocked_attempts,
+            "maintainer_closed_attempts": self.maintainer_closed_attempts,
             "blocking": self.blocking,
             "warnings": self.warnings,
             "may_start": self.may_start,
@@ -409,6 +443,20 @@ class TargetAssessment:
                 f"stale     #{attempt.get('number')} {attempt.get('title', '')} "
                 f"({attempt.get('state')}{age}) {attempt.get('url', '')}"
             )
+        for attempt in self.maintainer_closed_attempts:
+            closer = attempt.get("closed_by") or {}
+            lines.append(
+                f"rejected  #{attempt.get('number')} {attempt.get('title', '')} "
+                f"({closer.get('detail', 'closed by the project')}) "
+                f"{attempt.get('url', '')}"
+            )
+        if self.maintainer_closed_attempts:
+            lines.append(
+                "A maintainer closed that attempt. Somebody who speaks for the "
+                "project read the change and said no, so there is no dormant "
+                "branch here to supersede. Read the closure, then pick another "
+                "issue."
+            )
         for attempt in self.duplicate_blocked_attempts:
             days = attempt.get("days_stale")
             age = f", {days} days since its last activity" if days is not None else ""
@@ -480,6 +528,7 @@ class TargetAssessment:
             and not self.closed_attempts
             and not self.stale_attempts
             and not self.duplicate_blocked_attempts
+            and not self.maintainer_closed_attempts
             and not (self.claims.get("claims") or self.claims.get("assignments"))
             and not self.claims.get("assignees")
         ):
@@ -607,6 +656,18 @@ def assess_target(
     attempts = list(attempts_by_number.values())
     # A dormant attempt is sorted out before anything else reads these lists,
     # so every stage that asks whether the issue is claimed gets one answer.
+    # A closure by somebody who speaks for the project is read first, because
+    # it changes what every later bucket means: this is a rejection, not an
+    # abandoned branch, and neither the stale rule nor the closed-attempt flag
+    # answers it.
+    maintainer_closed = [
+        stale_attempt_row(attempt, now=now)
+        for attempt in attempts
+        if isinstance(attempt, dict)
+        and attempt_is_maintainer_closed(attempt)
+        and not attempt_is_merged(attempt)
+    ]
+    rejected_numbers = {row["number"] for row in maintainer_closed}
     dormant = [
         stale_attempt_row(attempt, now=now)
         for attempt in attempts
@@ -618,7 +679,7 @@ def assess_target(
     stale_attempts, duplicate_blocked = partition_duplicate_blocked(
         dormant, forbids_duplicates=forbids_duplicates
     )
-    stale_numbers = {row["number"] for row in dormant}
+    stale_numbers = {row["number"] for row in dormant} | rejected_numbers
     open_attempts = [
         attempt
         for attempt in attempts
@@ -703,6 +764,11 @@ def assess_target(
         # merging, has stopped claiming the issue. It is still prior art, so
         # it travels into both prompts and into the pull request body.
         warnings.append(STALE_PRIOR_ATTEMPT)
+    if maintainer_closed:
+        # Deliberately not overridable, and not the same question as
+        # `--acknowledge-prior-attempts`: that flag answers "an attempt was
+        # closed", and this is "the project read it and said no".
+        blocking.append(MAINTAINER_CLOSED_ATTEMPT)
     if duplicate_blocked:
         # Not overridable and not a warning. Superseding a dormant attempt is
         # exactly the contribution this repository's guide says it rejects
@@ -749,6 +815,7 @@ def assess_target(
         closed_attempts=closed_attempts,
         stale_attempts=stale_attempts,
         duplicate_blocked_attempts=duplicate_blocked,
+        maintainer_closed_attempts=maintainer_closed,
         blocking=blocking,
         warnings=warnings,
     )

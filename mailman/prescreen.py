@@ -39,6 +39,7 @@ from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     ISSUE_ASSIGNED,
+    MAINTAINER_CLOSED_ATTEMPT,
     NO_DUPLICATE_SEARCH,
     NO_MAINTAINER_REPLY,
     OPEN_PULL_REQUEST,
@@ -55,9 +56,9 @@ from mailman.targeting import (
 #: repository requires a maintainer reply before a pull request exists; 6 asks
 #: how long each cited attempt has been dormant; 7 asks whether the repository
 #: rejects duplicate pull requests, which decides whether a dormant one may be
-#: superseded at all. A screen written before any of them never asked the
-#: question, so `check` sends it back.
-PRESCREEN_SCHEMA_VERSION = 7
+#: superseded at all; 8 asks who closed each closed attempt. A screen written
+#: before any of them never asked the question, so `check` sends it back.
+PRESCREEN_SCHEMA_VERSION = 8
 ISSUE_SCREENS = "issue-screens"
 #: A pre-screen filters a shortlist; it is not the filing gate. The run stage
 #: still re-runs the duplicate search under its own one-hour limit, and
@@ -146,6 +147,7 @@ DECIDABLE = (
     UNACKNOWLEDGED_CLAIM,
     STALE_PRIOR_ATTEMPT,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
+    MAINTAINER_CLOSED_ATTEMPT,
 )
 
 
@@ -376,6 +378,7 @@ def prescreen_issue(
         "workspace": str(directory),
         "stale_attempts": [],
         "duplicate_blocked_attempts": [],
+        "maintainer_closed_attempts": [],
         "issue": {
             "success": captured.get("success"),
             "state": captured.get("state"),
@@ -453,6 +456,7 @@ def prescreen_issue(
         "open": [row["number"] for row in cited["open"]],
         "merged": [row["number"] for row in cited["merged"]],
         "stale": [row["number"] for row in cited["stale"]],
+        "maintainer_closed": [row["number"] for row in cited["maintainer_closed"]],
         "decided_by": cited["decided_by"],
         "detail": cited["detail"],
     }
@@ -472,6 +476,10 @@ def prescreen_issue(
     )
     record["stale_attempts"] = stale_cited
     record["duplicate_blocked_attempts"] = list(blocked_cited)
+    # An attempt a maintainer closed is a rejection of the change, not a
+    # dormant branch. skfolio#307 and wagtail#14384 passed this stage as
+    # supersedable stale attempts and were neither.
+    record["maintainer_closed_attempts"] = list(cited["maintainer_closed"])
     if stale_cited:
         warnings.append(STALE_PRIOR_ATTEMPT)
     # Whether we may file here at all, before whether this issue is worth it.
@@ -488,6 +496,8 @@ def prescreen_issue(
     thread_blocking: list[str] = []
     if required and claims.get("maintainer_replied") is False:
         thread_blocking.append(NO_MAINTAINER_REPLY)
+    if record["maintainer_closed_attempts"]:
+        thread_blocking.append(MAINTAINER_CLOSED_ATTEMPT)
     if blocked_cited:
         thread_blocking.append(DUPLICATE_FORBIDDEN_OPEN_ATTEMPT)
     if cited["open"]:
@@ -501,6 +511,16 @@ def prescreen_issue(
                 f"{slug} requires a maintainer to have answered the issue "
                 f"before a pull request exists ({required.get('quote')!r}), and "
                 "nobody who speaks for the project has replied on this one"
+            )
+        if MAINTAINER_CLOSED_ATTEMPT in thread_blocking:
+            named = ", ".join(
+                f"#{row.get('number')} ({(row.get('closed_by') or {}).get('detail')})"
+                for row in record["maintainer_closed_attempts"]
+            )
+            details.append(
+                "a maintainer closed an earlier attempt at this issue: "
+                f"{named}. Somebody who speaks for the project read that "
+                "change and said no, so there is nothing dormant to supersede"
             )
         if DUPLICATE_FORBIDDEN_OPEN_ATTEMPT in thread_blocking:
             named = ", ".join(
@@ -599,6 +619,14 @@ def prescreen_issue(
         row
         for row in assessment.duplicate_blocked_attempts
         if row.get("number") not in blocked_known
+    )
+    rejected_known = {
+        row.get("number") for row in record["maintainer_closed_attempts"]
+    }
+    record["maintainer_closed_attempts"].extend(
+        row
+        for row in assessment.maintainer_closed_attempts
+        if row.get("number") not in rejected_known
     )
     record["open_attempts"] = [row.get("number") for row in assessment.open_attempts]
     record["merged_attempts"] = [

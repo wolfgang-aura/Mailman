@@ -12,6 +12,7 @@ from mailman.targeting import (
     STALE_PRIOR_ATTEMPT,
     BUG_NOT_REPRODUCED,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
+    MAINTAINER_CLOSED_ATTEMPT,
     ISSUE_ASSIGNED,
     MERGED_FIX_ALREADY_IN_BASE,
     NO_CLAIM_CHECK,
@@ -619,6 +620,75 @@ class StaleAttemptTests(unittest.TestCase):
 
         self.assertTrue(assessment.may_start)
         self.assertEqual(assessment.stale_attempts[0]["days_stale"], 200.0)
+
+
+class MaintainerClosedAttemptTests(unittest.TestCase):
+    """A rejection is not a dormant branch, whatever its age."""
+
+    def _assess(self, attempts: list[dict]):
+        with tempfile.TemporaryDirectory() as temporary:
+            return assess_target(
+                _record(Path(temporary), attempts=attempts), now=_NOW
+            )
+
+    def _closed(self, **closure: object) -> dict:
+        return {
+            "number": 307,
+            "title": "Handle the empty portfolio",
+            "outcome": "closed unmerged",
+            "url": "https://github.com/skfolio/skfolio/pull/307",
+            "author": "outsider",
+            "updated_at": (_NOW - timedelta(days=120)).isoformat(),
+            **closure,
+        }
+
+    def test_an_attempt_a_maintainer_closed_blocks(self) -> None:
+        assessment = self._assess(
+            [
+                self._closed(
+                    closed_by={
+                        "login": "maintainer",
+                        "association": "OWNER",
+                        "maintainer": True,
+                        "detail": "maintainer (owner) closed it, and did not write it",
+                    }
+                )
+            ]
+        )
+
+        self.assertFalse(assessment.may_start)
+        self.assertIn(MAINTAINER_CLOSED_ATTEMPT, assessment.blocking)
+        self.assertNotIn(STALE_PRIOR_ATTEMPT, assessment.warnings)
+        self.assertNotIn(UNACKNOWLEDGED_ATTEMPTS, assessment.blocking)
+        self.assertEqual(assessment.stale_attempts, [])
+        self.assertEqual(assessment.closed_attempts, [])
+        self.assertEqual(assessment.maintainer_closed_attempts[0]["number"], 307)
+        self.assertIn("said no", assessment.summary())
+
+    def test_an_author_closing_their_own_attempt_is_stale(self) -> None:
+        assessment = self._assess(
+            [
+                self._closed(
+                    closed_by={
+                        "login": "outsider",
+                        "association": "CONTRIBUTOR",
+                        "maintainer": False,
+                        "detail": "outsider closed their own pull request",
+                    }
+                )
+            ]
+        )
+
+        self.assertTrue(assessment.may_start)
+        self.assertIn(STALE_PRIOR_ATTEMPT, assessment.warnings)
+        self.assertEqual(assessment.maintainer_closed_attempts, [])
+
+    def test_an_unknown_closer_keeps_the_old_behaviour(self) -> None:
+        assessment = self._assess([self._closed()])
+
+        self.assertTrue(assessment.may_start)
+        self.assertIn(STALE_PRIOR_ATTEMPT, assessment.warnings)
+        self.assertIsNone(assessment.stale_attempts[0]["closed_by"])
 
 
 class DuplicateForbiddenTests(unittest.TestCase):

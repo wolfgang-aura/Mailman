@@ -36,6 +36,7 @@ from mailman.screen import screen_path
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
+    MAINTAINER_CLOSED_ATTEMPT,
     NO_MAINTAINER_REPLY,
     STALE_PRIOR_ATTEMPT,
     NO_REPRODUCTION,
@@ -153,6 +154,14 @@ def emit(name):
     raise SystemExit(0)
 
 
+def emit_first(*names):
+    """The first fixture that exists, so a per-number one can override."""
+    for name in names:
+        if (HERE / name).is_file():
+            emit(name)
+    emit(names[-1])
+
+
 if ARGUMENTS[:2] == ["issue", "view"]:
     emit("issue-payload.json")
 if ARGUMENTS[:2] == ["pr", "view"]:
@@ -163,7 +172,8 @@ if ARGUMENTS[:1] == ["api"]:
     if "/comments" in path:
         emit("comments.json")
     if "/timeline" in path:
-        emit("timeline.json")
+        number = path.split("/issues/")[1].split("/")[0] if "/issues/" in path else ""
+        emit_first("timeline-" + number + ".json", "timeline.json")
     if "/pulls/" in path:
         emit("pr-association-" + path.rsplit("/", 1)[-1] + ".json")
     emit("issue-api.json")
@@ -185,6 +195,7 @@ class PrescreenTests(unittest.TestCase):
         *,
         comments: list[dict] | None = None,
         timeline: list[dict] | None = None,
+        timelines: dict[int, list[dict]] | None = None,
         pull_requests: dict[str, dict] | None = None,
     ) -> str:
         """A `gh` that answers from fixture files, one per question asked.
@@ -225,6 +236,10 @@ class PrescreenTests(unittest.TestCase):
                 }
             ),
         }
+        # One timeline per pull request, because who closed an attempt is read
+        # from the attempt's own timeline and not from the issue's.
+        for number, events in (timelines or {}).items():
+            fixtures[f"timeline-{number}.json"] = json.dumps(events)
         for reference, pull in (pull_requests or {}).items():
             slug, _, number = reference.rpartition("#")
             fixtures[f"pr-{slug.replace('/', '__')}-{number}.json"] = json.dumps(pull)
@@ -1049,6 +1064,104 @@ class PriorDiscussionTests(PrescreenTests):
         self.assertEqual(record["verdict"], "pass")
         self.assertFalse(record["prior_discussion"]["required"])
         self.assertFalse(record["prior_discussion"]["maintainer_replied"])
+
+
+class MaintainerClosedAttemptTests(StalePriorAttemptTests):
+    """Who closed the earlier attempt decides what its closure meant.
+
+    skfolio#307 and wagtail#14384 were closed by maintainers who rejected the
+    change, and both passed this stage with a stale-prior-attempt warning.
+    tqdm#1816 and #1818 were closed by their own authors, which is the shape
+    the stale rule is for.
+    """
+
+    def closed(self, *, author: str = "outsider") -> dict:
+        return {
+            **self.cited(days_old=120),
+            "state": "CLOSED",
+            "title": "Add a guard to the empty-input path",
+            "author": {"login": author},
+        }
+
+    def closing_event(self, *, actor: str, association: str) -> list[dict]:
+        return [
+            {
+                "event": "commented",
+                "actor": {"login": actor},
+                "author_association": association,
+                "body": "This is not the direction we want.",
+            },
+            {"event": "closed", "actor": {"login": actor}},
+        ]
+
+    def test_a_maintainer_closure_is_a_rejection_not_a_stale_attempt(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                self.issue(),
+                pull_requests={"example/project#8": self.closed()},
+                timelines={
+                    8: self.closing_event(actor="maintainer", association="MEMBER")
+                },
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [MAINTAINER_CLOSED_ATTEMPT])
+        self.assertIn(MAINTAINER_CLOSED_ATTEMPT, DECIDABLE)
+        self.assertEqual(record["stale_attempts"], [])
+        self.assertNotIn(STALE_PRIOR_ATTEMPT, record["warnings"])
+        self.assertEqual(record["cited_pull_requests"]["maintainer_closed"], [8])
+        rejected = record["maintainer_closed_attempts"][0]
+        self.assertEqual(rejected["number"], 8)
+        self.assertEqual(rejected["closed_by"]["login"], "maintainer")
+        self.assertEqual(rejected["closed_by"]["association"], "MEMBER")
+        self.assertTrue(rejected["closed_by"]["maintainer"])
+        self.assertIn("said no", record["next"])
+
+    def test_an_author_closing_their_own_attempt_is_still_stale(self) -> None:
+        # tqdm#1816 and #1818. Nobody judged the change.
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                self.issue(),
+                pull_requests={"example/project#8": self.closed(author="outsider")},
+                timelines={
+                    8: self.closing_event(actor="outsider", association="CONTRIBUTOR")
+                },
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(record["maintainer_closed_attempts"], [])
+        self.assertIn(STALE_PRIOR_ATTEMPT, record["warnings"])
+        self.assertEqual(record["stale_attempts"][0]["number"], 8)
+        self.assertEqual(
+            record["stale_attempts"][0]["closed_by"]["login"], "outsider"
+        )
+
+    def test_an_unreadable_closure_keeps_the_old_behaviour_and_says_so(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                self.issue(),
+                pull_requests={"example/project#8": self.closed()},
+                timelines={8: []},
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertIn(STALE_PRIOR_ATTEMPT, record["warnings"])
+        closure = record["stale_attempts"][0]["closed_by"]
+        self.assertIsNone(closure["login"])
+        self.assertFalse(closure["maintainer"])
+        self.assertIn("could not be determined", closure["detail"])
 
 
 class DuplicatePolicyTests(StalePriorAttemptTests):

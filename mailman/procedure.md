@@ -93,7 +93,14 @@ own without a domain narrowing the pool before they see it.
    being merged, is a stale prior attempt rather than a claim: it lands in
    `stale_attempts` with the warning `stale-prior-attempt`, and the target
    passes. A dormant attempt by an OWNER or MEMBER still blocks, because that
-   is a maintainer's own work in progress. So does any open attempt, dormant or
+   is a maintainer's own work in progress. An attempt a maintainer closed is
+   not stale at all: the closing actor is read from the pull request's
+   timeline, and a closer who is not its author and carries OWNER, MEMBER or
+   COLLABORATOR blocks the issue under `maintainer-closed-attempt`. Somebody
+   who speaks for the project read that change and said no. An attempt its own
+   author closed is the case the stale rule is for, and a closer who cannot be
+   determined leaves the attempt stale with that noted in the record. So does
+   any open attempt, dormant or
    not, in a repository whose guide rejects duplicate pull requests: the screen
    records that as the `no-duplicate-pull-requests` constraint and the
    pre-screen refuses the issue under `duplicate-forbidden-open-attempt`. There

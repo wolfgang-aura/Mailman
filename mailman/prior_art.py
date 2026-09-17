@@ -26,7 +26,12 @@ CITED_PULL_REQUESTS_FILENAME = "cited-pull-requests.json"
 # `updatedAt` is what says whether an open attempt is still moving, and
 # `isDraft` is what a reader needs to judge one that is not. Both are cheap;
 # neither was asked for while an open attempt was a flat refusal.
-_CITED_FIELDS = "number,state,mergedAt,mergeCommit,title,url,createdAt,updatedAt,isDraft"
+#: `author` is here so the closer can be compared against it: an author who
+#: closes their own pull request has withdrawn it, and a maintainer who closes
+#: it has rejected it. Those are opposite facts.
+_CITED_FIELDS = (
+    "number,state,mergedAt,mergeCommit,title,url,createdAt,updatedAt,isDraft,author"
+)
 
 _PULL_REQUEST_FIELDS = (
     "number,title,state,url,body,author,createdAt,updatedAt,closedAt,mergedAt,"
@@ -35,6 +40,7 @@ _PULL_REQUEST_FIELDS = (
 
 # GitHub's author association for someone who can merge. A comment from one of
 # these is a maintainer's decision; a comment from anyone else is an opinion.
+# The same list decides what a closure means: see `closing_actor`.
 _MAINTAINER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 _BODY_CHARACTER_LIMIT = 1200
@@ -216,6 +222,17 @@ def render_prior_art(record: dict[str, Any]) -> str:
                     "",
                 ]
             )
+        if item.get("maintainer_closed"):
+            closer = item.get("closed_by") or {}
+            lines.extend(
+                [
+                    "**A maintainer closed this one:** "
+                    f"{closer.get('detail', 'closed by the project')}. That is a "
+                    "judgement about the change, not a branch somebody "
+                    "abandoned. Re-filing it is how a contributor gets banned.",
+                    "",
+                ]
+            )
         if item["outcome"] == "open" and item in live:
             lines.extend(
                 [
@@ -259,7 +276,7 @@ def collect_prior_art(
         slug = slug.removeprefix(prefix)
     command_executable = executable or resolve_tool(run_directory, "gh")
     record: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "collected_at": datetime.now(UTC).isoformat(),
         "repository": slug,
         "requested": numbers,
@@ -293,8 +310,24 @@ def collect_prior_art(
             record["detail"] = f"the GitHub CLI returned unreadable JSON: {error}"
             _write(run_directory, record)
             return record
-        if isinstance(payload, dict):
-            record["attempts"].append(summarize_pull_request(payload))
+        if not isinstance(payload, dict):
+            continue
+        summary = summarize_pull_request(payload)
+        if summary["outcome"] == "closed unmerged":
+            # A maintainer's closure is a decision about the change; the
+            # author's own is a withdrawal. `check-target` reads this to tell
+            # a rejected attempt from a dormant one.
+            summary["closed_by"] = closing_actor(
+                run_directory,
+                executable=command_executable,
+                slug=slug,
+                number=summary["number"],
+                author=summary["author"],
+                timeout_seconds=timeout_seconds,
+                commands=record["commands"],
+            )
+            summary["maintainer_closed"] = bool(summary["closed_by"]["maintainer"])
+        record["attempts"].append(summary)
     record["success"] = True
     record["attempt_count"] = len(record["attempts"])
     record["closed_unmerged"] = sum(
@@ -333,7 +366,7 @@ def resolve_cited_pull_requests(
     """
     command_executable = executable or resolve_tool(run_directory, "gh")
     record: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "collected_at": datetime.now(UTC).isoformat(),
         "references": list(references),
         "resolved": [],
@@ -341,6 +374,7 @@ def resolve_cited_pull_requests(
         "open": [],
         "merged": [],
         "stale": [],
+        "maintainer_closed": [],
         "decided_by": None,
         "commands": [],
         "success": True,
@@ -386,6 +420,7 @@ def resolve_cited_pull_requests(
             )
             continue
         merge_commit = payload.get("mergeCommit")
+        writer = payload.get("author")
         row = {
             "reference": reference.get("text"),
             "repository": slug,
@@ -397,7 +432,10 @@ def resolve_cited_pull_requests(
             "created_at": payload.get("createdAt"),
             "updated_at": payload.get("updatedAt"),
             "is_draft": payload.get("isDraft"),
+            "author": writer.get("login") if isinstance(writer, dict) else None,
             "author_association": None,
+            "closed_by": None,
+            "maintainer_closed": False,
             "merge_commit": (
                 merge_commit.get("oid") if isinstance(merge_commit, dict) else None
             ),
@@ -415,8 +453,23 @@ def resolve_cited_pull_requests(
                 timeout_seconds=timeout_seconds,
                 commands=record["commands"],
             )
+            if row["state"] == "CLOSED" and not row["merged_at"]:
+                # Who closed it decides what the closure meant, and the same
+                # rule applies: paid for only where it can change the answer.
+                row["closed_by"] = closing_actor(
+                    run_directory,
+                    executable=command_executable,
+                    slug=slug,
+                    number=row["number"],
+                    author=row["author"],
+                    timeout_seconds=timeout_seconds,
+                    commands=record["commands"],
+                )
+                row["maintainer_closed"] = bool(row["closed_by"]["maintainer"])
         record["resolved"].append(row)
-        if is_stale_attempt(row, now=now):
+        if row["maintainer_closed"]:
+            record["maintainer_closed"].append(stale_attempt_row(row, now=now))
+        elif is_stale_attempt(row, now=now):
             record["stale"].append(stale_attempt_row(row, now=now))
         elif row["state"] == "OPEN":
             record["open"].append(row)
@@ -466,15 +519,141 @@ def _author_association(
     return association or None
 
 
+def _api(
+    run_directory: Path,
+    *,
+    executable: str,
+    path: str,
+    timeout_seconds: float,
+    commands: list[dict[str, Any]],
+) -> Any | None:
+    """One `gh api` read, recorded in the same command list as everything else."""
+    result: CommandResult = execute(
+        [executable, "api", path],
+        working_directory=run_directory,
+        timeout_seconds=timeout_seconds,
+    )
+    commands.append(result.to_dict())
+    if result.timed_out or result.exit_code != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def closing_actor(
+    run_directory: Path,
+    *,
+    executable: str,
+    slug: str,
+    number: Any,
+    author: str | None,
+    timeout_seconds: float,
+    commands: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Who closed this pull request, and whether they speak for the project.
+
+    A closed attempt means two opposite things depending on who closed it.
+    tqdm#1816 and #1818 were closed by their own authors: nobody judged the
+    change, and that is the shape the stale-attempt rule is for. skfolio#307
+    and wagtail#14384 were closed by maintainers who had rejected the change,
+    and both passed the pre-screen as supersedable stale attempts anyway.
+
+    `gh pr view` does not carry the closure at all. The issue timeline does:
+    the last `closed` event names the actor, and the entries that carry an
+    `author_association` say what that actor is to this repository. When the
+    timeline cannot be read, the issue's own `closed_by` names the actor
+    without an association, which is enough to tell a self-withdrawal from
+    everything else.
+    """
+    found: dict[str, Any] = {
+        "login": None,
+        "association": None,
+        "maintainer": False,
+        "source": None,
+        "detail": "who closed it could not be determined",
+    }
+    if not isinstance(number, int):
+        return found
+    associations: dict[str, str] = {}
+    login: str | None = None
+    association: str | None = None
+    events = _api(
+        run_directory,
+        executable=executable,
+        path=f"repos/{slug}/issues/{number}/timeline?per_page=100",
+        timeout_seconds=timeout_seconds,
+        commands=commands,
+    )
+    for event in events if isinstance(events, list) else []:
+        if not isinstance(event, dict):
+            continue
+        actor = event.get("actor") if isinstance(event.get("actor"), dict) else None
+        actor = actor or (event.get("user") if isinstance(event.get("user"), dict) else None)
+        name = actor.get("login") if isinstance(actor, dict) else None
+        kind = str(event.get("author_association") or "").upper()
+        if name and kind:
+            associations[name] = kind
+        # Reopened and closed again: the last closure is the one that stands.
+        if event.get("event") == "closed" and name:
+            login = name
+            association = kind or None
+            found["source"] = "timeline"
+    if login is None:
+        issue = _api(
+            run_directory,
+            executable=executable,
+            path=f"repos/{slug}/issues/{number}",
+            timeout_seconds=timeout_seconds,
+            commands=commands,
+        )
+        closed_by = issue.get("closed_by") if isinstance(issue, dict) else None
+        if isinstance(closed_by, dict) and closed_by.get("login"):
+            login = str(closed_by["login"])
+            found["source"] = "closed_by"
+    if login is None:
+        return found
+    association = association or associations.get(login)
+    found["login"] = login
+    found["association"] = association
+    if author and login == author:
+        found["detail"] = f"{login} closed their own pull request"
+        return found
+    if association in _MAINTAINER_ASSOCIATIONS:
+        found["maintainer"] = True
+        found["detail"] = (
+            f"{login} ({association.lower()}) closed it, and did not write it"
+        )
+        return found
+    found["detail"] = (
+        f"{login} closed it, association "
+        f"{association.lower() if association else 'unknown'}"
+    )
+    return found
+
+
 def _cited_detail(record: dict[str, Any]) -> str:
     """One line naming the reference that decided it, in the words it was written."""
     decided = record.get("decided_by")
     stale = record.get("stale") or []
+    rejected = record.get("maintainer_closed") or []
     if not decided:
         base = (
             f"{len(record.get('references') or [])} reference(s) read from the "
             "issue, none of them an open or merged pull request"
         )
+        if rejected:
+            named = ", ".join(
+                f"{row.get('repository')}#{row.get('number')} "
+                f"({(row.get('closed_by') or {}).get('detail', 'closed')})"
+                for row in rejected
+            )
+            base += (
+                f". {len(rejected)} attempt(s) a maintainer closed: {named}. "
+                "That is a judgement about the change, not a dormant branch to "
+                "supersede"
+            )
         if not stale:
             return base
         named = ", ".join(
