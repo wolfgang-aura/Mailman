@@ -1,6 +1,6 @@
 # Source of truth
 
-Last verified: 2026-09-10 in `Asia/Singapore`.
+Last verified: 2026-09-17 in `Asia/Singapore`.
 
 ## Luna work-order checkpoint
 
@@ -374,6 +374,21 @@ filter. Any recognizable, maintained Python project that passes `screen-target`
 is a valid target whatever field it serves; finance targets go first when the
 shortlist offers a choice. The recognizability rule set on 2026-09-02 is
 unchanged — obscure repositories are still out, in finance as anywhere else.
+
+Observed on 2026-09-17: `urllib3/urllib3` enforces its no-duplicate rule
+and treats an issue no maintainer acknowledged as no issue. Asked whether a
+second PR for #5053 would be taken given the dormant #5084, maintainer
+sigmavirus24 closed the issue `not_planned` and #5084 with it within the hour,
+calling the report hypothetical and any further PR unwelcome. urllib3 is off
+the target list. An issue with no maintainer reply is a run spent on a bug the
+project may not agree exists; the `untriaged-issue` decision gate (#88)
+already asks, and [#116](https://github.com/wolfgang-aura/Mailman/issues/116)
+asks prescreen to warn earlier.
+
+Decided by the repository owner on 2026-09-17: python-poetry/poetry#11052 sits
+as filed. No rebase or force-push while it is merely `behind`; poetry fails the
+responsiveness gate (median 14.6 days to first reply, 26% answered), so the
+rebase would be effort against a repository that is not reading.
 
 Projects whose policies permit AI-assisted contributions, read on 2026-09-02:
 `pytest-dev/pytest` welcomes them with human accountability and appreciates a
