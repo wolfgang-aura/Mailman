@@ -93,6 +93,10 @@ _CLAIM = re.compile(
     r"|i(?:'ve|ve| have) (?:a|an|the) (?:pr|patch|fix|branch|change)"
     r"|(?:please )?assign (?:this |it |the issue |me )?(?:to )?(?:me\b|myself)"
     r"|assign me"
+    # quantumlib/Cirq#8317: "I am interested in working on this issue ...
+    # could this issue be assigned to me?" read as no claim at all.
+    r"|(?:could|can|may|would) (?:this|it|the issue) (?:please )?be assigned to me"
+    r"|i(?:'m|m| am) (?:very |quite |really )?interested in (?:working on|taking|fixing|picking up)"
     r"|can i (?:take|work on|pick|try|have|give|attempt)"
     r"|may i (?:take|work on|pick|try|have|attempt)"
     r"|picking (?:this|it) up"

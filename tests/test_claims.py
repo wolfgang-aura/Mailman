@@ -123,6 +123,12 @@ class ClassifyCommentTests(unittest.TestCase):
             "whether the attached candidate is suitable for a PR?",
             "Proposed correction in `financepy/products/bonds/bond_zero.py`:",
             "I would be happy to help take this from a report to a fix",
+            # quantumlib/Cirq#8317, a day-old comment the prescreen read as
+            # no claim while the coordinator read it as one.
+            "I am interested in working on this issue. I am quite new to open "
+            "source contributions, so it may take me some time. If no one is "
+            "assigned yet, could this issue be assigned to me?",
+            "Could this be assigned to me?",
         ):
             with self.subTest(body=body):
                 self.assertEqual(classify_comment(_comment(body)), "claim")
