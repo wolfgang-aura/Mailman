@@ -24,20 +24,28 @@ class Check:
     required: bool
 
 
+COMMAND_VERSION_TIMEOUT_SECONDS = 10
+
+
 def _command_version(command: str, arguments: list[str]) -> str | None:
     executable = shutil.which(command)
     if not executable:
         return None
-    completed = subprocess.run(
-        [executable, *arguments],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=10,
-        check=False,
-        shell=False,
-    )
+    try:
+        completed = subprocess.run(
+            [executable, *arguments],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=COMMAND_VERSION_TIMEOUT_SECONDS,
+            check=False,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired:
+        # A loaded host can take longer than this to start a CLI; the tool is
+        # present, so say that rather than crash the whole doctor.
+        return f"{executable} (no answer to --version within {COMMAND_VERSION_TIMEOUT_SECONDS}s)"
     output = (completed.stdout or completed.stderr).strip().splitlines()
     return output[0] if output else executable
 
