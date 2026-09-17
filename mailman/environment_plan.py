@@ -7,6 +7,19 @@ import tomllib
 from pathlib import Path
 
 
+def _builds_editables_by_import(project: dict) -> bool:
+    """Whether an editable build of this target imports the `editables` package.
+
+    hatchling's editable hook imports `editables`, and `--no-build-isolation`
+    means pip will not fetch it: the install fails with `ModuleNotFoundError`
+    unless the build-dependency step already carries it. An undeclared backend
+    counts, because PEP 517 lets the target grow one without telling us here
+    and an unused pure-Python dependency costs nothing.
+    """
+    backend = project.get("build-system", {}).get("build-backend")
+    return not isinstance(backend, str) or backend.split(".")[0] == "hatchling"
+
+
 def draft_plan(workspace: Path, destination: Path, *, python: str = sys.executable) -> dict:
     if destination.exists():
         raise ValueError(f"plan already exists at {destination}; edit it instead of overwriting")
@@ -37,12 +50,15 @@ def draft_plan(workspace: Path, destination: Path, *, python: str = sys.executab
     interpreter = "{environment}/Scripts/python.exe" if sys.platform == "win32" else "{environment}/bin/python"
     build = project.get("build-system", {}).get("requires", ["setuptools"])
     dependencies = list(dict.fromkeys([*build, *(expand(group) if group else [])]))
+    install = [interpreter, "-m", "pip", "install", "--only-binary=:all:", "--no-build-isolation", "-e", f".[{extra}]" if extra else "."]
+    if "--no-build-isolation" in install and "-e" in install and _builds_editables_by_import(project):
+        dependencies = list(dict.fromkeys([*dependencies, "editables"]))
     plan = {
         "schema_version": 1,
         "steps": [
             {"name": "create-environment", "command": [python, "-m", "venv", "{environment}"], "working_directory": "run"},
             {"name": "install-build-and-test-dependencies", "command": [interpreter, "-m", "pip", "install", "--only-binary=:all:", *dependencies]},
-            {"name": "install-target", "command": [interpreter, "-m", "pip", "install", "--only-binary=:all:", "--no-build-isolation", "-e", f".[{extra}]" if extra else "."]},
+            {"name": "install-target", "command": install},
         ],
         "register": [{"name": "python", "executable": interpreter}],
         "draft": {
