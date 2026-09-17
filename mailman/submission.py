@@ -436,17 +436,18 @@ def _policy_findings(
     #
     # Imported here rather than at the top: `targeting` reads this module's
     # duplicate helpers, so the dependency only goes one way at import time.
-    from mailman.targeting import (
-        STALE_ATTEMPT_DAYS,
-        is_stale_attempt,
-        stale_attempt_row,
-    )
+    from mailman.targeting import STALE_ATTEMPT_DAYS, stale_attempt_row
 
     rivals = [row for row in strong if row not in merged and row not in superseded]
     # The same rule `check-target` applied hours earlier. A run cleared to
     # start against a dormant attempt must not be refused at the filing gate by
-    # that same attempt. See targeting.STALE_ATTEMPT_DAYS.
-    stale = [row for row in rivals if is_stale_attempt(row)]
+    # that same attempt. See targeting.STALE_ATTEMPT_DAYS. A closed unmerged
+    # attempt never reaches `rivals` at all, so the whole search is read again.
+    stale = stale_prior_attempts(
+        (duplicate_search or {}).get("matches"),
+        issue_number=issue_number,
+        superseded_numbers=superseded_numbers,
+    )
     open_rivals = [row for row in rivals if row not in stale]
     if stale:
         named = ", ".join(
@@ -589,6 +590,7 @@ def _pull_request_markdown(
     branch: str,
     title: str,
     verifications: list[dict[str, Any]],
+    stale_attempts: list[dict[str, Any]] | None = None,
 ) -> str:
     if issue_number:
         reference = f"Closes #{issue_number}."
@@ -676,6 +678,29 @@ def _pull_request_markdown(
                 "",
             ]
         )
+    if stale_attempts:
+        lines.extend(
+            [
+                "### Prior attempts this supersedes",
+                "",
+                "Each of these stopped claiming the issue: it is open and",
+                "untouched, or closed without merging. Name every one of them in",
+                "the body, link it, and say in one sentence how this change",
+                "differs. A body that ignores them reads to a maintainer as a",
+                "second contributor racing the first.",
+                "",
+            ]
+        )
+        for attempt in stale_attempts:
+            days = attempt.get("days_stale")
+            since = f", {days} days since its last activity" if days is not None else ""
+            title_text = attempt.get("title") or "no recorded title"
+            link = attempt.get("url") or f"#{attempt.get('number')}"
+            lines.append(
+                f"- #{attempt.get('number')} ({attempt.get('state')}{since}): "
+                f"{title_text} — {link}"
+            )
+        lines.append("")
     lines.extend(
         [
             "### An alternative I did not take",
@@ -838,6 +863,16 @@ def prepare_submission(
         )
     )
     findings.extend(_evidence_findings(run, verifications))
+    from mailman.targeting import stale_attempt_row
+
+    stale_rows = [
+        stale_attempt_row(row)
+        for row in stale_prior_attempts(
+            (duplicate_search or {}).get("matches"),
+            issue_number=issue_number,
+            superseded_numbers=superseded_numbers,
+        )
+    ]
     from mailman.completion import check_authorship
     try:
         check_authorship(run_directory)
@@ -855,6 +890,7 @@ def prepare_submission(
             branch=branch,
             title=title,
             verifications=verifications,
+            stale_attempts=stale_rows,
         ),
         encoding="utf-8",
         newline="\n",
@@ -1012,6 +1048,33 @@ def partition_duplicates(
         else:
             weak.append(row)
     return strong, weak
+
+
+def stale_prior_attempts(
+    matches: list[dict[str, Any]] | None,
+    *,
+    issue_number: int | None = None,
+    superseded_numbers: frozenset[int] = frozenset(),
+) -> list[dict[str, Any]]:
+    """Every dormant prior attempt on this issue, open or closed unmerged.
+
+    `duplicate_strength` calls a closed pull request weak, because a closed
+    attempt is not a rival in flight. It is still a prior attempt the body has
+    to supersede: tqdm#1812 carried two closed unmerged ones and the prepared
+    submission named neither. Read both partitions here and let the staleness
+    rule, not the strength, decide.
+    """
+    from mailman.targeting import is_stale_attempt
+
+    strong, weak = partition_duplicates(matches, issue_number=issue_number)
+    return [
+        row
+        for row in (*strong, *weak)
+        if row.get("pull_request")
+        and row.get("number") not in superseded_numbers
+        and duplicate_is_related(row)
+        and is_stale_attempt(row)
+    ]
 
 
 def record_duplicate_acknowledgement(

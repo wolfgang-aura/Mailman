@@ -527,6 +527,79 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertIn("pr#3485", detail)
         self.assertIn("supersedes", detail)
 
+    def test_the_body_names_an_open_dormant_attempt(self) -> None:
+        touched = datetime.now(UTC) - timedelta(days=200)
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-02T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [
+                        {
+                            "number": 3485,
+                            "title": "Delay background task execution",
+                            "state": "OPEN",
+                            "pull_request": True,
+                            "matched_by": ["#3458"],
+                            "updated_at": touched.isoformat(),
+                            "author_association": "CONTRIBUTOR",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self._prepare()
+        body = (self.run_directory / "submission" / "pull-request.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("#3485", body)
+        self.assertIn("supersede", body)
+
+    def test_a_closed_unmerged_attempt_is_reported_and_named(self) -> None:
+        # tqdm#1812 carried two closed unmerged attempts, #1816 and #1818, and
+        # submission.json held no finding at all: a closed row is weak, and the
+        # stale rule only read the strong rivals.
+        touched = datetime.now(UTC) - timedelta(days=300)
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-02T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [
+                        {
+                            "number": 1816,
+                            "title": "Fix the counter",
+                            "state": "CLOSED",
+                            "pull_request": True,
+                            "matched_by": ["#1812"],
+                            "updated_at": touched.isoformat(),
+                            "author_association": "CONTRIBUTOR",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        record = self._prepare()
+        codes = [finding["code"] for finding in record["findings"]]
+        self.assertIn("stale-prior-attempt", codes)
+        detail = next(
+            finding["detail"]
+            for finding in record["findings"]
+            if finding["code"] == "stale-prior-attempt"
+        )
+        self.assertIn("pr#1816", detail)
+        self.assertIn("closed unmerged", detail)
+        self.assertNotIn("possible-duplicate", record["blocking_codes"])
+        body = (self.run_directory / "submission" / "pull-request.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("#1816", body)
+        self.assertIn("supersede", body)
+
     def test_a_failed_duplicate_search_does_not_count_as_one(self) -> None:
         policy = _policy(requires_duplicate_search=True)
         (self.run_directory / "duplicate-search.json").write_text(
