@@ -386,6 +386,14 @@ def _build_parser() -> argparse.ArgumentParser:
     submission.add_argument("--output", type=Path)
     submission.add_argument("--branch")
     submission.add_argument("--title")
+    submission.add_argument(
+        "--workspace",
+        type=Path,
+        help=(
+            "checkout the touched tests run in; defaults to the one the export "
+            "came from, then the one `prepare-workspace` wrote"
+        ),
+    )
     submission.add_argument("--data-root", type=Path)
 
     handoff = subparsers.add_parser(
@@ -1606,7 +1614,9 @@ def _prepare_submission(arguments: argparse.Namespace) -> int:
         destination=arguments.output or (run_directory / "submission"),
         branch=branch,
         title=title,
+        workspace=arguments.workspace,
     )
+    touched = record.get("touched_tests") or {}
     print(
         json.dumps(
             {
@@ -1616,6 +1626,15 @@ def _prepare_submission(arguments: argparse.Namespace) -> int:
                 "ready": record["ready"],
                 "blocking_codes": record["blocking_codes"],
                 "branch": record["branch"],
+                "touched_tests": {
+                    "ran": touched.get("ran"),
+                    "reason": touched.get("reason"),
+                    "selected": len(touched.get("selected") or []),
+                    "capped": touched.get("capped"),
+                    "exit_code": touched.get("exit_code"),
+                    "passed": touched.get("passed"),
+                    "failed": touched.get("failed"),
+                },
                 "next": (
                     f"mailman handoff {record['run_id']} --body <final-body.md> "
                     f"--repo {record['target']} --head <fork>:{record['branch']} "

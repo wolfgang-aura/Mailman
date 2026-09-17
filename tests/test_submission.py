@@ -23,6 +23,7 @@ from mailman.submission import (
     record_duplicate_acknowledgement,
     record_no_test_acknowledgement,
 )
+from mailman.touched_tests import TOUCHED_TESTS_FILENAME, diff_sha256
 
 
 def _weak_match(number: int) -> dict[str, object]:
@@ -351,11 +352,56 @@ class LocalMatchTests(unittest.TestCase):
         )
 
 
+def passing_touched_tests(diff: str, **overrides: object) -> dict[str, object]:
+    """A touched-tests record that ran one file and passed, for this diff."""
+    record: dict[str, object] = {
+        "schema_version": 1,
+        "diff_sha256": diff_sha256(diff),
+        "ran": True,
+        "reason": None,
+        "runner": "pytest",
+        "selected": [
+            {"path": "tests/test_thing.py", "matched": ["thing"], "reason": "imports thing"}
+        ],
+        "candidates": 1,
+        "capped": False,
+        "cap": 25,
+        "omitted": [],
+        "command": ["python", "-m", "pytest", "tests/test_thing.py", "-q", "-p", "no:cacheprovider"],
+        "exit_code": 0,
+        "timed_out": False,
+        "duration_seconds": 0.7,
+        "passed": 3,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+    }
+    record.update(overrides)
+    return record
+
+
 class PrepareSubmissionTests(unittest.TestCase):
     def setUp(self) -> None:
         authors = patch("mailman.completion.check_authorship", return_value={"ok": True})
         authors.start()
         self.addCleanup(authors.stop)
+        # The stage itself is exercised in test_touched_tests; here it is the
+        # seam, answering with a passing record for whatever diff it is given.
+        self.touched_tests_calls: list[dict[str, object]] = []
+
+        def fake_stage(run_directory, *, diff, changed_paths, workspace, **_):
+            self.touched_tests_calls.append(
+                {"diff": diff, "changed_paths": changed_paths, "workspace": workspace}
+            )
+            record = passing_touched_tests(diff)
+            (run_directory / TOUCHED_TESTS_FILENAME).write_text(
+                json.dumps(record), encoding="utf-8"
+            )
+            return record
+
+        stage = patch("mailman.submission.run_touched_tests", side_effect=fake_stage)
+        self.touched_tests = stage.start()
+        self.addCleanup(stage.stop)
         self._temporary = TemporaryDirectory()
         self.run_directory = Path(self._temporary.name)
         (self.run_directory / "verification.json").write_text(
@@ -940,6 +986,70 @@ class PrepareSubmissionTests(unittest.TestCase):
         )
         record = self._prepare()
         self.assertIn("no-passing-verification", record["blocking_codes"])
+
+    def test_the_touched_tests_stage_runs_once_per_export_and_is_recorded(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/115"""
+        record = self._prepare()
+        self.assertTrue(record["ready"], record["blocking_codes"])
+        self.assertEqual(len(self.touched_tests_calls), 1)
+        self.assertEqual(self.touched_tests_calls[0]["changed_paths"],
+                         ["src/thing.py", "tests/test_thing.py"])
+        stored = json.loads(
+            (self.run_directory / "submission" / "submission.json").read_text(encoding="utf-8")
+        )
+        touched = stored["touched_tests"]
+        self.assertEqual(touched["command"][1:3], ["-m", "pytest"])
+        self.assertEqual(touched["exit_code"], 0)
+        self.assertEqual((touched["passed"], touched["failed"]), (3, 0))
+        self.assertEqual(touched["selected"][0]["path"], "tests/test_thing.py")
+        self.assertEqual(touched["diff_sha256"], stored["diff_sha256"])
+        # The same export does not run the tests a second time.
+        self._prepare()
+        self.assertEqual(len(self.touched_tests_calls), 1)
+        # A different export does.
+        self._prepare(diff=SOURCE_DIFF + "\n")
+        self.assertEqual(len(self.touched_tests_calls), 2)
+
+    def test_a_failed_touched_tests_run_blocks(self) -> None:
+        self.touched_tests.side_effect = lambda run_directory, *, diff, **_: (
+            passing_touched_tests(diff, exit_code=1, passed=2, failed=1)
+        )
+        record = self._prepare()
+        self.assertFalse(record["ready"])
+        self.assertIn("touched-tests-failed", record["blocking_codes"])
+        finding = next(f for f in record["findings"] if f["code"] == "touched-tests-failed")
+        self.assertIn("failed 1", finding["detail"])
+        self.assertIn("pytest", finding["detail"])
+
+    def test_a_touched_tests_stage_that_could_not_run_blocks(self) -> None:
+        self.touched_tests.side_effect = lambda run_directory, *, diff, **_: (
+            passing_touched_tests(
+                diff, ran=False, reason="no-environment-python", command=None,
+                exit_code=None, passed=None, failed=None,
+            )
+        )
+        record = self._prepare()
+        self.assertIn("touched-tests-not-run", record["blocking_codes"])
+        # The stage is retried once the environment is repaired; a stored
+        # not-run record is not evidence for the same diff.
+        (self.run_directory / TOUCHED_TESTS_FILENAME).write_text(
+            json.dumps(record["touched_tests"]), encoding="utf-8"
+        )
+        self._prepare()
+        self.assertEqual(self.touched_tests.call_count, 2)
+
+    def test_a_capped_selection_is_named_without_blocking(self) -> None:
+        self.touched_tests.side_effect = lambda run_directory, *, diff, **_: (
+            passing_touched_tests(
+                diff, capped=True, candidates=31, omitted=["tests/test_z.py"] * 6
+            )
+        )
+        record = self._prepare()
+        self.assertTrue(record["ready"], record["blocking_codes"])
+        finding = next(f for f in record["findings"] if f["code"] == "touched-tests-capped")
+        self.assertFalse(finding["blocking"])
+        self.assertIn("31", finding["detail"])
+        self.assertTrue(record["touched_tests"]["capped"])
 
     def test_the_draft_refuses_to_suggest_the_issue_title(self) -> None:
         self._prepare()

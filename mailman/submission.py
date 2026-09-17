@@ -18,6 +18,12 @@ from mailman.reproduction import (
     not_reproductions,
 )
 from mailman.toolchain import resolve_tool
+from mailman.touched_tests import (
+    load_touched_tests,
+    resolve_workspace,
+    run_touched_tests,
+    touched_tests_verdict,
+)
 
 
 SUBMISSION_SCHEMA_VERSION = 1
@@ -555,6 +561,27 @@ def _evidence_findings(
     return findings
 
 
+def _touched_tests_findings(record: dict[str, Any] | None) -> list[Finding]:
+    """The touched-tests stage as findings: not run and failed both block."""
+    findings: list[Finding] = []
+    code, detail = touched_tests_verdict(record)
+    if code is not None:
+        findings.append(Finding(code=code, blocking=True, detail=detail))
+    if record and record.get("capped"):
+        findings.append(
+            Finding(
+                code="touched-tests-capped",
+                blocking=False,
+                detail=(
+                    f"{record.get('candidates')} test files reference the changed "
+                    f"modules; only the first {record.get('cap')} ran. The omitted "
+                    "files are listed under touched_tests.omitted."
+                ),
+            )
+        )
+    return findings
+
+
 def _trailer_guidance(policy: TargetPolicy, run: RunRecord) -> str:
     agent = run.primary.agent
     if policy.ai_trailer == "forbidden":
@@ -812,12 +839,18 @@ def prepare_submission(
     destination: Path,
     branch: str,
     title: str,
+    workspace: Path | None = None,
 ) -> dict[str, Any]:
     """Assemble everything a human needs before opening a pull request.
 
     This never contacts the upstream repository. It reports whether the change
     and the run's evidence meet the target's own written rules, and refuses to
     call a submission ready when they do not.
+
+    The one thing it does run is the touched-tests stage: every test file that
+    imports or names a module the diff changed, in the run's own environment.
+    That stage runs once per export and its record travels with the
+    submission, so `handoff-check` can refuse a filing that skipped it.
     """
     issue_record = load_issue_record(run_directory)
     issue_number = _issue_number(issue_record)
@@ -863,6 +896,22 @@ def prepare_submission(
         )
     )
     findings.extend(_evidence_findings(run, verifications))
+    diff_digest = hashlib.sha256(diff.encode("utf-8")).hexdigest()
+    touched_tests = load_touched_tests(run_directory)
+    # A record for another diff, or one that never got to run, is retried; a
+    # failure is not, because the diff it failed on is the one being filed.
+    if (
+        touched_tests is None
+        or touched_tests.get("diff_sha256") != diff_digest
+        or not touched_tests.get("ran")
+    ):
+        touched_tests = run_touched_tests(
+            run_directory,
+            diff=diff,
+            changed_paths=changed_paths,
+            workspace=resolve_workspace(run_directory, workspace),
+        )
+    findings.extend(_touched_tests_findings(touched_tests))
     from mailman.targeting import stale_attempt_row
 
     stale_rows = [
@@ -902,7 +951,7 @@ def prepare_submission(
     )
     record = {
         "schema_version": SUBMISSION_SCHEMA_VERSION,
-        "diff_sha256": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
+        "diff_sha256": diff_digest,
         "run_id": run.run_id,
         "prepared_at": datetime.now(UTC).isoformat(),
         "target": policy.name,
@@ -922,6 +971,7 @@ def prepare_submission(
         "duplicate_candidates": _duplicate_candidate_counts(
             duplicate_search, acknowledgement, issue_number
         ),
+        "touched_tests": touched_tests,
         "files": ["pull-request.md", "accountability.md", "submission.json"],
     }
     (destination_path / "submission.json").write_text(
