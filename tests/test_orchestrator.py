@@ -15,6 +15,7 @@ from mailman.agents.base import AgentRequest, AgentResult, EngineeringAgent
 from mailman.artifacts import create_run, load_run
 from mailman.cli import main
 from mailman.executor import CommandResult
+from mailman.export import export_patch
 from mailman.models import RunStatus
 from mailman.orchestrator import (
     DEFAULT_RUN_TIME_BUDGET_SECONDS,
@@ -601,6 +602,59 @@ class OrchestrationTests(OrchestratorHarness):
 
         self.assertEqual(second.status, RunStatus.ENGINEERING_COMPLETE)
         self.assertEqual(len(primary.calls), 1)
+
+    def test_resume_review_keeps_an_untracked_file_the_coordinator_wrote(self) -> None:
+        # A coordinator answering `missing-changelog-entry` writes a file Git
+        # has never seen. Resuming the review must not be what removes it, and
+        # the exported patch has to carry it: both are how the finding clears.
+        run, directory = self.make_run()
+        reason = "command budget exceeded: 11 commands attempted, budget 10"
+        primary = ScriptedAgent(
+            "codex", [{"report": "candidate", "touch": ("fix.txt", "fixed")}]
+        )
+        stopped_reviewer = ScriptedAgent(
+            "claude", [{"exit_code": 1, "stdout": "", "stopped_reason": reason}]
+        )
+        agents = {"codex": primary, "claude": stopped_reviewer}
+        orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: agents[name],
+            reviewer_command_budget=10,
+        )
+        entry = self.workspace / "changelog" / "5053.bugfix.rst"
+        entry.parent.mkdir(parents=True, exist_ok=True)
+        entry.write_text("Fix the reported crash.\n", encoding="utf-8")
+
+        resumed = {"codex": primary, "claude": ScriptedAgent("claude", [{"report": APPROVED}])}
+        second = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: resumed[name],
+            resume_review=True,
+        )
+
+        self.assertEqual(second.status, RunStatus.ENGINEERING_COMPLETE)
+        self.assertTrue(entry.is_file())
+        record = export_patch(
+            run,
+            directory,
+            workspace=self.workspace,
+            destination=self.root / "export",
+        )
+        self.assertIn("changelog/5053.bugfix.rst", record["changed_files"])
+        self.assertIn(
+            "Fix the reported crash.",
+            (self.root / "export" / "changes.diff").read_text(encoding="utf-8"),
+        )
 
     def _blocked_after_one_review(self, run, directory):
         """Leave the run BLOCKED with a primary candidate and one cycle spent."""
