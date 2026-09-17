@@ -21,6 +21,7 @@ from mailman.handoff import (
 )
 from mailman.models import AgentConfig, RunRecord
 from mailman.provenance import record_provenance
+from mailman.touched_tests import diff_sha256
 
 
 BODY = """Nothing was cached, so every call recomputed the window.
@@ -85,6 +86,29 @@ def _prior_art(
                 "success": True,
                 "self_reported": self_reported,
                 "claims": [],
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    _touched_tests(directory)
+
+
+def _touched_tests(
+    directory: Path, *, diff: str = "diff --git a/ffn/core.py b/ffn/core.py\n", **overrides: object
+) -> None:
+    """The submission record `check_handoff` reads the touched-tests stage from."""
+    from tests.test_submission import passing_touched_tests
+
+    submission = directory / "submission"
+    submission.mkdir(exist_ok=True)
+    (submission / "submission.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "diff_sha256": diff_sha256(diff),
+                "ready": True,
+                "touched_tests": passing_touched_tests(diff, **overrides),
             }
         ),
         encoding="utf-8",
@@ -266,6 +290,88 @@ class CheckHandoffTests(unittest.TestCase):
             self.assertEqual(result["reason"], "no-handoff")
 
 
+class TouchedTestsGateTests(unittest.TestCase):
+    """https://github.com/wolfgang-aura/Mailman/issues/115
+
+    edgartools#1329 failed CI on a test file that imports the changed module
+    and that nobody ran before filing. The filing check now refuses a run
+    whose touched tests failed or never ran for the diff being pushed.
+    """
+
+    def setUp(self):
+        authors = patch("mailman.handoff.check_authorship", return_value={"ok": True, "head": "fixture"})
+        authors.start()
+        self.addCleanup(authors.stop)
+        foreign = patch("mailman.handoff.foreign_pull_request", return_value=None)
+        foreign.start()
+        self.addCleanup(foreign.stop)
+
+    def _prepared(self, root: Path) -> Path:
+        run, directory = _run_directory(root)
+        body_path = root / "body.md"
+        body_path.write_text(BODY, encoding="utf-8", newline="\n")
+        build_handoff(
+            run_id=run.run_id,
+            run_directory=directory,
+            body_path=body_path,
+            kind="pull-request",
+            repository="pmorissette/ffn",
+            title="Cache the rolling window",
+            head="Mailman-Fork:mailman/run-1",
+            base="master",
+        )
+        _prior_art(directory)
+        return directory
+
+    def test_a_passing_stage_is_reported_with_the_check(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name))
+            result = check_handoff(directory)
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["touched_tests"]["reason"], "touched-tests-passed")
+            self.assertEqual(result["touched_tests"]["selected"], ["tests/test_thing.py"])
+            self.assertEqual(result["touched_tests"]["passed"], 3)
+
+    def test_a_failed_stage_refuses(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name))
+            _touched_tests(directory, exit_code=1, passed=2, failed=1)
+            result = check_handoff(directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "touched-tests-failed")
+            self.assertIn("failed 1", result["detail"])
+
+    def test_a_stage_that_never_ran_refuses(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name))
+            _touched_tests(directory, ran=False, reason="no-environment-python", exit_code=None)
+            result = check_handoff(directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "touched-tests-not-run")
+            self.assertIn("no-environment-python", result["detail"])
+
+    def test_a_missing_submission_refuses(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name))
+            (directory / "submission" / "submission.json").unlink()
+            result = check_handoff(directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "touched-tests-not-run")
+
+    def test_a_record_for_an_earlier_export_refuses(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name))
+            export = directory / "export"
+            export.mkdir()
+            (export / "changes.diff").write_text(
+                "diff --git a/ffn/core.py b/ffn/core.py\n+new line\n", encoding="utf-8"
+            )
+            result = check_handoff(directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "touched-tests-not-run")
+            self.assertIn("export changed", result["detail"])
+
+
 class HandoffCliTests(unittest.TestCase):
 
     def setUp(self):
@@ -377,6 +483,8 @@ class PriorArtFreshnessTests(unittest.TestCase):
         )
         if evidence.pop("prior_art", True):
             _prior_art(directory, **evidence)  # type: ignore[arg-type]
+        else:
+            _touched_tests(directory)
         return directory
 
     def test_evidence_from_minutes_ago_publishes(self) -> None:

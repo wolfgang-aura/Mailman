@@ -257,6 +257,24 @@ own without a domain narrowing the pool before they see it.
     differs from it. `prepare-submission` records the attempts under
     `stale-prior-attempt` as a non-blocking finding; a body that ignores them
     reads to a maintainer as a second contributor racing the first.
+    `prepare-submission` also runs the touched-tests stage once per export:
+    it takes every changed non-test source file, derives its module names
+    (`edgar/xbrl/xbrl.py` is `edgar.xbrl.xbrl`, `edgar.xbrl` and `xbrl`),
+    selects every test file in the workspace whose text imports or names one
+    of them, and runs those files with the run environment's interpreter via
+    `-m pytest <files> -q -p no:cacheprovider` (`-m unittest` when pytest is
+    not installed there), twenty minutes at most, capped at 25 files with the
+    rest named under `omitted`. The record in `submission.json` under
+    `touched_tests` holds the files and why each was chosen, the exact
+    command, exit code, passed and failed counts and duration. A failure is
+    `touched-tests-failed`, a stage that could not run is
+    `touched-tests-not-run`, and both block `prepare-submission` and
+    `handoff-check`, which re-reads the record against the exported diff.
+    This is not the primary's focused check and does not replace the recorded
+    verification command: edgartools#1329 failed CI on
+    `tests/xbrl/test_statement_drilldown.py`, a file that imports the changed
+    module, that the primary never ran, and that fails locally in under a
+    second. Pass `--workspace PATH` when the export did not record one.
 14. Write decision.json using `decision --init` and the schema in
     docs/review-page-standard.md. Keep evidence classes distinct. Questions
     must be genuine user choices, never tasks you can do. Use [] otherwise.
@@ -265,9 +283,12 @@ own without a domain narrowing the pool before they see it.
     final verification, re-review and verify them before finalizing.
 15. Commit the reviewed change locally with the configured identity. Check
     authors, refresh duplicates and claims, then prepare `handoff` with the
-    exact local branch and final body. Run `handoff-check`. Keep all filings
-    and upstream writes pending. For a self-sourced defect, prepare any required
-    issue text alongside the PR and ask for approval of the ordered filings.
+    exact local branch and final body. Run `handoff-check`; it refuses with
+    `touched-tests-failed` or `touched-tests-not-run` until the touched-tests
+    record in `submission.json` matches the exported diff and passed. Keep
+    all filings and upstream writes pending. For a self-sourced defect,
+    prepare any required issue text alongside the PR and ask for approval of
+    the ordered filings.
     A closed issue is refused; an issue with no maintainer reply is flagged
     in the block, and on one the operator decides whether to file or to ask
     on the issue first.

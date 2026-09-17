@@ -48,6 +48,9 @@ def _fresh_prior_art(directory: Path) -> None:
         encoding="utf-8",
         newline="\n",
     )
+    from tests.test_handoff import _touched_tests
+
+    _touched_tests(directory)
 
 
 def _never_asked(owner: str) -> str | None:

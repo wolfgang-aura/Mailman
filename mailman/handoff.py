@@ -27,6 +27,7 @@ from mailman.executor import clamp_timeout_seconds
 from mailman.provenance import load_provenance, upstream_issue_number
 from mailman.submission import load_duplicate_search
 from mailman.target_intel import repository_slug
+from mailman.touched_tests import diff_sha256, touched_tests_verdict
 
 HANDOFF_FILENAME = "handoff.json"
 
@@ -822,6 +823,69 @@ def check_prior_art_freshness(
     }
 
 
+def check_touched_tests(run_directory: Path) -> dict[str, Any]:
+    """Say whether the tests that exercise the diff ran, and passed, for it.
+
+    The record lives in `submission/submission.json` under `touched_tests`,
+    where `prepare-submission` put it. It is compared against the diff that
+    submission checked and, when the export is still there, against the diff
+    that is about to be pushed. A record for any other diff is no record.
+    """
+    submission_path = run_directory / "submission" / "submission.json"
+    if not submission_path.is_file():
+        return {
+            "ok": False,
+            "reason": "touched-tests-not-run",
+            "detail": (
+                "no submission record; run `mailman prepare-submission` so the "
+                "tests that exercise the changed modules run in the run's "
+                "environment."
+            ),
+        }
+    try:
+        submission = json.loads(submission_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return {
+            "ok": False,
+            "reason": "touched-tests-not-run",
+            "detail": f"the submission record cannot be read ({error}).",
+        }
+    if not isinstance(submission, dict):
+        submission = {}
+    expected = submission.get("diff_sha256")
+    export = run_directory / "export" / "changes.diff"
+    if export.is_file():
+        try:
+            exported = diff_sha256(export.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            exported = None
+        if exported and exported != expected:
+            return {
+                "ok": False,
+                "reason": "touched-tests-not-run",
+                "detail": (
+                    "the export changed after the last `prepare-submission`; run "
+                    "it again so the touched tests run against the diff being filed."
+                ),
+            }
+    record = submission.get("touched_tests")
+    code, detail = touched_tests_verdict(
+        record if isinstance(record, dict) else None,
+        expected_diff_sha256=expected if isinstance(expected, str) else None,
+    )
+    if code is not None:
+        return {"ok": False, "reason": code, "detail": detail}
+    return {
+        "ok": True,
+        "reason": "touched-tests-passed",
+        "detail": detail,
+        "command": (record or {}).get("command"),
+        "selected": [entry.get("path") for entry in (record or {}).get("selected") or []],
+        "passed": (record or {}).get("passed"),
+        "failed": (record or {}).get("failed"),
+    }
+
+
 def check_handoff(
     run_directory: Path,
     *,
@@ -908,6 +972,19 @@ def check_handoff(
             "ok": False,
             "reason": "branch-changed",
             "detail": "the filing branch changed; regenerate the handoff",
+        }
+    # The tests that exercise the changed modules must have run for this exact
+    # export. edgartools#1329 failed CI on a file the primary never ran. See
+    # https://github.com/wolfgang-aura/Mailman/issues/115.
+    touched = check_touched_tests(run_directory)
+    unchanged["touched_tests"] = touched
+    if not touched["ok"]:
+        return {
+            "ok": False,
+            "reason": touched["reason"],
+            "detail": touched["detail"],
+            "digest": current,
+            "touched_tests": touched,
         }
     # The body being the text that was read is one question; whether the target
     # still wants it is another, and it is the one that ages. See
