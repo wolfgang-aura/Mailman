@@ -255,9 +255,9 @@ _POLICY_BANS = re.compile(
     # intelligence tools does not qualify as your original creation", a ban
     # phrased as a CLA consequence. The gate read it as permission.
     r"|(?:ai|artificial intelligence)[- ]?(?:generated|tools?)[^.]{0,80}"
-    r"(?:does|do)\s+not\s+qualify"
+    r"(?:does|do)\W+not\W+qualify"
     r"|generated\s+by\s+(?:ai|artificial intelligence)[^.]{0,80}"
-    r"(?:does|do)\s+not\s+qualify"
+    r"(?:does|do)\W+not\W+qualify"
     r")",
     re.IGNORECASE,
 )
