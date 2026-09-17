@@ -10,7 +10,10 @@ The gates run in the order a candidate actually dies in. Freshness kills most of
 them, and it costs two API calls, so it runs first. Provenance is reported ahead
 of it because it answers a different question, whether this repository's code
 should execute on the host at all, but it is computed from what freshness
-already fetched. Stars run last because they
+already fetched. Responsiveness runs late because it is the dearest gate, three
+calls per outside pull request, and it asks the question freshness cannot: not
+whether outside work merges here, but how long a stranger waits for a first
+word. Stars run last because they
 have never once changed a decision: `OpenBB-finance/OpenBB` has 72.6k of them and
 has merged nothing from outside in six weeks.
 
@@ -32,7 +35,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from mailman.claims import classify_comment
+from mailman.claims import MAINTAINER_ASSOCIATIONS, classify_comment
 from mailman.executor import CommandResult, execute
 from mailman.target_intel import (
     _Gh,
@@ -44,7 +47,7 @@ from mailman.target_intel import (
 )
 from mailman.toolchain import resolve_tool
 
-SCREEN_SCHEMA_VERSION = 2
+SCREEN_SCHEMA_VERSION = 3
 SCREENS_DIRECTORY = "screens"
 
 #: How far back to look for the pattern of outside merges, as opposed to the
@@ -119,6 +122,39 @@ DIRECT_PUSH_LIMIT = 0.5
 
 #: Below this many readable commits the share is not evidence of a habit.
 DIRECT_PUSH_SAMPLE_MINIMUM = 10
+
+#: How far back to sample outside pull requests for the responsiveness gate.
+#: Freshness asks whether outside work merges here at all; this asks how long
+#: a stranger waits for a maintainer to say anything. Of the twelve pull
+#: requests filed since 2026-09-01, one merged and six were closed unmerged,
+#: and the closes came from repositories where an outside pull request waits
+#: weeks for a first word: poetry, pdm, rqalpha. Every one of them passed
+#: freshness, because a collaborator's merge counts there and a stranger's
+#: silence does not.
+RESPONSIVENESS_WINDOW_DAYS = 90
+
+#: How many outside pull requests the gate reads in full. Each one costs three
+#: API calls (reviews, review comments, issue comments), so the sample is
+#: capped and the count read is recorded beside the numbers it produced.
+RESPONSIVENESS_SAMPLE = 50
+
+#: Below this many outside pull requests in the window, the numbers are
+#: arithmetic, not evidence. The gate reports `unknown`, and unknown fails:
+#: a repository nobody outside has written to in three months is not one
+#: where our pull request will be read quickly.
+RESPONSIVENESS_SAMPLE_MINIMUM = 3
+
+#: A first maintainer response is on time inside this many days. The median
+#: wait has to sit under it, and at least `FIRST_RESPONSE_SHARE` of the sample
+#: has to have been answered inside it.
+FIRST_RESPONSE_DAYS = 14
+FIRST_RESPONSE_SHARE = 0.5
+
+#: A repository that closes more outside pull requests than it merges is
+#: saying no more often than yes. Below this many decided (merged or closed
+#: unmerged) pull requests the ratio is not read, because two closes against
+#: one merge is a week, not a habit.
+REJECTION_DECIDED_MINIMUM = 5
 
 #: Python has to be the language the repository is actually written in. On
 #: `ccxt/ccxt` the Python is generated from TypeScript, and a patch to it is
@@ -1462,6 +1498,170 @@ def _direct_push_gate(gh: _Gh, slug: str, meta: dict[str, Any]) -> dict[str, Any
     )
 
 
+def _timestamp(value: Any) -> datetime | None:
+    """Parse one GitHub timestamp, or nothing when the row has none."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _is_maintainer(row: dict[str, Any]) -> bool:
+    return (
+        row.get("author_association") in MAINTAINER_ASSOCIATIONS
+        and not _is_bot(row.get("user"))
+    )
+
+
+def _first_maintainer_response(
+    gh: _Gh, slug: str, number: int, opened: datetime
+) -> float | None:
+    """Days from a pull request opening to the first word from a maintainer.
+
+    A review, an inline review comment and an issue comment are three
+    different endpoints, and a maintainer's first word can be any of them.
+    Whichever came first counts. The author's own comments are never a
+    response, and neither is a bot's.
+    """
+    stamps: list[datetime] = []
+    for path, field in (
+        (f"repos/{slug}/pulls/{number}/reviews", "submitted_at"),
+        (f"repos/{slug}/pulls/{number}/comments", "created_at"),
+        (f"repos/{slug}/issues/{number}/comments", "created_at"),
+    ):
+        for row in gh.pages(path, pages=1):
+            if not isinstance(row, dict) or not _is_maintainer(row):
+                continue
+            stamp = _timestamp(row.get(field))
+            if stamp is not None and stamp >= opened:
+                stamps.append(stamp)
+    if not stamps:
+        return None
+    return (min(stamps) - opened).total_seconds() / 86400
+
+
+def _responsiveness_gate(
+    gh: _Gh, slug: str, responsiveness_days: int
+) -> dict[str, Any]:
+    """Gate 8. How long does a stranger's pull request wait for a first word?
+
+    Freshness is satisfied by a collaborator's merge and says nothing about a
+    stranger's silence. This gate reads the outside pull requests opened in
+    the window and asks three things of them: how long the median one waited
+    for a maintainer to review or comment, what share got any response inside
+    `FIRST_RESPONSE_DAYS`, and whether more were closed unmerged than merged.
+    An unanswered pull request has waited its whole age, and is counted at
+    that, because a silence that has not ended is not a short wait.
+    """
+    now = datetime.now(UTC)
+    window_start = now - timedelta(days=responsiveness_days)
+    rows = gh.pages(
+        f"repos/{slug}/pulls?state=all&sort=created&direction=desc", pages=2
+    )
+    outside: list[tuple[dict[str, Any], datetime]] = []
+    excluded_bots: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        opened = _timestamp(row.get("created_at"))
+        if opened is None or opened < window_start:
+            continue
+        user = row.get("user") if isinstance(row.get("user"), dict) else None
+        if user and _is_bot(user) and user.get("login"):
+            excluded_bots.add(str(user["login"]))
+        if is_outside_human(row):
+            outside.append((row, opened))
+    in_window = len(outside)
+    sample = outside[:RESPONSIVENESS_SAMPLE]
+
+    waits: list[float] = []
+    responded = 0
+    responded_within = 0
+    merged = 0
+    closed_unmerged = 0
+    for row, opened in sample:
+        number = int(row.get("number") or 0)
+        wait = _first_maintainer_response(gh, slug, number, opened)
+        if wait is None:
+            waits.append((now - opened).total_seconds() / 86400)
+        else:
+            responded += 1
+            waits.append(wait)
+            if wait <= FIRST_RESPONSE_DAYS:
+                responded_within += 1
+        if row.get("merged_at"):
+            merged += 1
+        elif (row.get("state") or "") == "closed":
+            closed_unmerged += 1
+    sampled = len(sample)
+    median = round(statistics.median(waits), 1) if waits else None
+    share = round(responded_within / sampled, 2) if sampled else None
+    decided = merged + closed_unmerged
+    data = {
+        "result": "unknown",
+        "window_days": responsiveness_days,
+        "pull_requests_scanned": len(rows),
+        "outside_pull_requests_in_window": in_window,
+        "sampled": sampled,
+        "sample_cap": RESPONSIVENESS_SAMPLE,
+        "responded": responded,
+        "responded_within_days": responded_within,
+        "response_share": share,
+        "median_first_response_days": median,
+        "merged": merged,
+        "closed_unmerged": closed_unmerged,
+        "still_open": sampled - decided,
+        "excluded_bot_authors": sorted(excluded_bots),
+        "first_response_days": FIRST_RESPONSE_DAYS,
+        "first_response_share": FIRST_RESPONSE_SHARE,
+        "sample_minimum": RESPONSIVENESS_SAMPLE_MINIMUM,
+        "decided_minimum": REJECTION_DECIDED_MINIMUM,
+    }
+    if sampled < RESPONSIVENESS_SAMPLE_MINIMUM:
+        return _gate(
+            "responsiveness",
+            passed=False,
+            blocking=True,
+            detail=(
+                f"unknown: {sampled} outside pull request(s) opened in "
+                f"{responsiveness_days} days, fewer than the "
+                f"{RESPONSIVENESS_SAMPLE_MINIMUM} needed to measure a wait. "
+                "Unknown is not responsive."
+            ),
+            data=data,
+        )
+    numbers = (
+        f"median first maintainer response {median} day(s), "
+        f"{responded_within} of {sampled} answered within {FIRST_RESPONSE_DAYS} "
+        f"days ({share:.0%}), {merged} merged, {closed_unmerged} closed unmerged"
+        + (f"; excluded {', '.join(sorted(excluded_bots))}" if excluded_bots else "")
+    )
+    reasons: list[str] = []
+    if median is not None and median > FIRST_RESPONSE_DAYS:
+        reasons.append(f"the median wait is over {FIRST_RESPONSE_DAYS} days")
+    if share is not None and share < FIRST_RESPONSE_SHARE:
+        reasons.append(
+            f"under {FIRST_RESPONSE_SHARE:.0%} were answered within "
+            f"{FIRST_RESPONSE_DAYS} days"
+        )
+    if decided >= REJECTION_DECIDED_MINIMUM and closed_unmerged > merged:
+        reasons.append("more outside pull requests were closed unmerged than merged")
+    data["result"] = "fail" if reasons else "pass"
+    if reasons:
+        return _gate(
+            "responsiveness",
+            passed=False,
+            blocking=True,
+            detail=f"{numbers}: " + "; ".join(reasons),
+            data=data,
+        )
+    return _gate(
+        "responsiveness", passed=True, blocking=True, detail=numbers, data=data
+    )
+
 def direct_push_share(record: dict[str, Any] | None) -> float | None:
     """The share a recorded screen measured, for a stage that has no API budget.
 
@@ -1571,6 +1771,7 @@ def screen_repository(
     data_root: Path,
     window_days: int = 14,
     issue_window_days: int = ISSUE_WINDOW_DAYS,
+    responsiveness_days: int = RESPONSIVENESS_WINDOW_DAYS,
     executable: str | None = None,
     timeout_seconds: float = 120,
     working_directory: Path | None = None,
@@ -1589,6 +1790,7 @@ def screen_repository(
         "screened_at": datetime.now(UTC).isoformat(),
         "window_days": window_days,
         "issue_window_days": issue_window_days,
+        "responsiveness_days": responsiveness_days,
         "gates": [],
         "success": False,
     }
@@ -1624,6 +1826,7 @@ def screen_repository(
         _assignment_gate(gh, slug),
         _saturation_gate(gh, slug, window_days, issue_window_days),
         _direct_push_gate(gh, slug, meta),
+        _responsiveness_gate(gh, slug, responsiveness_days),
         _stars_gate(meta),
     ]
     failed = [

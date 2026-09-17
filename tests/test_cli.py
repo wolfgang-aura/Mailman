@@ -906,6 +906,50 @@ class InitRunModelTests(unittest.TestCase):
             self.assertEqual(record["reviewer"]["model"], "claude-model-id")
 
 
+class ScreenTargetCliTests(unittest.TestCase):
+    def test_the_responsiveness_window_reaches_the_screen(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            data_root.mkdir()
+            record = {
+                "success": True,
+                "repository": "example/project",
+                "verdict": "pass",
+                "gates": [],
+            }
+            with patch("mailman.cli.screen_repository", return_value=record) as screened:
+                out = StringIO()
+                with redirect_stdout(out):
+                    code = main(
+                        [
+                            "screen-target",
+                            "example/project",
+                            "--responsiveness-days",
+                            "30",
+                            "--data-root",
+                            str(data_root),
+                        ]
+                    )
+            self.assertEqual(code, 0)
+            keywords = screened.call_args.kwargs
+            self.assertEqual(keywords["responsiveness_days"], 30)
+            self.assertEqual(keywords["issue_window_days"], 90)
+
+    def test_the_responsiveness_window_defaults_to_ninety_days(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            data_root.mkdir()
+            record = {"success": False, "repository": "example/project", "detail": "x"}
+            with patch("mailman.cli.screen_repository", return_value=record) as screened:
+                out = StringIO()
+                with redirect_stdout(out):
+                    code = main(
+                        ["screen-target", "example/project", "--data-root", str(data_root)]
+                    )
+            self.assertEqual(code, 2)
+            self.assertEqual(screened.call_args.kwargs["responsiveness_days"], 90)
+
+
 class StreamFlushTests(unittest.TestCase):
     def test_a_streamed_line_arrives_before_the_process_exits(self) -> None:
         """A redirected run must not sit silent until its buffer fills.

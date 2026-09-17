@@ -99,6 +99,7 @@ from mailman.review_packet import write_packet_page
 from mailman.review_page import write_run_page
 from mailman.screen import (
     ISSUE_WINDOW_DAYS,
+    RESPONSIVENESS_WINDOW_DAYS,
     load_screen,
     render_screen,
     screen_repository,
@@ -536,6 +537,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="how old an unclaimed issue may be and still count as work. "
         "Separate from the merge window, and much longer: a normal backlog is "
         "not evidence that the door is closed",
+    )
+    screen.add_argument(
+        "--responsiveness-days",
+        type=int,
+        default=RESPONSIVENESS_WINDOW_DAYS,
+        help="how far back to sample outside pull requests for the wait until "
+        "a maintainer first responds",
     )
     screen.add_argument(
         "--refresh",
@@ -1540,6 +1548,7 @@ def _screen_target(arguments: argparse.Namespace) -> int:
         data_root=data_root,
         window_days=arguments.window_days,
         issue_window_days=arguments.issue_window_days,
+        responsiveness_days=arguments.responsiveness_days,
         executable=arguments.executable,
         timeout_seconds=arguments.timeout,
     )

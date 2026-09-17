@@ -78,6 +78,23 @@ own without a domain narrowing the pool before they see it.
    guide that requires a maintainer to have answered the issue first is
    recorded as the `prior-discussion` constraint, and `prescreen` then refuses
    any issue nobody from the project has replied on, under `no-maintainer-reply`.
+   Freshness asks whether outside work merges here; the `responsiveness` gate
+   asks how long a stranger waits for a first word, because a collaborator's
+   merge satisfies freshness and says nothing about a stranger's silence. Of
+   the twelve pull requests filed since 2026-09-01, one merged and six were
+   closed unmerged, from repositories where an outside pull request waits
+   weeks for any maintainer response. The gate reads up to 50 outside pull
+   requests opened in the last 90 days (`--responsiveness-days`), excluding
+   bots and the maintainers' own, and for each finds the first review, review
+   comment or issue comment from an OWNER, MEMBER or COLLABORATOR. It fails
+   when the median wait is over 14 days, when fewer than half were answered
+   within 14 days, or when at least five were decided and more were closed
+   unmerged than merged. An unanswered pull request has waited its whole age.
+   Fewer than three outside pull requests in the window is `unknown`, which
+   fails: a repository nobody outside has written to in three months is not
+   one where ours will be read quickly. The median, the share, the merged and
+   closed counts and the number sampled are recorded under the gate and
+   printed in the screen.
 2. Pre-screen every issue on the shortlist before opening a run on any of
    them: `mailman prescreen OWNER/REPO#N --symbols NAME NAME --hunt HUNT_ID
    --owner TOKEN`. It runs the same

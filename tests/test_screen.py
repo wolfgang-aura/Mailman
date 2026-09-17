@@ -56,6 +56,61 @@ def _issue(
     }
 
 
+def _outside_pull(
+    number: int,
+    *,
+    opened_days_ago: int,
+    author: str = "carol",
+    association: str = "CONTRIBUTOR",
+    account_type: str = "User",
+    merged: bool = False,
+    closed: bool = False,
+) -> dict:
+    """A pull request as `pulls?state=all` lists it, decided three days after opening."""
+    decided = merged or closed
+    decided_at = _days_ago(max(opened_days_ago - 3, 0)) if decided else None
+    return {
+        "number": number,
+        "title": f"fix {number}",
+        "user": {"login": author, "type": account_type},
+        "author_association": association,
+        "created_at": _days_ago(opened_days_ago),
+        "merged_at": decided_at if merged else None,
+        "closed_at": decided_at,
+        "state": "closed" if decided else "open",
+        "head": {"ref": f"fix-{number}"},
+        "body": "",
+    }
+
+
+def _response(
+    days_ago: int,
+    *,
+    login: str = "maint",
+    association: str = "MEMBER",
+    account_type: str = "User",
+    field: str = "submitted_at",
+) -> dict:
+    """One review or comment row, stamped in whichever field its endpoint uses."""
+    return {
+        "user": {"login": login, "type": account_type},
+        "author_association": association,
+        field: _days_ago(days_ago),
+        "body": "looking",
+    }
+
+
+#: Three outside pull requests in the window, each reviewed a day after it
+#: opened. The default fixture is responsive so that every other gate's test
+#: still passes on it.
+RESPONSIVE_PULLS = [
+    _outside_pull(101, opened_days_ago=30, merged=True),
+    _outside_pull(102, opened_days_ago=20, merged=True),
+    _outside_pull(103, opened_days_ago=10),
+]
+RESPONSIVE_REVIEWS = {101: [_response(29)], 102: [_response(19)], 103: [_response(9)]}
+
+
 def _contents(text: str) -> dict:
     return {
         "encoding": "base64",
@@ -90,6 +145,11 @@ class FakeGitHub:
             ],
         )
         self.open_pulls = overrides.pop("open_pulls", [])
+        #: What `pulls?state=all` lists, which the responsiveness gate reads.
+        self.all_pulls = overrides.pop("all_pulls", RESPONSIVE_PULLS)
+        #: Reviews and inline review comments per pull request number.
+        self.reviews = overrides.pop("reviews", RESPONSIVE_REVIEWS)
+        self.review_comments = overrides.pop("review_comments", {})
         self.commits = overrides.pop(
             "commits", [{"sha": f"c{index}"} for index in range(12)]
         )
@@ -154,8 +214,17 @@ class FakeGitHub:
             return [] if sha in self.direct_pushes else [{"number": 1}]
         if base.endswith("/commits"):
             return self.commits if "page=1" in path or "page=" not in path else []
+        if base.endswith("/reviews"):
+            number = int(base.rsplit("/", 2)[-2])
+            return self.reviews.get(number, [])
+        if "/pulls/" in base and base.endswith("/comments"):
+            number = int(base.rsplit("/", 2)[-2])
+            return self.review_comments.get(number, [])
         if "/pulls" in base:
-            rows = self.open_pulls if "state=open" in path else self.closed_pulls
+            if "state=all" in path:
+                rows = self.all_pulls
+            else:
+                rows = self.open_pulls if "state=open" in path else self.closed_pulls
             return rows if "page=1" in path or "page=" not in path else []
         if "/comments" in base:
             # repos/<slug>/issues/<number>/comments, one thread per call.
@@ -1356,10 +1425,230 @@ class ScreenTests(unittest.TestCase):
 
         for name in (
             "freshness", "ci", "pure-python", "policy", "saturation",
-            "direct-push", "stars",
+            "direct-push", "responsiveness", "stars",
         ):
             with self.subTest(gate=name):
                 self.assertIn(name, rendered)
+
+
+class ResponsivenessTests(unittest.TestCase):
+    """How long a stranger's pull request waits for a maintainer's first word.
+
+    Twelve pull requests filed since 2026-09-01: one merged, six closed
+    unmerged, and the closes came from repositories where an outside pull
+    request waits weeks for a first response. Every one of them passed
+    freshness.
+    """
+
+    def test_a_responsive_repository_passes_with_its_numbers_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), FakeGitHub())
+        gate = _named(record, "responsiveness")
+
+        self.assertTrue(gate["passed"])
+        self.assertTrue(gate["blocking"])
+        self.assertNotIn("responsiveness", record["failed_gates"])
+        self.assertEqual(record["schema_version"], 3)
+        self.assertEqual(record["responsiveness_days"], 90)
+        self.assertEqual(gate["data"]["result"], "pass")
+        self.assertEqual(gate["data"]["sampled"], 3)
+        self.assertEqual(gate["data"]["responded"], 3)
+        self.assertEqual(gate["data"]["responded_within_days"], 3)
+        self.assertEqual(gate["data"]["response_share"], 1.0)
+        self.assertEqual(gate["data"]["median_first_response_days"], 1.0)
+        self.assertEqual(gate["data"]["merged"], 2)
+        self.assertEqual(gate["data"]["closed_unmerged"], 0)
+        self.assertEqual(gate["data"]["still_open"], 1)
+        self.assertEqual(gate["data"]["window_days"], 90)
+        rendered = render_screen(record)
+        self.assertIn("median first maintainer response 1.0 day(s)", rendered)
+        self.assertIn("3 of 3 answered within 14 days (100%)", rendered)
+        self.assertIn("2 merged, 0 closed unmerged", rendered)
+
+    def test_a_slow_median_first_response_fails(self) -> None:
+        # poetry and pdm are this shape: the pull request is read, eventually.
+        pulls = [
+            _outside_pull(201, opened_days_ago=80, merged=True),
+            _outside_pull(202, opened_days_ago=70),
+            _outside_pull(203, opened_days_ago=60),
+            _outside_pull(204, opened_days_ago=50),
+        ]
+        reviews = {
+            201: [_response(50)],
+            202: [_response(40, field="created_at")],
+            203: [_response(30)],
+            204: [_response(20)],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    all_pulls=pulls,
+                    reviews={201: reviews[201], 203: reviews[203], 204: reviews[204]},
+                    issue_comments={202: reviews[202]},
+                ),
+            )
+        gate = _named(record, "responsiveness")
+
+        self.assertFalse(gate["passed"])
+        self.assertIn("responsiveness", record["failed_gates"])
+        self.assertEqual(gate["data"]["result"], "fail")
+        self.assertEqual(gate["data"]["median_first_response_days"], 30.0)
+        self.assertEqual(gate["data"]["responded"], 4)
+        self.assertEqual(gate["data"]["responded_within_days"], 0)
+        self.assertEqual(gate["data"]["response_share"], 0.0)
+        self.assertIn("the median wait is over 14 days", gate["detail"])
+        self.assertIn("under 50% were answered within 14 days", gate["detail"])
+
+    def test_a_repository_that_closes_more_than_it_merges_fails(self) -> None:
+        # Fast answers, and the answer is usually no.
+        pulls = [
+            _outside_pull(301, opened_days_ago=40, merged=True),
+            _outside_pull(302, opened_days_ago=35, merged=True),
+            _outside_pull(303, opened_days_ago=30, closed=True),
+            _outside_pull(304, opened_days_ago=25, closed=True),
+            _outside_pull(305, opened_days_ago=20, closed=True),
+            _outside_pull(306, opened_days_ago=15, closed=True),
+        ]
+        reviews = {
+            number: [_response(days - 1)]
+            for number, days in zip(range(301, 307), (40, 35, 30, 25, 20, 15))
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary), FakeGitHub(all_pulls=pulls, reviews=reviews)
+            )
+        gate = _named(record, "responsiveness")
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["data"]["merged"], 2)
+        self.assertEqual(gate["data"]["closed_unmerged"], 4)
+        self.assertEqual(gate["data"]["response_share"], 1.0)
+        self.assertEqual(
+            gate["detail"].split(": ", 1)[1],
+            "more outside pull requests were closed unmerged than merged",
+        )
+
+    def test_a_close_heavy_ratio_over_too_few_decisions_is_not_read(self) -> None:
+        pulls = [
+            _outside_pull(401, opened_days_ago=40, merged=True),
+            _outside_pull(402, opened_days_ago=30, closed=True),
+            _outside_pull(403, opened_days_ago=20, closed=True),
+            _outside_pull(404, opened_days_ago=10),
+        ]
+        reviews = {401: [_response(39)], 402: [_response(29)], 403: [_response(19)], 404: [_response(9)]}
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary), FakeGitHub(all_pulls=pulls, reviews=reviews)
+            )
+        gate = _named(record, "responsiveness")
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["data"]["closed_unmerged"], 2)
+        self.assertEqual(gate["data"]["merged"], 1)
+
+    def test_too_few_outside_pull_requests_is_unknown_and_fails(self) -> None:
+        pulls = [
+            _outside_pull(501, opened_days_ago=10, merged=True),
+            _outside_pull(502, opened_days_ago=5, merged=True),
+            # Outside the window, so not a sample however fast it was read.
+            _outside_pull(503, opened_days_ago=120, merged=True),
+        ]
+        reviews = {501: [_response(9)], 502: [_response(4)], 503: [_response(119)]}
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary), FakeGitHub(all_pulls=pulls, reviews=reviews)
+            )
+        gate = _named(record, "responsiveness")
+
+        self.assertFalse(gate["passed"])
+        self.assertIn("responsiveness", record["failed_gates"])
+        self.assertEqual(gate["data"]["result"], "unknown")
+        self.assertEqual(gate["data"]["sampled"], 2)
+        self.assertEqual(gate["data"]["outside_pull_requests_in_window"], 2)
+        self.assertEqual(gate["data"]["pull_requests_scanned"], 3)
+        self.assertIn("unknown: 2 outside pull request(s) opened in 90 days", gate["detail"])
+        self.assertIn("Unknown is not responsive", gate["detail"])
+
+    def test_bots_and_maintainers_own_pull_requests_are_not_samples(self) -> None:
+        pulls = [
+            _outside_pull(
+                601,
+                opened_days_ago=40,
+                author="dependabot[bot]",
+                account_type="Bot",
+                merged=True,
+            ),
+            _outside_pull(
+                602, opened_days_ago=35, author="maint", association="MEMBER"
+            ),
+            _outside_pull(603, opened_days_ago=30, merged=True),
+            _outside_pull(604, opened_days_ago=20, merged=True),
+            _outside_pull(605, opened_days_ago=10),
+        ]
+        # 605 is answered only by a bot and by its own author, which is no
+        # answer at all, so it has waited its whole age.
+        reviews = {603: [_response(29)], 604: [_response(19)]}
+        comments = {
+            605: [
+                _response(
+                    9,
+                    login="coderabbitai[bot]",
+                    association="MEMBER",
+                    account_type="Bot",
+                    field="created_at",
+                ),
+                _response(
+                    8, login="carol", association="CONTRIBUTOR", field="created_at"
+                ),
+            ]
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            gh = FakeGitHub(all_pulls=pulls, reviews=reviews, issue_comments=comments)
+            record = _screen(Path(temporary), gh)
+        gate = _named(record, "responsiveness")
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["data"]["sampled"], 3)
+        self.assertEqual(gate["data"]["responded"], 2)
+        self.assertEqual(gate["data"]["responded_within_days"], 2)
+        self.assertEqual(gate["data"]["response_share"], 0.67)
+        self.assertEqual(gate["data"]["median_first_response_days"], 1.0)
+        self.assertEqual(gate["data"]["excluded_bot_authors"], ["dependabot[bot]"])
+        self.assertIn("excluded dependabot[bot]", gate["detail"])
+        for number in (601, 602):
+            self.assertNotIn(f"repos/example/project/pulls/{number}/reviews", gh.asked)
+
+    def test_the_sample_is_capped_and_the_cap_recorded(self) -> None:
+        pulls = [
+            _outside_pull(700 + index, opened_days_ago=60 - index, merged=True)
+            for index in range(55)
+        ]
+        reviews = {700 + index: [_response(59 - index)] for index in range(55)}
+        with tempfile.TemporaryDirectory() as temporary:
+            gh = FakeGitHub(all_pulls=pulls, reviews=reviews)
+            record = _screen(Path(temporary), gh)
+        gate = _named(record, "responsiveness")
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["data"]["outside_pull_requests_in_window"], 55)
+        self.assertEqual(gate["data"]["sampled"], 50)
+        self.assertEqual(gate["data"]["sample_cap"], 50)
+        self.assertEqual(
+            sum(path.startswith("repos/example/project/pulls/7") and path.endswith("reviews?per_page=100&page=1") for path in gh.asked),
+            50,
+        )
+
+    def test_the_window_is_settable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), FakeGitHub(), responsiveness_days=15)
+        gate = _named(record, "responsiveness")
+
+        self.assertEqual(record["responsiveness_days"], 15)
+        self.assertEqual(gate["data"]["window_days"], 15)
+        # Only the pull request opened ten days ago is inside a 15-day window.
+        self.assertEqual(gate["data"]["sampled"], 1)
+        self.assertEqual(gate["data"]["result"], "unknown")
 
 
 if __name__ == "__main__":
