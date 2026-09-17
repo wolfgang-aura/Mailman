@@ -1470,10 +1470,26 @@ class ResponsivenessTests(unittest.TestCase):
         self.assertIn("3 of 3 answered within 14 days (100%)", rendered)
         self.assertIn("2 merged, 0 closed unmerged", rendered)
 
+    def test_a_silent_merge_counts_as_the_maintainer_answering(self) -> None:
+        # fsspec merges most outside work without a comment or a review.
+        pulls = [
+            _outside_pull(301, opened_days_ago=30, merged=True),
+            _outside_pull(302, opened_days_ago=20, merged=True),
+            _outside_pull(303, opened_days_ago=10, merged=True),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), FakeGitHub(all_pulls=pulls))
+        gate = _named(record, "responsiveness")
+
+        self.assertTrue(gate["passed"], gate["data"])
+        self.assertEqual(gate["data"]["responded"], 3)
+        self.assertEqual(gate["data"]["responded_within_days"], 3)
+        self.assertEqual(gate["data"]["median_first_response_days"], 3.0)
+
     def test_a_slow_median_first_response_fails(self) -> None:
         # poetry and pdm are this shape: the pull request is read, eventually.
         pulls = [
-            _outside_pull(201, opened_days_ago=80, merged=True),
+            _outside_pull(201, opened_days_ago=80),
             _outside_pull(202, opened_days_ago=70),
             _outside_pull(203, opened_days_ago=60),
             _outside_pull(204, opened_days_ago=50),

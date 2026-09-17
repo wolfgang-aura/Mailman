@@ -1668,6 +1668,12 @@ def _responsiveness_gate(
     for row, opened in sample:
         number = int(row.get("number") or 0)
         wait = _first_maintainer_response(gh, slug, number, opened)
+        merged_at = _timestamp(row.get("merged_at"))
+        if merged_at is not None:
+            # A merge is a maintainer's answer even when nobody wrote a word;
+            # fsspec merges most outside work silently and read as unanswered.
+            merge_wait = max((merged_at - opened).total_seconds() / 86400, 0.0)
+            wait = merge_wait if wait is None else min(wait, merge_wait)
         if wait is None:
             waits.append((now - opened).total_seconds() / 86400)
         else:
