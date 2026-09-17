@@ -66,7 +66,15 @@ own without a domain narrowing the pool before they see it.
    Human-only authorship declarations, assignment requirements and bans on
    generated descriptions are reasons to pick another target for this flow.
    A refusal phrased as an outcome fails the gate too: "we won't review
-   AI-generated PRs" closes the door as firmly as "no AI-generated code". A
+   AI-generated PRs" closes the door as firmly as "no AI-generated code".
+   The gate does not stop at the guide. A link whose text or path names ai,
+   llm, genai or policy is fetched through the same path — including an
+   organization's `.github` repository and paths relative to the guide — and
+   gated on as well; cattrs keeps its refusal in
+   `python-attrs/.github/AI_POLICY.md`. The document that decided is named in
+   `source`, every document read in `followed_documents`. A linked policy that
+   cannot be read leaves `result` at `unknown` and fails the gate: unknown is
+   not permission. A
    guide that requires a maintainer to have answered the issue first is
    recorded as the `prior-discussion` constraint, and `prescreen` then refuses
    any issue nobody from the project has replied on, under `no-maintainer-reply`.

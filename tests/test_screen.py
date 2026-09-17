@@ -759,6 +759,141 @@ class ScreenTests(unittest.TestCase):
             quote,
         )
 
+    #: python-attrs/cattrs, verbatim: the guide says one sentence about LLM
+    #: tools and keeps the rule in another repository.
+    CATTRS_GUIDE = (
+        "# Contributing\n\n"
+        "Thank you for considering contributing to *cattrs*!\n\n"
+        "> [!IMPORTANT]\n"
+        "> If you use LLM / \"AI\" tools for your contributions, please read "
+        "and follow our [_Generative AI / LLM Policy_][llm].\n\n"
+        "Every contribution helps, and credit will always be given.\n\n"
+        "[llm]: https://github.com/python-attrs/.github/blob/main/AI_POLICY.md\n"
+    )
+    #: python-attrs/.github/AI_POLICY.md, the document the guide links.
+    ATTRS_AI_POLICY = (
+        "# Generative AI / LLM Policy\n\n"
+        "We are not opposed to tools, but:\n\n"
+        "- Absolutely **no** unsupervised agentic tools.\n"
+        "- Pull requests that have an LLM product listed as co-author can't "
+        "be merged.\n"
+    )
+
+    def test_a_guide_that_links_its_ai_policy_is_gated_on_that_policy(self) -> None:
+        # The gate stopped at CONTRIBUTING.md, never followed the link, and
+        # recorded `constraints: []` for a project whose policy refuses
+        # unsupervised agentic tools by name.
+        gh = FakeGitHub(
+            policies={
+                "CONTRIBUTING.md": self.CATTRS_GUIDE,
+                "AI_POLICY.md": self.ATTRS_AI_POLICY,
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), gh)
+        gate = _named(record, "policy")
+
+        self.assertEqual(record["verdict"], "fail")
+        self.assertIn("policy", record["failed_gates"])
+        self.assertEqual(gate["data"]["result"], "refused")
+        # The document that decided is named, not the file the gate started in.
+        self.assertEqual(
+            gate["data"]["source"], "python-attrs/.github/AI_POLICY.md"
+        )
+        self.assertEqual(gate["data"]["guide"], "CONTRIBUTING.md")
+        self.assertIn("agentic tools", gate["data"]["quote"])
+        self.assertEqual(
+            [entry["source"] for entry in gate["data"]["followed_documents"]],
+            ["python-attrs/.github/AI_POLICY.md"],
+        )
+        # Followed through the same fetch path, into the organization's
+        # `.github` repository rather than the target's own.
+        self.assertIn(
+            "repos/python-attrs/.github/contents/AI_POLICY.md?ref=main", gh.asked
+        )
+
+    def test_a_linked_policy_that_cannot_be_read_is_unknown_not_permitted(
+        self,
+    ) -> None:
+        gh = FakeGitHub(policies={"CONTRIBUTING.md": self.CATTRS_GUIDE})
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), gh)
+        gate = _named(record, "policy")
+
+        self.assertEqual(record["verdict"], "fail")
+        self.assertIn("policy", record["failed_gates"])
+        self.assertEqual(gate["data"]["result"], "unknown")
+        self.assertEqual(
+            [entry["source"] for entry in gate["data"]["unread_documents"]],
+            ["python-attrs/.github/AI_POLICY.md"],
+        )
+        self.assertIn("unknown", gate["detail"])
+
+    def test_a_relative_link_is_read_beside_the_guide_that_names_it(self) -> None:
+        gh = FakeGitHub(
+            policies={
+                ".github/CONTRIBUTING.md": (
+                    "Please read our [AI policy](AI_POLICY.md) before "
+                    "opening a pull request.\n"
+                ),
+                ".github/AI_POLICY.md": (
+                    "AI-generated pull requests will be closed without review.\n"
+                ),
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), gh)
+        gate = _named(record, "policy")
+
+        self.assertIn("policy", record["failed_gates"])
+        self.assertEqual(gate["data"]["source"], ".github/AI_POLICY.md")
+        self.assertIn("repos/example/project/contents/.github/AI_POLICY.md", gh.asked)
+
+    def test_a_link_that_is_not_about_ai_costs_no_call(self) -> None:
+        # Every guide links a code of conduct. Following all of them would turn
+        # one gate into an API budget.
+        gh = FakeGitHub(
+            policies={
+                "CONTRIBUTING.md": (
+                    "Read the [Code of Conduct](CODE_OF_CONDUCT.md) and the "
+                    "[maintainers' handbook](https://example.invalid/handbook) "
+                    "first.\n"
+                )
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), gh)
+        gate = _named(record, "policy")
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(gate["data"]["result"], "permitted")
+        self.assertEqual(gate["data"]["followed_documents"], [])
+        self.assertNotIn(
+            "repos/example/project/contents/CODE_OF_CONDUCT.md", gh.asked
+        )
+
+    def test_a_constraint_in_a_linked_policy_reaches_the_record(self) -> None:
+        gh = FakeGitHub(
+            policies={
+                "CONTRIBUTING.md": "See our [LLM policy](AI_POLICY.md).\n",
+                "AI_POLICY.md": (
+                    "Any AI-assisted contribution must be disclosed in the "
+                    "pull request body.\n"
+                ),
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), gh)
+        gate = _named(record, "policy")
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertTrue(gate["data"]["requires_disclosure"])
+        self.assertEqual(
+            [entry["source"] for entry in gate["data"]["constraints"]],
+            ["AI_POLICY.md"],
+        )
+        self.assertIn("AI_POLICY.md", gate["detail"])
+
     def test_a_welcome_with_a_stale_pull_request_rule_is_not_a_refusal(self) -> None:
         # Two rules about two different things, a sentence apart. Reading the
         # closure rule as an answer to the AI rule would reject a repository

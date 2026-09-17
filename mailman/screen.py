@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import json
+import posixpath
 import re
 import statistics
 from collections import Counter
@@ -43,7 +44,7 @@ from mailman.target_intel import (
 )
 from mailman.toolchain import resolve_tool
 
-SCREEN_SCHEMA_VERSION = 1
+SCREEN_SCHEMA_VERSION = 2
 SCREENS_DIRECTORY = "screens"
 
 #: How far back to look for the pattern of outside merges, as opposed to the
@@ -198,6 +199,10 @@ _POLICY_BANS = re.compile(
     r"|we\s+(?:do not|don't)\s+accept\s+ai"
     r"|ai[- ]?(?:assisted|written)\s+contributions?\s+are\s+not"
     r"|zero[- ]tolerance\s+.{0,40}\bai\b"
+    # python-attrs/.github/AI_POLICY.md: "Absolutely **no** unsupervised
+    # agentic tools". A ban on the tool rather than on the output, and this
+    # project is the tool.
+    r"|\bno\b[^.]{0,30}\bagentic\s+(?:tools?|agents?|coding|workflows?)"
     r")",
     re.IGNORECASE,
 )
@@ -216,6 +221,11 @@ _REFUSAL_OUTCOME = re.compile(
     r"|automatically\s+closed"
     r"|clos(?:e|ed|ing)\s+(?:them\s+|it\s+|the\s+pr\s+)?outright"
     r"|closed\s+without\s+review"
+    # "Pull requests that have an LLM product listed as co-author can't be
+    # merged" is python-attrs's refusal, and `can't` was the one spelling of a
+    # refusal this pattern did not know.
+    r"|(?:can\s?n[o']?t|cannot|may\s+not)\s+(?:be\s+)?"
+    r"(?:reviewed?|accepted?|merged?|considered?)"
     r")",
     re.IGNORECASE,
 )
@@ -304,6 +314,131 @@ _POLICY_PATHS = (
     "CONTRIBUTING.rst",
     "AGENTS.md",
 )
+
+#: The links a contributing guide carries, in the three spellings a guide
+#: writes them: inline, reference-style with the target defined elsewhere, and
+#: reStructuredText for the `.rst` guides.
+_INLINE_LINK = re.compile(r"\[(?P<text>[^\]\n]{1,160})\]\((?P<url>[^)\s]{1,400})\)")
+_REFERENCE_USE = re.compile(r"\[(?P<text>[^\]\n]{1,160})\]\[(?P<ref>[^\]\n]{0,160})\]")
+_REFERENCE_DEFINITION = re.compile(
+    r"^ {0,3}\[(?P<ref>[^\]\n]{1,160})\]:\s*<?(?P<url>\S{1,400}?)>?\s*$",
+    re.MULTILINE,
+)
+_RST_LINK = re.compile(r"`(?P<text>[^`<\n]{1,160})<(?P<url>[^>`\s]{1,400})>`_")
+
+#: What makes a link worth one more API call. `ai` and `llm` are matched as
+#: whole words, because every third path in a repository contains the letters
+#: of "ai" and none of those are the policy.
+_POLICY_LINK_WORD = re.compile(
+    r"(?:^|[^a-z])(?:ai|llms?|gen[-_ ]?ai|polic(?:y|ies))(?:[^a-z]|$)",
+    re.IGNORECASE,
+)
+
+#: No guide links twenty policies, and an uncapped walk turns one gate into an
+#: API budget.
+_POLICY_LINK_LIMIT = 3
+
+
+def _policy_links(body: str) -> list[tuple[str, str]]:
+    """Every (link text, url) pair the guide carries, in document order."""
+    definitions = {
+        match.group("ref").strip().lower(): match.group("url").strip()
+        for match in _REFERENCE_DEFINITION.finditer(body)
+    }
+    links: list[tuple[str, str]] = []
+    for match in _INLINE_LINK.finditer(body):
+        links.append((match.group("text"), match.group("url")))
+    for match in _REFERENCE_USE.finditer(body):
+        # `[text][]` is the shorthand whose reference is its own text.
+        key = (match.group("ref").strip() or match.group("text")).strip().lower()
+        target = definitions.get(key)
+        if target:
+            links.append((match.group("text"), target))
+    for match in _RST_LINK.finditer(body):
+        links.append((match.group("text"), match.group("url")))
+    return links
+
+
+def _linked_document(url: str, *, slug: str, guide: str) -> tuple[str, str] | None:
+    """The contents path for a link, and the name to record the document under.
+
+    Three shapes, because a project writes the same pointer three ways: an
+    absolute `github.com` blob URL into another repository, which is where an
+    organization keeps its `.github/AI_POLICY.md`; the `raw` host; and a path
+    relative to the guide's own directory. Anything else is somebody's web
+    page, and this gate reads repository files.
+    """
+    link = url.strip().split("#", 1)[0].split("?", 1)[0]
+    if not link or link.startswith(("mailto:", "tel:")):
+        return None
+    ref: str | None = None
+    if link.lower().startswith(("http://", "https://")):
+        host, _, tail = link.split("://", 1)[1].partition("/")
+        parts = [part for part in tail.split("/") if part]
+        if host.lower() in ("github.com", "www.github.com"):
+            if len(parts) < 5 or parts[2] not in ("blob", "raw", "tree"):
+                return None
+            owner, repository, _, ref = parts[:4]
+            path = "/".join(parts[4:])
+        elif host.lower() in ("raw.githubusercontent.com", "raw.github.com"):
+            if len(parts) < 4:
+                return None
+            owner, repository, ref = parts[:3]
+            path = "/".join(parts[3:])
+        else:
+            return None
+    else:
+        owner, _, repository = slug.partition("/")
+        base = "" if link.startswith("/") else guide.rpartition("/")[0]
+        path = posixpath.normpath(posixpath.join(base, link.lstrip("/")))
+        if path.startswith("..") or path in (".", ""):
+            return None
+    if not path or path.endswith("/") or not owner or not repository:
+        return None
+    api = f"repos/{owner}/{repository}/contents/{path}"
+    if ref:
+        api += f"?ref={ref}"
+    source = path if f"{owner}/{repository}" == slug else f"{owner}/{repository}/{path}"
+    return api, source
+
+
+def _followed_policies(
+    gh: _Gh, slug: str, guide: str, body: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The documents the guide points at for its AI rules, read and unread.
+
+    python-attrs/cattrs keeps one sentence in `CONTRIBUTING.md` — "If you use
+    LLM / "AI" tools for your contributions, please read and follow our
+    [_Generative AI / LLM Policy_][llm]" — and the rule itself in another
+    repository, `python-attrs/.github/AI_POLICY.md`: "Absolutely **no**
+    unsupervised agentic tools". Stopping at the first file recorded
+    `constraints: []` and passed a repository that refuses this project by
+    name. See https://github.com/wolfgang-aura/Mailman/issues/99.
+    """
+    read: list[dict[str, Any]] = []
+    unread: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for text, url in _policy_links(body):
+        if not (_POLICY_LINK_WORD.search(text) or _POLICY_LINK_WORD.search(url)):
+            continue
+        resolved = _linked_document(url, slug=slug, guide=guide)
+        if resolved is None:
+            continue
+        api, source = resolved
+        if source == guide or api in seen:
+            continue
+        seen.add(api)
+        if len(read) + len(unread) >= _POLICY_LINK_LIMIT:
+            break
+        entry = {"source": source, "url": url.strip(), "link_text": text.strip()}
+        document = _decoded(gh.json(api))
+        if document.strip():
+            read.append({**entry, "body": document})
+        else:
+            # Unread, so the policy is unknown. A gate that reads that as
+            # permission is the gate that passed cattrs.
+            unread.append(entry)
+    return read, unread
 
 
 def _gate(
@@ -753,70 +888,136 @@ def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     )
 
 
-def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
-    """Gate 4. Does the contributing guide close an AI-assisted pull request?"""
-    for relative in _POLICY_PATHS:
-        body = _decoded(gh.json(f"repos/{slug}/contents/{relative}"))
-        if not body:
+#: Each constraint the gate reads, in the order the record lists them. A
+#: project can permit the code and still refuse a model-written body or a
+#: commit under a tool's account, and those have to reach the run rather than
+#: be summarised away into the word "pass".
+_CONSTRAINT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("disclosure", _POLICY_DISCLOSURE),
+    ("own-words", _POLICY_OWN_WORDS),
+    ("human-account", _POLICY_HUMAN_ACCOUNT),
+    (PRIOR_DISCUSSION, _POLICY_PRIOR_DISCUSSION),
+)
+
+#: The constraints whose quote is the whole sentence rather than the matched
+#: phrase, because the phrase alone does not say what the rule is.
+_SENTENCE_CONSTRAINTS = frozenset({PRIOR_DISCUSSION})
+
+
+def _constraints(source: str, flat: str, found: list[dict[str, Any]]) -> None:
+    """Add this document's constraints to `found`, first document winning."""
+    known = {entry["kind"] for entry in found}
+    for kind, pattern in _CONSTRAINT_PATTERNS:
+        if kind in known:
             continue
-        flat = " ".join(body.split())
-        ban = _POLICY_BANS.search(flat)
-        # A ban is written two ways: as a rule about what may be submitted, and
-        # as a statement of what will happen to it. The second is the one
-        # sentry-python uses, and reading only the first spent a whole hunt on
-        # a patch its automation closes on arrival. Mailman #99.
-        refusal = ban.group(0) if ban else _outcome_refusal(flat)
-        if refusal:
-            return _gate(
-                "policy",
-                passed=False,
-                blocking=True,
-                detail=f"{relative} refuses AI-assisted work: {refusal!r}",
-                data={"source": relative, "quote": refusal},
-            )
-        # Three separate questions, not one. A project can permit the code and
-        # still refuse a model-written body or a commit under a tool's account,
-        # and those constraints have to reach the run rather than be summarised
-        # away into the word "pass".
-        disclosure = _POLICY_DISCLOSURE.search(flat)
-        own_words = _POLICY_OWN_WORDS.search(flat)
-        human_account = _POLICY_HUMAN_ACCOUNT.search(flat)
-        prior_discussion = _POLICY_PRIOR_DISCUSSION.search(flat)
-        constraints = [
+        match = pattern.search(flat)
+        if not match:
+            continue
+        found.append(
             {
                 "kind": kind,
                 "quote": (
                     _sentence(flat, match.start(), match.end())
-                    if kind == PRIOR_DISCUSSION
+                    if kind in _SENTENCE_CONSTRAINTS
                     else match.group(0)
                 ),
+                "source": source,
             }
-            for kind, match in (
-                ("disclosure", disclosure),
-                ("own-words", own_words),
-                ("human-account", human_account),
-                (PRIOR_DISCUSSION, prior_discussion),
+        )
+
+
+def _quoted(constraints: list[dict[str, Any]], kind: str) -> str | None:
+    for entry in constraints:
+        if entry["kind"] == kind:
+            return entry["quote"]
+    return None
+
+
+def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
+    """Gate 4. Does the guide, or the policy it links, close an AI-assisted pull request?"""
+    for relative in _POLICY_PATHS:
+        body = _decoded(gh.json(f"repos/{slug}/contents/{relative}"))
+        if not body:
+            continue
+        followed, unread = _followed_policies(gh, slug, relative, body)
+        documents = [{"source": relative, "body": body}, *followed]
+        trail = {
+            "followed_documents": [
+                {key: entry[key] for key in ("source", "url", "link_text")}
+                for entry in followed
+            ],
+            "unread_documents": unread,
+        }
+        for document in documents:
+            flat = " ".join(document["body"].split())
+            ban = _POLICY_BANS.search(flat)
+            # A ban is written two ways: as a rule about what may be submitted,
+            # and as a statement of what will happen to it. The second is the
+            # one sentry-python uses, and reading only the first spent a whole
+            # hunt on a patch its automation closes on arrival. Mailman #99.
+            refusal = ban.group(0) if ban else _outcome_refusal(flat)
+            if not refusal:
+                continue
+            return _gate(
+                "policy",
+                passed=False,
+                blocking=True,
+                detail=(
+                    f"{document['source']} refuses AI-assisted work: {refusal!r}"
+                ),
+                data={
+                    "source": document["source"],
+                    "guide": relative,
+                    "result": "refused",
+                    "quote": refusal,
+                    **trail,
+                },
             )
-            if match
-        ]
+        if unread:
+            # The guide points at the document that decides and the document
+            # could not be read. Unknown is not permission.
+            named = ", ".join(entry["source"] for entry in unread)
+            return _gate(
+                "policy",
+                passed=False,
+                blocking=True,
+                detail=(
+                    f"{relative} sends contributors to {named}, which could not "
+                    "be read, so whether this project closes AI-assisted work "
+                    "is unknown"
+                ),
+                data={
+                    "source": relative,
+                    "guide": relative,
+                    "result": "unknown",
+                    "quote": None,
+                    **trail,
+                },
+            )
+        constraints: list[dict[str, Any]] = []
+        for document in documents:
+            flat = " ".join(document["body"].split())
+            _constraints(document["source"], flat, constraints)
+        kinds = {entry["kind"] for entry in constraints}
+        read = ", ".join(entry["source"] for entry in documents)
         if constraints:
             summary = "; ".join(
                 f"{entry['kind']}: {entry['quote']!r}" for entry in constraints
             )
-            detail = f"{relative} permits the code and constrains the submission - {summary}"
-            if own_words:
+            detail = f"{read} permits the code and constrains the submission - {summary}"
+            if "own-words" in kinds:
                 detail += (
                     ". Set `requires_own_words` in the target policy so "
                     "prepare-submission refuses a generated body."
                 )
-            if prior_discussion:
+            if PRIOR_DISCUSSION in kinds:
                 detail += (
                     " A maintainer has to have answered the issue before a "
                     "pull request exists here, so `prescreen` refuses an "
                     "unanswered one."
                 )
         else:
-            detail = f"{relative} says nothing that closes AI-assisted work"
+            detail = f"{read} says nothing that closes AI-assisted work"
         return _gate(
             "policy",
             passed=True,
@@ -824,12 +1025,15 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
             detail=detail,
             data={
                 "source": relative,
-                "requires_disclosure": bool(disclosure),
-                "requires_own_words": bool(own_words),
-                "requires_human_account": bool(human_account),
-                "requires_prior_discussion": bool(prior_discussion),
+                "guide": relative,
+                "result": "permitted",
+                "requires_disclosure": "disclosure" in kinds,
+                "requires_own_words": "own-words" in kinds,
+                "requires_human_account": "human-account" in kinds,
+                "requires_prior_discussion": PRIOR_DISCUSSION in kinds,
                 "constraints": constraints,
-                "quote": disclosure.group(0) if disclosure else None,
+                "quote": _quoted(constraints, "disclosure"),
+                **trail,
             },
         )
     return _gate(
@@ -837,7 +1041,7 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         passed=True,
         blocking=False,
         detail="no contributing guide found, so nothing forbids the work in writing",
-        data={"source": None},
+        data={"source": None, "result": "no-guide"},
     )
 
 
