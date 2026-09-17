@@ -322,6 +322,32 @@ cannot rewrite the gate result and procedure digest that its open pull requests
 rest on. Without this the record still reads `AWAITING_FILING_APPROVAL`, and the
 next session offers the operator work he has already filed.
 
+## Watch what was filed
+
+A filed pull request is not finished work. Run `mailman hunt watch` before
+starting a new hunt and once a day between hunts. It reads every filed pull
+request from both ledgers, the `filed` rows in `hunts/*/hunt.json` and every
+`runs/*/submission/provenance.json` that names a pull request, asks GitHub
+about each one, prints one line per pull request, and writes the reading to
+`.mailman/filed-watch.json`. That file's `checked_at` is the last time the
+watch completed; a stale one means nobody has looked. `--json` prints the
+record instead of the table.
+
+The `STATUS` column decides. `ok` is an open pull request with green or
+pending checks, a base it can still merge onto, and no outside comment newer
+than our last commit or reply. `attention` names the reason on the next line:
+a failing check by name, `mergeable_state behind` (the base moved on; rebase
+and push) or `dirty` (a conflict), or an unanswered comment or review from
+somebody other than the author, bots excluded, newer than anything we did on
+the thread. `unknown` is a row `gh` could not read, a 404, a rate limit, a
+timeout, and it counts as work because a reading with a hole in it proves
+nothing. `merged` and `closed` are history and never need work. The command
+exits 1 while any row is `attention` or `unknown`, so a scheduled run can page
+on the exit code alone. Act on an `attention` row through the normal path:
+`fetch-review` for a maintainer's request, a rebase for `behind`, the failing
+test for a red check. edgartools#1329 failed CI three hours before anybody
+looked; this is the look.
+
 For Mailman defects discovered during a hunt, search existing GitHub issues.
 Update local evidence for existing issues. Draft new issues privately and
 include them in the final filing approval, unless the user separately

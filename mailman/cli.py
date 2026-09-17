@@ -163,6 +163,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "refresh",
             "file",
             "targets",
+            "watch",
         ),
     )
     hunt.add_argument(
@@ -183,6 +184,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print every replaced candidate's reason and evidence too. The "
         "default view omits them; the hunt record keeps them either way",
+    )
+    hunt.add_argument(
+        "--json",
+        action="store_true",
+        help="print the full record instead of the table, for hunt watch",
     )
     hunt.add_argument("hunt_id", nargs="?")
     hunt.add_argument("run_id", nargs="?")
@@ -914,6 +920,19 @@ def _hunt(arguments: argparse.Namespace) -> int:
             )
         )
         return 0
+    if arguments.action == "watch":
+        # Every filed pull request, re-read from GitHub. Non-zero when one is
+        # red, behind, dirty, unanswered or unreadable: the row a cron job
+        # should page somebody about.
+        # https://github.com/wolfgang-aura/Mailman/issues/115
+        from mailman.filed_watch import render_watch, watch_filed
+
+        result = watch_filed(root)
+        if arguments.json:
+            print(json.dumps(result, indent=2))
+        else:
+            _emit(render_watch(result))
+        return 0 if result["ok"] else 1
     if not arguments.hunt_id:
         raise ValueError("provide a hunt ID, or a count for hunt init")
     if arguments.action == "init":
