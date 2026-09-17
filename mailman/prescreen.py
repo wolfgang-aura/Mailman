@@ -38,6 +38,7 @@ from mailman.submission import (
 )
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
+    CITED_MERGED_IN_BODY,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     ISSUE_ASSIGNED,
     MAINTAINER_CLOSED_ATTEMPT,
@@ -477,6 +478,9 @@ def prescreen_issue(
         "skipped": cited["skipped"],
         "open": [row["number"] for row in cited["open"]],
         "merged": [row["number"] for row in cited["merged"]],
+        "merged_in_body": [
+            row["number"] for row in cited["merged"] if row.get("in") == "body"
+        ],
         "stale": [row["number"] for row in cited["stale"]],
         "maintainer_closed": [row["number"] for row in cited["maintainer_closed"]],
         "decided_by": cited["decided_by"],
@@ -524,8 +528,17 @@ def prescreen_issue(
         thread_blocking.append(DUPLICATE_FORBIDDEN_OPEN_ATTEMPT)
     if cited["open"]:
         thread_blocking.append(OPEN_PULL_REQUEST)
-    if cited["merged"]:
+    # A merged pull request the reporter names in the body is the cause or
+    # the context of the report, not its fix: zauberzeug/nicegui#6339 was
+    # "found while reviewing #6294, where it is out of scope", and #6331 says
+    # #6329 "does not cover these paths". Both were refused as already fixed.
+    # A fix is announced later, in a comment, and those still block. The
+    # reproduction at the base commit is the check behind this one.
+    merged_fixes = [row for row in cited["merged"] if row.get("in") != "body"]
+    if merged_fixes:
         thread_blocking.append(ALREADY_FIXED_UPSTREAM)
+    elif cited["merged"]:
+        warnings.append(CITED_MERGED_IN_BODY)
     labels = captured.get("labels") or []
     record["ranking"] = _ranking(
         claims,

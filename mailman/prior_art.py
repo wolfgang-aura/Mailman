@@ -423,6 +423,7 @@ def resolve_cited_pull_requests(
         writer = payload.get("author")
         row = {
             "reference": reference.get("text"),
+            "in": reference.get("in"),
             "repository": slug,
             "number": payload.get("number", number),
             "state": str(payload.get("state") or "").upper(),

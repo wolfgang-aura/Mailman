@@ -42,6 +42,9 @@ OPEN_PULL_REQUEST = "open-pull-request"
 # The same code `prepare-submission` uses for a merged duplicate. The
 # judgement is identical; `check-target` only reaches it earlier.
 ALREADY_FIXED_UPSTREAM = "already-fixed-upstream"
+#: A merged pull request the issue's own body names. Context or cause, not a
+#: fix, so a warning: the reproduction at the base commit decides.
+CITED_MERGED_IN_BODY = "cited-merged-in-body"
 # A merged pull request that is already an ancestor of the base commit the
 # reproduction failed at. Upstream shipped something to the same code and the
 # defect survived it, so this is a warning to read rather than a refusal.

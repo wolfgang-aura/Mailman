@@ -176,8 +176,14 @@ def pull_request_references(
     repository: str,
     exclude: Iterable[tuple[str, int]] = (),
     limit: int = REFERENCE_LIMIT,
+    origins: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Every pull-request reference written in these texts, first mention first.
+
+    `origins`, parallel to `texts`, says where each text sits in the thread
+    (`body`, `comment`, `timeline`); the first mention's origin is kept under
+    `in`, because a merged pull request the reporter names in the body is the
+    cause or the context of the report, not its fix.
 
     Nothing here decides whether the number is a pull request at all: `#12`
     reads the same whether it names an issue, a pull request or a heading
@@ -188,10 +194,11 @@ def pull_request_references(
     skip = {(slug.lower(), number) for slug, number in exclude}
     found: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
-    for text in texts:
+    for index, text in enumerate(texts):
         flat = _flat(text)
         if not flat:
             continue
+        origin = origins[index] if origins and index < len(origins) else None
         for pattern in (_PULL_REQUEST_URL, _HASH_REFERENCE):
             for match in pattern.finditer(flat):
                 owner, name, digits = match.groups()
@@ -206,6 +213,7 @@ def pull_request_references(
                         "text": match.group(0),
                         "repository": slug,
                         "number": number,
+                        "in": origin,
                     }
                 )
     return found[:limit]
@@ -518,18 +526,19 @@ def read_claims(
     # them and `prescreen` pays for the ones it wants.
     # https://github.com/wolfgang-aura/Mailman/issues/98
     timeline = api(f"repos/{slug}/issues/{number}/timeline", per_page=100)
+    comment_bodies = [
+        comment.get("body") for comment in comments if isinstance(comment, dict)
+    ]
+    cross_referenced = _cross_referenced_urls(timeline)
     record["references"] = pull_request_references(
-        [
-            payload.get("body"),
-            *(
-                comment.get("body")
-                for comment in comments
-                if isinstance(comment, dict)
-            ),
-            *_cross_referenced_urls(timeline),
-        ],
+        [payload.get("body"), *comment_bodies, *cross_referenced],
         repository=slug,
         exclude=[(slug, int(number))],
+        origins=[
+            "body",
+            *(["comment"] * len(comment_bodies)),
+            *(["timeline"] * len(cross_referenced)),
+        ],
     )
     record["maintainer_replied"] = any(
         comment.get("author_association") in MAINTAINER_ASSOCIATIONS

@@ -36,6 +36,7 @@ from mailman.screen import screen_path
 from mailman.shortlist import MAINTAINER_INVITED, NO_LINKED_PR, RECENT
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
+    CITED_MERGED_IN_BODY,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     MAINTAINER_CLOSED_ATTEMPT,
     NO_MAINTAINER_REPLY,
@@ -728,6 +729,44 @@ class CitedPullRequestTests(PrescreenTests):
             [22721],
         )
         self.assertIn("no clone", record["cited_pull_requests"]["detail"])
+
+    def test_a_merged_pull_request_named_in_the_body_is_context_not_a_fix(
+        self,
+    ) -> None:
+        # zauberzeug/nicegui#6339: a maintainer opened the issue with "Found
+        # while reviewing #6294, where it is out of scope", and the stage
+        # refused it as already fixed upstream. A merged pull request the
+        # reporter names in the body is what the report is about, not its
+        # fix; a fix arrives later, in a comment.
+        record = prescreen_issue(
+            self.root,
+            "zauberzeug/nicegui#6339",
+            executable=self.stub(
+                "[]",
+                self.issue(
+                    6339,
+                    "zauberzeug/nicegui",
+                    "`Layer.current_leaflet` keeps the last `ui.leaflet` alive. "
+                    "Found while reviewing #6294, where it is out of scope.",
+                    "Layer.current_leaflet keeps the last ui.leaflet alive",
+                ),
+                pull_requests={
+                    "zauberzeug/nicegui#6294": {
+                        "number": 6294,
+                        "state": "MERGED",
+                        "title": "Fix leakage of tasks awaiting initialization",
+                        "url": "https://github.com/zauberzeug/nicegui/pull/6294",
+                        "mergedAt": "2026-09-16T00:00:00Z",
+                        "mergeCommit": {"oid": "a" * 40},
+                    }
+                },
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertNotIn(ALREADY_FIXED_UPSTREAM, record["blocking"])
+        self.assertIn(CITED_MERGED_IN_BODY, record["warnings"])
+        self.assertEqual(record["cited_pull_requests"]["merged_in_body"], [6294])
 
     def test_a_cross_repository_pull_request_rejects_the_issue(self) -> None:
         # python-jsonschema/jsonschema#1497: the fix is open in the sibling
