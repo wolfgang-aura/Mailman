@@ -12,9 +12,13 @@ import base64
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from datetime import UTC, datetime, timedelta
+from io import StringIO
 from pathlib import Path
+from unittest import mock
 
+from mailman.cli import main
 from mailman.screen import (
     direct_push_share,
     forbids_duplicate_pull_requests,
@@ -22,6 +26,7 @@ from mailman.screen import (
     render_screen,
     requires_prior_discussion,
     screen_repository,
+    screen_shortlist,
 )
 
 
@@ -1649,6 +1654,189 @@ class ResponsivenessTests(unittest.TestCase):
         # Only the pull request opened ten days ago is inside a 15-day window.
         self.assertEqual(gate["data"]["sampled"], 1)
         self.assertEqual(gate["data"]["result"], "unknown")
+
+
+def _reply(body: str, *, association: str = "NONE", days_ago: int = 1) -> dict:
+    return {
+        "user": {"login": "somebody", "type": "User"},
+        "author_association": association,
+        "body": body,
+        "created_at": _days_ago(days_ago),
+    }
+
+
+class ShortlistTests(unittest.TestCase):
+    """The saturation gate keeps the issues it found, ranked.
+
+    Across the last two hunts 72 of 106 pre-screened issues died on somebody's
+    open pull request, because the newest unclaimed issue is where everybody
+    looks first. See https://github.com/wolfgang-aura/Mailman/issues/102.
+    """
+
+    def _shortlist(self, gh: FakeGitHub) -> tuple[dict, list[dict]]:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), gh)
+        return record, screen_shortlist(record)
+
+    def test_an_invited_recent_issue_outranks_an_old_uninvited_one(self) -> None:
+        record, rows = self._shortlist(
+            FakeGitHub(
+                issues=[
+                    _issue(10, days_old=60),
+                    _issue(11, days_old=2),
+                    _issue(12, days_old=60),
+                ],
+                issue_comments={
+                    10: [],
+                    11: [_reply("PRs welcome for this one.", association="MEMBER")],
+                    12: [
+                        _reply(
+                            "Happy to accept a PR.", association="OWNER", days_ago=30
+                        )
+                    ],
+                },
+            )
+        )
+        by_number = {row["number"]: row for row in rows}
+        gate = _named(record, "saturation")
+
+        # Invited beats everything, then recent, then the tie falls to age.
+        self.assertEqual([row["number"] for row in rows], [11, 12, 10])
+        self.assertEqual(
+            by_number[11]["reasons"],
+            ["maintainer-invited", "recent", "no-linked-pr"],
+        )
+        self.assertEqual(
+            by_number[12]["reasons"], ["maintainer-invited", "no-linked-pr"]
+        )
+        self.assertEqual(by_number[10]["reasons"], ["no-linked-pr"])
+        self.assertGreater(by_number[12]["score"], by_number[10]["score"])
+        self.assertEqual(gate["data"]["maintainer_invited"], 2)
+        self.assertIn("2 asked for by a maintainer", gate["detail"])
+
+    def test_an_old_invited_issue_outranks_a_recent_uninvited_one(self) -> None:
+        # "Feel free to open a PR" with nobody having asked is an invitation to
+        # anybody, not the work handed to somebody; the issue stays on the list.
+        _, rows = self._shortlist(
+            FakeGitHub(
+                issues=[_issue(10, days_old=2), _issue(11, days_old=60)],
+                issue_comments={
+                    10: [],
+                    11: [
+                        _reply(
+                            "Feel free to open a PR.",
+                            association="COLLABORATOR",
+                            days_ago=30,
+                        )
+                    ],
+                },
+            )
+        )
+
+        self.assertEqual([row["number"] for row in rows], [11, 10])
+
+    def test_an_invitation_by_a_non_maintainer_does_not_count(self) -> None:
+        _, rows = self._shortlist(
+            FakeGitHub(
+                issues=[_issue(10, days_old=60)],
+                issue_comments={
+                    10: [_reply("PRs welcome, I'd say.", association="CONTRIBUTOR")]
+                },
+            )
+        )
+
+        self.assertEqual(rows[0]["reasons"], ["no-linked-pr"])
+
+    def test_a_maintainer_written_on_thread_is_recent(self) -> None:
+        _, rows = self._shortlist(
+            FakeGitHub(
+                issues=[_issue(10, days_old=60)],
+                issue_comments={
+                    10: [_reply("Still happens on main.", association="MEMBER")]
+                },
+            )
+        )
+
+        self.assertEqual(rows[0]["reasons"], ["recent", "no-linked-pr"])
+
+    def test_a_help_wanted_label_counts_as_an_invitation(self) -> None:
+        _, rows = self._shortlist(
+            FakeGitHub(
+                issues=[
+                    _issue(10, days_old=60, labels=[{"name": "Help-Wanted"}]),
+                    _issue(11, days_old=60, labels=["good first issue"]),
+                    _issue(12, days_old=60, labels=["bug"]),
+                ],
+                issue_comments={10: [], 11: [], 12: []},
+            )
+        )
+
+        self.assertEqual([row["number"] for row in rows], [10, 11, 12])
+        self.assertIn("maintainer-invited", rows[0]["reasons"])
+        self.assertIn("maintainer-invited", rows[1]["reasons"])
+        self.assertNotIn("maintainer-invited", rows[2]["reasons"])
+
+    def test_a_pull_request_cited_in_the_thread_loses_the_clean_code(self) -> None:
+        # Not a claim on its own: only `gh pr view` can say what #90 is. But an
+        # issue nobody has cited anything against ranks above one somebody has.
+        cited = _issue(10, days_old=3)
+        cited["body"] = "See the earlier attempt in #90."
+        _, rows = self._shortlist(
+            FakeGitHub(
+                issues=[cited, _issue(11, days_old=3)],
+                issue_comments={10: [], 11: []},
+            )
+        )
+
+        self.assertEqual([row["number"] for row in rows], [11, 10])
+        self.assertEqual(rows[1]["reasons"], ["recent"])
+
+    def test_the_rendered_screen_prints_the_shortlist_from_the_top(self) -> None:
+        record, _ = self._shortlist(
+            FakeGitHub(
+                issues=[_issue(10, days_old=60), _issue(11, days_old=2)],
+                issue_comments={
+                    10: [],
+                    11: [_reply("PRs welcome.", association="MEMBER")],
+                },
+            )
+        )
+        rendered = render_screen(record)
+
+        self.assertIn("shortlist (ranked", rendered)
+        self.assertLess(rendered.index("#11"), rendered.index("#10"))
+        self.assertIn("maintainer-invited, recent, no-linked-pr", rendered)
+
+    def test_screen_target_json_prints_the_ranked_shortlist(self) -> None:
+        record, rows = self._shortlist(
+            FakeGitHub(
+                issues=[_issue(10, days_old=60), _issue(11, days_old=2)],
+                issue_comments={
+                    10: [],
+                    11: [_reply("PRs welcome.", association="MEMBER")],
+                },
+            )
+        )
+        stdout = StringIO()
+        with tempfile.TemporaryDirectory() as temporary, mock.patch(
+            "mailman.cli.screen_repository", return_value=record
+        ), redirect_stdout(stdout):
+            code = main(
+                [
+                    "screen-target",
+                    "example/project",
+                    "--refresh",
+                    "--json",
+                    "--data-root",
+                    temporary,
+                ]
+            )
+        printed = json.loads(stdout.getvalue())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(printed["verdict"], "pass")
+        self.assertEqual(printed["shortlist"], rows)
+        self.assertEqual(printed["shortlist"][0]["number"], 11)
 
 
 if __name__ == "__main__":

@@ -95,6 +95,22 @@ own without a domain narrowing the pool before they see it.
    one where ours will be read quickly. The median, the share, the merged and
    closed counts and the number sampled are recorded under the gate and
    printed in the screen.
+   A passing screen prints the shortlist: every unclaimed workable issue the
+   saturation gate found, ranked, and `screen-target --json` prints the same
+   rows as JSON. Pre-screen from the top. The rank is a strict order of three
+   reasons, and each row names the ones it holds: `maintainer-invited` (a
+   comment by an OWNER, MEMBER or COLLABORATOR, or the report itself when its
+   author is one, asking for the pull request in words such as "PRs welcome"
+   or "feel free to open a PR", or a `help wanted`, `good first issue` or
+   `contributions welcome` label) outranks everything; then `recent` (opened,
+   or last written on by a maintainer, within 14 days); then `no-linked-pr`
+   (no pull request linked to or cited by the issue, open, merged or dormant).
+   Across the last two hunts 72 of 106 pre-screened issues died on somebody's
+   open pull request, because the newest unclaimed issue is where every
+   contributor looks first. An issue a maintainer asked for and nobody took
+   is the one worth the pre-screen. The pre-screen record repeats the score
+   under `ranking`, from the whole thread rather than one page of it, and that
+   one is the one to trust when the two differ.
 2. Pre-screen every issue on the shortlist before opening a run on any of
    them: `mailman prescreen OWNER/REPO#N --symbols NAME NAME --hunt HUNT_ID
    --owner TOKEN`. It runs the same

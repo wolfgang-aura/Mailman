@@ -33,6 +33,7 @@ from mailman.prescreen import (
     prescreen_path,
 )
 from mailman.screen import screen_path
+from mailman.shortlist import MAINTAINER_INVITED, NO_LINKED_PR, RECENT
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
@@ -1323,6 +1324,65 @@ class InitRunGateTests(PrescreenTests):
             (self.root / run_id / "prescreen-skipped.json").read_text(encoding="utf-8")
         )
         self.assertEqual(skipped["reason"], "operator asked for this one")
+
+
+class RankingTests(unittest.TestCase):
+    """The pre-screen record repeats the shortlist's score and its reasons.
+
+    A coordinator reading two passes needs to see which one a maintainer
+    asked for. Not a subclass of `PrescreenTests`: the base tests would run
+    again for nothing. https://github.com/wolfgang-aura/Mailman/issues/102
+    """
+
+    stub = PrescreenTests.stub
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name) / "runs"
+        self.root.mkdir(parents=True)
+
+    def _reply(self, body: str, association: str) -> dict:
+        return {
+            "body": body,
+            "author_association": association,
+            "created_at": datetime.now(UTC).isoformat(),
+            "user": {"login": "somebody", "type": "User"},
+        }
+
+    def test_a_maintainer_invitation_is_recorded_with_its_reasons(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                comments=[self._reply("Happy to accept a PR for this.", "MEMBER")],
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(record["claims"]["invitations"], 1)
+        self.assertEqual(
+            record["ranking"]["reasons"],
+            [MAINTAINER_INVITED, RECENT, NO_LINKED_PR],
+        )
+        self.assertEqual(load_prescreen(self.root, "example/project", 7), record)
+
+    def test_the_same_words_from_an_outsider_rank_nothing(self) -> None:
+        # The fixture issue was opened on 2026-09-01, outside the recent
+        # window, and an outsider's reply does not move the maintainer clock.
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                comments=[self._reply("Happy to accept a PR for this.", "NONE")],
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(record["claims"]["invitations"], 0)
+        self.assertEqual(record["ranking"]["reasons"], [NO_LINKED_PR])
 
 
 if __name__ == "__main__":

@@ -43,6 +43,30 @@ MAINTAINER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 _QUOTE_CHARACTER_LIMIT = 400
 
+#: The words a maintainer uses to ask for the pull request. One spelling, so
+#: the claim gate (where "PRs welcome" means nobody has claimed it) and the
+#: shortlist (where it means the maintainer wants it) cannot disagree about
+#: what an invitation is.
+_WELCOME = (
+    r"(?:pull requests?|prs?|patch(?:es)?|contributions?) "
+    r"(?:are |would be |very |always )?welcome"
+)
+_FEEL_FREE = r"feel free to (?:open|submit|send|raise|pick|take|work)"
+_INVITATION = re.compile(
+    r"\b(?:"
+    + _WELCOME
+    + r"|"
+    + _FEEL_FREE
+    + r"|(?:happy|glad|willing|open) to (?:accept|review|merge|take|consider) "
+    r"(?:a |an |any |the )?(?:pr|pull request|patch|fix|contribution)"
+    r"|(?:i|we)(?:'d| would|'ll| will) (?:gladly |happily )?"
+    r"(?:accept|review|merge|take) (?:a |the )?(?:pr|pull request|patch|contribution)"
+    r"|(?:a |the )?(?:pr|pull request|patch) (?:would be|is) "
+    r"(?:welcome|appreciated|accepted)"
+    r")",
+    re.IGNORECASE,
+)
+
 #: Asking after a bug is not claiming it. These run first, because several of
 #: them contain the words a claim is made of: "is anyone working on this" would
 #: otherwise read as "working on this".
@@ -52,9 +76,7 @@ _NOT_A_CLAIM = re.compile(
     r"|any (?:update|progress|news|luck)"
     r"|has this been"
     r"|i(?:'m| am| was)? ?(?:no longer|not) working on"
-    r"|pull requests? (?:are )?welcome"
-    r"|prs? (?:are )?welcome"
-    r")",
+    r"|" + _WELCOME + r")",
     re.IGNORECASE,
 )
 
@@ -101,8 +123,7 @@ _ASSIGNMENT = re.compile(
     r"|(?:this |it )?(?:is |'s )?all yours\b"
     r"|it(?:'s| is) yours\b"
     r"|go ahead\b"
-    r"|feel free to (?:open|submit|send|raise|pick|take|work)"
-    r"|you can (?:take|work on|pick|have) (?:this|it)"
+    r"|" + _FEEL_FREE + r"|you can (?:take|work on|pick|have) (?:this|it)"
     r"|(?:please )?go for it\b"
     r")",
     re.IGNORECASE,
@@ -226,6 +247,68 @@ def classify_comment(comment: dict[str, Any]) -> str | None:
     if _NOT_A_CLAIM.search(body):
         return None
     return "claim" if _CLAIM.search(body) else None
+
+
+def classify_thread(comments: Iterable[dict[str, Any]]) -> list[str | None]:
+    """`classify_comment` over a thread, in order, with one contextual rule.
+
+    "Feel free to open a PR" is a handover when it answers "can I take
+    this?", and an invitation to anybody when nobody has asked. The sentence
+    alone cannot tell the two apart; the thread can. A maintainer's
+    invitation-phrased reply with no claim before it is read as
+    `"invitation"` here, so the saturation gate does not count the issue
+    claimed and `check-target` does not refuse it as handed over. Every other
+    handover phrasing is left alone: "go ahead, all yours" names somebody
+    even when the claim it answers was made elsewhere.
+    """
+    kinds: list[str | None] = []
+    claimed_before = False
+    for comment in comments:
+        kind = classify_comment(comment)
+        if (
+            kind == "assignment"
+            and not claimed_before
+            and is_maintainer_invitation(comment)
+        ):
+            kind = "invitation"
+        if kind == "claim":
+            claimed_before = True
+        kinds.append(kind)
+    return kinds
+
+
+def invites_pull_request(text: str | None) -> bool:
+    """Say whether this text asks for a pull request, whoever wrote it."""
+    return bool(_INVITATION.search(_matchable(_flat(text))))
+
+
+def is_maintainer_invitation(comment: dict[str, Any]) -> bool:
+    """Say whether one comment is a maintainer asking for the pull request.
+
+    The report itself counts when its author is a maintainer: a member who
+    writes up a bug and says "PRs welcome" has invited the fix as plainly as
+    one who answers a stranger's report the same way. From anybody else the
+    same sentence is an opinion, which is the rule `classify_comment` already
+    applies to handing the work over.
+    """
+    if not isinstance(comment, dict) or _is_bot(comment.get("user")):
+        return False
+    if comment.get("author_association") not in MAINTAINER_ASSOCIATIONS:
+        return False
+    return invites_pull_request(comment.get("body"))
+
+
+def maintainer_touched_at(comments: Iterable[dict[str, Any]]) -> str | None:
+    """The newest timestamp at which somebody who speaks for the project wrote."""
+    stamps = [
+        str(comment.get("created_at"))
+        for comment in comments
+        if isinstance(comment, dict)
+        and comment.get("author_association") in MAINTAINER_ASSOCIATIONS
+        and not _is_bot(comment.get("user"))
+        and comment.get("created_at")
+    ]
+    return max(stamps) if stamps else None
 
 
 def _row(comment: dict[str, Any]) -> dict[str, Any]:
@@ -411,13 +494,21 @@ def read_claims(
         "created_at": payload.get("created_at"),
         "html_url": payload.get("html_url"),
     }
-    for comment in [report, *comments]:
-        kind = classify_comment(comment)
+    record["invitations"] = []
+    thread = [report, *comments]
+    for comment, kind in zip(thread, classify_thread(thread)):
         if kind == "claim":
             record["claims"].append(_row(comment))
         elif kind == "assignment":
             record["assignments"].append(_row(comment))
+        # Read apart from the claim question. The reply that hands the work
+        # to one person and the reply that asks anybody for it are both
+        # invitations where the shortlist is concerned, and neither is a claim.
+        if is_maintainer_invitation(comment):
+            record["invitations"].append(_row(comment))
     record["comments_read"] = len(comments)
+    record["issue_created_at"] = payload.get("created_at")
+    record["maintainer_touched_at"] = maintainer_touched_at(thread)
     # Every pull request the thread names, unresolved. Deciding what each one
     # is costs a `gh pr view` per reference, so the read stops at collecting
     # them and `prescreen` pays for the ones it wants.
@@ -470,6 +561,7 @@ def render_claims(record: dict[str, Any]) -> str:
     for heading, key in (
         ("## Claims", "claims"),
         ("## Maintainer replies handing the work over", "assignments"),
+        ("## Maintainer replies asking for a pull request", "invitations"),
     ):
         rows = record.get(key) or []
         if not rows:
