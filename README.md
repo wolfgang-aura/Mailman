@@ -374,7 +374,11 @@ merged nothing from outside in six weeks.
    naming them, and how old they are. Age is capped by `--issue-window-days`,
    default 90, which is not the merge window and must not be set from it. A
    fortnight's cap read a normal three-week backlog as a closed door and
-   rejected eighteen repositories that failed nothing else.
+   rejected eighteen repositories that failed nothing else. A pass prints the
+   workable issues as a ranked shortlist, and `--json` prints the same rows:
+   `maintainer-invited` first, then `recent`, then `no-linked-pr`, each row
+   naming the reasons it holds. `mailman/procedure.md` says what the codes
+   mean and why the order is that one.
 7. **Direct push.** What share of recent default-branch commits arrived outside
    a pull request. Warns above 0.5 and blocks nothing: a maintainer who pushes
    his own fixes will write a one-line change faster than he will review one,

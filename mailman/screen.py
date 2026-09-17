@@ -32,7 +32,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from mailman.claims import classify_comment
+from mailman.claims import (
+    classify_thread,
+    maintainer_touched_at,
+    pull_request_references,
+)
 from mailman.executor import CommandResult, execute
 from mailman.target_intel import (
     _Gh,
@@ -41,6 +45,12 @@ from mailman.target_intel import (
     enforcement_markers,
     is_outside_human,
     repository_slug,
+)
+from mailman.shortlist import (
+    MAINTAINER_INVITED,
+    rank_issue,
+    render_shortlist,
+    sort_shortlist,
 )
 from mailman.toolchain import resolve_tool
 
@@ -1248,20 +1258,66 @@ def _age_in_days(row: dict[str, Any], now: datetime) -> int | None:
         return None
 
 
-def _comment_claims(gh: _Gh, slug: str, number: str) -> bool:
-    """Say whether one issue's thread carries an unanswered work claim.
+def _read_thread(gh: _Gh, slug: str, number: str) -> dict[str, Any]:
+    """Read one issue's thread for a claim, and for what ranks it.
 
-    This is the claim form GitHub itself does not track: a comment saying
+    The claim is the form GitHub itself does not track: a comment saying
     "I'm on it" that no maintainer has answered. `mailman claims` reads the
     same thread for a single run; saturation applies the same judgement, so
-    the two gates cannot disagree about what a claim is.
+    the two gates cannot disagree about what a claim is. The same page also
+    says whether a maintainer asked for the pull request, when a maintainer
+    last wrote, and which pull requests the thread cites, and the shortlist
+    ranks on those. One read answers all four.
     """
     comments = gh.pages(
         f"repos/{slug}/issues/{number}/comments?per_page=100", pages=1
     )
-    return any(
-        classify_comment(comment) in {"claim", "assignment"} for comment in comments
+    return {
+        "comments": comments,
+        "claimed": any(
+            kind in {"claim", "assignment"} for kind in classify_thread(comments)
+        ),
+        "maintainer_touched_at": maintainer_touched_at(comments),
+        "cited": [
+            comment.get("body") for comment in comments if isinstance(comment, dict)
+        ],
+    }
+
+
+def _shortlist_row(
+    row: dict[str, Any],
+    thread: dict[str, Any] | None,
+    *,
+    slug: str,
+    age: int,
+    cited_elsewhere: bool,
+    now: datetime,
+) -> dict[str, Any]:
+    """One ranked shortlist entry, with the reasons that put it where it is."""
+    cited = pull_request_references(
+        [row.get("body"), *((thread or {}).get("cited") or [])],
+        repository=slug,
+        exclude=[(slug, int(row["number"]))],
     )
+    ranked = rank_issue(
+        row,
+        (thread or {}).get("comments") or [],
+        linked_pull_requests=cited_elsewhere or bool(cited),
+        maintainer_touched_at=(thread or {}).get("maintainer_touched_at"),
+        now=now,
+    )
+    return {
+        "number": row["number"],
+        "title": row.get("title"),
+        "age_days": age,
+        "labels": [
+            str(label.get("name") or "") if isinstance(label, dict) else str(label)
+            for label in row.get("labels") or []
+        ],
+        "thread_read": thread is not None,
+        "score": ranked["score"],
+        "reasons": ranked["reasons"],
+    }
 
 
 def _saturation_gate(
@@ -1302,9 +1358,11 @@ def _saturation_gate(
         row for row in unassigned if str(row["number"]) not in claimed
     ]
     threads_capped = max(0, len(candidates) - _COMMENT_THREAD_LIMIT)
+    threads: dict[str, dict[str, Any]] = {}
     for row in candidates[:_COMMENT_THREAD_LIMIT]:
         number = str(row["number"])
-        if _comment_claims(gh, slug, number):
+        threads[number] = _read_thread(gh, slug, number)
+        if threads[number]["claimed"]:
             claimed_by_comment.add(number)
     claimed |= claimed_by_comment
 
@@ -1319,6 +1377,7 @@ def _saturation_gate(
     # issue window, not the merge window: whether an old bug is still real is
     # decided later, by `prescreen` and by `reproduce` at the base commit.
     workable = []
+    shortlist: list[dict[str, Any]] = []
     enhancement_labelled = 0
     stale_beyond_window = 0
     for row in unclaimed:
@@ -1330,7 +1389,28 @@ def _saturation_gate(
             stale_beyond_window += 1
             continue
         workable.append(age)
+        # The count alone was what the record used to keep, and a coordinator
+        # rebuilt the list by hand from it. Now the issues themselves are
+        # kept, ranked by whether a maintainer asked for them, how recently
+        # anybody touched them, and whether any pull request is on record.
+        # https://github.com/wolfgang-aura/Mailman/issues/102
+        number = str(row["number"])
+        shortlist.append(
+            _shortlist_row(
+                row,
+                threads.get(number),
+                slug=slug,
+                age=age,
+                cited_elsewhere=number in claims["abandoned"],
+                now=now,
+            )
+        )
+    shortlist = sort_shortlist(shortlist)
     data = {
+        "shortlist": shortlist,
+        "maintainer_invited": sum(
+            1 for row in shortlist if MAINTAINER_INVITED in row["reasons"]
+        ),
         "open_issues": len(open_issues),
         "open_pull_requests_seen": len(open_pulls),
         "unassigned": len(unassigned),
@@ -1382,7 +1462,8 @@ def _saturation_gate(
         blocking=False,
         detail=(
             f"{len(unclaimed)} of {len(unassigned)} unassigned issue(s) have no "
-            f"claim of any kind, {len(workable)} of them workable, median "
+            f"claim of any kind, {len(workable)} of them workable, "
+            f"{data['maintainer_invited']} asked for by a maintainer, median "
             f"workable age {data['median_workable_age_days']} day(s)"
         ),
         data=data,
@@ -1639,6 +1720,17 @@ def screen_repository(
     return record
 
 
+def screen_shortlist(record: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The ranked workable issues a screen recorded, first to pre-screen first."""
+    if not isinstance(record, dict):
+        return []
+    for gate in record.get("gates") or []:
+        if isinstance(gate, dict) and gate.get("name") == "saturation":
+            rows = (gate.get("data") or {}).get("shortlist") or []
+            return [row for row in rows if isinstance(row, dict)]
+    return []
+
+
 def render_screen(record: dict[str, Any]) -> str:
     """One line per gate, with the numbers that decided it."""
     slug = record.get("repository")
@@ -1649,6 +1741,13 @@ def render_screen(record: dict[str, Any]) -> str:
         mark = "pass" if gate["passed"] else ("FAIL" if gate["blocking"] else "warn")
         lines.append(f"  {mark:<5} {gate['name']:<13} {gate['detail']}")
     verdict = record.get("verdict")
+    shortlist = screen_shortlist(record)
+    if verdict == "pass" and shortlist:
+        # Ranked, so the first line is the issue to pre-screen first. The
+        # codes are maintainer-invited, recent and no-linked-pr, in that
+        # order of weight; the procedure says what each one means.
+        lines.append("  shortlist (ranked; pre-screen from the top):")
+        lines += render_shortlist(shortlist)
     if verdict == "pass":
         lines.append("  verdict: worth a run")
     else:

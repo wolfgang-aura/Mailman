@@ -102,6 +102,7 @@ from mailman.screen import (
     load_screen,
     render_screen,
     screen_repository,
+    screen_shortlist,
 )
 from mailman.submission import (
     TargetPolicy,
@@ -544,6 +545,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     screen.add_argument("--executable", help="path to the GitHub CLI executable")
     screen.add_argument("--timeout", type=float, default=120)
+    screen.add_argument(
+        "--json",
+        action="store_true",
+        help="print the verdict and the ranked shortlist as JSON instead of text",
+    )
     screen.add_argument("--data-root", type=Path)
     screen.add_argument("--hunt", dest="deadline_hunt_id")
     screen.add_argument("--owner")
@@ -1532,8 +1538,13 @@ def _screen_target(arguments: argparse.Namespace) -> int:
     if not arguments.refresh:
         cached = load_screen(data_root, slug)
         if cached and cached.get("success"):
-            _emit(render_screen(cached))
-            _emit(f"  (recorded {cached.get('screened_at')}; --refresh to re-read)")
+            if arguments.json:
+                print(json.dumps(_screen_summary(cached), indent=2))
+            else:
+                _emit(render_screen(cached))
+                _emit(
+                    f"  (recorded {cached.get('screened_at')}; --refresh to re-read)"
+                )
             return 0 if cached.get("verdict") == "pass" else 1
     record = screen_repository(
         arguments.repository,
@@ -1543,10 +1554,31 @@ def _screen_target(arguments: argparse.Namespace) -> int:
         executable=arguments.executable,
         timeout_seconds=arguments.timeout,
     )
-    _emit(render_screen(record))
+    if arguments.json:
+        print(json.dumps(_screen_summary(record), indent=2))
+    else:
+        _emit(render_screen(record))
     if not record.get("success"):
         return 2
     return 0 if record.get("verdict") == "pass" else 1
+
+
+def _screen_summary(record: dict) -> dict:
+    """The verdict and the ranked shortlist, without the commands that got them.
+
+    The shortlist is what a coordinator pre-screens from, so it is the one
+    part of the record worth printing whole: each row carries its score and
+    the reason codes (`maintainer-invited`, `recent`, `no-linked-pr`) that
+    put it where it is.
+    """
+    return {
+        "repository": record.get("repository"),
+        "screened_at": record.get("screened_at"),
+        "success": record.get("success"),
+        "verdict": record.get("verdict"),
+        "failed_gates": record.get("failed_gates", []),
+        "shortlist": screen_shortlist(record),
+    }
 
 
 def _claims(arguments: argparse.Namespace) -> int:

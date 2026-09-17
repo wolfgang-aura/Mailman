@@ -30,6 +30,7 @@ from mailman.screen import (
     load_screen,
     requires_prior_discussion,
 )
+from mailman.shortlist import is_recent, label_invites, ranking
 from mailman.submission import (
     partition_duplicates,
     record_duplicate_search,
@@ -341,6 +342,25 @@ def _citable(
     ]
 
 
+def _ranking(
+    claims: dict[str, Any], *, labels: Sequence[Any], linked: bool
+) -> dict[str, Any]:
+    """The same score the screen's shortlist carries, from what this stage read.
+
+    The screen ranks from a list row and one page of comments; this stage has
+    the whole thread and the resolved pull requests, so its answer can differ
+    from the shortlist's and is the one to trust. The reasons are recorded so
+    a coordinator reading two passes can see which one a maintainer asked for.
+    """
+    return ranking(
+        invited=bool(claims.get("invitations")) or label_invites(list(labels)),
+        recent=is_recent(
+            claims.get("issue_created_at"), claims.get("maintainer_touched_at")
+        ),
+        no_linked_pull_request=not linked,
+    )
+
+
 def is_fresh(record: dict[str, Any], *, hours: int = PRESCREEN_HOURS) -> bool:
     try:
         screened = datetime.fromisoformat(record["screened_at"])
@@ -441,7 +461,9 @@ def prescreen_issue(
         "assignees": claims.get("assignees", []),
         "assignments": len(claims.get("assignments", [])),
         "claims": len(claims.get("claims", [])),
+        "invitations": len(claims.get("invitations", [])),
         "maintainer_replied": claims.get("maintainer_replied"),
+        "maintainer_touched_at": claims.get("maintainer_touched_at"),
     }
     cited = resolve_cited_pull_requests(
         directory,
@@ -504,6 +526,15 @@ def prescreen_issue(
         thread_blocking.append(OPEN_PULL_REQUEST)
     if cited["merged"]:
         thread_blocking.append(ALREADY_FIXED_UPSTREAM)
+    labels = captured.get("labels") or []
+    record["ranking"] = _ranking(
+        claims,
+        labels=labels,
+        linked=any(
+            cited[key]
+            for key in ("open", "merged", "stale", "maintainer_closed")
+        ),
+    )
     if thread_blocking:
         details = []
         if NO_MAINTAINER_REPLY in thread_blocking:
@@ -635,6 +666,20 @@ def prescreen_issue(
     record["closed_attempts"] = [
         row.get("number") for row in assessment.closed_attempts
     ]
+    # Re-ranked now that the search has had its say: an attempt the thread
+    # never named is still a pull request on record.
+    record["ranking"] = _ranking(
+        claims,
+        labels=labels,
+        linked=bool(
+            record["stale_attempts"]
+            or record["duplicate_blocked_attempts"]
+            or record["maintainer_closed_attempts"]
+            or record["open_attempts"]
+            or record["merged_attempts"]
+            or record["closed_attempts"]
+        ),
+    )
     record["verdict"] = "reject" if blocking else "pass"
     if blocking:
         record["next"] = f"Do not open a run on {slug}#{number}: " + "; ".join(blocking)

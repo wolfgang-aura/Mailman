@@ -16,6 +16,8 @@ from pathlib import Path
 from mailman.claims import (
     CLAIMS_FILENAME,
     classify_comment,
+    classify_thread,
+    is_maintainer_invitation,
     load_claims,
     pull_request_references,
     read_claims,
@@ -325,6 +327,96 @@ class ReadClaimsTests(unittest.TestCase):
 
         self.assertIn("someone", rendered)
         self.assertIn("work on this issue", rendered)
+
+
+class InvitationTests(unittest.TestCase):
+    """A maintainer asking for the pull request, told apart from a handover.
+
+    The shortlist ranks on this, so the recogniser lives beside the claim
+    rules rather than in a second copy of them. See
+    https://github.com/wolfgang-aura/Mailman/issues/102.
+    """
+
+    def test_the_invitation_phrasings_read_as_invitations(self) -> None:
+        for body in (
+            "PRs welcome!",
+            "Pull requests are welcome.",
+            "Contributions welcome.",
+            "Happy to accept a PR for this.",
+            "We'd gladly review a pull request.",
+            "Feel free to open a PR.",
+            "A PR would be appreciated.",
+        ):
+            with self.subTest(body=body):
+                self.assertTrue(
+                    is_maintainer_invitation(_comment(body, association="MEMBER"))
+                )
+
+    def test_the_same_words_from_an_outsider_are_not_an_invitation(self) -> None:
+        for association in ("NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR"):
+            with self.subTest(association=association):
+                self.assertFalse(
+                    is_maintainer_invitation(
+                        _comment("PRs welcome!", association=association)
+                    )
+                )
+
+    def test_a_bot_never_invites(self) -> None:
+        comment = _comment("PRs welcome!", association="MEMBER", login="stale[bot]")
+        comment["user"]["type"] = "Bot"
+
+        self.assertFalse(is_maintainer_invitation(comment))
+
+    def test_a_reply_about_the_bug_is_not_an_invitation(self) -> None:
+        self.assertFalse(
+            is_maintainer_invitation(
+                _comment("I can reproduce this on main.", association="MEMBER")
+            )
+        )
+
+    def test_feel_free_answers_a_claim_as_a_handover_and_nobody_as_an_invitation(
+        self,
+    ) -> None:
+        answered = [
+            _comment("Can I take this?"),
+            _comment("Feel free to open a PR.", association="MEMBER"),
+        ]
+        unasked = [
+            _comment("Same here on 3.12."),
+            _comment("Feel free to open a PR.", association="MEMBER"),
+        ]
+
+        self.assertEqual(classify_thread(answered), ["claim", "assignment"])
+        self.assertEqual(classify_thread(unasked), [None, "invitation"])
+
+    def test_the_record_keeps_the_invitation_and_when_a_maintainer_last_wrote(
+        self,
+    ) -> None:
+        maintainer = _comment("PRs welcome.", association="MEMBER", login="owner")
+        maintainer["created_at"] = "2026-09-10T00:00:00Z"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = ReadClaimsTests._run(self, Path(temporary))
+            record = read_claims(
+                root,
+                executable="gh",
+                execute=_FakeGh(
+                    {
+                        "number": 4775,
+                        "assignees": [],
+                        "author_association": "NONE",
+                        "created_at": "2026-09-01T00:00:00Z",
+                    },
+                    [_comment("Same here."), maintainer],
+                ),
+            )
+
+        self.assertEqual(record["claims"], [])
+        self.assertEqual(record["assignments"], [])
+        self.assertEqual(len(record["invitations"]), 1)
+        self.assertEqual(record["invitations"][0]["author"], "owner")
+        self.assertEqual(record["maintainer_touched_at"], "2026-09-10T00:00:00Z")
+        self.assertEqual(record["issue_created_at"], "2026-09-01T00:00:00Z")
+        self.assertIn("asking for a pull request", render_claims(record))
 
 
 if __name__ == "__main__":
