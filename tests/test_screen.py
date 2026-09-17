@@ -17,6 +17,7 @@ from pathlib import Path
 
 from mailman.screen import (
     direct_push_share,
+    forbids_duplicate_pull_requests,
     load_screen,
     render_screen,
     requires_prior_discussion,
@@ -893,6 +894,55 @@ class ScreenTests(unittest.TestCase):
             ["AI_POLICY.md"],
         )
         self.assertIn("AI_POLICY.md", gate["detail"])
+
+    def test_a_rule_against_duplicate_pull_requests_is_recorded(self) -> None:
+        # urllib3's contributing guide and README, verbatim. Nothing read this,
+        # so the stale-attempt rule offered to supersede a dormant attempt in a
+        # repository that closes the second pull request unread.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "CONTRIBUTING.md": (
+                            "## Pull requests\n\nDuplicate pull requests for "
+                            "the same issue, including alternative solutions, "
+                            "will be rejected without review unless a "
+                            "maintainer has approved opening an alternative "
+                            "pull request in advance.\n"
+                        )
+                    }
+                ),
+            )
+        gate = _named(record, "policy")
+
+        # The rule is about which pull requests they read, not about AI, so the
+        # gate passes and the constraint travels.
+        self.assertEqual(record["verdict"], "pass")
+        self.assertTrue(gate["data"]["forbids_duplicate_pull_requests"])
+        constraint = forbids_duplicate_pull_requests(record)
+        self.assertEqual(constraint["kind"], "no-duplicate-pull-requests")
+        self.assertIn("Duplicate pull requests", constraint["quote"])
+        self.assertIn("rejected without review", constraint["quote"])
+        self.assertIn("without review", gate["detail"])
+
+    def test_a_guide_with_no_duplicate_rule_records_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "CONTRIBUTING.md": (
+                            "Open a pull request against `main` and keep it "
+                            "focused on one change.\n"
+                        )
+                    }
+                ),
+            )
+        gate = _named(record, "policy")
+
+        self.assertFalse(gate["data"]["forbids_duplicate_pull_requests"])
+        self.assertIsNone(forbids_duplicate_pull_requests(record))
 
     def test_a_welcome_with_a_stale_pull_request_rule_is_not_a_refusal(self) -> None:
         # Two rules about two different things, a sentence apart. Reading the

@@ -93,7 +93,12 @@ own without a domain narrowing the pool before they see it.
    being merged, is a stale prior attempt rather than a claim: it lands in
    `stale_attempts` with the warning `stale-prior-attempt`, and the target
    passes. A dormant attempt by an OWNER or MEMBER still blocks, because that
-   is a maintainer's own work in progress. Every stage reads the same rule, so
+   is a maintainer's own work in progress. So does any open attempt, dormant or
+   not, in a repository whose guide rejects duplicate pull requests: the screen
+   records that as the `no-duplicate-pull-requests` constraint and the
+   pre-screen refuses the issue under `duplicate-forbidden-open-attempt`. There
+   is nothing to supersede where the second pull request is closed unread. A
+   closed unmerged attempt is unaffected. Every stage reads the same rule, so
    `check-target`, `hunt status`, `hunt finish` and `prepare-submission` cannot
    disagree with the pre-screen about which attempts are dormant. A stale
    attempt is prior art you owe work: read its diff and its review comments

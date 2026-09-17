@@ -26,6 +26,7 @@ from mailman.prior_art import collect_prior_art, resolve_cited_pull_requests
 from mailman.screen import (
     DIRECT_PUSH_LIMIT,
     direct_push_share,
+    forbids_duplicate_pull_requests,
     load_screen,
     requires_prior_discussion,
 )
@@ -36,6 +37,7 @@ from mailman.submission import (
 )
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
+    DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     ISSUE_ASSIGNED,
     NO_DUPLICATE_SEARCH,
     NO_MAINTAINER_REPLY,
@@ -46,13 +48,16 @@ from mailman.targeting import (
     WORK_HANDED_OVER,
     assess_target,
     own_pull_request,
+    partition_duplicate_blocked,
 )
 
 #: 4 reads the pull requests the issue's own thread names; 5 asks whether the
 #: repository requires a maintainer reply before a pull request exists; 6 asks
-#: how long each cited attempt has been dormant. A screen written before any of
-#: them never asked the question, so `check` sends it back.
-PRESCREEN_SCHEMA_VERSION = 6
+#: how long each cited attempt has been dormant; 7 asks whether the repository
+#: rejects duplicate pull requests, which decides whether a dormant one may be
+#: superseded at all. A screen written before any of them never asked the
+#: question, so `check` sends it back.
+PRESCREEN_SCHEMA_VERSION = 7
 ISSUE_SCREENS = "issue-screens"
 #: A pre-screen filters a shortlist; it is not the filing gate. The run stage
 #: still re-runs the duplicate search under its own one-hour limit, and
@@ -140,6 +145,7 @@ DECIDABLE = (
     WORK_HANDED_OVER,
     UNACKNOWLEDGED_CLAIM,
     STALE_PRIOR_ATTEMPT,
+    DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
 )
 
 
@@ -369,6 +375,7 @@ def prescreen_issue(
         "symbols": [symbol for symbol in symbols if symbol.strip()],
         "workspace": str(directory),
         "stale_attempts": [],
+        "duplicate_blocked_attempts": [],
         "issue": {
             "success": captured.get("success"),
             "state": captured.get("state"),
@@ -449,10 +456,23 @@ def prescreen_issue(
         "decided_by": cited["decided_by"],
         "detail": cited["detail"],
     }
+    # Whether a dormant attempt may be superseded at all is the repository's
+    # rule, not ours. urllib3 rejects a second pull request for an issue
+    # without reading it, and offering to supersede a dormant one there is the
+    # contribution they close.
+    duplicate_rule = forbids_duplicate_pull_requests(screen)
+    record["duplicate_policy"] = {
+        "forbidden": bool(duplicate_rule),
+        "quote": duplicate_rule.get("quote") if duplicate_rule else None,
+    }
     # A dormant attempt is prior art the run carries, not a reason to refuse
     # the target. `cited["open"]` already excludes them.
-    record["stale_attempts"] = list(cited["stale"])
-    if cited["stale"]:
+    stale_cited, blocked_cited = partition_duplicate_blocked(
+        list(cited["stale"]), forbids_duplicates=bool(duplicate_rule)
+    )
+    record["stale_attempts"] = stale_cited
+    record["duplicate_blocked_attempts"] = list(blocked_cited)
+    if stale_cited:
         warnings.append(STALE_PRIOR_ATTEMPT)
     # Whether we may file here at all, before whether this issue is worth it.
     # getsentry/sentry-python closes a pull request whose issue no maintainer
@@ -468,6 +488,8 @@ def prescreen_issue(
     thread_blocking: list[str] = []
     if required and claims.get("maintainer_replied") is False:
         thread_blocking.append(NO_MAINTAINER_REPLY)
+    if blocked_cited:
+        thread_blocking.append(DUPLICATE_FORBIDDEN_OPEN_ATTEMPT)
     if cited["open"]:
         thread_blocking.append(OPEN_PULL_REQUEST)
     if cited["merged"]:
@@ -479,6 +501,16 @@ def prescreen_issue(
                 f"{slug} requires a maintainer to have answered the issue "
                 f"before a pull request exists ({required.get('quote')!r}), and "
                 "nobody who speaks for the project has replied on this one"
+            )
+        if DUPLICATE_FORBIDDEN_OPEN_ATTEMPT in thread_blocking:
+            named = ", ".join(
+                f"#{row.get('number')}" for row in blocked_cited
+            )
+            details.append(
+                f"{slug} rejects a duplicate pull request for an issue that "
+                f"already has one ({record['duplicate_policy']['quote']!r}), "
+                f"and {named} is open. Dormant or not, it is still the pull "
+                "request they count, so there is nothing to supersede"
             )
         if cited["decided_by"]:
             details.append(cited["detail"])
@@ -550,7 +582,7 @@ def prescreen_issue(
             "requested": [],
             "detail": "no strong duplicate to read",
         }
-    assessment = assess_target(directory)
+    assessment = assess_target(directory, forbids_duplicates=bool(duplicate_rule))
     blocking = [code for code in assessment.blocking if code in DECIDABLE]
     record["blocking"] = blocking
     combined = warnings + [
@@ -561,6 +593,12 @@ def prescreen_issue(
     known = {row.get("number") for row in record["stale_attempts"]}
     record["stale_attempts"].extend(
         row for row in assessment.stale_attempts if row.get("number") not in known
+    )
+    blocked_known = {row.get("number") for row in record["duplicate_blocked_attempts"]}
+    record["duplicate_blocked_attempts"].extend(
+        row
+        for row in assessment.duplicate_blocked_attempts
+        if row.get("number") not in blocked_known
     )
     record["open_attempts"] = [row.get("number") for row in assessment.open_attempts]
     record["merged_attempts"] = [

@@ -59,6 +59,15 @@ NO_MAINTAINER_REPLY = "no-maintainer-reply"
 #: a block. The stale attempt is prior art the agent has to read and the pull
 #: request body has to supersede.
 STALE_PRIOR_ATTEMPT = "stale-prior-attempt"
+#: The repository's guide rejects a second pull request for an issue outright,
+#: and an earlier one is open. Dormancy does not clear it: the rule is about
+#: the duplicate, not about whether anybody is still working. urllib3 says
+#: "Duplicate pull requests for the same issue, including alternative
+#: solutions, will be rejected without review unless a maintainer has approved
+#: opening an alternative pull request in advance", and superseding a dormant
+#: attempt there is the contribution they close without reading. A closed
+#: unmerged attempt is not a duplicate of anything and is unaffected.
+DUPLICATE_FORBIDDEN_OPEN_ATTEMPT = "duplicate-forbidden-open-attempt"
 
 #: How long an open pull request may sit untouched before it stops claiming the
 #: issue. Decided by the operator on 2026-09-17: the last hunt lost 40 of 66
@@ -190,6 +199,23 @@ def stale_attempt_row(
     }
 
 
+def partition_duplicate_blocked(
+    rows: list[dict[str, Any]], *, forbids_duplicates: bool
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split stale-attempt rows into the ones a no-duplicate rule re-blocks.
+
+    One function, so `prescreen`'s thread stage and `check-target` cannot
+    disagree about which dormant attempts a repository still counts as the
+    claim. Rows are `stale_attempt_row` shapes, whose `state` is either `open`
+    or `closed unmerged`.
+    """
+    if not forbids_duplicates:
+        return list(rows), []
+    stale = [row for row in rows if row.get("state") != "open"]
+    blocked = [row for row in rows if row.get("state") == "open"]
+    return stale, blocked
+
+
 @dataclass(frozen=True)
 class TargetAssessment:
     """What the recorded searches say about an issue, before a run starts."""
@@ -205,6 +231,7 @@ class TargetAssessment:
     superseded_attempts: list[dict[str, Any]] = field(default_factory=list)
     closed_attempts: list[dict[str, Any]] = field(default_factory=list)
     stale_attempts: list[dict[str, Any]] = field(default_factory=list)
+    duplicate_blocked_attempts: list[dict[str, Any]] = field(default_factory=list)
     blocking: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -225,6 +252,7 @@ class TargetAssessment:
             "superseded_attempts": self.superseded_attempts,
             "closed_attempts": self.closed_attempts,
             "stale_attempts": self.stale_attempts,
+            "duplicate_blocked_attempts": self.duplicate_blocked_attempts,
             "blocking": self.blocking,
             "warnings": self.warnings,
             "may_start": self.may_start,
@@ -381,6 +409,20 @@ class TargetAssessment:
                 f"stale     #{attempt.get('number')} {attempt.get('title', '')} "
                 f"({attempt.get('state')}{age}) {attempt.get('url', '')}"
             )
+        for attempt in self.duplicate_blocked_attempts:
+            days = attempt.get("days_stale")
+            age = f", {days} days since its last activity" if days is not None else ""
+            lines.append(
+                f"rival     #{attempt.get('number')} {attempt.get('title', '')} "
+                f"(open{age}) {attempt.get('url', '')}"
+            )
+        if self.duplicate_blocked_attempts:
+            lines.append(
+                "This repository rejects a duplicate pull request for an issue "
+                "that already has one, without reading it. A dormant attempt is "
+                "still that pull request, so there is nothing to supersede here. "
+                "Pick another issue."
+            )
         if self.stale_attempts:
             lines.append(
                 f"A pull request open and untouched for {STALE_ATTEMPT_DAYS} days, "
@@ -437,6 +479,7 @@ class TargetAssessment:
             and not self.superseded_attempts
             and not self.closed_attempts
             and not self.stale_attempts
+            and not self.duplicate_blocked_attempts
             and not (self.claims.get("claims") or self.claims.get("assignments"))
             and not self.claims.get("assignees")
         ):
@@ -484,11 +527,15 @@ def assess_target(
     acknowledged: bool = False,
     acknowledged_claims: bool = False,
     now: datetime | None = None,
+    forbids_duplicates: bool = False,
 ) -> TargetAssessment:
     """Judge a target from the searches already recorded in the run.
 
     `now` is the instant the staleness of an earlier attempt is measured
     against. It exists so a test can freeze it; nothing else passes it.
+
+    `forbids_duplicates` is the repository's own rule, read out of the screen
+    by the caller: when it is set, a dormant open attempt is still a claim.
     """
     duplicate_search = _read(run_directory / DUPLICATE_SEARCH_FILENAME)
     prior_art = _read(run_directory / PRIOR_ART_FILENAME)
@@ -560,12 +607,18 @@ def assess_target(
     attempts = list(attempts_by_number.values())
     # A dormant attempt is sorted out before anything else reads these lists,
     # so every stage that asks whether the issue is claimed gets one answer.
-    stale_attempts = [
+    dormant = [
         stale_attempt_row(attempt, now=now)
         for attempt in attempts
         if isinstance(attempt, dict) and is_stale_attempt(attempt, now=now)
     ]
-    stale_numbers = {row["number"] for row in stale_attempts}
+    # A repository that rejects duplicates outright keeps its open attempts,
+    # dormant or not. They stay out of `open_attempts` so the record says which
+    # rule refused the target rather than reporting a live rival that is not.
+    stale_attempts, duplicate_blocked = partition_duplicate_blocked(
+        dormant, forbids_duplicates=forbids_duplicates
+    )
+    stale_numbers = {row["number"] for row in dormant}
     open_attempts = [
         attempt
         for attempt in attempts
@@ -650,6 +703,11 @@ def assess_target(
         # merging, has stopped claiming the issue. It is still prior art, so
         # it travels into both prompts and into the pull request body.
         warnings.append(STALE_PRIOR_ATTEMPT)
+    if duplicate_blocked:
+        # Not overridable and not a warning. Superseding a dormant attempt is
+        # exactly the contribution this repository's guide says it rejects
+        # without review.
+        blocking.append(DUPLICATE_FORBIDDEN_OPEN_ATTEMPT)
     if open_attempts:
         # Deliberately not overridable. Every escape hatch here is one someone
         # takes at the wrong moment, and `run-agent` still exists for a
@@ -690,6 +748,7 @@ def assess_target(
         superseded_attempts=superseded_attempts,
         closed_attempts=closed_attempts,
         stale_attempts=stale_attempts,
+        duplicate_blocked_attempts=duplicate_blocked,
         blocking=blocking,
         warnings=warnings,
     )

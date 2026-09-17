@@ -307,11 +307,38 @@ _POLICY_HUMAN_ACCOUNT = re.compile(
     re.IGNORECASE,
 )
 
+#: The constraint that says a second pull request for an issue is refused
+#: whatever it contains. Recorded as `forbids_duplicate_pull_requests`, which
+#: is what `prescreen` and `check-target` read before deciding that a dormant
+#: attempt may be superseded.
+NO_DUPLICATE_PULL_REQUESTS = "no-duplicate-pull-requests"
+
+#: urllib3's `docs/contributing.rst` and README: "Duplicate pull requests for
+#: the same issue, including alternative solutions, will be rejected without
+#: review unless a maintainer has approved opening an alternative pull request
+#: in advance." Nothing read this, so the stale-attempt rule walked straight
+#: into it and offered to supersede a dormant attempt in a repository that
+#: closes the second pull request unread.
+_POLICY_NO_DUPLICATES = re.compile(
+    r"(?:"
+    r"duplicate\s+pull\s+requests?[^.]{0,200}"
+    r"(?:reject|close|closed|without\s+review|will\s+not\s+be\s+reviewed)"
+    r"|(?:reject(?:ed)?|closed)[^.]{0,120}\bduplicate\s+pull\s+requests?"
+    r"|alternative\s+pull\s+requests?[^.]{0,160}"
+    r"(?:reject|close|approved?\s+in\s+advance)"
+    r"|\bduplicates?\b[^.]{0,80}will\s+be\s+closed"
+    r"|will\s+be\s+closed[^.]{0,80}\bduplicates?\b"
+    r")",
+    re.IGNORECASE,
+)
+
 _POLICY_PATHS = (
     "CONTRIBUTING.md",
     ".github/CONTRIBUTING.md",
     "docs/CONTRIBUTING.md",
     "CONTRIBUTING.rst",
+    # urllib3 keeps its guide here, lower case, and the gate read none of it.
+    "docs/contributing.rst",
     "AGENTS.md",
 )
 
@@ -897,11 +924,12 @@ _CONSTRAINT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("own-words", _POLICY_OWN_WORDS),
     ("human-account", _POLICY_HUMAN_ACCOUNT),
     (PRIOR_DISCUSSION, _POLICY_PRIOR_DISCUSSION),
+    (NO_DUPLICATE_PULL_REQUESTS, _POLICY_NO_DUPLICATES),
 )
 
 #: The constraints whose quote is the whole sentence rather than the matched
 #: phrase, because the phrase alone does not say what the rule is.
-_SENTENCE_CONSTRAINTS = frozenset({PRIOR_DISCUSSION})
+_SENTENCE_CONSTRAINTS = frozenset({PRIOR_DISCUSSION, NO_DUPLICATE_PULL_REQUESTS})
 
 
 def _constraints(source: str, flat: str, found: list[dict[str, Any]]) -> None:
@@ -1016,6 +1044,12 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
                     "pull request exists here, so `prescreen` refuses an "
                     "unanswered one."
                 )
+            if NO_DUPLICATE_PULL_REQUESTS in kinds:
+                detail += (
+                    " A second pull request for an issue is rejected here "
+                    "without review, so a dormant open attempt is still the "
+                    "claim and cannot be superseded."
+                )
         else:
             detail = f"{read} says nothing that closes AI-assisted work"
         return _gate(
@@ -1031,6 +1065,9 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
                 "requires_own_words": "own-words" in kinds,
                 "requires_human_account": "human-account" in kinds,
                 "requires_prior_discussion": PRIOR_DISCUSSION in kinds,
+                "forbids_duplicate_pull_requests": (
+                    NO_DUPLICATE_PULL_REQUESTS in kinds
+                ),
                 "constraints": constraints,
                 "quote": _quoted(constraints, "disclosure"),
                 **trail,
@@ -1441,13 +1478,14 @@ def direct_push_share(record: dict[str, Any] | None) -> float | None:
     return None
 
 
-def requires_prior_discussion(record: dict[str, Any] | None) -> dict[str, Any] | None:
-    """The constraint, when the guide wants a maintainer to answer first.
+def _recorded_constraint(
+    record: dict[str, Any] | None, *, kind: str, flag: str
+) -> dict[str, Any] | None:
+    """One constraint out of a written screen, or `None` when it is not there.
 
     `prescreen` has the claims record and no API budget to re-read the guide,
     exactly as with `direct_push_share`. A repository with no screen, or one
     written before this constraint existed, returns `None`: unknown, not clear.
-    See https://github.com/wolfgang-aura/Mailman/issues/99.
     """
     if not isinstance(record, dict):
         return None
@@ -1455,13 +1493,39 @@ def requires_prior_discussion(record: dict[str, Any] | None) -> dict[str, Any] |
         if not isinstance(gate, dict) or gate.get("name") != "policy":
             continue
         data = gate.get("data") or {}
-        if not data.get("requires_prior_discussion"):
+        if not data.get(flag):
             return None
         for entry in data.get("constraints") or []:
-            if isinstance(entry, dict) and entry.get("kind") == PRIOR_DISCUSSION:
+            if isinstance(entry, dict) and entry.get("kind") == kind:
                 return entry
-        return {"kind": PRIOR_DISCUSSION, "quote": None}
+        return {"kind": kind, "quote": None}
     return None
+
+
+def requires_prior_discussion(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The constraint, when the guide wants a maintainer to answer first.
+
+    See https://github.com/wolfgang-aura/Mailman/issues/99.
+    """
+    return _recorded_constraint(
+        record, kind=PRIOR_DISCUSSION, flag="requires_prior_discussion"
+    )
+
+
+def forbids_duplicate_pull_requests(
+    record: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """The constraint, when a second pull request for an issue is refused unread.
+
+    Read before any stage decides that a dormant attempt has stopped claiming
+    its issue: where this rule is in force, the attempt is still the pull
+    request the maintainers count, and ours would be the duplicate.
+    """
+    return _recorded_constraint(
+        record,
+        kind=NO_DUPLICATE_PULL_REQUESTS,
+        flag="forbids_duplicate_pull_requests",
+    )
 
 
 def _stars_gate(meta: dict[str, Any]) -> dict[str, Any]:

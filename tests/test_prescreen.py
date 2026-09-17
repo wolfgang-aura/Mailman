@@ -35,6 +35,7 @@ from mailman.prescreen import (
 from mailman.screen import screen_path
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
+    DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     NO_MAINTAINER_REPLY,
     STALE_PRIOR_ATTEMPT,
     NO_REPRODUCTION,
@@ -1048,6 +1049,117 @@ class PriorDiscussionTests(PrescreenTests):
         self.assertEqual(record["verdict"], "pass")
         self.assertFalse(record["prior_discussion"]["required"])
         self.assertFalse(record["prior_discussion"]["maintainer_replied"])
+
+
+class DuplicatePolicyTests(StalePriorAttemptTests):
+    """A repository that rejects a second pull request for an issue, unread.
+
+    urllib3's contributing guide says so in one sentence, nothing read it, and
+    the stale-attempt rule walked into it: a dormant attempt there is still the
+    pull request the maintainers count.
+    """
+
+    QUOTE = (
+        "Duplicate pull requests for the same issue, including alternative "
+        "solutions, will be rejected without review unless a maintainer has "
+        "approved opening an alternative pull request in advance."
+    )
+
+    def record_duplicate_rule(self) -> None:
+        """The repository screen the pre-screen reads the rule out of."""
+        path = screen_path(self.root, "example/project")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "repository": "example/project",
+                    "success": True,
+                    "verdict": "pass",
+                    "gates": [
+                        {
+                            "name": "policy",
+                            "passed": True,
+                            "blocking": True,
+                            "detail": "",
+                            "data": {
+                                "forbids_duplicate_pull_requests": True,
+                                "constraints": [
+                                    {
+                                        "kind": "no-duplicate-pull-requests",
+                                        "quote": self.QUOTE,
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_a_dormant_attempt_cannot_be_superseded_here(self) -> None:
+        self.record_duplicate_rule()
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                self.issue(),
+                pull_requests={"example/project#8": self.cited(days_old=200)},
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [DUPLICATE_FORBIDDEN_OPEN_ATTEMPT])
+        self.assertIn(DUPLICATE_FORBIDDEN_OPEN_ATTEMPT, DECIDABLE)
+        self.assertTrue(record["duplicate_policy"]["forbidden"])
+        self.assertEqual(record["duplicate_policy"]["quote"], self.QUOTE)
+        self.assertEqual(record["duplicate_blocked_attempts"][0]["number"], 8)
+        # It is no longer offered as prior art to supersede.
+        self.assertEqual(record["stale_attempts"], [])
+        self.assertNotIn(STALE_PRIOR_ATTEMPT, record["warnings"])
+        self.assertIn("nothing to supersede", record["next"])
+
+    def test_a_closed_unmerged_attempt_is_still_only_prior_art(self) -> None:
+        self.record_duplicate_rule()
+        closed = {
+            **self.cited(days_old=200),
+            "state": "CLOSED",
+            "title": "An attempt its author withdrew",
+        }
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]", self.issue(), pull_requests={"example/project#8": closed}
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(record["blocking"], [])
+        self.assertEqual(record["duplicate_blocked_attempts"], [])
+        self.assertIn(STALE_PRIOR_ATTEMPT, record["warnings"])
+        self.assertEqual(
+            record["stale_attempts"][0]["state"], "closed unmerged"
+        )
+
+    def test_without_the_rule_the_dormant_attempt_is_superseded_as_before(
+        self,
+    ) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                self.issue(),
+                pull_requests={"example/project#8": self.cited(days_old=200)},
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertFalse(record["duplicate_policy"]["forbidden"])
+        self.assertEqual(record["duplicate_blocked_attempts"], [])
+        self.assertIn(STALE_PRIOR_ATTEMPT, record["warnings"])
 
 
 class InitRunGateTests(PrescreenTests):

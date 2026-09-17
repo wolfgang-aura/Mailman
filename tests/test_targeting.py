@@ -11,6 +11,7 @@ from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
     STALE_PRIOR_ATTEMPT,
     BUG_NOT_REPRODUCED,
+    DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     ISSUE_ASSIGNED,
     MERGED_FIX_ALREADY_IN_BASE,
     NO_CLAIM_CHECK,
@@ -618,6 +619,53 @@ class StaleAttemptTests(unittest.TestCase):
 
         self.assertTrue(assessment.may_start)
         self.assertEqual(assessment.stale_attempts[0]["days_stale"], 200.0)
+
+
+class DuplicateForbiddenTests(unittest.TestCase):
+    """Where a second pull request is refused unread, dormancy clears nothing.
+
+    urllib3: "Duplicate pull requests for the same issue, including
+    alternative solutions, will be rejected without review unless a maintainer
+    has approved opening an alternative pull request in advance."
+    """
+
+    def _assess(self, attempts: list[dict], *, forbids: bool = True):
+        with tempfile.TemporaryDirectory() as temporary:
+            return assess_target(
+                _record(Path(temporary), attempts=attempts),
+                now=_NOW,
+                forbids_duplicates=forbids,
+            )
+
+    def test_a_dormant_open_attempt_blocks_under_its_own_code(self) -> None:
+        assessment = self._assess([_open_attempt(days_since_activity=400)])
+
+        self.assertFalse(assessment.may_start)
+        self.assertIn(DUPLICATE_FORBIDDEN_OPEN_ATTEMPT, assessment.blocking)
+        # Its own code, not the generic one: the reason is the repository's
+        # rule, not a rival who is still working.
+        self.assertNotIn(OPEN_PULL_REQUEST, assessment.blocking)
+        self.assertNotIn(STALE_PRIOR_ATTEMPT, assessment.warnings)
+        self.assertEqual(assessment.stale_attempts, [])
+        self.assertEqual(assessment.duplicate_blocked_attempts[0]["number"], 14668)
+        self.assertIn("nothing to supersede here", assessment.summary())
+
+    def test_a_closed_unmerged_attempt_is_unaffected(self) -> None:
+        assessment = self._assess([_CLOSED])
+
+        self.assertTrue(assessment.may_start)
+        self.assertIn(STALE_PRIOR_ATTEMPT, assessment.warnings)
+        self.assertEqual(assessment.duplicate_blocked_attempts, [])
+        self.assertEqual(assessment.stale_attempts[0]["state"], "closed unmerged")
+
+    def test_without_the_rule_the_same_attempt_is_only_stale(self) -> None:
+        assessment = self._assess(
+            [_open_attempt(days_since_activity=400)], forbids=False
+        )
+
+        self.assertTrue(assessment.may_start)
+        self.assertIn(STALE_PRIOR_ATTEMPT, assessment.warnings)
+        self.assertEqual(assessment.duplicate_blocked_attempts, [])
 
 
 class MergedFixAlreadyInBaseTests(unittest.TestCase):
