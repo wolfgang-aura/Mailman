@@ -337,6 +337,29 @@ class PrescreenTests(unittest.TestCase):
             record["stages_skipped"], ["duplicate-search", "prior-art", "claims"]
         )
 
+    def test_an_issue_under_discussion_is_rejected_before_any_search(self) -> None:
+        # py-pdf/pypdf#4035 carried `needs-discussion`; a run was built,
+        # reviewed and filed on it, and the maintainer asked why a PR was
+        # opened on an undecided design. Mailman #124.
+        issue = {
+            "number": 7,
+            "title": "Two-byte ToUnicode CMap on a simple font",
+            "body": "PDFBox ignores it; poppler pads.",
+            "state": "OPEN",
+            "url": "https://github.com/example/project/issues/7",
+            "author": {"login": "reporter"},
+            "labels": [{"name": "workflow-text-extraction"}, {"name": "needs-discussion"}],
+            "createdAt": "2026-09-01T00:00:00Z",
+            "updatedAt": "2026-09-01T00:00:00Z",
+        }
+        record = prescreen_issue(
+            self.root, "example/project#7", executable=self.stub("[]", issue)
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertIn("issue-under-discussion", record["blocking"])
+        self.assertNotIn("duplicate_search", record)
+
     def record_direct_push_share(self, share: float) -> None:
         """Write the screen record the pre-screen reads the habit out of."""
         path = screen_path(self.root, "example/project")

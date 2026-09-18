@@ -209,8 +209,16 @@ def record_command_reproduction(
 def _snapshot_command_artifacts(
     run_directory: Path, command: list[str], working_directory: Path
 ) -> list[dict[str, Any]]:
-    """Preserve workspace files named by a reproducer after scratch cleanup."""
+    """Preserve the files a reproducer names, from the workspace or the run.
+
+    A reproducer that must not appear in the candidate diff lives in the
+    run's own `scratch/` directory, outside the workspace. Snapshotting only
+    workspace files handed the primary agent `src/setup.cfg` as "the exact
+    reproducer source" on pretix#6327 and it stopped, rightly, saying the
+    reproducer did not test the bug. Mailman #125.
+    """
     workspace = working_directory.resolve()
+    run_root = run_directory.resolve()
     artifacts: list[dict[str, Any]] = []
     seen: set[Path] = set()
     for argument in command[1:]:
@@ -224,17 +232,20 @@ def _snapshot_command_artifacts(
             source = candidate.resolve(strict=True)
         except (OSError, RuntimeError):
             continue
-        if (
-            source in seen
-            or not source.is_file()
-            or not source.is_relative_to(workspace)
+        if source in seen or not source.is_file():
+            continue
+        if source.is_relative_to(workspace):
+            relative = source.relative_to(workspace)
+        elif source.is_relative_to(run_root) and not source.is_relative_to(
+            run_root / REPRODUCTION_ARTIFACT_DIRECTORY
         ):
+            relative = source.relative_to(run_root)
+        else:
             continue
         size = source.stat().st_size
         if size > REPRODUCTION_ARTIFACT_MAX_BYTES:
             continue
         seen.add(source)
-        relative = source.relative_to(workspace)
         snapshot = run_directory / REPRODUCTION_ARTIFACT_DIRECTORY / relative
         snapshot.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, snapshot)

@@ -85,6 +85,13 @@ own without a domain narrowing the pool before they see it.
    guide that requires a maintainer to have answered the issue first is
    recorded as the `prior-discussion` constraint, and `prescreen` then refuses
    any issue nobody from the project has replied on, under `no-maintainer-reply`.
+   An issue labelled `needs-discussion`, `design`, `rfc` or the like is
+   rejected under `issue-under-discussion`: the maintainers have said the
+   design is not settled, and a patch on it is pressure, not help. The only
+   upstream write for such an issue is a short comment with evidence, drafted
+   for approval. A pull request body that cites a specification carries the
+   clause number and the quoted sentence, read from the text; the patch's
+   side in any disagreement between reference tools is named in the body.
    A guide that needs a signed Contributor License Agreement before a first
    pull request merges is recorded as the `cla` constraint (`requires_cla`);
    signing is the operator's act, so it goes to them before the run is filed,

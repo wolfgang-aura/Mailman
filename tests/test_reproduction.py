@@ -132,6 +132,48 @@ class RecordTests(unittest.TestCase):
             self.assertIn("reported_ip", snapshot.read_text(encoding="utf-8"))
             self.assertEqual(len(artifact["sha256"]), 64)
 
+    def test_a_reproducer_in_the_runs_scratch_directory_is_snapshotted_too(self) -> None:
+        # pretix#6327: the reproducer lived in the run's scratch/ so it would
+        # not enter the diff; only the workspace's setup.cfg was snapshotted,
+        # and the primary was shown a config file as "the reproducer source".
+        # Mailman #125.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            (workspace / "src").mkdir(parents=True)
+            (workspace / "src" / "setup.cfg").write_text("[tool:pytest]\n", encoding="utf-8")
+            source = root / "scratch" / "test_repro.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("assert default is None\n", encoding="utf-8")
+            result = _result(exit_code=1, stdout="1 failed")
+            result = CommandResult(
+                **{
+                    **result.__dict__,
+                    "command": [
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        str(source),
+                        "-c",
+                        "src/setup.cfg",
+                    ],
+                    "working_directory": str(workspace),
+                }
+            )
+
+            record = record_command_reproduction(
+                root,
+                result=result,
+                expectation=Expectation(exit_code=1, required_output=("1 failed",)),
+                working_directory=workspace,
+                command_record=1,
+            )
+
+            sources = [artifact["source"] for artifact in record["artifacts"]]
+            self.assertEqual(sources, ["scratch/test_repro.py", "src/setup.cfg"])
+            snapshot = root / record["artifacts"][0]["snapshot"]
+            self.assertIn("default is None", snapshot.read_text(encoding="utf-8"))
+
     def test_a_command_record_keeps_the_checks_it_ran(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

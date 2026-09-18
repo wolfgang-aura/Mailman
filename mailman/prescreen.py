@@ -70,6 +70,11 @@ PRESCREEN_HOURS = 24
 ISSUE_UNREADABLE = "issue-unreadable"
 ISSUE_NOT_OPEN = "issue-not-open"
 ISSUE_NOT_BOUNDED_FIX = "issue-not-bounded-fix"
+#: The maintainers have said the design is not settled. A patch on such an
+#: issue is pressure, not help: py-pdf/pypdf#4105 was filed on #4035 under
+#: `needs-discussion`, and the maintainer asked why a PR existed at all.
+#: The only upstream write here is a comment with evidence. Mailman #124.
+ISSUE_UNDER_DISCUSSION = "issue-under-discussion"
 #: The fix is small enough that the maintainer writes it rather than reviews it,
 #: in a repository whose maintainers push to the default branch. Blocking.
 TRIVIAL_FIX_DIRECT_PUSH = "trivial-fix-direct-push-repository"
@@ -134,6 +139,20 @@ _NON_FIX_LABELS = frozenset(
         "project",
         "question",
         "tracking",
+    }
+)
+_DISCUSSION_LABELS = frozenset(
+    {
+        "needs-discussion",
+        "needs discussion",
+        "needs-decision",
+        "needs decision",
+        "discussion",
+        "design",
+        "design-decision",
+        "rfc",
+        "proposal",
+        "undecided",
     }
 )
 #: What this stage can decide with public GitHub state and a few API calls.
@@ -212,6 +231,8 @@ def _issue_blocking(captured: dict[str, Any]) -> list[str]:
     labels = {str(label).strip().lower() for label in captured.get("labels") or []}
     if labels & _NON_FIX_LABELS:
         blocking.append(ISSUE_NOT_BOUNDED_FIX)
+    if labels & _DISCUSSION_LABELS:
+        blocking.append(ISSUE_UNDER_DISCUSSION)
     return blocking
 
 
