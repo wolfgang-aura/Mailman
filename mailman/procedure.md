@@ -69,12 +69,19 @@ own without a domain narrowing the pool before they see it.
    AI-generated PRs" closes the door as firmly as "no AI-generated code".
    The gate does not stop at the guide. A link whose text or path names ai,
    llm, genai or policy is fetched through the same path — including an
-   organization's `.github` repository and paths relative to the guide — and
-   gated on as well; cattrs keeps its refusal in
-   `python-attrs/.github/AI_POLICY.md`. The document that decided is named in
+   organization's `.github` repository, paths relative to the guide and a
+   page on the project's own site — and gated on as well; cattrs keeps its
+   refusal in `python-attrs/.github/AI_POLICY.md`, pretix keeps its
+   disclosure rule at docs.pretix.eu. The document that decided is named in
    `source`, every document read in `followed_documents`. A linked policy that
    cannot be read leaves `result` at `unknown` and fails the gate: unknown is
-   not permission. A
+   not permission.
+   The `host` gate reads `pyproject.toml` against what this host is known to
+   refuse: a required dependency Application Control blocks at import
+   (numba, PyQt6), or a framework whose tests need a service the host lacks
+   (a Frappe app needs a bench). Either fails the screen before a run is
+   opened; the same package in an extra only warns, and the pre-screen
+   should reject an issue whose traceback runs through that extra. A
    guide that requires a maintainer to have answered the issue first is
    recorded as the `prior-discussion` constraint, and `prescreen` then refuses
    any issue nobody from the project has replied on, under `no-maintainer-reply`.

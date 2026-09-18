@@ -28,6 +28,7 @@ import json
 import posixpath
 import re
 import statistics
+import tomllib
 from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
@@ -61,7 +62,7 @@ from mailman.shortlist import (
 )
 from mailman.toolchain import resolve_tool
 
-SCREEN_SCHEMA_VERSION = 3
+SCREEN_SCHEMA_VERSION = 4
 SCREENS_DIRECTORY = "screens"
 
 #: How far back to look for the pattern of outside merges, as opposed to the
@@ -959,6 +960,7 @@ def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         "build_requires_line": requires_line,
         "wheel_only_hook": wheel_hook,
         "environment_plan": None,
+        "pyproject": pyproject,
     }
     if total and python_share < MINIMUM_PYTHON_SHARE:
         dominant = max(source, key=source.get)
@@ -1067,6 +1069,111 @@ def _quoted(constraints: list[dict[str, Any]], kind: str) -> str | None:
         if entry["kind"] == kind:
             return entry["quote"]
     return None
+
+#: Import names Windows Application Control blocks on this host at import
+#: time, after pip has installed them without complaint: numba (pymc#8441,
+#: 2026-09-17) and PyQt6 (electrum#10969, 2026-09-18, "DLL load failed while
+#: importing QtWidgets: An Application Control policy has blocked this file").
+#: Keyed by the distribution name as a requirement spells it, lower case.
+#: See https://github.com/wolfgang-aura/Mailman/issues/121.
+HOST_BLOCKED_PACKAGES: dict[str, str] = {
+    "numba": "numba's DLLs are blocked by Application Control on this host",
+    "pyqt6": "PyQt6's DLLs are blocked by Application Control on this host",
+    "pyqt6-qt6": "PyQt6's DLLs are blocked by Application Control on this host",
+}
+
+#: Frameworks whose test suite needs a running service the host does not
+#: have. frappe/erpnext passed every gate on 2026-09-18 and could not run one
+#: test: a Frappe app is tested inside a bench, with MariaDB, Redis and a site.
+HOST_UNRUNNABLE_FRAMEWORKS: dict[str, str] = {
+    "frappe": "a Frappe app is tested inside a bench (MariaDB, Redis, a site)",
+}
+
+_REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _requirement_name(requirement: str) -> str:
+    """The distribution a requirement names, normalised the way pip does."""
+    match = _REQUIREMENT_NAME.match(requirement)
+    if not match:
+        return ""
+    return re.sub(r"[-_.]+", "-", match.group(1)).lower()
+
+
+def _pyproject_requirements(pyproject: str) -> tuple[set[str], set[str], bool]:
+    """Required names, optional names, and whether `[tool.bench]` is present."""
+    try:
+        table = tomllib.loads(pyproject)
+    except (tomllib.TOMLDecodeError, ValueError):
+        return set(), set(), False
+    project = table.get("project") if isinstance(table.get("project"), dict) else {}
+    required = {
+        _requirement_name(item)
+        for item in (project.get("dependencies") or [])
+        if isinstance(item, str)
+    }
+    optional: set[str] = set()
+    extras = project.get("optional-dependencies")
+    if isinstance(extras, dict):
+        for items in extras.values():
+            optional |= {
+                _requirement_name(item) for item in (items or []) if isinstance(item, str)
+            }
+    tool = table.get("tool") if isinstance(table.get("tool"), dict) else {}
+    return required - {""}, optional - {""}, "bench" in tool
+
+
+def _host_gate(pyproject: str) -> dict[str, Any]:
+    """Gate 3b. Can the target's tests run on this host at all?
+
+    Two of the five repositories that passed the screen on 2026-09-18 could
+    not be reproduced here, after the pre-screen and, for one, a full
+    environment build. The screen knew the dependency list and never read it
+    against what the host is known to refuse.
+    """
+    required, optional, bench = _pyproject_requirements(pyproject)
+    frameworks = sorted(
+        name for name in HOST_UNRUNNABLE_FRAMEWORKS if name in required or (bench and name == "frappe")
+    )
+    blocked = sorted(name for name in HOST_BLOCKED_PACKAGES if name in required)
+    optional_blocked = sorted(
+        name for name in HOST_BLOCKED_PACKAGES if name in optional and name not in required
+    )
+    data = {
+        "required_unrunnable": frameworks,
+        "required_blocked": blocked,
+        "optional_blocked": optional_blocked,
+    }
+    reasons = [HOST_UNRUNNABLE_FRAMEWORKS[name] for name in frameworks]
+    reasons += [HOST_BLOCKED_PACKAGES[name] for name in blocked]
+    if reasons:
+        return _gate(
+            "host",
+            passed=False,
+            blocking=True,
+            detail="; ".join(dict.fromkeys(reasons)),
+            data=data,
+        )
+    if optional_blocked:
+        return _gate(
+            "host",
+            passed=False,
+            blocking=False,
+            detail=(
+                "an extra needs "
+                + ", ".join(optional_blocked)
+                + ", which Application Control blocks here; an issue in that "
+                "part of the code cannot be reproduced on this host"
+            ),
+            data=data,
+        )
+    return _gate(
+        "host",
+        passed=True,
+        blocking=False,
+        detail="no dependency this host is known to refuse",
+        data=data,
+    )
 
 
 def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
@@ -1967,11 +2074,13 @@ def screen_repository(
         return record
 
     freshness = _freshness_gate(gh, slug, window_days)
+    python = _python_gate(gh, slug)
     gates = [
         _provenance_gate(meta, freshness),
         freshness,
         _ci_gate(gh, slug),
-        _python_gate(gh, slug),
+        python,
+        _host_gate(python["data"].pop("pyproject", "")),
         _policy_gate(gh, slug),
         _assignment_gate(gh, slug),
         _saturation_gate(gh, slug, window_days, issue_window_days),

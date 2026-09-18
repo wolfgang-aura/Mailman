@@ -658,6 +658,86 @@ class ScreenTests(unittest.TestCase):
         self.assertIsNone(gate["data"]["wheel_only_hook"])
         self.assertIn("pure-python", record["failed_gates"])
 
+    def test_a_frappe_app_fails_the_host_gate(self) -> None:
+        # frappe/erpnext passed every gate on 2026-09-18; its tests need a
+        # bench with MariaDB, Redis and a site, none of which this host has.
+        # Mailman #121.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "pyproject.toml": (
+                            '[project]\nname = "erpnext"\n'
+                            'dependencies = [\n    "pycountry~=22.3.5",\n]\n\n'
+                            '[tool.bench.frappe-dependencies]\n'
+                            'frappe = ">=17.0.0-dev,<18.0.0"\n'
+                        )
+                    }
+                ),
+            )
+        gate = _named(record, "host")
+
+        self.assertEqual(record["verdict"], "fail")
+        self.assertIn("host", record["failed_gates"])
+        self.assertIn("bench", gate["detail"])
+        self.assertEqual(gate["data"]["required_unrunnable"], ["frappe"])
+
+    def test_a_required_package_application_control_blocks_fails_the_host_gate(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "pyproject.toml": (
+                            '[project]\nname = "pymc"\n'
+                            'dependencies = ["numpy>=1.25", "numba>=0.58; '
+                            'python_version < \'3.13\'"]\n'
+                        )
+                    }
+                ),
+            )
+        gate = _named(record, "host")
+
+        self.assertIn("host", record["failed_gates"])
+        self.assertEqual(gate["data"]["required_blocked"], ["numba"])
+        self.assertIn("Application Control", gate["detail"])
+
+    def test_a_blocked_package_in_an_extra_warns_without_failing(self) -> None:
+        # electrum's Qt window needs PyQt6, which is an extra; the crash we
+        # picked was in that window. The screen cannot know which issue comes
+        # next, so it warns and records the extra for the pre-screen.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "pyproject.toml": (
+                            '[project]\nname = "wallet"\n'
+                            'dependencies = ["aiohttp>=3.11"]\n'
+                            '[project.optional-dependencies]\n'
+                            'gui = ["PyQt6>=6.4", "qdarkstyle>=3.2"]\n'
+                        )
+                    }
+                ),
+            )
+        gate = _named(record, "host")
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertFalse(gate["passed"])
+        self.assertFalse(gate["blocking"])
+        self.assertEqual(gate["data"]["optional_blocked"], ["pyqt6"])
+
+    def test_a_plain_pyproject_passes_the_host_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), FakeGitHub())
+        gate = _named(record, "host")
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(record["verdict"], "pass")
+
     def test_a_plain_pyproject_leaves_the_language_gate_alone(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(
@@ -1563,7 +1643,7 @@ class ResponsivenessTests(unittest.TestCase):
         self.assertTrue(gate["passed"])
         self.assertTrue(gate["blocking"])
         self.assertNotIn("responsiveness", record["failed_gates"])
-        self.assertEqual(record["schema_version"], 3)
+        self.assertEqual(record["schema_version"], 4)
         self.assertEqual(record["responsiveness_days"], 90)
         self.assertEqual(gate["data"]["result"], "pass")
         self.assertEqual(gate["data"]["sampled"], 3)
