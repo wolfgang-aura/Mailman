@@ -1056,9 +1056,7 @@ _CONSTRAINT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 #: The constraints whose quote is the whole sentence rather than the matched
 #: phrase, because the phrase alone does not say what the rule is.
-_SENTENCE_CONSTRAINTS = frozenset(
-    {PRIOR_DISCUSSION, NO_DUPLICATE_PULL_REQUESTS, REQUIRES_CLA}
-)
+_SENTENCE_CONSTRAINTS = frozenset({PRIOR_DISCUSSION, NO_DUPLICATE_PULL_REQUESTS})
 
 
 def _constraints(source: str, flat: str, found: list[dict[str, Any]]) -> None:
