@@ -495,6 +495,48 @@ class PrescreenTests(unittest.TestCase):
         )
         self.assertEqual(queries["issue"], ["#7 docstore"])
 
+    def test_a_narrow_hit_on_a_bare_number_does_not_reference_the_issue(self) -> None:
+        # pretix#6327: GitHub's search tokenised `#6327` to `6327` and returned
+        # a 2018 pull request whose comment log said `django.po:6327:`. The
+        # narrow branch took every hit as a citation, check-target read it as
+        # a maintainer-closed attempt and refused the run.
+        payload = json.dumps(
+            [
+                {
+                    "number": 924,
+                    "title": "follow gettext convention on language tags",
+                    "body": "Language tags should follow the gettext convention.",
+                    "state": "CLOSED",
+                    "url": "https://github.com/example/project/pull/924",
+                    "createdAt": "2018-05-27T12:24:44Z",
+                    "updatedAt": "2018-11-26T08:58:10Z",
+                    "isDraft": False,
+                },
+                {
+                    "number": 6328,
+                    "title": "Fix mutable default argument",
+                    "body": "Fixes #7",
+                    "state": "CLOSED",
+                    "url": "https://github.com/example/project/pull/6328",
+                    "createdAt": "2026-07-01T11:55:00Z",
+                    "updatedAt": "2026-07-01T11:56:50Z",
+                    "isDraft": False,
+                },
+            ]
+        )
+        prescreen_issue(self.root, "example/project#7", executable=self.stub(payload))
+        directory = prescreen_directory(self.root, "example/project", 7)
+        search = json.loads(
+            (directory / "duplicate-search.json").read_text(encoding="utf-8")
+        )
+        narrow = {
+            row["number"]: row["references_issue"]
+            for row in search["matches"]
+            if "narrow" in row.get("methods", [])
+        }
+        self.assertEqual(narrow.get(6328), True)
+        self.assertEqual(narrow.get(924), False)
+
     def test_the_verdict_lands_beside_the_repository_screens(self) -> None:
         prescreen_issue(self.root, "example/project#7", executable=self.stub("[]"))
         path = prescreen_path(self.root, "example/project", 7)

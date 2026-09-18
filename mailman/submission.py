@@ -1167,8 +1167,8 @@ def record_duplicate_acknowledgement(
 # not know makes it refuse the whole call. `updatedAt` is what decides whether
 # an open attempt still claims the issue; see targeting.STALE_ATTEMPT_DAYS.
 _SEARCH_FIELDS = {
-    "pr": "number,title,state,url,createdAt,updatedAt,isDraft",
-    "issue": "number,title,state,url,createdAt,updatedAt",
+    "pr": "number,title,body,state,url,createdAt,updatedAt,isDraft",
+    "issue": "number,title,body,state,url,createdAt,updatedAt",
 }
 # `gh search prs` and `gh search issues` are the only two that carry the author
 # association, which is what keeps a maintainer's own dormant branch blocking.
@@ -1234,6 +1234,26 @@ def _query_terms(query: str) -> list[str]:
         for word in re.findall(r"[A-Za-z0-9_]+", query)
         if len(word) >= _MINIMUM_TERM_LENGTH
     ]
+
+
+def _references_issue(text: str, issue_number: int | None) -> bool:
+    """Does this text cite the issue, as a reference and not as a bare number?
+
+    GitHub's search tokenises `#6327` to `6327`, so the narrow query for
+    pretix#6327 returned a 2018 pull request whose comment log carried
+    `django.po:6327:`. A line number, a byte count or a version is not a
+    citation. Only the forms people write for one are: `#N`, `GH-N`,
+    `issues/N`, `pull/N`, `issue N`.
+    """
+    if issue_number is None or not text:
+        return False
+    return bool(
+        re.search(
+            rf"(?:#|GH-|issues/|pull/|issue\s+|pull\s+request\s+){issue_number}(?![0-9])",
+            text,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _local_matches(
@@ -1481,16 +1501,27 @@ def record_duplicate_search(
                 )
             elif method == "narrow":
                 # The narrow query is the issue number and the symbols the
-                # change touches, so a hit here already references the issue.
-                rows = _match_rows(
-                    payload,
-                    pull_request=kind == "pr",
-                    method="narrow",
-                    reasons=["narrow"],
-                    matched_terms=list(terms or []),
-                    term_count=len(terms or []),
-                    references_issue=issue_number is not None,
-                )
+                # change touches. GitHub matched the number as a bare token,
+                # so the citation is checked here on the title and body
+                # before a hit counts as referencing the issue.
+                rows = []
+                for entry in payload if isinstance(payload, list) else []:
+                    if not isinstance(entry, dict):
+                        continue
+                    text = " ".join(
+                        str(entry.get(field) or "") for field in ("title", "body")
+                    )
+                    rows.extend(
+                        _match_rows(
+                            [entry],
+                            pull_request=kind == "pr",
+                            method="narrow",
+                            reasons=["narrow"],
+                            matched_terms=list(terms or []),
+                            term_count=len(terms or []),
+                            references_issue=_references_issue(text, issue_number),
+                        )
+                    )
             else:
                 rows = _match_rows(
                     payload, pull_request=kind == "pr", method=method
