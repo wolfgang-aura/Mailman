@@ -85,6 +85,10 @@ own without a domain narrowing the pool before they see it.
    guide that requires a maintainer to have answered the issue first is
    recorded as the `prior-discussion` constraint, and `prescreen` then refuses
    any issue nobody from the project has replied on, under `no-maintainer-reply`.
+   A guide that needs a signed Contributor License Agreement before a first
+   pull request merges is recorded as the `cla` constraint (`requires_cla`);
+   signing is the operator's act, so it goes to them before the run is filed,
+   not after cla-bot fails the first check.
    Freshness asks whether outside work merges here; the `responsiveness` gate
    asks how long a stranger waits for a first word, because a collaborator's
    merge satisfies freshness and says nothing about a stranger's silence. Of

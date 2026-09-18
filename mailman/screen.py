@@ -393,6 +393,22 @@ _POLICY_NO_DUPLICATES = re.compile(
     re.IGNORECASE,
 )
 
+#: A project that needs a signed Contributor License Agreement before a first
+#: pull request merges. pretix/pretix's guide says so in its first lines and
+#: nothing read it; cla-bot failed the check the minute #6564 was filed.
+#: Signing is the operator's act, so it has to be asked before filing. See
+#: https://github.com/wolfgang-aura/Mailman/issues/122.
+REQUIRES_CLA = "cla"
+_POLICY_CLA = re.compile(
+    r"(?:"
+    r"sign(?:ed|ing)?\s+[^.]{0,40}?"
+    r"(?:contributor\s+license\s+agreement|\bcla\b)"
+    r"|(?:contributor\s+license\s+agreement|\bcla\b)[^.]{0,80}"
+    r"(?:must\s+be\s+signed|before\s+[^.]{0,40}(?:merge|accept))"
+    r")",
+    re.IGNORECASE,
+)
+
 _POLICY_PATHS = (
     "CONTRIBUTING.md",
     ".github/CONTRIBUTING.md",
@@ -1035,11 +1051,14 @@ _CONSTRAINT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("human-account", _POLICY_HUMAN_ACCOUNT),
     (PRIOR_DISCUSSION, _POLICY_PRIOR_DISCUSSION),
     (NO_DUPLICATE_PULL_REQUESTS, _POLICY_NO_DUPLICATES),
+    (REQUIRES_CLA, _POLICY_CLA),
 )
 
 #: The constraints whose quote is the whole sentence rather than the matched
 #: phrase, because the phrase alone does not say what the rule is.
-_SENTENCE_CONSTRAINTS = frozenset({PRIOR_DISCUSSION, NO_DUPLICATE_PULL_REQUESTS})
+_SENTENCE_CONSTRAINTS = frozenset(
+    {PRIOR_DISCUSSION, NO_DUPLICATE_PULL_REQUESTS, REQUIRES_CLA}
+)
 
 
 def _constraints(source: str, flat: str, found: list[dict[str, Any]]) -> None:
@@ -1265,6 +1284,11 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
                     "without review, so a dormant open attempt is still the "
                     "claim and cannot be superseded."
                 )
+            if REQUIRES_CLA in kinds:
+                detail += (
+                    " A signed CLA is needed before a first pull request "
+                    "merges; the operator signs it before filing."
+                )
         else:
             detail = f"{read} says nothing that closes AI-assisted work"
         return _gate(
@@ -1283,6 +1307,7 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
                 "forbids_duplicate_pull_requests": (
                     NO_DUPLICATE_PULL_REQUESTS in kinds
                 ),
+                "requires_cla": REQUIRES_CLA in kinds,
                 "constraints": constraints,
                 "quote": _quoted(constraints, "disclosure"),
                 **trail,

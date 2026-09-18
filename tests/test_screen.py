@@ -1159,6 +1159,34 @@ class ScreenTests(unittest.TestCase):
         )
         self.assertIn(self.PRETIX_POLICY_URL, record["read_failures"])
 
+    def test_a_cla_signature_requirement_is_recorded_as_a_constraint(self) -> None:
+        # pretix/pretix CONTRIBUTING.md, line 13. Nothing read it, and cla-bot
+        # failed the first check on #6564 the minute it was filed. Mailman #122.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "CONTRIBUTING.md": (
+                            "# Contributing to pretix\n"
+                            "Before we can accept your first PR we'll need you "
+                            "to sign [our **Contributor License Agreement** "
+                            "(CLA)](https://pretix.eu/about/en/cla).\n"
+                            "You can find more information in our License FAQ.\n"
+                        )
+                    }
+                ),
+            )
+        gate = _named(record, "policy")
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertTrue(gate["data"]["requires_cla"])
+        self.assertIn("signed CLA", gate["detail"])
+        constraint = next(
+            entry for entry in gate["data"]["constraints"] if entry["kind"] == "cla"
+        )
+        self.assertIn("Contributor License Agreement", constraint["quote"])
+
     def test_a_rule_against_duplicate_pull_requests_is_recorded(self) -> None:
         # urllib3's contributing guide and README, verbatim. Nothing read this,
         # so the stale-attempt rule offered to supersede a dormant attempt in a
