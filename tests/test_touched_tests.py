@@ -155,6 +155,34 @@ class SelectionTests(unittest.TestCase):
             ["testing/test_top_level.py"],
         )
 
+    def test_a_helper_under_the_tests_directory_is_not_collected(self) -> None:
+        # pretix: `src/tests/testdummy/signals.py` names the module but pytest
+        # collects nothing from it, so running it exits 5.
+        self._test_file("tests/test_xbrl.py", "from edgar.xbrl import xbrl\n")
+        self._test_file("tests/testdummy/signals.py", "from edgar.xbrl import xbrl\n")
+        self._test_file("tests/conftest.py", "from edgar.xbrl import xbrl\n")
+        selection = select_test_files(self.workspace, ["edgar/xbrl/xbrl.py"])
+        self.assertEqual([e["path"] for e in selection["selected"]], ["tests/test_xbrl.py"])
+
+    def test_a_test_file_the_diff_changes_runs_even_without_naming_the_module(
+        self,
+    ) -> None:
+        # pretix#6518: the changed test reached the module only through a
+        # service function and was left out.
+        self._test_file("tests/test_xbrl.py", "from edgar.xbrl import xbrl\n")
+        self._test_file("tests/test_invoices.py", "from edgar.services import generate\n")
+        selection = select_test_files(
+            self.workspace, ["edgar/xbrl/xbrl.py", "tests/test_invoices.py"]
+        )
+        self.assertEqual(selection["source_files"], ["edgar/xbrl/xbrl.py"])
+        self.assertEqual(
+            [(e["path"], e["reason"]) for e in selection["selected"]],
+            [
+                ("tests/test_invoices.py", "changed by the diff"),
+                ("tests/test_xbrl.py", "imports or names edgar.xbrl, xbrl"),
+            ],
+        )
+
     def test_a_changed_test_file_is_not_a_touched_module(self) -> None:
         self._test_file("tests/test_other.py", "import os\n")
         selection = select_test_files(self.workspace, ["tests/test_other.py"])

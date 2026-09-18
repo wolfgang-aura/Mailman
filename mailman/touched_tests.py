@@ -118,8 +118,19 @@ def _reference_pattern(name: str) -> re.Pattern[str]:
     )
 
 
+def _is_test_module(relative: str) -> bool:
+    """A file pytest would collect on its own, not a helper beside the tests.
+
+    `src/tests/testdummy/signals.py` lives under `tests/` and is a helper
+    package pytest never collects; naming it on the command line collected
+    nothing and the stage exited 5 and called the candidate unverified.
+    """
+    name = relative.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name.startswith("test_") or name.endswith(("_test.py", "_tests.py"))
+
+
 def _test_files(workspace: Path) -> list[str]:
-    """Every test file in the workspace, as a `/`-separated relative path."""
+    """Every collectable test file in the workspace, as a `/`-separated relative path."""
     found: list[str] = []
     for root, directories, files in os.walk(workspace):
         # A `testing` directory inside a package is library code, not a test
@@ -138,7 +149,7 @@ def _test_files(workspace: Path) -> list[str]:
             relative = (relative_root / name).as_posix()
             if relative.startswith("./"):
                 relative = relative[2:]
-            if _is_test_path(relative):
+            if _is_test_path(relative) and _is_test_module(relative):
                 found.append(relative)
     return found
 
@@ -160,7 +171,24 @@ def select_test_files(
     }
     selected: list[dict[str, Any]] = []
     if patterns:
+        # A test file the diff itself changes is the primary's own coverage of
+        # the change; it runs first whether or not its text names the module.
+        # pretix#6518 changed `src/tests/base/test_invoices.py`, which reaches
+        # `pretix.base.invoicing.pdf` only through a service function, and the
+        # stage left it out.
+        changed_tests = [
+            path.replace("\\", "/")
+            for path in changed_paths
+            if _is_test_path(path) and _is_test_module(path)
+            and (workspace / path).is_file()
+        ]
+        for relative in changed_tests:
+            selected.append(
+                {"path": relative, "matched": [], "reason": "changed by the diff"}
+            )
         for relative in _test_files(workspace):
+            if relative in changed_tests:
+                continue
             try:
                 text = (workspace / relative).read_text(
                     encoding="utf-8", errors="replace"
