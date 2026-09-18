@@ -32,6 +32,7 @@ from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import quote
 
@@ -45,6 +46,7 @@ from mailman.claims import (
 from mailman.executor import CommandResult, execute
 from mailman.target_intel import (
     _Gh,
+    fetch_page,
     _is_bot,
     classify_claims,
     enforcement_markers,
@@ -240,7 +242,10 @@ _WHEEL_ONLY_HOOK_HEADER = re.compile(
 #: learning library's contributing guide.
 _POLICY_BANS = re.compile(
     r"(?:"
-    r"no\s+ai[- ]generated"
+    # docs.pretix.eu: "No AI-generated media is allowed (art, images, videos,
+    # audio, etc.). Text and code are the only acceptable AI-generated
+    # content". A ban on pictures is not a ban on the patch.
+    r"no\s+ai[- ]generated(?!\s+(?:media|images?|art|artwork|videos?|audio|assets|graphics))"
     r"|ai[- ]generated\s+(?:code|pull requests?|prs?|contributions?)\s+"
     r"(?:are|will be)\s+(?:not\s+accepted|rejected|closed|banned)"
     r"|(?:do not|don't|please do not)\s+(?:use|submit)\s+(?:ai|llm|chatgpt|copilot)"
@@ -441,14 +446,24 @@ def _policy_links(body: str) -> list[tuple[str, str]]:
     return links
 
 
-def _linked_document(url: str, *, slug: str, guide: str) -> tuple[str, str] | None:
-    """The contents path for a link, and the name to record the document under.
+#: How a linked policy is read: `api` through `gh api` for a repository
+#: file, `page` over https for a document the project keeps on its own site.
+_API_DOCUMENT = "api"
+_PAGE_DOCUMENT = "page"
 
-    Three shapes, because a project writes the same pointer three ways: an
+
+def _linked_document(
+    url: str, *, slug: str, guide: str
+) -> tuple[str, str, str] | None:
+    """How to read a link, where, and the name to record the document under.
+
+    Four shapes, because a project writes the same pointer four ways: an
     absolute `github.com` blob URL into another repository, which is where an
-    organization keeps its `.github/AI_POLICY.md`; the `raw` host; and a path
-    relative to the guide's own directory. Anything else is somebody's web
-    page, and this gate reads repository files.
+    organization keeps its `.github/AI_POLICY.md`; the `raw` host; a path
+    relative to the guide's own directory; and a page on the project's own
+    documentation site, which is where pretix keeps its "AI-assisted
+    contribution policy" and where the gate did not go until the run that
+    read it by hand. Mailman #107.
     """
     link = url.strip().split("#", 1)[0].split("?", 1)[0]
     if not link or link.startswith(("mailto:", "tel:")):
@@ -467,6 +482,8 @@ def _linked_document(url: str, *, slug: str, guide: str) -> tuple[str, str] | No
                 return None
             owner, repository, ref = parts[:3]
             path = "/".join(parts[3:])
+        elif host:
+            return _PAGE_DOCUMENT, link, f"{host}/{tail}".rstrip("/")
         else:
             return None
     else:
@@ -481,7 +498,40 @@ def _linked_document(url: str, *, slug: str, guide: str) -> tuple[str, str] | No
     if ref:
         api += f"?ref={ref}"
     source = path if f"{owner}/{repository}" == slug else f"{owner}/{repository}/{path}"
-    return api, source
+    return _API_DOCUMENT, api, source
+
+
+class _PageText(HTMLParser):
+    """The prose of an HTML page, with scripts, styles and navigation dropped."""
+
+    _SKIPPED = ("script", "style", "nav", "header", "footer", "noscript")
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+        self._skipping = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._SKIPPED:
+            self._skipping += 1
+        elif tag in ("p", "li", "br", "div", "h1", "h2", "h3", "h4", "tr"):
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIPPED and self._skipping:
+            self._skipping -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._skipping:
+            self.parts.append(data)
+
+
+def page_text(html: str) -> str:
+    """What a reader sees of a page, for the same patterns the guide gets."""
+    parser = _PageText()
+    parser.feed(html)
+    parser.close()
+    return "".join(parser.parts)
 
 
 def _followed_policies(
@@ -506,14 +556,17 @@ def _followed_policies(
         resolved = _linked_document(url, slug=slug, guide=guide)
         if resolved is None:
             continue
-        api, source = resolved
-        if source == guide or api in seen:
+        kind, locator, source = resolved
+        if source == guide or locator in seen:
             continue
-        seen.add(api)
+        seen.add(locator)
         if len(read) + len(unread) >= _POLICY_LINK_LIMIT:
             break
         entry = {"source": source, "url": url.strip(), "link_text": text.strip()}
-        document = _decoded(gh.json(api))
+        if kind == _PAGE_DOCUMENT:
+            document = page_text(gh.page(locator) or "")
+        else:
+            document = _decoded(gh.json(locator))
         if document.strip():
             read.append({**entry, "body": document})
         else:
@@ -1872,13 +1925,14 @@ def screen_repository(
     timeout_seconds: float = 120,
     working_directory: Path | None = None,
     _execute: Callable[..., CommandResult] = execute,
+    _fetch: Callable[[str, float], CommandResult] = fetch_page,
 ) -> dict[str, Any]:
     """Run every repository-level gate and write the verdict where it is reusable."""
     slug = repository_slug(repository)
     data_root.mkdir(parents=True, exist_ok=True)
     home = working_directory or data_root
     gh = _Gh(
-        executable or resolve_tool(home, "gh"), home, timeout_seconds, _execute
+        executable or resolve_tool(home, "gh"), home, timeout_seconds, _execute, _fetch
     )
     record: dict[str, Any] = {
         "schema_version": SCREEN_SCHEMA_VERSION,

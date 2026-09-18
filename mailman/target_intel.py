@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.error
+import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -172,6 +174,54 @@ def enforcement_markers(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(found.values(), key=lambda entry: -entry["count"])
 
 
+#: What a project's web server sees when the screen reads a policy page it
+#: keeps outside GitHub. Some documentation hosts answer a bare urllib agent
+#: with 403.
+_PAGE_USER_AGENT = "mailman-screen (+https://github.com/wolfgang-aura/Mailman)"
+
+#: A policy page is a few kilobytes of prose; a cap stops one link from
+#: pulling a whole site export into a screen record.
+_PAGE_BYTE_LIMIT = 2_000_000
+
+
+def _page_result(
+    url: str, exit_code: int, stdout: str, stderr: str, timeout_seconds: float, started: datetime
+) -> CommandResult:
+    return CommandResult(
+        command=["fetch", url],
+        working_directory="",
+        started_at=started.isoformat(),
+        duration_seconds=(datetime.now(UTC) - started).total_seconds(),
+        exit_code=exit_code,
+        stdout=stdout,
+        stderr=stderr,
+        timed_out=False,
+        timeout_seconds=timeout_seconds,
+        environment={},
+    )
+
+
+def fetch_page(url: str, timeout_seconds: float) -> CommandResult:
+    """Read one web page over https, reported the way a command is.
+
+    The screen's policy gate follows a contributing guide to the document it
+    links, and pretix keeps that document at docs.pretix.eu, where `gh api`
+    cannot go. The result carries the page body as stdout so the same
+    `commands` log records it beside the API calls.
+    """
+    started = datetime.now(UTC)
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": _PAGE_USER_AGENT})
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            raw = response.read(_PAGE_BYTE_LIMIT)
+            charset = response.headers.get_content_charset() or "utf-8"
+    except urllib.error.HTTPError as error:
+        return _page_result(url, 1, "", f"HTTP {error.code} {error.reason}", timeout_seconds, started)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
+        return _page_result(url, 1, "", str(error), timeout_seconds, started)
+    return _page_result(url, 0, raw.decode(charset, errors="replace"), "", timeout_seconds, started)
+
+
 class _Gh:
     """One `gh api` caller that records every command it ran."""
 
@@ -181,13 +231,24 @@ class _Gh:
         working_directory: Path,
         timeout_seconds: float,
         run: Callable[..., CommandResult] = execute,
+        fetch: Callable[[str, float], CommandResult] = fetch_page,
     ) -> None:
         self.executable = executable
         self.working_directory = working_directory
         self.timeout_seconds = timeout_seconds
         self.run = run
+        self.fetch = fetch
         self.commands: list[dict[str, Any]] = []
         self.failures: list[str] = []
+
+    def page(self, url: str) -> str | None:
+        """The body of one web page, or None when it could not be read."""
+        result = self.fetch(url, self.timeout_seconds)
+        self.commands.append(result.to_dict())
+        if result.timed_out or result.exit_code != 0:
+            self.failures.append(url)
+            return None
+        return result.stdout
 
     def json(self, path: str) -> Any | None:
         result: CommandResult = self.run(

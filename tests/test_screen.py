@@ -138,6 +138,21 @@ HEALTHY_WORKFLOW = "jobs:\n  test:\n    steps:\n      - run: pytest -q\n"
 PUBLISH_WORKFLOW = "jobs:\n  publish:\n    steps:\n      - run: twine upload dist/*\n"
 
 
+class FakePages:
+    """Answer the https pages the policy gate follows, from canned HTML."""
+
+    def __init__(self, pages: dict[str, str] | None = None) -> None:
+        self.pages = pages or {}
+        self.fetched: list[str] = []
+
+    def __call__(self, url: str, timeout_seconds: float) -> _Result:
+        self.fetched.append(url)
+        body = self.pages.get(url)
+        if body is None:
+            return _Result("", exit_code=1)
+        return _Result(body)
+
+
 class FakeGitHub:
     """Answer the paths the screen asks for, from a dict of canned payloads."""
 
@@ -245,13 +260,16 @@ def _named(record: dict, name: str) -> dict:
     return next(gate for gate in record["gates"] if gate["name"] == name)
 
 
-def _screen(root: Path, gh: FakeGitHub, **keywords) -> dict:
+def _screen(
+    root: Path, gh: FakeGitHub, pages: FakePages | None = None, **keywords
+) -> dict:
     return screen_repository(
         "https://github.com/example/project.git",
         data_root=root,
         executable="gh",
         working_directory=root,
         _execute=gh,
+        _fetch=pages or FakePages(),
         **keywords,
     )
 
@@ -991,6 +1009,75 @@ class ScreenTests(unittest.TestCase):
             ["AI_POLICY.md"],
         )
         self.assertIn("AI_POLICY.md", gate["detail"])
+
+    #: pretix/pretix CONTRIBUTING.md, the one line it says about AI.
+    PRETIX_GUIDE = (
+        "# Contributing to pretix\n\n"
+        "Please read our [AI-assisted contribution policy]"
+        "(https://docs.pretix.eu/dev/development/contribution/ai.html) "
+        "before submitting.\n"
+    )
+    PRETIX_POLICY_URL = "https://docs.pretix.eu/dev/development/contribution/ai.html"
+    #: The linked page, with the chrome a documentation site wraps it in.
+    PRETIX_POLICY_PAGE = (
+        "<html><head><title>AI-assisted contribution policy</title>"
+        "<script>var x = 'AI-generated PRs will be closed';</script></head>"
+        "<body><nav><a href='/'>Home</a></nav><div role='main'>"
+        "<h1>AI-assisted contribution policy</h1>"
+        "<p>pretix is maintained by humans.</p>"
+        "<p>All AI usage in any form must be disclosed. You must state the "
+        "tool you used (e.g. Claude Code, Cursor, Amp) along with the extent "
+        "that the work was AI-assisted.</p>"
+        "<p>The human-in-the-loop must fully understand all code.</p>"
+        "<p>No AI-generated media is allowed (art, images, videos, audio, "
+        "etc.). Text and code are the only acceptable AI-generated content, "
+        "per the other rules in this policy.</p>"
+        "</div></body></html>"
+    )
+
+    def test_a_policy_on_the_projects_own_site_is_fetched_and_gated_on(self) -> None:
+        # pretix keeps its policy at docs.pretix.eu. The gate treated any host
+        # that is not github.com as "somebody's web page", never read it, and
+        # passed the repository with `constraints: []`; the disclosure the page
+        # requires was found by hand after the run. Mailman #107.
+        gh = FakeGitHub(policies={"CONTRIBUTING.md": self.PRETIX_GUIDE})
+        pages = FakePages({self.PRETIX_POLICY_URL: self.PRETIX_POLICY_PAGE})
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), gh, pages)
+        gate = _named(record, "policy")
+
+        self.assertEqual(pages.fetched, [self.PRETIX_POLICY_URL])
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(gate["data"]["result"], "permitted")
+        self.assertTrue(gate["data"]["requires_disclosure"])
+        self.assertEqual(
+            [entry["source"] for entry in gate["data"]["followed_documents"]],
+            ["docs.pretix.eu/dev/development/contribution/ai.html"],
+        )
+        self.assertEqual(
+            [entry["source"] for entry in gate["data"]["constraints"]],
+            ["docs.pretix.eu/dev/development/contribution/ai.html"],
+        )
+        # The page's script carried a ban the prose does not; it is not read,
+        # so the result above is "permitted" and the quote is the disclosure
+        # rule, not the script's text.
+        self.assertIn("must be disclosed", gate["data"]["quote"])
+
+    def test_a_policy_page_that_cannot_be_fetched_is_unknown_not_permitted(
+        self,
+    ) -> None:
+        gh = FakeGitHub(policies={"CONTRIBUTING.md": self.PRETIX_GUIDE})
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), gh, FakePages())
+        gate = _named(record, "policy")
+
+        self.assertEqual(record["verdict"], "fail")
+        self.assertEqual(gate["data"]["result"], "unknown")
+        self.assertEqual(
+            [entry["source"] for entry in gate["data"]["unread_documents"]],
+            ["docs.pretix.eu/dev/development/contribution/ai.html"],
+        )
+        self.assertIn(self.PRETIX_POLICY_URL, record["read_failures"])
 
     def test_a_rule_against_duplicate_pull_requests_is_recorded(self) -> None:
         # urllib3's contributing guide and README, verbatim. Nothing read this,
