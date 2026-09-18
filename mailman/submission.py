@@ -1511,15 +1511,25 @@ def record_duplicate_search(
                     text = " ".join(
                         str(entry.get(field) or "") for field in ("title", "body")
                     )
+                    cited = _references_issue(text, issue_number)
+                    # A hit that does not cite the issue matched on the
+                    # symbols alone, so the `#N` term is not among its
+                    # matched terms and `duplicate_is_related` reads it as
+                    # a partial match rather than a full one.
+                    matched_terms = [
+                        term
+                        for term in (terms or [])
+                        if cited or not term.startswith("#")
+                    ]
                     rows.extend(
                         _match_rows(
                             [entry],
                             pull_request=kind == "pr",
                             method="narrow",
                             reasons=["narrow"],
-                            matched_terms=list(terms or []),
+                            matched_terms=matched_terms,
                             term_count=len(terms or []),
-                            references_issue=_references_issue(text, issue_number),
+                            references_issue=cited,
                         )
                     )
             else:

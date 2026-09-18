@@ -524,7 +524,9 @@ class PrescreenTests(unittest.TestCase):
                 },
             ]
         )
-        prescreen_issue(self.root, "example/project#7", executable=self.stub(payload))
+        record = prescreen_issue(
+            self.root, "example/project#7", executable=self.stub(payload)
+        )
         directory = prescreen_directory(self.root, "example/project", 7)
         search = json.loads(
             (directory / "duplicate-search.json").read_text(encoding="utf-8")
@@ -536,6 +538,11 @@ class PrescreenTests(unittest.TestCase):
         }
         self.assertEqual(narrow.get(6328), True)
         self.assertEqual(narrow.get(924), False)
+        # And the unrelated one is not a prior attempt for check-target to
+        # refuse over.
+        self.assertEqual(
+            [row["number"] for row in record["stale_attempts"]], [6328]
+        )
 
     def test_the_verdict_lands_beside_the_repository_screens(self) -> None:
         prescreen_issue(self.root, "example/project#7", executable=self.stub("[]"))
