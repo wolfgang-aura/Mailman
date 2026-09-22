@@ -579,6 +579,12 @@ sentence was posted by someone who had not read it, because the preview lived in
 prose and in an agent's memory rather than in the harness. See
 [issue #47](https://github.com/wolfgang-aura/Mailman/issues/47).
 
+`mailman contributions` exits 1 while a ready submission has no provenance,
+because a filed pull request may be missing from the ledger. An `ABANDONED` run
+is skipped. A ready run that was never filed is recorded once with
+`mailman provenance RUN_ID --not-filed REASON` and leaves the list
+([issue #132](https://github.com/wolfgang-aura/Mailman/issues/132)).
+
 Once `mailman provenance` records a run's pull request as closed, or names the
 pull request that superseded it with `--superseded-by`, the case is over and
 `handoff` refuses anything aimed at the issue, our pull request or the

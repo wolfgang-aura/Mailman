@@ -256,14 +256,16 @@ opening the local packet URL during this session; visual state is unverified.
 - Third upstream merge, 2026-09-22: dgunning/edgartools#1329 (run `20260916T134234Z-ec068b`,
   Claude `claude-opus-5` primary and reviewer) merged as `cb4b142` at 15:00 UTC from the
   user-owned fork, three commits, after `CHANGES_REQUESTED` on 2026-09-20 and one revision.
-  Provenance reads `MERGED`. Record 0014. Fork `wolfgang-aura/edgartools` still exists.
+  Provenance reads `MERGED`. Record 0014.
 - Upstream tally, 2026-09-23 (`mailman contributions --refresh`, `mailman hunt watch`, GitHub
   search `author:wolfgang-aura type:pr -user:wolfgang-aura`): 18 PRs filed. Merged 3:
   ffn#330 (maintainer re-land of our #328), securo#875, edgartools#1329. Open 9: pretix#6564,
   pymc#8442, nicegui#6345, tqdm#1837, openalgo#2021, openalgo#2022, poetry#11052, pdm#3883,
   openai-agents-python#4890. Closed unmerged 6: pypdf#4105, skfolio#316, rqalpha#1040,
   pytest#14993, mypy#21961 (superseded by #21967), pdm#3884. ffn#328 is counted under its
-  re-land. `contributions --refresh` exits 1 on two ready runs never filed (Mailman #132).
+  re-land. `contributions` exits 0 since Mailman #132: the abandoned urllib3#5053 run is
+  skipped, and the sentry-python#7401 run is recorded `--not-filed`.
+- edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23 (API returns 404).
 
 ### Reproduce gate, live-verified 2026-09-04
 

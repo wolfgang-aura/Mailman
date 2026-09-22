@@ -27,6 +27,8 @@ from typing import Any
 from mailman.executor import clamp_timeout_seconds
 
 PROVENANCE_FILENAME = "provenance.json"
+
+NOT_FILED_FILENAME = "not-filed.json"
 PATCH_FILENAME = "contribution.patch"
 SUBMISSION_DIRECTORY = "submission"
 
@@ -620,9 +622,40 @@ def unrecorded_submissions(data_root: Path) -> list[str]:
             continue
         if not isinstance(record, dict) or record.get("ready") is not True:
             continue
+        # An abandoned run, or one a human recorded as never filed, has no pull
+        # request to be missing. Counting it kept the exit code at 1 for good.
+        # https://github.com/wolfgang-aura/Mailman/issues/132
+        if _run_status(directory) == "ABANDONED":
+            continue
+        if (submission_directory(directory) / NOT_FILED_FILENAME).is_file():
+            continue
         if load_provenance(directory) is None:
             pending.append(directory.name)
     return pending
+
+
+def _run_status(run_directory: Path) -> str | None:
+    try:
+        payload = json.loads((run_directory / "run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload.get("status") if isinstance(payload, dict) else None
+
+
+def record_not_filed(run_directory: Path, reason: str) -> dict[str, Any]:
+    """Record that a ready submission was deliberately never filed upstream."""
+    if not reason.strip():
+        raise ProvenanceError("say why the run was not filed")
+    if load_provenance(run_directory) is not None:
+        raise ProvenanceError("this run has provenance, so it was filed")
+    record = {
+        "run_id": run_directory.name,
+        "reason": reason.strip(),
+        "recorded_at": datetime.now(UTC).isoformat(),
+    }
+    path = submission_directory(run_directory) / NOT_FILED_FILENAME
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    return record
 
 
 def render_contributions(

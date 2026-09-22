@@ -74,9 +74,11 @@ from mailman.orchestrator import (
 from mailman.prior_art import collect_prior_art
 from mailman.prompts import load_recorded_verification, write_task_prompts
 from mailman.provenance import (
+    ProvenanceError,
     collect_contributions,
     competitors,
     deletion_is_safe,
+    record_not_filed,
     record_provenance,
     refresh_contributions,
     render_contributions,
@@ -635,6 +637,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--superseded-by",
         type=int,
         help="pull request that carried this work after ours was closed",
+    )
+    provenance_parser.add_argument(
+        "--not-filed",
+        metavar="REASON",
+        help="record that this ready run was never filed upstream, and why",
     )
     provenance_parser.add_argument("--data-root", type=Path)
 
@@ -2157,6 +2164,13 @@ def _prepare_workspace(arguments: argparse.Namespace) -> int:
 
 def _provenance(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    if arguments.not_filed is not None:
+        if arguments.pr is not None or arguments.superseded_by is not None:
+            raise ProvenanceError(
+                "--not-filed cannot be combined with --pr or --superseded-by"
+            )
+        print(json.dumps(record_not_filed(run_directory, arguments.not_filed), indent=2))
+        return 0
     record = record_provenance(
         run_id=run.run_id,
         run_directory=run_directory,
@@ -2218,8 +2232,9 @@ def _contributions(arguments: argparse.Namespace) -> int:
                     "so any pull request filed from them is missing from the list "
                     "above:",
                     *(f"  {run_id}" for run_id in unrecorded),
-                    "Run `mailman provenance RUN_ID --pull-request N --head "
-                    "OWNER:BRANCH` for each filed one.",
+                    "Run `mailman provenance RUN_ID --pr N --head "
+                    "OWNER:BRANCH` for each filed one, and `mailman provenance "
+                    "RUN_ID --not-filed REASON` for each one never filed.",
                 ]
             ),
             file=sys.stderr,

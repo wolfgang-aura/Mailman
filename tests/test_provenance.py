@@ -17,6 +17,7 @@ from mailman.provenance import (
     contribution_from_record,
     deletion_is_safe,
     load_provenance,
+    record_not_filed,
     record_provenance,
     refresh_contributions,
     refresh_state,
@@ -271,6 +272,59 @@ class UnrecordedSubmissionTests(unittest.TestCase):
             )
 
             self.assertEqual(unrecorded_submissions(data_root), [])
+
+    def test_an_abandoned_run_is_not_listed(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/132
+
+        urllib3#5053 was ready, then the maintainer refused the change and the
+        run was abandoned. It kept `contributions` exiting 1 on every call.
+        """
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            directory = self._ready_run(data_root, "20260916T225951Z-8b7a50")
+            (directory / "run.json").write_text(
+                json.dumps({"status": "ABANDONED"}), encoding="utf-8"
+            )
+
+            self.assertEqual(unrecorded_submissions(data_root), [])
+
+    def test_a_run_recorded_as_not_filed_is_not_listed(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/132
+
+        sentry-python#7401 stayed READY_FOR_HUMAN_REVIEW when its hunt was
+        abandoned. Only a human can say it was never filed, and says so once.
+        """
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            directory = self._ready_run(data_root, "20260916T173555Z-6950bf")
+            (directory / "run.json").write_text(
+                json.dumps({"status": "READY_FOR_HUMAN_REVIEW"}), encoding="utf-8"
+            )
+            self.assertEqual(
+                unrecorded_submissions(data_root), ["20260916T173555Z-6950bf"]
+            )
+
+            record = record_not_filed(directory, "hunt abandoned before filing")
+
+            self.assertEqual(record["reason"], "hunt abandoned before filing")
+            self.assertEqual(unrecorded_submissions(data_root), [])
+
+    def test_not_filed_needs_a_reason(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._ready_run(Path(name), "20260916T173555Z-6950bf")
+
+            with self.assertRaises(ProvenanceError):
+                record_not_filed(directory, "  ")
+
+    def test_a_filed_run_cannot_be_recorded_as_not_filed(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._ready_run(Path(name), "20260908T220821Z-124828")
+            (directory / "submission" / "provenance.json").write_text(
+                json.dumps({"pull_request": 1}), encoding="utf-8"
+            )
+
+            with self.assertRaises(ProvenanceError):
+                record_not_filed(directory, "never filed")
 
 
 class RecordTests(unittest.TestCase):

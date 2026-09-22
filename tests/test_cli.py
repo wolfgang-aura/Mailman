@@ -111,6 +111,43 @@ class ContributionsCliTests(unittest.TestCase):
             self.assertIn("COMPETING: #21967", out.getvalue())
             self.assertIn("python/mypy#21961: #21967 (open)", err.getvalue())
 
+    def test_a_run_recorded_as_not_filed_leaves_the_unrecorded_list(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/132"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, directory = create_run(
+                repository="https://github.com/example/project",
+                issue="https://github.com/example/project/issues/1",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            (directory / "submission").mkdir()
+            (directory / "submission" / "submission.json").write_text(
+                json.dumps({"ready": True}), encoding="utf-8"
+            )
+            err = StringIO()
+            with redirect_stdout(StringIO()), redirect_stderr(err):
+                self.assertEqual(main(["contributions", "--data-root", str(data_root)]), 1)
+            self.assertIn("--pr N", err.getvalue())
+            self.assertIn("--not-filed", err.getvalue())
+
+            with redirect_stdout(StringIO()):
+                code = main(
+                    [
+                        "provenance",
+                        run.run_id,
+                        "--not-filed",
+                        "hunt abandoned before filing",
+                        "--data-root",
+                        str(data_root),
+                    ]
+                )
+            self.assertEqual(code, 0)
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                self.assertEqual(main(["contributions", "--data-root", str(data_root)]), 0)
+
     def test_without_refresh_nothing_calls_github(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_root = Path(temporary_directory) / "runs"
