@@ -133,6 +133,16 @@ def _comment(login: str, days_ago: float, *, kind: str = "User") -> dict:
             "body": "..."}
 
 
+def _review(login: str, days_ago: float, state: str) -> dict:
+    return {"user": {"login": login, "type": "User"},
+            "submitted_at": _at(days_ago), "state": state, "body": "..."}
+
+
+def _commits(days_ago: float) -> list[dict]:
+    return [{"sha": "abc", "commit": {"committer": {"date": _at(days_ago)},
+                                      "author": {"date": _at(days_ago)}}}]
+
+
 class _Root:
     """A data root with one hunt-filed row and one provenance-only row."""
 
@@ -313,6 +323,101 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(row["last_outside"]["kind"], "review")
         self.assertEqual(len(row["reasons"]), 1)
         self.assertIn("unanswered comment from frostming", row["reasons"][0])
+
+    def test_an_approval_is_not_an_unanswered_comment(self) -> None:
+        """dgunning approved edgartools#1329 and the row read `attention`.
+
+        An approval asks for nothing: the next move is the maintainer's merge.
+        See https://github.com/wolfgang-aura/Mailman/issues/130.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "dgunning/edgartools", 1329)
+            gh = FakeGitHub({"dgunning/edgartools#1329": {
+                "checks": [_check("test-fast")],
+                "reviews": [_review("dgunning", 4, "CHANGES_REQUESTED"),
+                            _review("dgunning", 1, "APPROVED")],
+                "commits": _commits(3),
+            }})
+
+            result = self._watch(root, gh)
+
+        self.assertTrue(result["ok"])
+        (row,) = result["rows"]
+        self.assertEqual(row["status"], "approved")
+        self.assertEqual(row["reasons"], [])
+        self.assertEqual(row["last_outside"]["review_state"], "APPROVED")
+        self.assertIn("approved by dgunning", render_watch(result))
+        self.assertNotIn("unanswered comment", render_watch(result))
+
+    def test_a_changes_requested_review_after_an_approval_needs_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "dgunning/edgartools", 1329)
+            gh = FakeGitHub({"dgunning/edgartools#1329": {
+                "checks": [_check("test-fast")],
+                "reviews": [_review("dgunning", 2, "APPROVED"),
+                            _review("dgunning", 1, "CHANGES_REQUESTED")],
+                "commits": _commits(3),
+            }})
+
+            result = self._watch(root, gh)
+
+        self.assertFalse(result["ok"])
+        (row,) = result["rows"]
+        self.assertEqual(row["status"], "attention")
+        self.assertIn("unanswered comment from dgunning", row["reasons"][0])
+
+    def test_a_comment_after_an_approval_needs_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "dgunning/edgartools", 1329)
+            gh = FakeGitHub({"dgunning/edgartools#1329": {
+                "checks": [_check("test-fast")],
+                "reviews": [_review("dgunning", 2, "APPROVED")],
+                "comments": [_comment("dgunning", 1)],
+                "commits": _commits(3),
+            }})
+
+            result = self._watch(root, gh)
+
+        self.assertFalse(result["ok"])
+        (row,) = result["rows"]
+        self.assertEqual(row["status"], "attention")
+        self.assertEqual(row["last_outside"]["kind"], "comment")
+
+    def test_an_approval_of_a_head_we_have_replaced_does_not_stand(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "dgunning/edgartools", 1329)
+            gh = FakeGitHub({"dgunning/edgartools#1329": {
+                "checks": [_check("test-fast")],
+                "reviews": [_review("dgunning", 2, "APPROVED")],
+                "commits": _commits(0.5),
+            }})
+
+            result = self._watch(root, gh)
+
+        self.assertTrue(result["ok"])
+        (row,) = result["rows"]
+        self.assertEqual(row["status"], "ok")
+
+    def test_an_approved_pull_request_with_a_red_check_still_needs_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "dgunning/edgartools", 1329)
+            gh = FakeGitHub({"dgunning/edgartools#1329": {
+                "checks": [_check("test-fast", "failure")],
+                "reviews": [_review("dgunning", 1, "APPROVED")],
+                "commits": _commits(3),
+            }})
+
+            result = self._watch(root, gh)
+
+        self.assertFalse(result["ok"])
+        (row,) = result["rows"]
+        self.assertEqual(row["status"], "attention")
+        self.assertEqual(row["reasons"], ["failing check: test-fast"])
 
     def test_a_maintainer_comment_we_replied_to_is_answered(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

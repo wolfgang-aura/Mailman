@@ -415,7 +415,11 @@ than our last commit or reply. `attention` names the reason on the next line:
 a failing check by name, `mergeable_state behind` (the base moved on; rebase
 and push) or `dirty` (a conflict), or an unanswered comment or review from
 somebody other than the author, bots excluded, newer than anything we did on
-the thread. `unknown` is a row `gh` could not read, a 404, a rate limit, a
+the thread. `approved` is that same green row whose newest outside word is an
+approving review no push of ours has outdated: it asks for nothing and the
+next move is the maintainer's merge, so it is not work. A later comment, a
+later `CHANGES_REQUESTED`, or a red check puts the row back on `attention`.
+`unknown` is a row `gh` could not read, a 404, a rate limit, a
 timeout, and it counts as work because a reading with a hole in it proves
 nothing. `merged` and `closed` are history and never need work. The command
 exits 1 while any row is `attention` or `unknown`, so a scheduled run can page

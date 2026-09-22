@@ -54,6 +54,7 @@ MERGEABLE_RETRY_SECONDS = 2.0
 #: The one word the table prints per row, in the order they are worth reading.
 STATUS_ATTENTION = "attention"
 STATUS_UNKNOWN = "unknown"
+STATUS_APPROVED = "approved"
 STATUS_OK = "ok"
 STATUS_MERGED = "merged"
 STATUS_CLOSED = "closed"
@@ -135,6 +136,25 @@ def filed_rows(data_root: Path) -> list[dict[str, Any]]:
     return sorted(rows.values(), key=lambda row: (row["repository"].lower(), row["pull_request"]))
 
 
+def _is_standing_approval(last_outside: dict[str, Any] | None,
+                          last_ours: datetime | None) -> bool:
+    """True when the newest word from outside is an approval that still stands.
+
+    An approval is not an unanswered comment: it asks for nothing and the next
+    move is the maintainer's. An approval older than our own last push is not
+    standing, because the reviewer approved a head we have since replaced.
+    See https://github.com/wolfgang-aura/Mailman/issues/130.
+    """
+    if not last_outside or last_outside.get("kind") != "review":
+        return False
+    if last_outside.get("review_state") != "APPROVED":
+        return False
+    at = _read_timestamp(last_outside.get("at"))
+    if at is None:
+        return False
+    return last_ours is None or at > last_ours
+
+
 def _reasons_for(pull: dict[str, Any], checks: dict[str, Any],
                  last_outside: dict[str, Any] | None,
                  last_ours: datetime | None) -> list[str]:
@@ -144,7 +164,7 @@ def _reasons_for(pull: dict[str, Any], checks: dict[str, Any],
     mergeable = pull.get("mergeable_state")
     if mergeable in STUCK_MERGEABLE_STATES:
         reasons.append(f"mergeable_state {mergeable}")
-    if last_outside is not None:
+    if last_outside is not None and not _is_standing_approval(last_outside, last_ours):
         outside_at = _read_timestamp(last_outside.get("at"))
         if outside_at is not None and (last_ours is None or outside_at > last_ours):
             reasons.append(
@@ -252,6 +272,9 @@ def inspect_pull_request(gh: _Gh, row: dict[str, Any], *,
                 continue
             if last_outside is None or at > _read_timestamp(last_outside["at"]):
                 last_outside = {"login": login, "at": at.isoformat(), "kind": kind}
+                if kind == "review":
+                    # `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`.
+                    last_outside["review_state"] = str(entry.get("state") or "").upper()
     for entry in commits if isinstance(commits, list) else []:
         if not isinstance(entry, dict):
             continue
@@ -271,7 +294,12 @@ def inspect_pull_request(gh: _Gh, row: dict[str, Any], *,
         return result
     reasons = _reasons_for(pull, checks, last_outside, last_ours)
     result["reasons"] = reasons
-    result["status"] = STATUS_ATTENTION if reasons else STATUS_OK
+    if reasons:
+        result["status"] = STATUS_ATTENTION
+    elif _is_standing_approval(last_outside, last_ours):
+        result["status"] = STATUS_APPROVED
+    else:
+        result["status"] = STATUS_OK
     return result
 
 
@@ -421,6 +449,13 @@ def render_watch(result: dict[str, Any]) -> str:
         if row.get("status") == STATUS_ATTENTION:
             for reason in row.get("reasons") or []:
                 lines.append(f"  {row['repository']}#{row['pull_request']}: {reason}")
+        elif row.get("status") == STATUS_APPROVED:
+            outside = row.get("last_outside") or {}
+            lines.append(
+                f"  {row['repository']}#{row['pull_request']}: approved by "
+                f"{outside.get('login') or 'a maintainer'} on "
+                f"{str(outside.get('at'))[:10]}; awaiting merge"
+            )
         elif row.get("status") == STATUS_UNKNOWN:
             lines.append(
                 f"  {row['repository']}#{row['pull_request']}: could not read "
