@@ -220,7 +220,8 @@ class NarrowFirstDuplicateSearchTests(unittest.TestCase):
         self.assertGreater(self.calls.index(methods[0]), 0)
 
     def test_a_confirmed_duplicate_stops_the_expensive_methods(self):
-        hit = [{"number": 42, "title": "Add sources to show", "state": "OPEN",
+        hit = [{"number": 42, "title": "Add sources to show",
+                "body": "Fixes #10967 by reading the lock file.", "state": "OPEN",
                 "url": "https://example.invalid/42", "createdAt": "2026-01-01"}]
         self._patch(lambda command: hit if "--search" in command else [])
         from mailman.submission import record_duplicate_search
@@ -235,6 +236,33 @@ class NarrowFirstDuplicateSearchTests(unittest.TestCase):
         self.assertEqual(record["match_count"], 1)
         self.assertEqual(len(self.calls), 1)
         self.assertIn("10967", record["detail"])
+
+    def test_a_narrow_hit_that_never_cites_the_issue_does_not_stop_the_search(self):
+        """The shortcut claims the hit already references the issue, so it must.
+
+        GitHub tokenises `#10967` to `10967` and matches a line number or a
+        version the same way. `3b54878` narrowed `references_issue` to a real
+        citation and left this path uncovered.
+        See https://github.com/wolfgang-aura/Mailman/issues/131.
+        """
+        hit = [{"number": 42, "title": "Add sources to show",
+                "body": "Touches locale/django.po:10967 and nothing else.",
+                "state": "OPEN", "url": "https://example.invalid/42",
+                "createdAt": "2026-01-01"}]
+        self._patch(lambda command: hit if "--search" in command else [])
+        from mailman.submission import record_duplicate_search
+
+        record = record_duplicate_search(
+            self.directory, repository="https://github.com/example/project.git",
+            query="show dependency sources", issue_number=10967, executable="gh",
+        )
+        self.assertEqual(record["decided_by"], "broad")
+        self.assertGreater(len(self.calls), 1)
+        self.assertNotIn("already reference", record.get("detail") or "")
+        self.assertTrue(
+            all(not row.get("references_issue") for row in record["matches"]),
+            "a bare number in the body is not a citation",
+        )
 
     def test_a_search_with_nothing_narrow_to_go_on_is_unchanged(self):
         self._patch(lambda command: [])
