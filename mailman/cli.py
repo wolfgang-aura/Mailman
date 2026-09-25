@@ -2150,6 +2150,18 @@ def _prepare_workspace(arguments: argparse.Namespace) -> int:
             "already_fixed": snippets.get("already_fixed"),
             "detail": snippets.get("detail"),
         }
+        # An issue reported on an older release may describe a bug the next
+        # release fixed without citing it. List what landed since, for a
+        # person to read before the environment build.
+        from mailman.version_gap import check_version_gap
+
+        gap = check_version_gap(run_directory)
+        summary["version_gap"] = {
+            "tag": gap.get("tag"),
+            "commits_since": gap.get("commits_since"),
+            "related": len(gap.get("related") or []),
+            "detail": gap.get("detail"),
+        }
     print(json.dumps(summary, indent=2))
     if record["success"]:
         return 0

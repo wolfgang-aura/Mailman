@@ -192,6 +192,10 @@ own without a domain narrowing the pool before they see it.
 
 6. Run `prepare-workspace`. Use the personal fork account and configured
    GitHub noreply identity. Keep environments and scratch outside the target.
+   When its summary carries `version_gap.related`, read those commit subjects
+   (also in `version-gap.json`) before building. An issue reported on an older
+   release may already be fixed at base by a commit that never cites it; if so,
+   drop the run as `already-fixed-upstream`.
 7. Run `draft-environment RUN_ID`, inspect its draft against CI and contribution
    instructions, adjust it and run `prepare-environment --plan PATH`. Resolve
    wheel/interpreter mismatches from the exact installation error. Do not

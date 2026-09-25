@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from mailman.base_snippets import BASE_SNIPPET_CHECK_FILENAME
+from mailman.version_gap import VERSION_GAP_FILENAME
 from mailman.claims import CLAIMS_FILENAME
 from mailman.issue import load_issue_record
 from mailman.provenance import load_provenance
@@ -261,6 +262,7 @@ class TargetAssessment:
     reproduction: dict[str, Any] = field(default_factory=dict)
     claims: dict[str, Any] = field(default_factory=dict)
     base_snippets: dict[str, Any] = field(default_factory=dict)
+    version_gap: dict[str, Any] = field(default_factory=dict)
     open_attempts: list[dict[str, Any]] = field(default_factory=list)
     merged_attempts: list[dict[str, Any]] = field(default_factory=list)
     superseded_attempts: list[dict[str, Any]] = field(default_factory=list)
@@ -283,6 +285,7 @@ class TargetAssessment:
             "reproduction": self.reproduction,
             "claims": self.claims,
             "base_snippets": self.base_snippets,
+            "version_gap": self.version_gap,
             "open_attempts": self.open_attempts,
             "merged_attempts": self.merged_attempts,
             "superseded_attempts": self.superseded_attempts,
@@ -419,6 +422,8 @@ class TargetAssessment:
         if self.base_snippets.get("success"):
             prefix = "at base   " if self.base_snippets.get("already_fixed") else "snippets  "
             lines.append(prefix + str(self.base_snippets.get("detail", "")))
+        if self.version_gap.get("related"):
+            lines.append("since     " + str(self.version_gap.get("detail", "")))
         for attempt in self.open_attempts:
             lines.append(
                 f"open      #{attempt.get('number')} {attempt.get('title', '')} "
@@ -595,6 +600,7 @@ def assess_target(
     reproduction = _read(run_directory / REPRODUCTION_FILENAME)
     claims = _read(run_directory / CLAIMS_FILENAME)
     base_snippets = _read(run_directory / BASE_SNIPPET_CHECK_FILENAME)
+    version_gap = _read(run_directory / VERSION_GAP_FILENAME)
     searched = duplicate_search.get("success") is True
     target_read = intel.get("success") is True
 
@@ -812,6 +818,7 @@ def assess_target(
         reproduction=reproduction,
         claims=claims,
         base_snippets=base_snippets,
+        version_gap=version_gap,
         open_attempts=open_attempts,
         merged_attempts=merged_attempts,
         superseded_attempts=superseded_attempts,
