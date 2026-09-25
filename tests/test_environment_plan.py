@@ -27,7 +27,8 @@ test = [{include-group = "common"}, "pytest"]
             plan = load_plan(path)
             self.assertIn("hypothesis", plan["steps"][1]["command"])
             self.assertEqual(plan["steps"][2]["command"][-1], ".[tests]")
-            self.assertIn("--only-binary=:all:", plan["steps"][2]["command"])
+            self.assertIn("--prefer-binary", plan["steps"][2]["command"])
+            self.assertNotIn("--only-binary=:all:", plan["steps"][1]["command"])
             self.assertEqual(plan["draft"]["requires_python"], ">=3.12")
             with self.assertRaisesRegex(ValueError, "already exists"):
                 draft_plan(root, path)
@@ -82,3 +83,41 @@ test = ["pytest"]
             (root / "pyproject.toml").write_text('[project]\nname = "fixture"\n', encoding="utf-8")
             plan = draft_plan(root, root / "plan.json")
             self.assertIn("editables", plan["steps"][1]["command"])
+
+    def test_hatch_test_environments_supply_test_dependencies(self):
+        """edgartools declares its test tools only in hatch's default env (#133)."""
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "pyproject.toml").write_text('''
+[project]
+name = "fixture"
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+[tool.hatch.envs.default]
+dependencies = ["pytest-asyncio", "vcrpy<8.2", "fixture-plugin @ {root:uri}/plugin"]
+[tool.hatch.envs.hatch-test]
+extra-dependencies = ["freezegun"]
+[tool.hatch.envs.docs]
+dependencies = ["mkdocs"]
+''', encoding="utf-8")
+            plan = draft_plan(root, root / "plan.json")
+            build = plan["steps"][1]["command"]
+            for requirement in ("pytest-asyncio", "vcrpy<8.2", "freezegun", "setuptools"):
+                self.assertIn(requirement, build)
+            self.assertNotIn("mkdocs", build)
+            self.assertFalse(any("{root:uri}" in part for part in build))
+            self.assertEqual(plan["draft"]["hatch_environments"], ["default", "hatch-test"])
+
+    def test_sdist_only_dependencies_are_not_refused(self):
+        """beets' langdetect publishes no wheel and is pure Python (#133)."""
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "pyproject.toml").write_text(
+                '[project]\nname = "fixture"\n[dependency-groups]\ntest = ["langdetect"]\n',
+                encoding="utf-8",
+            )
+            plan = draft_plan(root, root / "plan.json")
+            for step in plan["steps"][1:]:
+                self.assertIn("--prefer-binary", step["command"])
+                self.assertNotIn("--only-binary=:all:", step["command"])

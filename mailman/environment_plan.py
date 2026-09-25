@@ -20,6 +20,45 @@ def _builds_editables_by_import(project: dict) -> bool:
     return not isinstance(backend, str) or backend.split(".")[0] == "hatchling"
 
 
+#: Hatch environments a target runs its tests in. `default` is where `hatch run
+#: test` looks, and edgartools declares pytest-asyncio, pytest-env and vcrpy
+#: only there: a plan without them failed 58 tests at base and candidate alike.
+#: https://github.com/wolfgang-aura/Mailman/issues/133
+HATCH_TEST_ENVIRONMENTS = ("default", "test", "tests", "hatch-test")
+
+#: Prefer a wheel, and fall back to an older wheel before a newer sdist, but
+#: still install a package that publishes no wheel at all. `--only-binary=:all:`
+#: refused beets' `langdetect` and `titlecase`, which are pure Python and build
+#: without a compiler. A package that needs one fails either way.
+BINARY_POLICY = "--prefer-binary"
+
+
+def _hatch_test_dependencies(project: dict) -> tuple[list[str], list[str]]:
+    """Requirements declared in the hatch environments tests run in.
+
+    An entry with hatch context formatting (`{root:uri}`, `{env:...}`) names a
+    path or value only hatch can resolve, so it is left out rather than handed
+    to pip as a literal.
+    """
+    environments = project.get("tool", {}).get("hatch", {}).get("envs", {})
+    dependencies: list[str] = []
+    used: list[str] = []
+    for name in HATCH_TEST_ENVIRONMENTS:
+        environment = environments.get(name) if isinstance(environments, dict) else None
+        if not isinstance(environment, dict):
+            continue
+        declared = [
+            entry
+            for key in ("dependencies", "extra-dependencies")
+            for entry in environment.get(key, [])
+            if isinstance(entry, str) and "{" not in entry
+        ]
+        if declared:
+            used.append(name)
+            dependencies.extend(declared)
+    return dependencies, used
+
+
 def draft_plan(workspace: Path, destination: Path, *, python: str = sys.executable) -> dict:
     if destination.exists():
         raise ValueError(f"plan already exists at {destination}; edit it instead of overwriting")
@@ -49,26 +88,28 @@ def draft_plan(workspace: Path, destination: Path, *, python: str = sys.executab
 
     interpreter = "{environment}/Scripts/python.exe" if sys.platform == "win32" else "{environment}/bin/python"
     build = project.get("build-system", {}).get("requires", ["setuptools"])
-    dependencies = list(dict.fromkeys([*build, *(expand(group) if group else [])]))
-    install = [interpreter, "-m", "pip", "install", "--only-binary=:all:", "--no-build-isolation", "-e", f".[{extra}]" if extra else "."]
+    hatch, hatch_environments = _hatch_test_dependencies(project)
+    dependencies = list(dict.fromkeys([*build, *(expand(group) if group else []), *hatch]))
+    install = [interpreter, "-m", "pip", "install", BINARY_POLICY, "--no-build-isolation", "-e", f".[{extra}]" if extra else "."]
+    # Without build isolation a dependency that ships only an sdist builds with
+    # whatever the environment holds, and a fresh venv holds no setuptools.
+    dependencies = list(dict.fromkeys([*dependencies, "setuptools"]))
     if "--no-build-isolation" in install and "-e" in install and _builds_editables_by_import(project):
         dependencies = list(dict.fromkeys([*dependencies, "editables"]))
     plan = {
         "schema_version": 1,
         "steps": [
             {"name": "create-environment", "command": [python, "-m", "venv", "{environment}"], "working_directory": "run"},
-            {"name": "install-build-and-test-dependencies", "command": [interpreter, "-m", "pip", "install", "--only-binary=:all:", *dependencies]},
+            {"name": "install-build-and-test-dependencies", "command": [interpreter, "-m", "pip", "install", BINARY_POLICY, *dependencies]},
             {"name": "install-target", "command": install},
         ],
         "register": [{"name": "python", "executable": interpreter}],
         "draft": {
             "source": str(source.resolve()), "requires_python": metadata.get("requires-python"),
-            "extra": extra, "group": group,
+            "extra": extra, "group": group, "hatch_environments": hatch_environments,
             "review": "Read CI and contributing instructions before execution. This draft does not reproduce uv or poetry lock resolution. Adjust the interpreter to requires-python and the supported CI matrix.",
         },
     }
-    if not dependencies:
-        plan["steps"].pop(1)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
     return plan
