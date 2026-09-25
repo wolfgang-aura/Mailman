@@ -709,6 +709,28 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(gate["data"]["required_blocked"], ["numba"])
         self.assertIn("Application Control", gate["detail"])
 
+    def test_a_web3_project_fails_the_host_gate(self) -> None:
+        # ApeWorX/ape on 2026-09-25: the environment built, then every import
+        # died on ckzg, which eth-account loads and web3 imports.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "pyproject.toml": (
+                            '[project]\nname = "eth-ape"\n'
+                            'dependencies = ["eth-account>=0.11.3,<0.14", '
+                            '"web3[tester]>=7.12.1,<8"]\n'
+                        )
+                    }
+                ),
+            )
+        gate = _named(record, "host")
+
+        self.assertIn("host", record["failed_gates"])
+        self.assertEqual(gate["data"]["required_blocked"], ["eth-account", "web3"])
+        self.assertIn("ckzg", gate["detail"])
+
     def test_a_blocked_package_in_an_extra_warns_without_failing(self) -> None:
         # electrum's Qt window needs PyQt6, which is an extra; the crash we
         # picked was in that window. The screen cannot know which issue comes

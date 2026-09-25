@@ -1105,6 +1105,14 @@ HOST_BLOCKED_PACKAGES: dict[str, str] = {
     "numba": "numba's DLLs are blocked by Application Control on this host",
     "pyqt6": "PyQt6's DLLs are blocked by Application Control on this host",
     "pyqt6-qt6": "PyQt6's DLLs are blocked by Application Control on this host",
+    # ApeWorX/ape#2581, 2026-09-25: `import eth_account` loads ckzg at module
+    # import ("DLL load failed while importing ckzg: An Application Control
+    # policy has blocked this file"), and web3 and py-evm import it in turn,
+    # so every web3 project is unrunnable here. The environment had built.
+    "ckzg": "ckzg's DLL is blocked by Application Control on this host",
+    "eth-account": "eth-account imports ckzg, whose DLL Application Control blocks on this host",
+    "web3": "web3 imports eth-account and ckzg, whose DLL Application Control blocks on this host",
+    "py-evm": "py-evm imports ckzg, whose DLL Application Control blocks on this host",
 }
 
 #: Frameworks whose test suite needs a running service the host does not
