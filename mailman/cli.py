@@ -100,10 +100,12 @@ from mailman.review_decision import (
 from mailman.review_packet import write_packet_page
 from mailman.review_page import write_run_page
 from mailman.screen import (
+    FRESHNESS_WINDOW_DAYS,
     ISSUE_WINDOW_DAYS,
     RESPONSIVENESS_WINDOW_DAYS,
     load_screen,
     render_screen,
+    screen_is_current,
     screen_repository,
     screen_shortlist,
 )
@@ -508,7 +510,7 @@ def _build_parser() -> argparse.ArgumentParser:
     intel.add_argument(
         "--window-days",
         type=int,
-        default=14,
+        default=FRESHNESS_WINDOW_DAYS,
         help="how far back to count outside merges and refusals",
     )
     intel.add_argument(
@@ -538,7 +540,7 @@ def _build_parser() -> argparse.ArgumentParser:
     screen.add_argument(
         "--window-days",
         type=int,
-        default=14,
+        default=FRESHNESS_WINDOW_DAYS,
         help="how recent an outside merge has to be to count as fresh",
     )
     screen.add_argument(
@@ -1560,7 +1562,16 @@ def _screen_target(arguments: argparse.Namespace) -> int:
     slug = repository_slug(arguments.repository)
     if not arguments.refresh:
         cached = load_screen(data_root, slug)
-        if cached and cached.get("success"):
+        if (
+            cached
+            and cached.get("success")
+            and screen_is_current(
+                cached,
+                window_days=arguments.window_days,
+                issue_window_days=arguments.issue_window_days,
+                responsiveness_days=arguments.responsiveness_days,
+            )
+        ):
             if arguments.json:
                 print(json.dumps(_screen_summary(cached), indent=2))
             else:

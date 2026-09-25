@@ -339,7 +339,8 @@ merged nothing from outside in six weeks.
    author route, `pydantic/pydantic-ai` on both. It is not a sandbox and does
    not pretend to be one: a hostile `setup.py` in a repository that clears this
    gate still runs. The gate is the decision not to point pip at a stranger.
-2. **Freshness.** Outside human merges in the window, bots excluded by account
+2. **Freshness.** Outside human merges in the window (`--window-days`,
+   default 45), bots excluded by account
    type and by name. Fails when nobody outside has merged, when one person wrote
    every outside merge in ninety days, when one person wrote 80% of them, or
    when every merge inside the window is by one author who wrote 35% or more of
@@ -372,9 +373,11 @@ merged nothing from outside in six weeks.
    every model library's guide.
 6. **Saturation.** How many unassigned open issues have no open pull request
    naming them, and how old they are. Age is capped by `--issue-window-days`,
-   default 90, which is not the merge window and must not be set from it. A
+   default 730, which is not the merge window and must not be set from it. A
    fortnight's cap read a normal three-week backlog as a closed door and
-   rejected eighteen repositories that failed nothing else. A pass prints the
+   rejected eighteen repositories that failed nothing else; a 90-day cap then
+   cut away the old, maintainer-acknowledged bugs nobody else is racing for.
+   Whether an old bug is still real is decided by `reproduce`, not here. A pass prints the
    workable issues as a ranked shortlist, and `--json` prints the same rows:
    `maintainer-invited` first, then `recent`, then `no-linked-pr`, each row
    naming the reasons it holds. `mailman/procedure.md` says what the codes

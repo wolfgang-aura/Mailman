@@ -46,6 +46,7 @@ from mailman.claims import (
 )
 from mailman.executor import CommandResult, execute
 from mailman.target_intel import (
+    FRESHNESS_WINDOW_DAYS,
     _Gh,
     fetch_page,
     _is_bot,
@@ -120,7 +121,14 @@ SHARE_SAMPLE_MINIMUM = 8
 #: Reading the merge window as an age cap rejected eighteen repositories that
 #: failed nothing else, among them `fsspec/filesystem_spec` with 282 unclaimed
 #: issues. See https://github.com/wolfgang-aura/Mailman/issues/95.
-ISSUE_WINDOW_DAYS = 90
+#:
+#: Ninety days still cut away the only work nobody races for. On 2026-09-25 a
+#: 90-day cap left twelve screened repositories with no workable issue, while
+#: `pytest-dev/pytest-xdist`, `ApeWorX/ape` and `conan-io/conan` held 231, 168
+#: and 79 unclaimed issues just past it. Re-screened at 730 days, 43 of 68
+#: sampled old bugs in six passing repositories had a maintainer in the thread.
+#: Whether an old bug is still real is `reproduce`'s question, not this one.
+ISSUE_WINDOW_DAYS = 730
 
 #: How many recent default-branch commits to trace back to a pull request. Each
 #: one costs an API call, so the sample is small and is recorded next to the
@@ -2035,6 +2043,27 @@ def load_screen(data_root: Path, slug: str) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) else None
 
 
+def screen_is_current(
+    record: dict[str, Any],
+    *,
+    window_days: int = FRESHNESS_WINDOW_DAYS,
+    issue_window_days: int = ISSUE_WINDOW_DAYS,
+    responsiveness_days: int = RESPONSIVENESS_WINDOW_DAYS,
+) -> bool:
+    """Whether a recorded verdict was read with the windows now asked for.
+
+    A verdict is an answer to a question with its windows in it. When the
+    defaults widened on 2026-09-25, 294 cached screens still carried the old
+    answer, and reusing them would have kept every repository the change was
+    for on the reject pile.
+    """
+    return (
+        record.get("window_days") == window_days
+        and record.get("issue_window_days") == issue_window_days
+        and record.get("responsiveness_days") == responsiveness_days
+    )
+
+
 def _write(data_root: Path, record: dict[str, Any]) -> Path:
     destination = screen_path(data_root, record["repository"])
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -2048,7 +2077,7 @@ def screen_repository(
     repository: str,
     *,
     data_root: Path,
-    window_days: int = 14,
+    window_days: int = FRESHNESS_WINDOW_DAYS,
     issue_window_days: int = ISSUE_WINDOW_DAYS,
     responsiveness_days: int = RESPONSIVENESS_WINDOW_DAYS,
     executable: str | None = None,

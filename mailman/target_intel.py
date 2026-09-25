@@ -33,6 +33,12 @@ from typing import Any, Callable
 from mailman.executor import CommandResult, execute
 from mailman.toolchain import resolve_tool
 
+#: How recent an outside human merge has to be to count as fresh. Fourteen
+#: days failed `copier-org/copier` and `ipython/ipython`, which merge outside
+#: work every few weeks and answer strangers inside the responsiveness bar.
+#: Freshness asks whether the door is open; `responsiveness` asks how fast.
+FRESHNESS_WINDOW_DAYS = 45
+
 TARGET_INTEL_FILENAME = "target-intel.json"
 TARGET_INTEL_MARKDOWN = "target-intel.md"
 TARGET_INTEL_SCHEMA_VERSION = 1
@@ -350,7 +356,7 @@ def collect_target_intel(
     run_directory: Path,
     *,
     repository: str,
-    window_days: int = 14,
+    window_days: int = FRESHNESS_WINDOW_DAYS,
     merge_paths: int = 6,
     enforcement_samples: int = 8,
     executable: str | None = None,

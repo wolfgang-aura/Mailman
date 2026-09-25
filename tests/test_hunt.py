@@ -342,6 +342,28 @@ class HuntTests(OrchestratorHarness):
         self.assertEqual(result["disposition"], "REPLACE", result)
         self.assertFalse(result["human_required"])
 
+    def test_a_refusal_under_old_windows_is_re_read_not_replaced(self):
+        # 294 cached screens were read with a 14-day freshness window and a
+        # 90-day issue window; copier-org/copier failed only on the first.
+        directory = self.ready_run()
+        screen_path(self.data_root, "example/project").write_text(json.dumps({
+            "success": True, "verdict": "fail", "failed_gates": ["freshness"],
+            "window_days": 14, "issue_window_days": 90, "responsiveness_days": 90,
+        }), encoding="utf-8")
+        result = next_action(directory)
+        self.assertEqual(result["stage"], "screen", result)
+        self.assertEqual(result["disposition"], "REPAIR", result)
+        self.assertIn("--refresh", result["action"])
+
+    def test_a_refusal_under_current_windows_is_replaced(self):
+        directory = self.ready_run()
+        screen_path(self.data_root, "example/project").write_text(json.dumps({
+            "success": True, "verdict": "fail", "failed_gates": ["freshness"],
+            "window_days": 45, "issue_window_days": 730, "responsiveness_days": 90,
+        }), encoding="utf-8")
+        result = next_action(directory)
+        self.assertEqual(result["disposition"], "REPLACE", result)
+
     def test_missing_screen_is_coordinator_work(self):
         _, directory = self.make_run()
         result = next_action(directory)

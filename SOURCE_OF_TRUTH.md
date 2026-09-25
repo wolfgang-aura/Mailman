@@ -388,6 +388,16 @@ is a valid target whatever field it serves; finance targets go first when the
 shortlist offers a choice. The recognizability rule set on 2026-09-02 is
 unchanged — obscure repositories are still out, in finance as anywhere else.
 
+Screen windows widened by the repository owner on 2026-09-25, after hunt
+`20260924T231540Z-218236` found 0 workable candidates in ~70 repositories: every
+fresh bug in a passing repository was already claimed. `screen-target` now
+defaults to a 730-day issue window (was 90) and a 45-day freshness window (was
+14); responsiveness and the triage rule are unchanged. Measured before the
+change on 12 near-miss repositories: 6 pass (ApeWorX/ape, agronholm/anyio,
+conan-io/conan, copier-org/copier, ipython/ipython, redis/redis-py), and 43 of
+68 sampled workable issues there have an OWNER, MEMBER or COLLABORATOR in the
+thread. A cached verdict read under other windows is re-read, not reused.
+
 Observed on 2026-09-17: `urllib3/urllib3` enforces its no-duplicate rule
 and treats an issue no maintainer acknowledged as no issue. Asked whether a
 second PR for #5053 would be taken given the dormant #5084, maintainer

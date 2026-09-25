@@ -16,7 +16,7 @@ from mailman.handoff import check_handoff, load_handoff
 from mailman.models import RunStatus, utc_now
 from mailman.orchestrator import orchestration_step_names
 from mailman.review_decision import DecisionError, load_decision
-from mailman.screen import load_screen
+from mailman.screen import load_screen, screen_is_current
 from mailman.target_intel import repository_slug
 from mailman.targeting import (
     STALE_PRIOR_ATTEMPT,
@@ -528,6 +528,12 @@ def next_action(directory: Path) -> dict:
         return row
 
     screen = load_screen(directory.parent, repository_slug(run.repository)) or {}
+    if (screen.get("success") and screen.get("verdict") != "pass"
+            and not screen_is_current(screen)):
+        # A refusal read under narrower windows than today's may not stand,
+        # so it is re-read rather than replaced. A pass stays a pass.
+        return action("screen", f"mailman screen-target {repository_slug(run.repository)} --refresh",
+                      disposition="REPAIR")
     if screen.get("verdict") != "pass" or not screen.get("success"):
         return action("screen", f"mailman screen-target {repository_slug(run.repository)} --refresh",
                       disposition="REPLACE" if screen.get("success") else "REPAIR")

@@ -353,14 +353,16 @@ class ScreenTests(unittest.TestCase):
         self.assertNotIn("assignment", record["failed_gates"])
 
     def test_a_repository_with_no_recent_outside_merge_fails_first(self) -> None:
-        # OpenBB-finance/OpenBB: 72.6k stars, last outside merge six weeks back.
+        # OpenBB-finance/OpenBB: 72.6k stars. Its last outside merge was six
+        # weeks back when screened, inside today's 45-day window, so the
+        # fixture puts the latest merge past it.
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(
                 Path(temporary),
                 FakeGitHub(
                     closed_pulls=[
-                        _pull(1, author="alice", merged_days_ago=42),
-                        _pull(2, author="bob", merged_days_ago=50),
+                        _pull(1, author="alice", merged_days_ago=60),
+                        _pull(2, author="bob", merged_days_ago=70),
                     ]
                 ),
             )
@@ -436,6 +438,7 @@ class ScreenTests(unittest.TestCase):
                         for n in range(6)
                     ]
                 ),
+                window_days=14,
             )
         freshness = _named(record, "freshness")
 
@@ -448,7 +451,7 @@ class ScreenTests(unittest.TestCase):
     def test_a_single_window_author_on_a_small_sample_still_passes(self) -> None:
         # A share over two merges is arithmetic, not evidence about the project.
         with tempfile.TemporaryDirectory() as temporary:
-            record = _screen(Path(temporary), FakeGitHub())
+            record = _screen(Path(temporary), FakeGitHub(), window_days=14)
 
         self.assertEqual(record["verdict"], "pass")
         self.assertEqual(_named(record, "freshness")["data"]["authors_in_window"], ["alice"])
@@ -490,6 +493,7 @@ class ScreenTests(unittest.TestCase):
                         _pull(5, author="fourth", merged_days_ago=40),
                     ]
                 ),
+                window_days=14,
             )
         freshness = _named(record, "freshness")
 
@@ -1354,7 +1358,7 @@ class ScreenTests(unittest.TestCase):
                 FakeGitHub(
                     issues=[
                         _issue(10, days_old=1, labels=["enhancement"]),
-                        _issue(11, days_old=400),
+                        _issue(11, days_old=1000),
                         _issue(12, days_old=2, labels=["feature-request"]),
                     ],
                     issue_comments={11: []},
@@ -1367,7 +1371,7 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(gate["data"]["workable"], 0)
         self.assertIn("none is workable", gate["detail"])
         self.assertIn("enhancement-labelled", gate["detail"])
-        self.assertIn("older than the 90-day issue window", gate["detail"])
+        self.assertIn("older than the 730-day issue window", gate["detail"])
 
     def test_a_three_week_old_backlog_is_workable_under_a_fresh_window(self) -> None:
         # The eighteen repositories that failed nothing but saturation, among
@@ -1393,9 +1397,42 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(gate["data"]["workable"], 2)
         self.assertEqual(gate["data"]["stale_beyond_window"], 0)
         self.assertEqual(gate["data"]["median_workable_age_days"], 30)
-        self.assertEqual(gate["data"]["window_days"], 14)
-        self.assertEqual(gate["data"]["issue_window_days"], 90)
-        self.assertEqual(record["issue_window_days"], 90)
+        self.assertEqual(gate["data"]["window_days"], 45)
+        self.assertEqual(gate["data"]["issue_window_days"], 730)
+        self.assertEqual(record["issue_window_days"], 730)
+
+    def test_an_old_unclaimed_bug_is_still_work_by_default(self) -> None:
+        # ApeWorX/ape on 2026-09-25: 168 unclaimed issues, every one past the
+        # old 90-day cap, most filed by a maintainer and never taken.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    issues=[_issue(10, days_old=500)],
+                    issue_comments={10: []},
+                ),
+            )
+        gate = _named(record, "saturation")
+
+        self.assertNotIn("saturation", record["failed_gates"])
+        self.assertEqual(gate["data"]["workable"], 1)
+        self.assertEqual(gate["data"]["stale_beyond_window"], 0)
+
+    def test_a_merge_a_month_back_is_fresh_by_default(self) -> None:
+        # copier-org/copier failed a 14-day window with a merge 18 days old.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    closed_pulls=[
+                        _pull(1, author="alice", merged_days_ago=30),
+                        _pull(2, author="bob", merged_days_ago=40),
+                    ]
+                ),
+            )
+
+        self.assertNotIn("freshness", record["failed_gates"])
+        self.assertEqual(_named(record, "freshness")["data"]["window_days"], 45)
 
     def test_the_issue_window_is_set_apart_from_the_merge_window(self) -> None:
         # Passing the merge window as the age cap is the defect itself, so the
@@ -1414,7 +1451,7 @@ class ScreenTests(unittest.TestCase):
         self.assertIn("saturation", record["failed_gates"])
         self.assertEqual(gate["data"]["stale_beyond_window"], 1)
         self.assertIn("older than the 14-day issue window", gate["detail"])
-        self.assertIn("counted over 14 days", gate["detail"])
+        self.assertIn("counted over 45 days", gate["detail"])
 
     def test_the_workable_count_excludes_labels_and_staleness_from_the_median(
         self) -> None:
@@ -1424,7 +1461,7 @@ class ScreenTests(unittest.TestCase):
                 FakeGitHub(
                     issues=[
                         _issue(10, days_old=3),
-                        _issue(11, days_old=400),
+                        _issue(11, days_old=1000),
                         _issue(12, days_old=1, labels=["enhancement"]),
                     ],
                     issue_comments={10: []},

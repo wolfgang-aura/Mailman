@@ -970,7 +970,36 @@ class ScreenTargetCliTests(unittest.TestCase):
             self.assertEqual(code, 0)
             keywords = screened.call_args.kwargs
             self.assertEqual(keywords["responsiveness_days"], 30)
-            self.assertEqual(keywords["issue_window_days"], 90)
+            self.assertEqual(keywords["issue_window_days"], 730)
+
+    def _cached(self, data_root: Path, **windows: int) -> None:
+        path = data_root / "screens" / "example__project.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "success": True, "repository": "example/project", "verdict": "fail",
+            "failed_gates": ["freshness"], "gates": [], **windows,
+        }), encoding="utf-8")
+
+    def test_a_verdict_read_under_other_windows_is_not_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            self._cached(data_root, window_days=14, issue_window_days=90, responsiveness_days=90)
+            fresh = {"success": True, "repository": "example/project", "verdict": "pass", "gates": []}
+            with patch("mailman.cli.screen_repository", return_value=fresh) as screened:
+                with redirect_stdout(StringIO()):
+                    code = main(["screen-target", "example/project", "--data-root", str(data_root)])
+            self.assertEqual(code, 0)
+            self.assertEqual(screened.call_count, 1)
+
+    def test_a_verdict_read_under_the_same_windows_is_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            self._cached(data_root, window_days=45, issue_window_days=730, responsiveness_days=90)
+            with patch("mailman.cli.screen_repository") as screened:
+                with redirect_stdout(StringIO()):
+                    code = main(["screen-target", "example/project", "--data-root", str(data_root)])
+            self.assertEqual(code, 1)
+            screened.assert_not_called()
 
     def test_the_responsiveness_window_defaults_to_ninety_days(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
