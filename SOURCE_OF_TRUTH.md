@@ -1,6 +1,6 @@
 # Source of truth
 
-Last verified: 2026-09-23 in `Asia/Singapore`.
+Last verified: 2026-09-26 in `Asia/Singapore`.
 
 ## Luna work-order checkpoint
 
@@ -257,15 +257,18 @@ opening the local packet URL during this session; visual state is unverified.
   Claude `claude-opus-5` primary and reviewer) merged as `cb4b142` at 15:00 UTC from the
   user-owned fork, three commits, after `CHANGES_REQUESTED` on 2026-09-20 and one revision.
   Provenance reads `MERGED`. Record 0014.
-- Upstream tally, 2026-09-23 (`mailman contributions --refresh`, `mailman hunt watch`, GitHub
-  search `author:wolfgang-aura type:pr -user:wolfgang-aura`): 18 PRs filed. Merged 3:
-  ffn#330 (maintainer re-land of our #328), securo#875, edgartools#1329. Open 9: pretix#6564,
-  pymc#8442, nicegui#6345, tqdm#1837, openalgo#2021, openalgo#2022, poetry#11052, pdm#3883,
-  openai-agents-python#4890. Closed unmerged 6: pypdf#4105, skfolio#316, rqalpha#1040,
-  pytest#14993, mypy#21961 (superseded by #21967), pdm#3884. ffn#328 is counted under its
-  re-land. `contributions` exits 0 since Mailman #132: the abandoned urllib3#5053 run is
-  skipped, and the sentry-python#7401 run is recorded `--not-filed`.
-- edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23 (API returns 404).
+- Fourth upstream merge, 2026-09-26: dgunning/edgartools#1365 (run `20260924T222329Z-301fab`,
+  Claude `claude-opus-5-5` primary and reviewer) merged as `0ec15fe` at 12:33 UTC from the
+  user-owned fork, three commits, after the maintainer approved the offer on #1337 and asked for
+  the #1136 row loop to be shared. Provenance and `contributions --refresh` read `MERGED`.
+  Record 0015. Issues #136 and #137 filed from it.
+- Upstream tally, 2026-09-26 (`mailman contributions --refresh`, `mailman hunt watch`): 19 PRs
+  filed. Merged 4: ffn#330 (maintainer re-land of our #328), securo#875, edgartools#1329,
+  edgartools#1365. The open and closed rows are unchanged from the 2026-09-23 tally: open 9
+  (pretix#6564, pymc#8442, nicegui#6345, tqdm#1837, openalgo#2021, openalgo#2022, poetry#11052,
+  pdm#3883, openai-agents-python#4890), closed unmerged 6.
+- edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
+  It still exists; deleting it is the operator's call.
 
 ### Reproduce gate, live-verified 2026-09-04
 
