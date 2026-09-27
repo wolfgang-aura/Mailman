@@ -306,7 +306,10 @@ own without a domain narrowing the pool before they see it.
     of them, and runs those files with the run environment's interpreter via
     `-m pytest <files> -q -p no:cacheprovider` (`-m unittest` when pytest is
     not installed there), twenty minutes at most, capped at 25 files with the
-    rest named under `omitted`. The record in `submission.json` under
+    rest named under `omitted`. Files importing the full dotted module rank
+    ahead of package and bare-stem matches before the cap, and `-m "not
+    network"` is added when the target registers a `network` marker
+    (recorded as `marker_filter`). The record in `submission.json` under
     `touched_tests` holds the files and why each was chosen, the exact
     command, exit code, passed and failed counts and duration. A failure is
     `touched-tests-failed`, a stage that could not run is

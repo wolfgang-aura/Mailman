@@ -198,6 +198,21 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(len(selection["selected"]), 2)
         self.assertEqual(selection["omitted"], ["tests/test_2.py", "tests/test_3.py"])
 
+    def test_the_cap_keeps_files_that_import_the_module_directly(self) -> None:
+        # #127: alphabetical capping dropped tests/xbrl/test_statement_drilldown.py,
+        # which imports edgar.xbrl.xbrl, in favour of files that only name `xbrl`.
+        for index in range(3):
+            self._test_file(f"tests/core/test_{index}.py", "from edgar import xbrl\n")
+        self._test_file(
+            "tests/xbrl/test_statement_drilldown.py",
+            "from edgar.xbrl.xbrl import get_all_statements\n",
+        )
+        selection = select_test_files(self.workspace, ["edgar/xbrl/xbrl.py"], cap=2)
+        self.assertEqual(
+            selection["selected"][0]["path"], "tests/xbrl/test_statement_drilldown.py"
+        )
+        self.assertIn("tests/core/test_2.py", selection["omitted"])
+
 
 class CountParsingTests(unittest.TestCase):
     def test_a_pytest_summary_line_is_read(self) -> None:
@@ -324,6 +339,35 @@ class RunTouchedTestsTests(unittest.TestCase):
             (self.run_directory / TOUCHED_TESTS_FILENAME).read_text(encoding="utf-8")
         )
         self.assertEqual(stored["diff_sha256"], record["diff_sha256"])
+
+    def test_a_registered_network_marker_is_deselected(self) -> None:
+        # #127: edgartools marks SEC-bound tests `network`; without an identity
+        # they fail with IdentityNotSetError and blocked handoff-check.
+        (self.workspace / "pyproject.toml").write_text(
+            '[tool.pytest.ini_options]\nmarkers = [\n  "network: needs the SEC",\n'
+            '  "fast",\n]\n',
+            encoding="utf-8",
+        )
+        record = self._run(FakeExecutor())
+        self.assertEqual(record["command"][-2:], ["-m", "not network"])
+        self.assertEqual(record["marker_filter"], "not network")
+
+    def test_a_network_marker_registered_in_conftest_is_deselected(self) -> None:
+        (self.workspace / "tests" / "conftest.py").write_text(
+            "def pytest_configure(config):\n"
+            '    config.addinivalue_line("markers", "network: hits the network")\n',
+            encoding="utf-8",
+        )
+        record = self._run(FakeExecutor())
+        self.assertEqual(record["command"][-2:], ["-m", "not network"])
+
+    def test_no_marker_filter_without_a_registered_network_marker(self) -> None:
+        (self.workspace / "pytest.ini").write_text(
+            "[pytest]\nmarkers =\n    slow: takes long\n", encoding="utf-8"
+        )
+        record = self._run(FakeExecutor())
+        self.assertNotIn("not network", record["command"])
+        self.assertIsNone(record["marker_filter"])
 
 
 if __name__ == "__main__":
