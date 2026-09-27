@@ -247,6 +247,12 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="pull_request",
         help="https://github.com/OWNER/REPO/pull/NUMBER",
     )
+    fetch_review.add_argument(
+        "--acknowledge-foreign-commits",
+        action="store_true",
+        help="the commits or approvals on the head branch that we did not push "
+        "have been read (wolfgang-aura/Mailman#140)",
+    )
     fetch_review.add_argument("--executable")
     fetch_review.add_argument("--timeout", type=float, default=60)
     fetch_review.add_argument("--data-root", type=Path)
@@ -1164,8 +1170,11 @@ def _fetch_review(arguments: argparse.Namespace) -> int:
         pull_request=arguments.pull_request,
         executable=arguments.executable,
         timeout_seconds=arguments.timeout,
+        acknowledge_foreign_commits=arguments.acknowledge_foreign_commits,
     )
-    if record["success"] and run.status is RunStatus.READY_FOR_HUMAN_REVIEW:
+    foreign = maintainer_review.foreign_detail(record)
+    blocked = bool(foreign) and not arguments.acknowledge_foreign_commits
+    if record["success"] and not blocked and run.status is RunStatus.READY_FOR_HUMAN_REVIEW:
         run.transition(
             RunStatus.MAINTAINER_CHANGES_REQUESTED,
             f"{record['repository']}#{record['number']} requested changes",
@@ -1178,6 +1187,7 @@ def _fetch_review(arguments: argparse.Namespace) -> int:
                 "status": str(run.status),
                 "success": record["success"],
                 "detail": record.get("detail"),
+                "foreign_commits": foreign,
                 "requested_changes": record.get("change_count", 0),
                 "review": str(run_directory / maintainer_review.REVIEW_MARKDOWN),
                 "next": "mailman build-prompts to put the review in both prompts, then "
@@ -1186,7 +1196,7 @@ def _fetch_review(arguments: argparse.Namespace) -> int:
             indent=2,
         )
     )
-    return 0 if record["success"] else 1
+    return 0 if record["success"] and not blocked else 1
 
 
 def _revision_response(arguments: argparse.Namespace) -> int:

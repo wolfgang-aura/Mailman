@@ -402,6 +402,56 @@ class WatchTests(unittest.TestCase):
         (row,) = result["rows"]
         self.assertEqual(row["status"], "ok")
 
+    def test_commits_and_an_approval_on_a_head_we_did_not_push_are_reported(
+        self,
+    ) -> None:
+        """openai-agents-python#4890: a maintainer pushed, another approved.
+
+        The watch read `approved; awaiting merge` and nobody looked at who
+        pushed the head for a day. https://github.com/wolfgang-aura/Mailman/issues/140
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "openai/openai-agents-python", 4890)
+            gh = FakeGitHub({"openai/openai-agents-python#4890": {
+                "checks": [_check("tests")],
+                "reviews": [{**_review("markstuart-oai", 0.5, "APPROVED"),
+                             "commit_id": "head-0"}],
+                "commits": [
+                    {"sha": "a" * 40, "author": {"login": AUTHOR},
+                     "commit": {"committer": {"date": _at(9)}, "author": {"date": _at(9)}}},
+                    {"sha": "head-0", "author": {"login": "jbeckwith-oai"},
+                     "commit": {"committer": {"date": _at(1)}, "author": {"date": _at(1)}}},
+                ],
+            }})
+
+            result = self._watch(root, gh)
+
+        (row,) = result["rows"]
+        self.assertEqual([c["sha"] for c in row["foreign_commits"]], ["head-0"])
+        self.assertEqual(row["foreign_commits"][0]["author"], "jbeckwith-oai")
+        self.assertEqual([a["login"] for a in row["foreign_approvals"]],
+                         ["markstuart-oai"])
+        text = render_watch(result)
+        self.assertIn("head-0 by jbeckwith-oai", text)
+        self.assertIn("markstuart-oai approved head-0", text)
+
+    def test_a_branch_with_only_our_commits_names_no_foreign_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "tqdm/tqdm", 1837)
+            gh = FakeGitHub({"tqdm/tqdm#1837": {
+                "checks": [_check("test")],
+                "commits": [{"sha": "abc", "author": {"login": AUTHOR},
+                             "commit": {"committer": {"date": _at(3)},
+                                        "author": {"date": _at(3)}}}],
+            }})
+
+            result = self._watch(root, gh)
+
+        self.assertEqual(result["rows"][0]["foreign_commits"], [])
+        self.assertNotIn("not pushed by us", render_watch(result))
+
     def test_an_approved_pull_request_with_a_red_check_still_needs_work(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _Root(temporary)

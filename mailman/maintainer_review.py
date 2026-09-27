@@ -113,6 +113,7 @@ def fetch_review(
     pull_request: str,
     executable: str | None = None,
     timeout_seconds: float = 60,
+    acknowledge_foreign_commits: bool = False,
     _execute: Callable[..., CommandResult] = execute,
 ) -> dict[str, Any]:
     """Read the reviews, inline comments and conversation on a filed pull request."""
@@ -132,7 +133,7 @@ def fetch_review(
     }
     reviews = _execute(
         [command, "pr", "view", str(number), "--repo", repository,
-         "--json", "author,commits,reviews,state,title,url"],
+         "--json", "author,commits,headRefOid,headRepositoryOwner,reviews,state,title,url"],
         working_directory=run_directory, timeout_seconds=timeout_seconds,
     )
     record["commands"].append(reviews.to_dict())
@@ -142,6 +143,9 @@ def fetch_review(
         return _write(run_directory, record)
     record["title"] = payload.get("title")
     record["pull_request_state"] = payload.get("state")
+    record["head_sha"] = payload.get("headRefOid")
+    record["foreign_commits"], record["foreign_approvals"] = foreign_changes(payload)
+    record["foreign_commits_acknowledged"] = bool(acknowledge_foreign_commits)
     for row in payload.get("reviews") or []:
         if not isinstance(row, dict):
             continue
@@ -195,6 +199,75 @@ def fetch_review(
         render(record), encoding="utf-8", newline="\n"
     )
     return record
+
+
+def foreign_changes(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Commits on our head branch that we did not author, and approvals of them.
+
+    On openai-agents-python#4890 a maintainer pushed two commits to our branch
+    and another approved them; a day later a revision nearly force-pushed over
+    both. A commit counts as foreign when it names at least one GitHub login
+    and none is the fork owner's; a commit with no linked login is not judged.
+    https://github.com/wolfgang-aura/Mailman/issues/140
+    """
+    owners = {
+        login for login in (
+            (payload.get("author") or {}).get("login"),
+            (payload.get("headRepositoryOwner") or {}).get("login"),
+        ) if login
+    }
+    commits: list[dict[str, Any]] = []
+    for commit in payload.get("commits") or []:
+        if not isinstance(commit, dict):
+            continue
+        logins = [
+            (who or {}).get("login") for who in commit.get("authors") or []
+            if (who or {}).get("login")
+        ]
+        if logins and not owners.intersection(logins):
+            commits.append({
+                "sha": commit.get("oid"),
+                "authors": logins,
+                "committed_at": commit.get("committedDate"),
+                "headline": commit.get("messageHeadline"),
+            })
+    shas = {commit["sha"] for commit in commits}
+    head = payload.get("headRefOid")
+    approvals = [
+        {"id": f"review:{row.get('id')}",
+         "author": (row.get("author") or {}).get("login"),
+         "sha": (row.get("commit") or {}).get("oid"),
+         "submitted_at": row.get("submittedAt")}
+        for row in payload.get("reviews") or []
+        if isinstance(row, dict) and row.get("state") == "APPROVED"
+        and ((row.get("commit") or {}).get("oid") in shas
+             or (head in shas and not (row.get("commit") or {}).get("oid")))
+    ]
+    return commits, approvals
+
+
+def foreign_detail(record: dict[str, Any]) -> str | None:
+    """One sentence naming what someone else pushed, or None when nothing."""
+    commits = record.get("foreign_commits") or []
+    approvals = record.get("foreign_approvals") or []
+    if not commits and not approvals:
+        return None
+    parts = [
+        f"{str(c.get('sha'))[:7]} by {', '.join(c.get('authors') or [])}"
+        for c in commits
+    ]
+    text = (f"{len(commits)} commit(s) on the head branch were not pushed by us: "
+            + "; ".join(parts)) if commits else ""
+    if approvals:
+        text += ("; " if text else "") + "; ".join(
+            f"{a.get('author')} approved {str(a.get('sha'))[:7]}, a head we did not push"
+            for a in approvals
+        )
+    return text + (". Fetch the branch, build on its head, and never force-push "
+                   "over it; rerun fetch-review with --acknowledge-foreign-commits "
+                   "once this has been read")
 
 
 def _review_changes(item: dict[str, Any]) -> list[dict[str, Any]]:
@@ -300,6 +373,23 @@ def render(record: dict[str, Any]) -> str:
         "stays ruled out, and a constraint they named is not negotiable.",
         "",
     ]
+    foreign = foreign_detail(record)
+    if foreign:
+        lines += ["## Someone else pushed to this branch", ""]
+        lines += [
+            f"- `{str(c.get('sha'))[:7]}` by {', '.join(c.get('authors') or [])} "
+            f"at {c.get('committed_at')}: {c.get('headline') or ''}".rstrip(": ")
+            for c in record.get("foreign_commits") or []
+        ]
+        lines += [
+            f"- {a.get('author')} approved `{str(a.get('sha'))[:7]}` at "
+            f"{a.get('submitted_at')}, a head we did not push"
+            for a in record.get("foreign_approvals") or []
+        ]
+        lines += [
+            "", "Start the revision from the pull request's current head. A "
+            "force-push would discard these commits and the approval on them.", "",
+        ]
     points: dict[str, list[dict[str, Any]]] = {}
     for change in record.get("requested_changes", []):
         if change.get("point"):
@@ -381,6 +471,9 @@ def check_revision(run_directory: Path) -> dict[str, Any]:
     if not review or not review.get("success"):
         return {"ok": False, "reason": "no-review",
                 "detail": "no readable upstream review: run `mailman fetch-review RUN_ID --pr URL`"}
+    foreign = foreign_detail(review)
+    if foreign and not review.get("foreign_commits_acknowledged"):
+        return {"ok": False, "reason": "foreign-commits", "detail": foreign}
     wanted = {item["id"] for item in review.get("requested_changes", [])}
     if not wanted:
         return {"ok": True, "reason": "nothing-requested", "answered": [],

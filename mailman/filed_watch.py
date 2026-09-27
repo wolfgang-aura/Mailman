@@ -198,6 +198,8 @@ def inspect_pull_request(gh: _Gh, row: dict[str, Any], *,
         "checks": {"total": 0, "pending": 0, "failing": []},
         "last_outside": None,
         "last_ours_at": None,
+        "foreign_commits": [],
+        "foreign_approvals": [],
         "updated_at": None,
         "days_since_update": None,
         "status": STATUS_UNKNOWN,
@@ -275,8 +277,23 @@ def inspect_pull_request(gh: _Gh, row: dict[str, Any], *,
                 if kind == "review":
                     # `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`.
                     last_outside["review_state"] = str(entry.get("state") or "").upper()
+    head_repo = (pull.get("head") or {}).get("repo") or {}
+    owners = {login for login in (author, (head_repo.get("owner") or {}).get("login"))
+              if login}
+    foreign = _foreign_commits(commits, owners)
+    result["foreign_commits"] = foreign
+    foreign_shas = {entry["sha"] for entry in foreign}
+    result["foreign_approvals"] = [
+        {"login": (entry.get("user") or {}).get("login"),
+         "sha": entry.get("commit_id"), "at": entry.get("submitted_at")}
+        for entry in (reviews if isinstance(reviews, list) else [])
+        if isinstance(entry, dict)
+        and str(entry.get("state") or "").upper() == "APPROVED"
+        and entry.get("commit_id") in foreign_shas
+    ]
     for entry in commits if isinstance(commits, list) else []:
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or entry.get("sha") in foreign_shas:
+            # A maintainer's push does not answer the maintainer.
             continue
         commit = entry.get("commit") or {}
         for who in ("committer", "author"):
@@ -301,6 +318,28 @@ def inspect_pull_request(gh: _Gh, row: dict[str, Any], *,
     else:
         result["status"] = STATUS_OK
     return result
+
+
+def _foreign_commits(commits: Any, owners: set[str]) -> list[dict[str, Any]]:
+    """Commits on our head branch whose GitHub author is not the fork owner.
+
+    A maintainer pushed two commits to openai-agents-python#4890 and another
+    approved them; the watch said `approved` and nobody looked for a day. A
+    commit with no linked GitHub account is not judged either way.
+    https://github.com/wolfgang-aura/Mailman/issues/140
+    """
+    found: list[dict[str, Any]] = []
+    for entry in commits if isinstance(commits, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        login = (entry.get("author") or {}).get("login")
+        if login and login not in owners:
+            found.append({
+                "sha": entry.get("sha"),
+                "author": login,
+                "at": ((entry.get("commit") or {}).get("committer") or {}).get("date"),
+            })
+    return found
 
 
 def _last_error(gh: _Gh) -> str | None:
@@ -460,6 +499,20 @@ def render_watch(result: dict[str, Any]) -> str:
             lines.append(
                 f"  {row['repository']}#{row['pull_request']}: could not read "
                 f"({row.get('detail') or 'no detail'})"
+            )
+    for row in rows:
+        name = f"{row['repository']}#{row['pull_request']}"
+        commits = row.get("foreign_commits") or []
+        if commits:
+            lines.append(
+                f"  {name}: {len(commits)} commit(s) not pushed by us: "
+                + "; ".join(f"{str(c['sha'])[:7]} by {c['author']}" for c in commits)
+                + " (build on this head; never force-push over it)"
+            )
+        for approval in row.get("foreign_approvals") or []:
+            lines.append(
+                f"  {name}: {approval['login']} approved {str(approval['sha'])[:7]}, "
+                "a head we did not push"
             )
     count = len(result.get("needs_work") or [])
     if count:

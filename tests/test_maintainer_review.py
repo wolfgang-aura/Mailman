@@ -293,6 +293,120 @@ class NumberedPointTests(unittest.TestCase):
                          ["review:R1"])
 
 
+def _maintainer_pushed_view() -> dict:
+    """openai-agents-python#4890 on 2026-09-27: two maintainer commits, approved."""
+    return _view(
+        headRefOid="6edb43b" + "0" * 33,
+        commits=[
+            {"oid": "a" * 40, "authors": [{"login": "wolfgang-aura"}],
+             "committedDate": "2026-09-06T10:00:00Z"},
+            {"oid": "7586a91" + "0" * 33, "authors": [{"login": "jbeckwith-oai"}],
+             "committedDate": "2026-09-27T19:30:00Z"},
+            {"oid": "6edb43b" + "0" * 33, "authors": [{"login": "jbeckwith-oai"}],
+             "committedDate": "2026-09-27T19:33:00Z"},
+        ],
+        reviews=[
+            {"id": "R1", "author": {"login": "seratch"},
+             "state": "CHANGES_REQUESTED", "submittedAt": "2026-09-07T14:01:40Z",
+             "body": "Keep the original file.", "commit": {"oid": "a" * 40}},
+            {"id": "R2", "author": {"login": "markstuart-oai"},
+             "state": "APPROVED", "submittedAt": "2026-09-27T20:03:00Z",
+             "body": "", "commit": {"oid": "6edb43b" + "0" * 33}},
+        ],
+    )
+
+
+class ForeignCommitTests(unittest.TestCase):
+    """A maintainer pushed to our branch and approved; we nearly force-pushed.
+
+    https://github.com/wolfgang-aura/Mailman/issues/140
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name) / "runs"
+        self.root.mkdir(parents=True)
+        self.run, self.directory = make_run(self.root)
+
+    def answer_everything(self) -> None:
+        init_response(self.directory)
+        path = self.directory / "revision-response.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        for row in record["answers"]:
+            row.update(answer="answered", note="done")
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+    def test_commits_and_an_approval_we_did_not_push_are_reported(self) -> None:
+        record = fetch_review(self.directory, pull_request=PULL_REQUEST,
+                              executable="gh", _execute=FakeGh(_maintainer_pushed_view()))
+        self.assertEqual([c["sha"][:7] for c in record["foreign_commits"]],
+                         ["7586a91", "6edb43b"])
+        self.assertEqual(record["foreign_commits"][0]["authors"], ["jbeckwith-oai"])
+        self.assertEqual([a["author"] for a in record["foreign_approvals"]],
+                         ["markstuart-oai"])
+        self.assertFalse(record["foreign_commits_acknowledged"])
+        text = (self.directory / REVIEW_MARKDOWN).read_text(encoding="utf-8")
+        self.assertIn("7586a91", text)
+        self.assertIn("jbeckwith-oai", text)
+        self.assertIn("markstuart-oai approved", text)
+
+    def test_the_revision_gate_refuses_until_the_report_is_acknowledged(self) -> None:
+        fetch_review(self.directory, pull_request=PULL_REQUEST,
+                     executable="gh", _execute=FakeGh(_maintainer_pushed_view()))
+        self.answer_everything()
+        checked = check_revision(self.directory)
+        self.assertFalse(checked["ok"])
+        self.assertEqual(checked["reason"], "foreign-commits")
+        self.assertIn("--acknowledge-foreign-commits", checked["detail"])
+
+        fetch_review(self.directory, pull_request=PULL_REQUEST, executable="gh",
+                     _execute=FakeGh(_maintainer_pushed_view()),
+                     acknowledge_foreign_commits=True)
+        self.answer_everything()
+        self.assertTrue(check_revision(self.directory)["ok"])
+
+    def test_a_branch_with_only_our_commits_reports_nothing(self) -> None:
+        record = fetch_review(self.directory, pull_request=PULL_REQUEST,
+                              executable="gh", _execute=FakeGh(_view()))
+        self.assertEqual(record["foreign_commits"], [])
+        self.assertEqual(record["foreign_approvals"], [])
+
+    def test_the_command_exits_non_zero_and_leaves_the_run_until_acknowledged(
+        self,
+    ) -> None:
+        from unittest import mock
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from mailman import maintainer_review
+        from mailman.artifacts import write_run
+        from mailman.cli import main
+
+        self.run.status = RunStatus.READY_FOR_HUMAN_REVIEW
+        write_run(self.run, self.directory)
+        real = maintainer_review.fetch_review
+
+        def fake(*arguments, **keywords):
+            keywords["_execute"] = FakeGh(_maintainer_pushed_view())
+            return real(*arguments, **keywords)
+
+        base = ["fetch-review", self.run.run_id, "--pr", PULL_REQUEST,
+                "--executable", "gh", "--data-root", str(self.root)]
+        with mock.patch.object(maintainer_review, "fetch_review", fake):
+            with redirect_stdout(StringIO()) as out:
+                code = main(base)
+            self.assertEqual(code, 1)
+            self.assertIn("acknowledge-foreign-commits", out.getvalue())
+            status = json.loads(out.getvalue())["status"]
+            self.assertEqual(status, str(RunStatus.READY_FOR_HUMAN_REVIEW))
+            with redirect_stdout(StringIO()) as out:
+                code = main(base + ["--acknowledge-foreign-commits"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["status"],
+                         str(RunStatus.MAINTAINER_CHANGES_REQUESTED))
+
+
 class RevisionGateTests(FetchReviewTests):
     def prepare(self) -> None:
         fetch_review(self.directory, pull_request=PULL_REQUEST,
