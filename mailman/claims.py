@@ -241,6 +241,38 @@ def _cross_referenced_urls(timeline: Any) -> list[str]:
     return urls
 
 
+def maintainer_labels(timeline: Any, *, reporter: str | None) -> list[dict[str, Any]]:
+    """The labels somebody who can triage put on the issue, grouped per act.
+
+    securo-finance/securo#972 was triaged with `prio:high` and `risk:medium`
+    and no comment, and the untriaged-issue question fired anyway. GitHub lets
+    only an account with triage access label another person's issue, so a
+    `labeled` event from anybody but the reporter or a bot is triage. The
+    reporter's own label is not, whatever template put it there.
+    See https://github.com/wolfgang-aura/Mailman/issues/139.
+    """
+    if not isinstance(timeline, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for entry in timeline:
+        if not isinstance(entry, dict) or entry.get("event") != "labeled":
+            continue
+        actor = entry.get("actor")
+        if _is_bot(actor):
+            continue
+        login = actor.get("login") if isinstance(actor, dict) else None
+        label = entry.get("label")
+        name = label.get("name") if isinstance(label, dict) else None
+        if not login or not name or (reporter and login.lower() == reporter.lower()):
+            continue
+        at = entry.get("created_at")
+        if rows and rows[-1]["actor"] == login and rows[-1]["at"] == at:
+            rows[-1]["labels"].append(name)
+        else:
+            rows.append({"labels": [name], "actor": login, "at": at})
+    return rows
+
+
 def classify_comment(comment: dict[str, Any]) -> str | None:
     """Say whether one comment claims the work, hands it over, or neither.
 
@@ -370,6 +402,10 @@ def triage_warning(run_directory: Path) -> str | None:
     if reporter is None or replied is None:
         return None
     if reporter in MAINTAINER_ASSOCIATIONS or replied:
+        return None
+    # A label from somebody with triage access is triage in another form.
+    # Mailman #139.
+    if claims.get("maintainer_labelled"):
         return None
     return (
         f"the issue was reported from outside the project ({reporter}) and no "
@@ -544,6 +580,11 @@ def read_claims(
         comment.get("author_association") in MAINTAINER_ASSOCIATIONS
         for comment in comments
         if isinstance(comment, dict)
+    )
+    reporter = payload.get("user")
+    record["maintainer_labelled"] = maintainer_labels(
+        timeline,
+        reporter=reporter.get("login") if isinstance(reporter, dict) else None,
     )
     record["success"] = True
     _write(run_directory, record)
