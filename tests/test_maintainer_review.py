@@ -107,6 +107,125 @@ class FetchReviewTests(unittest.TestCase):
         self.assertEqual(load_review(self.directory)["success"], False)
 
 
+class _Result:
+    """The slice of `CommandResult` that `fetch_review` reads."""
+
+    def __init__(self, stdout: str, exit_code: int = 0) -> None:
+        self.stdout = stdout
+        self.exit_code = exit_code
+        self.timed_out = False
+
+    def to_dict(self) -> dict:
+        return {"exit_code": self.exit_code, "stdout": self.stdout}
+
+
+class FakeGh:
+    """Answer the three `gh` calls `fetch_review` makes from canned payloads."""
+
+    def __init__(self, view: dict, inline: list | None = None,
+                 conversation: list | None = None,
+                 conversation_fails: bool = False) -> None:
+        self.view = view
+        self.inline = inline or []
+        self.conversation = conversation or []
+        self.conversation_fails = conversation_fails
+        self.asked: list[list[str]] = []
+
+    def __call__(self, arguments, **keywords):
+        self.asked.append(list(arguments))
+        if arguments[1] == "pr":
+            return _Result(json.dumps(self.view))
+        path = arguments[2]
+        if path.endswith("/pulls/42/comments"):
+            return _Result(json.dumps(self.inline))
+        if path.endswith("/issues/42/comments"):
+            if self.conversation_fails:
+                return _Result("gh: rate limited", 1)
+            return _Result(json.dumps(self.conversation))
+        raise AssertionError(f"unexpected call {arguments}")
+
+
+def _view(**extra) -> dict:
+    view = {
+        "title": "Fix the thing", "state": "OPEN",
+        "author": {"login": "wolfgang-aura"},
+        "reviews": [
+            {"id": "R1", "author": {"login": "maintainer"},
+             "state": "CHANGES_REQUESTED", "submittedAt": "2026-09-07T14:01:40Z",
+             "body": "Keep the original file until the replacement is committed."},
+        ],
+        "commits": [
+            {"oid": "a" * 40, "authors": [{"login": "wolfgang-aura"}],
+             "committedDate": "2026-09-06T10:00:00Z"},
+        ],
+    }
+    view.update(extra)
+    return view
+
+
+def _conversation(identifier: int, login: str, at: str, body: str) -> dict:
+    return {"id": identifier, "user": {"login": login, "type": "User"},
+            "created_at": at, "body": body}
+
+
+class ConversationCommentTests(unittest.TestCase):
+    """nicegui#6345 and pymc#8442: the maintainer decided in the conversation.
+
+    https://github.com/wolfgang-aura/Mailman/issues/128
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        root = Path(self.temporary.name) / "runs"
+        root.mkdir(parents=True)
+        _, self.directory = make_run(root)
+
+    def test_a_review_an_inline_comment_and_a_conversation_comment_are_three_entries(
+        self,
+    ) -> None:
+        gh = FakeGh(
+            _view(),
+            inline=[{"id": 7, "user": {"login": "maintainer"}, "path": "a.py",
+                     "line": 3, "created_at": "2026-09-07T14:02:00Z",
+                     "body": "Rename this."}],
+            conversation=[
+                _conversation(9, "maintainer", "2026-09-08T09:00:00Z",
+                              "Go with option C and make the reference a weakref."),
+                _conversation(10, "wolfgang-aura", "2026-09-08T10:00:00Z",
+                              "Will do."),
+                _conversation(11, "codecov[bot]", "2026-09-08T11:00:00Z",
+                              "Coverage report."),
+                _conversation(12, "maintainer", "2026-09-05T09:00:00Z",
+                              "Thanks for filing, before any commit."),
+            ],
+        )
+        record = fetch_review(self.directory, pull_request=PULL_REQUEST,
+                              executable="gh", _execute=gh)
+        self.assertTrue(record["success"])
+        self.assertEqual(
+            [item["id"] for item in record["requested_changes"]],
+            ["review:R1", "comment:7", "comment:9"],
+        )
+        conversation = next(c for c in record["comments"] if c["id"] == "comment:9")
+        self.assertIsNone(conversation["path"])
+        self.assertTrue(record["conversation_comments_read"])
+        text = (self.directory / REVIEW_MARKDOWN).read_text(encoding="utf-8")
+        self.assertIn("Go with option C and make the reference a weakref.", text)
+        self.assertNotIn("Coverage report.", text)
+        self.assertTrue(any("issues/42/comments" in " ".join(call)
+                            for call in gh.asked))
+
+    def test_an_unreadable_conversation_is_reported_not_refused(self) -> None:
+        gh = FakeGh(_view(), conversation_fails=True)
+        record = fetch_review(self.directory, pull_request=PULL_REQUEST,
+                              executable="gh", _execute=gh)
+        self.assertTrue(record["success"])
+        self.assertFalse(record["conversation_comments_read"])
+        text = (self.directory / REVIEW_MARKDOWN).read_text(encoding="utf-8")
+        self.assertIn("conversation comments could not be read", text)
+
+
 class RevisionGateTests(FetchReviewTests):
     def prepare(self) -> None:
         fetch_review(self.directory, pull_request=PULL_REQUEST,
