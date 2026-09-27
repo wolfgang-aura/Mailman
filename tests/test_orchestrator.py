@@ -784,6 +784,54 @@ class OrchestrationTests(OrchestratorHarness):
         self.assertEqual(second.review_cycles, 2)
         self.assertEqual(len(primary.calls), 1)
 
+    def test_a_resume_review_announces_the_passes_it_may_spend(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/113
+
+        One resume-review went from cycle 1 to cycle 3, because a REVISE
+        verdict buys a revision and a second reviewer pass. The call has to
+        say so before any agent runs.
+        """
+        run, directory = self.make_run()
+        primary = self._blocked_after_one_review(run, directory)
+        primary.script.append({"report": "revised", "touch": ("fix.txt", "again")})
+        resumed = ScriptedAgent(
+            "claude",
+            [{"report": "MAILMAN-VERDICT: REVISE"}, {"report": APPROVED}],
+        )
+        agents = {"codex": primary, "claude": resumed}
+        announced: list[str] = []
+
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: agents[name],
+            resume_review=True,
+            max_revisions=1,
+            max_review_cycles=5,
+            announce=announced.append,
+        )
+
+        budget = next(step for step in outcome.steps
+                      if step.name == "review-budget" and step.data.get("resume"))
+        self.assertEqual(budget.data["cycles_used"], 1)
+        self.assertEqual(budget.data["max_passes_this_call"], 2)
+        self.assertEqual(budget.data["max_review_cycles"], 5)
+        first_budget_line = next(
+            index for index, line in enumerate(announced) if "review-budget" in line
+        )
+        first_agent_line = next(
+            (index for index, line in enumerate(announced) if "agent:" in line),
+            len(announced),
+        )
+        self.assertLess(first_budget_line, first_agent_line)
+        self.assertIn("at most 2 reviewer pass", announced[first_budget_line])
+        # And the call spent exactly what it announced.
+        self.assertEqual(outcome.review_cycles, 3)
+
     def test_an_expired_run_deadline_stops_a_resume_review(self) -> None:
         """https://github.com/wolfgang-aura/Mailman/issues/81"""
         run, directory = self.make_run()

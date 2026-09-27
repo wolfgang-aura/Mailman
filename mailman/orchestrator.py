@@ -1175,7 +1175,38 @@ class _Orchestration:
             "runs, or pass the command the prompts quote."
         )
 
+    def _announce_review_budget(self, *, resume: bool) -> None:
+        """Say how many reviewer passes this call may spend, before it spends any.
+
+        A REVISE verdict buys a revision and then another reviewer pass, so one
+        resume-review took a run from cycle 1 to cycle 3 and the coordinator
+        only learned it from the block reason. The bound is an upper one: an
+        approval ends the call early.
+        https://github.com/wolfgang-aura/Mailman/issues/113
+        """
+        used = self.run.review_cycles
+        remaining_cycles = max(self.max_review_cycles - used, 0)
+        remaining_revisions = max(self.max_revisions - self.revisions_used, 0)
+        passes = min(remaining_cycles, remaining_revisions + 1)
+        self._step(
+            "review-budget",
+            ok=True,
+            detail=(
+                f"this call spends at most {passes} reviewer pass(es): "
+                f"{used} of {self.max_review_cycles} cycles used, "
+                f"{remaining_revisions} revision(s) left"
+            ),
+            data={
+                "resume": resume,
+                "cycles_used": used,
+                "max_review_cycles": self.max_review_cycles,
+                "revisions_left": remaining_revisions,
+                "max_passes_this_call": passes,
+            },
+        )
+
     def _loop(self, *, start_primary: bool = True) -> OrchestrationOutcome:
+        self._announce_review_budget(resume=not start_primary)
         if start_primary and not self._finish_primary_stage(
             self.primary_prompt, "primary"
         ):
