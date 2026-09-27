@@ -286,8 +286,9 @@ opening the local packet URL during this session; visual state is unverified.
   open 10, closed unmerged 6. Mailman #138 and #139 filed from this hunt.
 - openai-agents-python#4890, 2026-09-27/28: jbeckwith-oai pushed `7586a91` and `6edb43b` to our
   PR branch (19:33 UTC), addressing every blocker in their consolidated review. markstuart-oai
-  approved `6edb43b` at 20:03 UTC; 21/21 checks pass; still OPEN and mergeable, and still our
-  PR, with our nine commits under theirs. Our own revision of the same blockers, which passed
+  approved `6edb43b` at 20:03 UTC; 21/21 checks pass. Still OPEN, but `reviewDecision` is
+  CHANGES_REQUESTED from seratch's 2026-09-07 review on `2bf1a31`, which nobody has dismissed;
+  that is the maintainers' step, not ours. Still our PR, with our nine commits under theirs. Our own revision of the same blockers, which passed
   fork CI, was not pushed. It is parked locally as `local/4890-our-review` in
   `.mailman/scratch/agents-4890`. The fork's CI draft PR #1 and branch `ci/4890-review` were
   deleted 2026-09-28. Mailman #140 filed: nothing detects maintainer pushes to our PR branch.
