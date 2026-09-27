@@ -322,7 +322,7 @@ before trusting either.
 - Host operating system: Windows.
 - Verified Python: CPython 3.14.3. The project supports Python 3.12 and newer.
 - Codex CLI: installed at `%APPDATA%\npm\codex.cmd` and authenticated. It executed a real fixture on 2026-09-02.
-- Claude CLI: installed at `%APPDATA%\npm\claude.cmd` and authenticated. It executed a real review on 2026-09-02. Its adapter flags are verified against the installed build: `--print`, `--input-format`, `--output-format`, `--permission-mode` (`acceptEdits`, `plan`), `--disallowedTools`, `--model`, and the undocumented but accepted `--max-turns`.
+- Claude CLI: installed from the Claude desktop app's terminal, so npm put it inside the MSIX package at `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\npm\claude.cmd`, not the real `%APPDATA%\npm`. Since `7244e10`, `mailman.hostpaths.find_executable` searches packaged npm folders after PATH, so `doctor`, the adapters and `resolve_tool` find it without `probe-tool`. It is authenticated. It executed a real review on 2026-09-02. Its adapter flags are verified against the installed build: `--print`, `--input-format`, `--output-format`, `--permission-mode` (`acceptEdits`, `plan`), `--disallowedTools`, `--model`, and the undocumented but accepted `--max-turns`.
 - Both CLIs were absent from the host earlier on 2026-09-02 and were installed with `npm install -g @anthropic-ai/claude-code @openai/codex` from an independent terminal. Before that install, a Claude Code agent session reported both as present while the host did not have them. Confirm agent CLI presence from an independent terminal, never from inside an agent session.
 - GitHub CLI: installed and authenticated. The user authorized the first public push on 2026-09-02.
 
