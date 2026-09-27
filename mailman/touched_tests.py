@@ -154,6 +154,13 @@ def _test_files(workspace: Path) -> list[str]:
     return found
 
 
+def _directness(name: str, modules: dict[str, list[str]]) -> int:
+    """0 for a module's full dotted path, 1 for its package, 2 for a bare stem."""
+    return min(
+        (names.index(name) for names in modules.values() if name in names), default=2
+    )
+
+
 def select_test_files(
     workspace: Path, changed_paths: list[str], *, cap: int = TOUCHED_TESTS_CAP
 ) -> dict[str, Any]:
@@ -186,6 +193,7 @@ def select_test_files(
             selected.append(
                 {"path": relative, "matched": [], "reason": "changed by the diff"}
             )
+        matched_by_import: list[dict[str, Any]] = []
         for relative in _test_files(workspace):
             if relative in changed_tests:
                 continue
@@ -197,13 +205,20 @@ def select_test_files(
                 continue
             matched = [name for name, pattern in patterns.items() if pattern.search(text)]
             if matched:
-                selected.append(
+                matched_by_import.append(
                     {
                         "path": relative,
                         "matched": matched,
                         "reason": "imports or names " + ", ".join(matched),
                     }
                 )
+        # Before the cap: a file importing the module itself beats one that
+        # only names its package or bare stem. Alphabetical capping dropped
+        # the file that failed CI on edgartools#1329 (#127).
+        matched_by_import.sort(
+            key=lambda entry: min(_directness(name, modules) for name in entry["matched"])
+        )
+        selected.extend(matched_by_import)
     capped = len(selected) > cap
     omitted = [entry["path"] for entry in selected[cap:]] if capped else []
     return {
@@ -215,6 +230,66 @@ def select_test_files(
         "cap": cap,
         "omitted": omitted,
     }
+
+
+_NETWORK_MARKER = re.compile(r"^\s*network\s*(?::|$)")
+_CONFTEST_NETWORK_MARKER = re.compile(
+    r"addinivalue_line\(\s*[\"']markers[\"']\s*,\s*[\"']network\b"
+)
+
+
+def _ini_markers(path: Path, section: str) -> list[str]:
+    import configparser
+
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read(path, encoding="utf-8")
+    except (OSError, configparser.Error, UnicodeDecodeError):
+        return []
+    if not parser.has_option(section, "markers"):
+        return []
+    return parser.get(section, "markers").splitlines()
+
+
+def network_marker_registered(workspace: Path) -> bool:
+    """Whether the target registers a pytest `network` marker.
+
+    edgartools marks SEC-bound tests `network` and CI deselects them; run here
+    they failed with IdentityNotSetError and blocked handoff-check (#127).
+    """
+    import tomllib
+
+    markers: list[str] = []
+    pyproject = workspace / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+            data = {}
+        options = data.get("tool", {}).get("pytest", {}).get("ini_options", {})
+        declared = options.get("markers") if isinstance(options, dict) else None
+        if isinstance(declared, list):
+            markers.extend(str(marker) for marker in declared)
+        elif isinstance(declared, str):
+            markers.extend(declared.splitlines())
+    for name, section in (
+        ("pytest.ini", "pytest"),
+        ("tox.ini", "pytest"),
+        ("setup.cfg", "tool:pytest"),
+    ):
+        path = workspace / name
+        if path.is_file():
+            markers.extend(_ini_markers(path, section))
+    if any(_NETWORK_MARKER.match(marker) for marker in markers):
+        return True
+    for conftest in (workspace / "conftest.py", workspace / "tests" / "conftest.py"):
+        try:
+            text = conftest.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if _CONFTEST_NETWORK_MARKER.search(text):
+            return True
+    return False
 
 
 def environment_python(run_directory: Path) -> str | None:
@@ -333,6 +408,7 @@ def run_touched_tests(
         "cap": cap,
         "omitted": [],
         "command": None,
+        "marker_filter": None,
         "exit_code": None,
         "timed_out": False,
         "duration_seconds": 0.0,
@@ -369,6 +445,9 @@ def run_touched_tests(
     files = [entry["path"] for entry in selection["selected"]]
     if runner == "pytest":
         command = [python, "-m", "pytest", *files, "-q", "-p", "no:cacheprovider"]
+        if network_marker_registered(workspace):
+            record["marker_filter"] = "not network"
+            command.extend(["-m", "not network"])
     else:
         command = [python, "-m", "unittest", *files]
     record["runner"] = runner

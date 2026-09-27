@@ -306,7 +306,10 @@ own without a domain narrowing the pool before they see it.
     of them, and runs those files with the run environment's interpreter via
     `-m pytest <files> -q -p no:cacheprovider` (`-m unittest` when pytest is
     not installed there), twenty minutes at most, capped at 25 files with the
-    rest named under `omitted`. The record in `submission.json` under
+    rest named under `omitted`. Files importing the full dotted module rank
+    ahead of package and bare-stem matches before the cap, and `-m "not
+    network"` is added when the target registers a `network` marker
+    (recorded as `marker_filter`). The record in `submission.json` under
     `touched_tests` holds the files and why each was chosen, the exact
     command, exit code, passed and failed counts and duration. A failure is
     `touched-tests-failed`, a stage that could not run is
@@ -317,6 +320,17 @@ own without a domain narrowing the pool before they see it.
     `tests/xbrl/test_statement_drilldown.py`, a file that imports the changed
     module, that the primary never ran, and that fails locally in under a
     second. Pass `--workspace PATH` when the export did not record one.
+    When the target ships `scripts/check_offline_audit.py`, `prepare-submission`
+    also runs it on the changed test files with the run interpreter; a
+    non-zero exit is `offline-audit-failed` and blocks (recorded under
+    `offline_audit`).
+    When the target configures or runs ruff (`[tool.ruff]` in pyproject,
+    `ruff.toml`, `.pre-commit-config.yaml` or a workflow), it runs `ruff
+    check` (and `ruff format --check` when CI formats) over the changed Python
+    files with the run interpreter, installing the pinned version first if
+    needed. A finding is `lint-failed` and blocks; a ruff that cannot be
+    installed is recorded under `lint` as skipped with a non-blocking
+    `lint-skipped`. Other linters and type checkers are not run.
 14. Write decision.json using `decision --init` and the schema in
     docs/review-page-standard.md. Keep evidence classes distinct. Questions
     must be genuine user choices, never tasks you can do. Use [] otherwise.

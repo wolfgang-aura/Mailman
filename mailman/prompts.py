@@ -508,6 +508,43 @@ workspace. List every required change as a short bullet above your verdict.
 {_prior_art_section(prior_art, audience="reviewer")}{stale}{_maintainer_review_section(maintainer_review, audience="reviewer")}"""
 
 
+def resolve_verification_program(
+    run_directory: Path, verification_command: Sequence[str] | None
+) -> list[str] | None:
+    """Make a relative verification program absolute, or refuse it.
+
+    `resume-review` runs the command with the workspace as cwd, so a program
+    written relative to the repository root, such as
+    `.mailman/runs/<id>/environment/Scripts/python.exe`, failed there with
+    WinError 2 after the primary had already worked (#129). A bare name is left
+    for the toolchain and an absolute path is left alone.
+    """
+    if not verification_command:
+        return list(verification_command) if verification_command else None
+    parts = list(verification_command)
+    program = Path(parts[0])
+    if program.is_absolute() or program.name == parts[0]:
+        return parts
+    data_root = run_directory.resolve().parent
+    bases = [Path.cwd(), data_root]
+    if data_root.parent.name == ".mailman":
+        bases.append(data_root.parent.parent)
+    tried: list[Path] = []
+    for base in bases:
+        candidate = (base / program).resolve()
+        if candidate in tried:
+            continue
+        tried.append(candidate)
+        if candidate.is_file():
+            parts[0] = str(candidate)
+            return parts
+    raise ValueError(
+        f"verification program {parts[0]} does not exist; tried "
+        + ", ".join(str(path) for path in tried)
+        + ". Pass an absolute path or one relative to the repository root."
+    )
+
+
 def write_task_prompts(
     run: RunRecord,
     run_directory: Path,
@@ -516,6 +553,9 @@ def write_task_prompts(
     start_files: Sequence[str] = (),
 ) -> tuple[Path, Path]:
     """Turn the captured issue into a primary and a reviewer prompt."""
+    verification_command = resolve_verification_program(
+        run_directory, verification_command
+    )
     issue_path = run_directory / "issue.md"
     if not issue_path.is_file():
         raise ValueError(

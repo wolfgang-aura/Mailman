@@ -912,6 +912,19 @@ def prepare_submission(
             workspace=resolve_workspace(run_directory, workspace),
         )
     findings.extend(_touched_tests_findings(touched_tests))
+    # The target's own CI checks on changed files, so CI is not the first to
+    # run them (#137, #120).
+    from mailman.target_checks import run_lint, run_offline_audit
+
+    check_workspace = resolve_workspace(run_directory, workspace)
+    offline_audit, audit_findings = run_offline_audit(
+        run_directory, workspace=check_workspace, changed_paths=changed_paths
+    )
+    findings.extend(Finding(**entry) for entry in audit_findings)
+    lint, lint_findings = run_lint(
+        run_directory, workspace=check_workspace, changed_paths=changed_paths
+    )
+    findings.extend(Finding(**entry) for entry in lint_findings)
     from mailman.targeting import stale_attempt_row
 
     stale_rows = [
@@ -972,6 +985,8 @@ def prepare_submission(
             duplicate_search, acknowledgement, issue_number
         ),
         "touched_tests": touched_tests,
+        "offline_audit": offline_audit,
+        "lint": lint,
         "files": ["pull-request.md", "accountability.md", "submission.json"],
     }
     (destination_path / "submission.json").write_text(

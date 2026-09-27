@@ -75,6 +75,54 @@ class TaskPromptTests(unittest.TestCase):
             self.assertIn("smallest focused test", primary)
             self.assertNotIn("Run it yourself", primary)
 
+    def test_a_repo_relative_verification_program_is_recorded_absolute(self) -> None:
+        # #129: resume-review runs verification from the workspace, where a
+        # repo-relative program failed with WinError 2.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            run, run_directory = make_run(repository / ".mailman" / "runs")
+            (run_directory / "issue.md").write_text("# example/project#7: Crash\n", encoding="utf-8")
+            python = run_directory / "environment" / "Scripts" / "python.exe"
+            python.parent.mkdir(parents=True)
+            python.write_bytes(b"")
+            relative = f".mailman/runs/{run.run_id}/environment/Scripts/python.exe"
+
+            write_task_prompts(
+                run, run_directory, verification_command=[relative, "-m", "pytest"]
+            )
+
+            record = json.loads((run_directory / "prompts.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                record["verification_command"], [str(python.resolve()), "-m", "pytest"]
+            )
+
+    def test_a_missing_relative_verification_program_is_refused(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from mailman.cli import main
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / ".mailman" / "runs"
+            run, run_directory = make_run(data_root)
+            (run_directory / "issue.md").write_text("# example/project#7: Crash\n", encoding="utf-8")
+            missing = ".mailman/runs/X/environment/Scripts/python.exe"
+            with self.assertRaisesRegex(ValueError, "X/environment/Scripts/python.exe"):
+                write_task_prompts(
+                    run, run_directory, verification_command=[missing, "-m", "pytest"]
+                )
+            stderr = StringIO()
+            with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                code = main(
+                    [
+                        "build-prompts", run.run_id, "--verification",
+                        f"{missing} -m pytest", "--data-root", str(data_root),
+                    ]
+                )
+            self.assertNotEqual(code, 0)
+            self.assertIn("does not exist", stderr.getvalue())
+            self.assertFalse((run_directory / "prompts.json").exists())
+
     def test_refuses_to_build_prompts_from_the_issue_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             run, run_directory = make_run(Path(temporary_directory) / "runs")

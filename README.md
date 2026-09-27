@@ -289,11 +289,20 @@ mailman export-patch RUN_ID
 
 This produces `changes.diff`, `summary.md`, `pull-request.md`, and `export.json`
 in the run's `export` directory. The diff covers new files as well as edited
-ones, and it is never rewritten: a diff matching a credential pattern stops the
+ones: untracked files that Git does not ignore (a changelog fragment, a new
+test) are included without `git add`, while ignored files are left out. Nothing
+in Mailman deletes an untracked file from the workspace. The diff is never
+rewritten: a diff matching a credential pattern stops the
 export instead of being silently redacted. The command refuses a run that is not
 `READY_FOR_HUMAN_REVIEW` unless `--allow-unfinished` is passed, which is how a
 `BLOCKED` run's partial work gets read. Nothing is pushed, and the pull request
 text is a draft for a human to accept, edit, or discard.
+
+The diff is always taken against the run's pinned base commit, so the export
+refuses a workspace whose HEAD no longer descends from that base, or whose
+history since the base includes commits `origin` already has (a candidate
+rebased onto newer upstream). Rebuild the branch on the base and cherry-pick the
+candidate's own commits, or start a new run at the new base.
 
 A run refuses to start against an issue somebody else has already claimed:
 
