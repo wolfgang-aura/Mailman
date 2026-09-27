@@ -295,5 +295,27 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(record["changed_files"], ["code.py"])
 
 
+    def test_exports_untracked_files_but_not_ignored_ones(self) -> None:
+        # #111: an untracked, non-ignored file (a changelog fragment) is part of
+        # the patch; a file Git ignores is not.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workspace, base_commit = make_workspace(root)
+            run, run_directory = make_ready_run(root, base_commit)
+            (workspace / ".git" / "info" / "exclude").write_text(
+                "*.log\n", encoding="utf-8"
+            )
+            (workspace / "changelog").mkdir()
+            (workspace / "changelog" / "7.bugfix.rst").write_text(
+                "Fix the crash.\n", encoding="utf-8"
+            )
+            (workspace / "debug.log").write_text("noise\n", encoding="utf-8")
+
+            record = export_patch(
+                run, run_directory, workspace=workspace, destination=root / "export"
+            )
+            self.assertEqual(record["changed_files"], ["changelog/7.bugfix.rst"])
+
+
 if __name__ == "__main__":
     unittest.main()
