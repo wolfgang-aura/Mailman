@@ -21,8 +21,14 @@ whether anything needs them at all.
 
 ## The order, and why
 
-1. **Recommendation and one sentence.** `SEND`, `HOLD` or `DROP`, and how many
-   questions block the patch.
+1. **Recommendation and one sentence.** `SEND`, `ASK`, `HOLD` or `DROP`, and
+   how many questions block the patch. `ASK` means comment first on an
+   untriaged issue. It requires an `offer` block whose `path` names a comment
+   draft inside the run directory, under 120 words, naming the reproduction and
+   the run's base commit. The validator refuses a missing, oversized or
+   escaping draft, and an `offer` on any other recommendation. The draft is
+   shown verbatim, escaped, in an **offer comment** section right after the
+   questions, on the run page and on the packet. Mailman never posts it.
 2. **Three panels, answerable at a glance.** *What was broken*, *What we did*,
    *Is it actually fixed*. One bold sentence each, one supporting sentence, and
    a stamp naming the class of evidence.

@@ -373,6 +373,19 @@ checkpoint page as soon as any candidate is ready. Show it. A candidate that is
 ready and invisible is indistinguishable to the user from no candidate at all,
 and that is what fifteen hours of silence looked like.
 
+Ask first on an untriaged issue. When no maintainer has triaged the issue, the
+decision is `ASK`, not `SEND`, and carries an `offer` block:
+`{"path": "offer-comment.md"}`. The file sits inside the run directory, stays
+under 120 words, names the reproduction and cites the run's base commit (a
+prefix of `base_commit` in `run.json`). `mailman decision` refuses the ASK
+without it. `hunt status` and `hunt finish` report these candidates as
+`ready_to_ask`, apart from `ready`. They never count toward N, so the finish
+exit code still reflects the PR quota alone. The offer text appears verbatim on
+the run page, the checkpoint and the packet, where the operator approves it.
+Mailman never posts the comment: the operator does. After a maintainer answers
+yes, change the decision to `SEND`, remove the `offer` block and do the PR
+handoff. A refusal ends the candidate.
+
 ## What reaches the user
 
 Only escalate unavailable user-controlled authentication, an explicit budget

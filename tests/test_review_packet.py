@@ -56,6 +56,37 @@ class PacketTests(unittest.TestCase):
         self.assertIn('<span class="value">2</span>', page)
         self.assertIn('<span class="value">1</span>', page)
 
+    def test_an_ask_run_puts_its_offer_text_in_the_packet(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/138
+
+        The operator approves the offer comment in the same pass as the
+        pull requests, so its text is on the packet, not behind a link.
+        """
+        from mailman.review_page import render_run_page
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            sent = write_named_run(root, "20260101T000000Z-000001", 11)
+            asked = write_named_run(root, "20260101T000000Z-000002", 12)
+            write_decision(sent)
+            (asked / "offer-comment.md").write_text(
+                "@maintainer This reproduces on `main` (aaaaaaaa). A fix is "
+                "ready; would you like a PR?\n",
+                encoding="utf-8",
+            )
+            write_decision(
+                asked, recommendation="ASK", offer={"path": "offer-comment.md"}
+            )
+
+            page = render_packet_page([sent, asked])
+            run_page = render_run_page(asked)
+
+        self.assertIn("Offer comments to approve", page)
+        self.assertIn("would you like a PR?", page)
+        self.assertIn("Recommended to ask", page)
+        self.assertIn("never posts", page)
+        self.assertIn("would you like a PR?", run_page)
+
     def test_a_run_without_a_decision_is_listed_not_dropped(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

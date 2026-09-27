@@ -25,6 +25,7 @@ from mailman.review_decision import (
     DecisionError,
     load_decision,
     recommendation_pill,
+    render_offer,
 )
 from mailman.review_page import _read_json, _shorten
 from mailman.review_page import _STYLE as _RUN_STYLE
@@ -133,11 +134,13 @@ def _rollup(entries: Sequence[PacketEntry]) -> str:
         len(entry.decision.blocking_questions) for entry in ready if entry.decision
     )
     send = sum(1 for entry in ready if entry.decision and entry.decision.recommendation == "SEND")
+    ask = sum(1 for entry in ready if entry.decision and entry.decision.recommendation == "ASK")
     gaps = sum(len(entry.decision.gaps) for entry in ready if entry.decision)
     not_ready = len(entries) - len(ready)
     cells = [
         ("Runs waiting", str(len(entries))),
         ("Recommended to send", str(send)),
+        *([("Recommended to ask", str(ask))] if ask else []),
         ("Questions that block", str(blocking)),
         ("Open gaps", str(gaps)),
         ("No decision written", str(not_ready)),
@@ -185,6 +188,28 @@ def _questions(entries: Sequence[PacketEntry]) -> str:
             "decision below is a straight yes or no on the patch.</p>"
         )
     return "".join(blocks)
+
+
+def _offers(entries: Sequence[PacketEntry]) -> str:
+    """Every ASK run's offer comment, verbatim, approved in the same pass.
+
+    An offer is not a pull request and does not count as one. Its text is on
+    this page because approving it from behind a link is how a comment gets
+    posted unread. https://github.com/wolfgang-aura/Mailman/issues/138
+    """
+    blocks = [
+        render_offer(entry.decision, f" for {entry.target}")
+        for entry in entries
+        if entry.decision is not None and entry.decision.offer is not None
+    ]
+    if not blocks:
+        return ""
+    return (
+        "<section><h2>Offer comments to approve</h2>"
+        '<p class="note">Ask first: each goes on its issue, and that pull request '
+        "waits for a maintainer's answer. None of these is a pull request.</p>"
+        f"{''.join(blocks)}</section>"
+    )
 
 
 def _runs_table(entries: Sequence[PacketEntry]) -> str:
@@ -273,6 +298,7 @@ that goes upstream or does not, and the decision is yours.</p></div></div>
 <p class="note">Questions are numbered once across the whole batch. Answer by
 number and letter &mdash; &ldquo;1A 2B 3A&rdquo; is a complete reply.</p>
 {_questions(entries)}</section>
+{_offers(entries)}
 <section><h2>The runs</h2>
 <p class="note">One row per run. Open a page for the patch, the evidence and
 the gaps behind its recommendation.</p>

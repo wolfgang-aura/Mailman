@@ -235,6 +235,107 @@ class UntriagedIssueGateTests(unittest.TestCase):
             load_decision(directory)
 
 
+BASE_COMMIT = "b022ad29ac3965248c473b5790cf8e124887eac6"
+
+OFFER_TEXT = (
+    "@maintainer This still reproduces on `main` (b022ad29): the issue's "
+    "snippet returns the wrong value.\n\nA fix is ready, with two regression "
+    "tests. Would you like a PR, or would you rather fix it yourself?\n"
+)
+
+
+def ask_decision(directory: Path, *, offer_text: str | None = OFFER_TEXT,
+                 offer: object = "default") -> dict:
+    """An ASK decision on an untriaged run, with its offer draft on disk."""
+    (directory / "run.json").write_text(
+        json.dumps({"run_id": directory.name, "base_commit": BASE_COMMIT}),
+        encoding="utf-8",
+    )
+    _write_untriaged_claims(directory)
+    if offer_text is not None:
+        (directory / "offer-comment.md").write_text(offer_text, encoding="utf-8")
+    data = copy.deepcopy(VALID)
+    data["recommendation"] = "ASK"
+    data["questions"] = [blank_decision(directory)["questions"][0]]
+    if offer == "default":
+        data["offer"] = {"path": "offer-comment.md"}
+    elif offer is not None:
+        data["offer"] = offer
+    (directory / DECISION_FILENAME).write_text(json.dumps(data), encoding="utf-8")
+    return data
+
+
+class AskFirstDecisionTests(unittest.TestCase):
+    """https://github.com/wolfgang-aura/Mailman/issues/138
+
+    Ask-first: a verified untriaged candidate is offered on the issue before
+    any pull request. The offer draft is gated like the rest of the decision.
+    """
+
+    def load(self, **arguments: object):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ask_decision(directory, **arguments)  # type: ignore[arg-type]
+            return load_decision(directory)
+
+    def problems(self, **arguments: object) -> str:
+        with self.assertRaises(DecisionError) as caught:
+            self.load(**arguments)
+        return " ".join(caught.exception.problems)
+
+    def test_an_ask_with_a_valid_offer_loads_and_carries_the_text(self) -> None:
+        decision = self.load()
+
+        self.assertEqual(decision.recommendation, "ASK")
+        self.assertIsNotNone(decision.offer)
+        self.assertEqual(decision.offer.path, "offer-comment.md")
+        self.assertIn("b022ad29", decision.offer.text)
+
+    def test_an_ask_without_an_offer_is_refused(self) -> None:
+        self.assertIn("offer", self.problems(offer=None))
+
+    def test_an_offer_file_that_does_not_exist_is_refused(self) -> None:
+        self.assertIn("offer-comment.md", self.problems(offer_text=None))
+
+    def test_an_offer_of_120_words_or_more_is_refused(self) -> None:
+        long_text = OFFER_TEXT + " word" * 120
+        self.assertIn("120", self.problems(offer_text=long_text))
+
+    def test_an_offer_must_name_the_base_commit(self) -> None:
+        text = OFFER_TEXT.replace("(b022ad29)", "(deadbeef1)")
+        self.assertIn("base commit", self.problems(offer_text=text))
+
+    def test_an_offer_must_name_the_reproduction(self) -> None:
+        text = OFFER_TEXT.replace("still reproduces", "is still broken")
+        self.assertIn("reproduction", self.problems(offer_text=text))
+
+    def test_an_offer_outside_the_run_directory_is_refused(self) -> None:
+        problems = self.problems(offer={"path": "../elsewhere/offer.md"})
+        self.assertIn("inside the run directory", problems)
+
+    def test_an_offer_on_a_send_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            data = ask_decision(directory)
+            data["recommendation"] = "SEND"
+            with self.assertRaises(DecisionError) as caught:
+                parse_decision(data)
+        self.assertIn("ASK", " ".join(caught.exception.problems))
+
+    def test_the_offer_is_rendered_escaped(self) -> None:
+        from mailman.review_decision import render_offer
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ask_decision(directory, offer_text=OFFER_TEXT + "<script>x</script>\n")
+            markup = render_offer(load_decision(directory))
+
+        self.assertIn("Would you like a PR", markup)
+        self.assertIn("&lt;script&gt;", markup)
+        self.assertNotIn("<script>", markup)
+        self.assertIn("never posts", markup)
+
+
 class DecisionRenderingTests(unittest.TestCase):
     def test_the_panels_carry_a_claim_a_detail_and_a_stamp(self) -> None:
         markup = render_panels(parse_decision(copy.deepcopy(VALID)))

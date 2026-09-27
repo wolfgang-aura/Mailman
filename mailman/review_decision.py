@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import html
 import json
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -50,9 +51,19 @@ EVIDENCE_CLASSES = (
 )
 _MACHINE_CLASSES = {"machine-checked", "measured", "seen", "deployed", "live-verified"}
 
-#: What the page recommends the human do with the patch.
-RECOMMENDATIONS = ("SEND", "HOLD", "DROP")
-_RECOMMENDATION_TONE = {"SEND": "ok", "HOLD": "warn", "DROP": "stop"}
+#: What the page recommends the human do with the patch. ASK is ask-first: the
+#: candidate is verified, but nobody who maintains the project has said the
+#: behaviour is a bug, so the operator approves a short offer comment on the
+#: issue and the pull request waits for a maintainer's answer.
+#: https://github.com/wolfgang-aura/Mailman/issues/138
+RECOMMENDATIONS = ("SEND", "ASK", "HOLD", "DROP")
+_RECOMMENDATION_TONE = {"SEND": "ok", "ASK": "warn", "HOLD": "warn", "DROP": "stop"}
+
+#: An offer comment is a question to a maintainer, not a pull request body.
+#: The two that worked (edgartools#1337, #1370) were under a hundred words.
+OFFER_WORD_LIMIT = 120
+_REPRODUCTION_WORD = re.compile(r"\brepro(?:duc\w*)?\b", re.IGNORECASE)
+_COMMIT_WORD = re.compile(r"\b[0-9a-f]{7,40}\b")
 
 #: Options are labelled so the operator answers "1A 2B 3A" instead of retyping
 #: the choice he is picking.
@@ -115,6 +126,14 @@ class LedgerEntry:
 
 
 @dataclass(frozen=True)
+class Offer:
+    """The comment an ASK decision proposes for the issue. Mailman never posts it."""
+
+    path: str
+    text: str = ""
+
+
+@dataclass(frozen=True)
 class Decision:
     """One run's answer to "what am I being asked, and on what evidence"."""
 
@@ -124,6 +143,7 @@ class Decision:
     questions: list[Question] = field(default_factory=list)
     gaps: list[Gap] = field(default_factory=list)
     ledger: list[LedgerEntry] = field(default_factory=list)
+    offer: Offer | None = None
 
     @property
     def blocking_questions(self) -> list[Question]:
@@ -321,6 +341,68 @@ def _parse_ledger(raw_ledger: Any, problems: list[str]) -> list[LedgerEntry]:
     return ledger
 
 
+def _parse_offer(raw: Any, recommendation: str, problems: list[str]) -> Offer | None:
+    if raw is None:
+        if recommendation == "ASK":
+            problems.append(
+                'recommendation ASK needs an offer block, e.g. {"path": '
+                '"offer-comment.md"}: the comment draft in the run directory the '
+                "operator approves before anything is posted."
+            )
+        return None
+    path = _text(raw.get("path")) if isinstance(raw, dict) else ""
+    if not path:
+        problems.append(
+            "offer.path is empty; name the comment draft in the run directory."
+        )
+        return None
+    if recommendation != "ASK":
+        problems.append(
+            f"offer belongs to an ASK recommendation, not {recommendation or 'none'}; "
+            "remove it once a maintainer has answered and the run moves on."
+        )
+    return Offer(path)
+
+
+def offer_problems(run_directory: Path, offer: Offer) -> tuple[list[str], str]:
+    """What is wrong with the offer draft on disk, and its text when nothing is."""
+    root = Path(run_directory).resolve()
+    draft = (root / offer.path).resolve()
+    if not draft.is_relative_to(root):
+        return [f"offer.path {offer.path!r} must stay inside the run directory."], ""
+    if not draft.is_file():
+        return [f"offer.path {offer.path!r} does not exist; write the draft first."], ""
+    text = draft.read_text(encoding="utf-8").strip()
+    problems: list[str] = []
+    words = len(text.split())
+    if not words:
+        problems.append(f"{offer.path} is empty.")
+    elif words >= OFFER_WORD_LIMIT:
+        problems.append(
+            f"{offer.path} is {words} words; keep an offer under "
+            f"{OFFER_WORD_LIMIT}. It asks whether a pull request is wanted; the "
+            "pull request says the rest."
+        )
+    if not _REPRODUCTION_WORD.search(text):
+        problems.append(
+            f"{offer.path} does not name the reproduction; say that it reproduces "
+            "and with what."
+        )
+    try:
+        run = json.loads((root / "run.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        run = {}
+    base = str(run.get("base_commit") or "").lower() if isinstance(run, dict) else ""
+    if not base:
+        problems.append("run.json names no base commit for the offer to cite.")
+    elif not any(base.startswith(word) for word in _COMMIT_WORD.findall(text.lower())):
+        problems.append(
+            f"{offer.path} does not name the base commit; cite {base[:8]} so the "
+            "maintainer can check the reproduction against the same tree."
+        )
+    return problems, text
+
+
 def parse_decision(data: Any) -> Decision:
     """Turn a decision document into a `Decision`, or say everything wrong with it."""
     if not isinstance(data, dict):
@@ -350,10 +432,11 @@ def parse_decision(data: Any) -> Decision:
     questions = _parse_questions(data.get("questions"), problems)
     gaps = _parse_gaps(data.get("gaps"), problems)
     ledger = _parse_ledger(data.get("ledger"), problems)
+    offer = _parse_offer(data.get("offer"), recommendation, problems)
 
     if problems:
         raise DecisionError(problems)
-    return Decision(recommendation, headline, panels, questions, gaps, ledger)
+    return Decision(recommendation, headline, panels, questions, gaps, ledger, offer)
 
 
 def load_decision(run_directory: Path) -> Decision:
@@ -378,6 +461,11 @@ def load_decision(run_directory: Path) -> Decision:
     problem = untriaged_problem(Path(run_directory), decision)
     if problem:
         raise DecisionError([problem], path)
+    if decision.offer is not None:
+        problems, text = offer_problems(Path(run_directory), decision.offer)
+        if problems:
+            raise DecisionError(problems, path)
+        decision = replace(decision, offer=replace(decision.offer, text=text))
     return decision
 
 
@@ -533,6 +621,20 @@ def render_questions(decision: Decision, first_number: int = 1) -> str:
             f"{_escape(question.recommendation)}</p></div>"
         )
     return "".join(blocks)
+
+
+def render_offer(decision: Decision, where: str = "") -> str:
+    """The offer comment an ASK decision wants approved, verbatim and escaped."""
+    if decision.offer is None:
+        return ""
+    return (
+        f'<div class="card"><p class="byline">Offer comment{_escape(where)} '
+        f'&middot; <span class="mono">{_escape(decision.offer.path)}</span></p>'
+        f'<pre class="block">{_escape(decision.offer.text)}</pre>'
+        '<p class="note" style="margin:12px 16px">Mailman never posts this. It is '
+        "not a pull request: approve the comment, post it yourself, and file only "
+        "after a maintainer answers.</p></div>"
+    )
 
 
 def render_gaps(decision: Decision) -> str:

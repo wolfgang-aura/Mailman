@@ -20,12 +20,14 @@ from typing import Any, Iterable
 
 from mailman.markdown_lite import render_markdown
 from mailman.review_decision import (
+    Decision,
     DecisionError,
     load_decision,
     recommendation_pill,
     render_gaps,
     render_ledger,
     render_missing,
+    render_offer,
     render_panels,
     render_questions,
 )
@@ -621,6 +623,21 @@ Paths are shown relative to the run.</p>
 """
 
 
+def _offer_section(decision: Decision) -> str:
+    """An ASK run's offer comment, which is what the operator approves.
+
+    https://github.com/wolfgang-aura/Mailman/issues/138
+    """
+    if decision.offer is None:
+        return ""
+    return (
+        "<section><h2>The offer comment</h2>"
+        '<p class="note">Ask first: this goes on the issue, and the pull request '
+        "waits for a maintainer's answer.</p>"
+        f"{render_offer(decision)}</section>\n"
+    )
+
+
 def _decision_sections(run_directory: Path) -> str:
     """The decision layer, or a loud banner naming why there is none.
 
@@ -654,7 +671,7 @@ def _decision_sections(run_directory: Path) -> str:
 <p class="note">Answer by number and letter &mdash; &ldquo;1A 2B&rdquo; is a
 complete reply.</p>
 {render_questions(decision)}</section>
-<section><h2>What is still open</h2>
+{_offer_section(decision)}<section><h2>What is still open</h2>
 <p class="note">Every open item carries the reason it is open and what closing
 it would cost. Nothing is listed here that was simply not done.</p>
 {render_gaps(decision)}</section>
