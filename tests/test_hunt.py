@@ -26,12 +26,15 @@ from mailman.hunt import (
     hunt_path,
     load_hunt,
     next_action,
+    open_pull_request_repositories,
     record_filing,
+    record_prescreen,
     refresh,
     restore_run,
     save,
     status,
     target_claims,
+    workable_targets,
 )
 from mailman.identity import Identity, save_identity
 from mailman.models import AgentConfig
@@ -777,3 +780,103 @@ class PreFilingRefreshTests(HuntTests):
         self.assertEqual(status(self.data_root, record)["ready"], 1)
         result = refresh(self.data_root, record, include_ready=True)
         self.assertEqual([row["run_id"] for row in result["refreshed"]], [directory.name])
+
+
+class PrescreenRecordTests(OrchestratorHarness):
+    """A hunt keeps its prescreens, and the next target comes from screens.
+
+    Hunt 20260916T165859Z-0d3481 ran 20 prescreens and kept none of them.
+    https://github.com/wolfgang-aura/Mailman/issues/102
+    """
+
+    new_hunt = HuntTests.new_hunt
+
+    def _prescreen(self, slug, number, verdict, blocking=()):
+        return {"repository": slug, "issue_number": number, "verdict": verdict,
+                "blocking": list(blocking), "screened_at": "2026-09-28T01:00:00+00:00"}
+
+    def _screen(self, slug, numbers, *, verdict="pass", days_old=0):
+        from mailman.screen import (FRESHNESS_WINDOW_DAYS, ISSUE_WINDOW_DAYS,
+                                    RESPONSIVENESS_WINDOW_DAYS)
+        path = screen_path(self.data_root, slug)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rows = [{"number": n, "title": f"bug {n}", "age_days": 3, "score": 1,
+                 "reasons": ["no-linked-pr"]} for n in numbers]
+        path.write_text(json.dumps({
+            "repository": slug, "success": True, "verdict": verdict,
+            "screened_at": (datetime.now(UTC) - timedelta(days=days_old)).isoformat(),
+            "window_days": FRESHNESS_WINDOW_DAYS,
+            "issue_window_days": ISSUE_WINDOW_DAYS,
+            "responsiveness_days": RESPONSIVENESS_WINDOW_DAYS,
+            "gates": [{"name": "saturation", "data": {"shortlist": rows}}],
+        }), encoding="utf-8")
+
+    def test_a_prescreen_is_appended_to_the_hunt_and_counted_in_status(self):
+        record = self.new_hunt()
+        record_prescreen(self.data_root, record,
+                         self._prescreen("acme/widgets", 7, "reject", ["open-pull-request"]))
+        record_prescreen(self.data_root, record, self._prescreen("acme/widgets", 9, "pass"))
+        record_prescreen(self.data_root, record, self._prescreen("acme/widgets", 7, "pass"))
+
+        saved = load_hunt(self.data_root, record["hunt_id"])
+        self.assertEqual(
+            saved["prescreens"],
+            [
+                {"target": "acme/widgets#9", "verdict": "pass", "rejects": [],
+                 "screened_at": "2026-09-28T01:00:00+00:00"},
+                {"target": "acme/widgets#7", "verdict": "pass", "rejects": [],
+                 "screened_at": "2026-09-28T01:00:00+00:00"},
+            ],
+        )
+        self.assertEqual(status(self.data_root, saved)["prescreens"],
+                         {"screened": 2, "passed": 2})
+
+    def test_prescreen_with_hunt_writes_the_verdict_to_that_hunt(self):
+        record = self.new_hunt()
+        verdict = self._prescreen("acme/widgets", 7, "reject", ["open-pull-request"])
+        with mock.patch("mailman.prescreen.prescreen_issue", return_value=verdict), \
+                redirect_stdout(StringIO()):
+            code = main(["prescreen", "acme/widgets#7", "--data-root", str(self.data_root),
+                         "--hunt", record["hunt_id"]])
+
+        self.assertEqual(code, 1)
+        saved = load_hunt(self.data_root, record["hunt_id"])
+        self.assertEqual([row["target"] for row in saved["prescreens"]], ["acme/widgets#7"])
+
+    def test_a_reject_keeps_its_reasons(self):
+        record = self.new_hunt()
+        row = record_prescreen(self.data_root, record, self._prescreen(
+            "acme/widgets", 7, "reject", ["open-pull-request"]))
+
+        self.assertEqual(row["rejects"], ["open-pull-request"])
+        self.assertEqual(status(self.data_root, record)["prescreens"],
+                         {"screened": 1, "passed": 0})
+
+    def test_workable_targets_skip_prescreened_stale_failed_and_held_repositories(self):
+        from mailman.prescreen import prescreen_path
+        self._screen("acme/widgets", [1, 2])
+        self._screen("acme/stale", [3], days_old=30)
+        self._screen("acme/failed", [4], verdict="fail")
+        self._screen("acme/held", [5])
+        done = prescreen_path(self.data_root, "acme/widgets", 2)
+        done.parent.mkdir(parents=True, exist_ok=True)
+        done.write_text("{}", encoding="utf-8")
+
+        rows = workable_targets(self.data_root, held_repositories={"acme/held"})
+
+        self.assertEqual([row["target"] for row in rows], ["acme/widgets#1"])
+        self.assertEqual(rows[0]["title"], "bug 1")
+
+    def test_a_repository_with_a_filed_pull_request_not_seen_closed_is_held(self):
+        record = self.new_hunt()
+        record["runs"].append({"run_id": "r1", "filed": {
+            "repository": "acme/held", "pr_number": 12, "pr_url":
+            "https://github.com/acme/held/pull/12"}})
+        save(hunt_path(self.data_root, record["hunt_id"]), record)
+
+        self.assertEqual(open_pull_request_repositories(self.data_root), {"acme/held"})
+        watch = self.data_root.parent / "filed-watch.json"
+        watch.write_text(json.dumps({"rows": [
+            {"repository": "acme/held", "pull_request": 12, "state": "closed"}
+        ]}), encoding="utf-8")
+        self.assertEqual(open_pull_request_repositories(self.data_root), set())

@@ -28,6 +28,7 @@ import json
 import posixpath
 import re
 import statistics
+import sys
 import tomllib
 from collections import Counter
 from collections.abc import Callable
@@ -214,10 +215,17 @@ _TEST_RUNNER = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
-#: Files whose presence means a compiler is in the build. The operator has no
-#: Rust or MSVC toolchain, so these are fatal rather than inconvenient.
-_COMPILED_MARKERS = ("Cargo.toml", "setup.py", "Makefile", "meson.build")
+#: Files whose presence means a compiler may be in the build. The operator has
+#: no Rust or MSVC toolchain, so `Cargo.toml` is fatal on its own; the others
+#: only decide whether a few compiled bytes are fixtures or an extension. A
+#: `Makefile` is not here: on sphinx it builds the docs, and it said "compiler"
+#: on the record. https://github.com/wolfgang-aura/Mailman/issues/100
+_COMPILED_MARKERS = ("Cargo.toml", "setup.py", "meson.build", "CMakeLists.txt")
 _COMPILED_LANGUAGES = ("Cython", "Rust", "C", "C++", "Go", "Zig")
+#: Cython or Rust bytes below this share of the Python are fixtures, not a
+#: build, when nothing else names a compiler. sphinx carries 245 bytes of
+#: Cython under 4.9 MB of Python, from a test of its own C-extension docs.
+COMPILED_FIXTURE_SHARE = 0.005
 
 #: Build requirements that mean a compiler runs at install time even when every
 #: file on disk is a `.py`. `pmorissette/bt` is 100% Python by GitHub's count
@@ -975,9 +983,21 @@ def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     )
     build_compilers, requires_line = _build_requires(pyproject)
     wheel_hook = _wheel_only_hook(pyproject)
+    python_bytes = languages.get("Python", 0) or 0
+    compiled_bytes = compiled.get("Cython", 0) + compiled.get("Rust", 0)
+    compiled_share = (compiled_bytes / python_bytes) if python_bytes else 0.0
+    # A stray `.pyx` fixture is not a build. It counts as one only when a
+    # marker or the build back end could turn it into an extension.
+    fixture_only = (
+        compiled_bytes > 0
+        and compiled_share < COMPILED_FIXTURE_SHARE
+        and not markers
+        and not build_compilers
+    )
     data = {
         "python_share": round(python_share, 3),
         "compiled_languages": compiled,
+        "compiled_share": round(compiled_share, 3),
         "root_markers": markers,
         "languages": languages,
         "build_requires_compilers": build_compilers,
@@ -985,6 +1005,7 @@ def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         "wheel_only_hook": wheel_hook,
         "environment_plan": None,
         "pyproject": pyproject,
+        "root_names": sorted(name for name in root_names if isinstance(name, str)),
     }
     if total and python_share < MINIMUM_PYTHON_SHARE:
         dominant = max(source, key=source.get)
@@ -998,7 +1019,9 @@ def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
             ),
             data=data,
         )
-    if "Cargo.toml" in markers or "Cython" in compiled or "Rust" in compiled:
+    if "Cargo.toml" in markers or (
+        ("Cython" in compiled or "Rust" in compiled) and not fixture_only
+    ):
         return _gate(
             "pure-python",
             passed=False,
@@ -1040,11 +1063,19 @@ def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
             ),
             data=data,
         )
+    detail = f"Python is {python_share:.0%} of the source, no compiler markers"
+    if fixture_only:
+        detail = (
+            f"Python is {python_share:.0%} of the source; the "
+            f"{compiled_bytes:,} bytes of {', '.join(sorted(compiled))} are "
+            f"fixtures ({compiled_share:.2%} of the Python, no compiler in the "
+            "build back end)"
+        )
     return _gate(
         "pure-python",
         passed=True,
         blocking=True,
-        detail=f"Python is {python_share:.0%} of the source, no compiler markers",
+        detail=detail,
         data=data,
     )
 
@@ -1122,7 +1153,30 @@ HOST_UNRUNNABLE_FRAMEWORKS: dict[str, str] = {
     "frappe": "a Frappe app is tested inside a bench (MariaDB, Redis, a site)",
 }
 
+#: Packages that are a thin Python binding over a C library the host does not
+#: ship. electrum_ecc installs from its sdist and then raises "Failed to load
+#: libsecp256k1" at import (electrum#10969, 2026-09-16). Mailman #94.
+NATIVE_LIBRARY_SHIMS: dict[str, str] = {
+    "electrum-ecc": "electrum-ecc loads libsecp256k1, which this host does not have",
+    "coincurve": "coincurve loads libsecp256k1, which this host does not have",
+    "secp256k1": "secp256k1 loads libsecp256k1, which this host does not have",
+}
+
+#: Requirement files read beside the pyproject, relative to the repository
+#: root, keyed by the root entry that must exist before the file is asked for.
+REQUIREMENT_FILES = (
+    ("requirements.txt", "requirements.txt"),
+    ("contrib", "contrib/requirements/requirements.txt"),
+)
+
+#: At most this many required packages are looked up on PyPI per screen.
+WHEEL_CHECK_LIMIT = 30
+
 _REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+_PLATFORM_MARKER = re.compile(r"\b(sys_platform|platform_system|os_name)\b")
+_WINDOWS_MARKER = re.compile(
+    r"(sys_platform|platform_system|os_name)\s*==\s*['\"](win32|Windows|nt)['\"]"
+)
 
 
 def _requirement_name(requirement: str) -> str:
@@ -1156,15 +1210,105 @@ def _pyproject_requirements(pyproject: str) -> tuple[set[str], set[str], bool]:
     return required - {""}, optional - {""}, "bench" in tool
 
 
-def _host_gate(pyproject: str) -> dict[str, Any]:
+def _requirement_lines(text: str) -> set[str]:
+    """Names a requirements file installs on Windows, options and comments skipped."""
+    names: set[str] = set()
+    for raw in text.splitlines():
+        line = raw.split(" #", 1)[0].strip()
+        if not line or line.startswith(("#", "-")):
+            continue
+        marker = line.split(";", 1)[1] if ";" in line else ""
+        if _PLATFORM_MARKER.search(marker) and not _WINDOWS_MARKER.search(marker):
+            continue
+        names.add(_requirement_name(line))
+    return names - {""}
+
+
+def _runtime_requirements(gh: _Gh, slug: str, root_names: set[str]) -> set[str]:
+    """Names the repository's requirement files pin, beside its pyproject."""
+    names: set[str] = set()
+    for marker, path in REQUIREMENT_FILES:
+        if marker in root_names:
+            names |= _requirement_lines(_decoded(gh.json(f"repos/{slug}/contents/{path}")))
+    return names
+
+
+def _wheel_files(gh: _Gh, name: str) -> list[str] | None:
+    """The files PyPI lists for the latest release, or None when unread."""
+    body = gh.page(f"https://pypi.org/pypi/{quote(name)}/json")
+    if body is None:
+        return None
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return None
+    urls = payload.get("urls") if isinstance(payload, dict) else None
+    if not isinstance(urls, list):
+        return None
+    return [
+        str(entry["filename"])
+        for entry in urls
+        if isinstance(entry, dict) and entry.get("filename")
+    ]
+
+
+def _wheel_fits_host(filename: str) -> bool:
+    """Whether pip on this Windows host and Python could install this wheel."""
+    if not filename.endswith(".whl"):
+        return False
+    parts = filename[: -len(".whl")].split("-")
+    if len(parts) < 5:
+        return False
+    python_tags = set(parts[-3].split("."))
+    abi_tags = set(parts[-2].split("."))
+    platforms = set(parts[-1].split("."))
+    current = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    if "any" in platforms:
+        return bool(python_tags & {"py3", current, f"py{sys.version_info.major}{sys.version_info.minor}"})
+    if "win_amd64" not in platforms:
+        return False
+    if current in python_tags:
+        return True
+    if "abi3" in abi_tags:
+        return any(
+            tag.startswith("cp3") and tag[3:].isdigit()
+            and int(tag[3:]) <= sys.version_info.minor
+            for tag in python_tags
+        )
+    return "py3" in python_tags and "none" in abi_tags
+
+
+def _host_gate(
+    pyproject: str,
+    *,
+    requirements: set[str] | frozenset[str] = frozenset(),
+    wheel_files: Callable[[str], list[str] | None] | None = None,
+) -> dict[str, Any]:
     """Gate 3b. Can the target's tests run on this host at all?
 
     Two of the five repositories that passed the screen on 2026-09-18 could
     not be reproduced here, after the pre-screen and, for one, a full
     environment build. The screen knew the dependency list and never read it
     against what the host is known to refuse.
+
+    `requirements` adds what the repository's requirement files pin, and
+    `wheel_files` looks a package up on PyPI. A required package with no
+    wheel this host can install fails, because the environment step installs
+    binaries only; a package PyPI did not answer for is recorded as unchecked.
     """
     required, optional, bench = _pyproject_requirements(pyproject)
+    required = required | set(requirements)
+    optional = optional - required
+    shims = sorted(name for name in NATIVE_LIBRARY_SHIMS if name in required)
+    no_wheel: list[dict[str, Any]] = []
+    unchecked: list[str] = []
+    if wheel_files is not None:
+        for name in sorted(required - set(shims))[:WHEEL_CHECK_LIMIT]:
+            files = wheel_files(name)
+            if files is None:
+                unchecked.append(name)
+            elif not any(_wheel_fits_host(filename) for filename in files):
+                no_wheel.append({"package": name, "files": files})
     frameworks = sorted(
         name for name in HOST_UNRUNNABLE_FRAMEWORKS if name in required or (bench and name == "frappe")
     )
@@ -1176,9 +1320,17 @@ def _host_gate(pyproject: str) -> dict[str, Any]:
         "required_unrunnable": frameworks,
         "required_blocked": blocked,
         "optional_blocked": optional_blocked,
+        "native_shims": shims,
+        "no_wheel": no_wheel,
+        "pypi_unchecked": unchecked,
     }
     reasons = [HOST_UNRUNNABLE_FRAMEWORKS[name] for name in frameworks]
     reasons += [HOST_BLOCKED_PACKAGES[name] for name in blocked]
+    reasons += [NATIVE_LIBRARY_SHIMS[name] for name in shims]
+    reasons += [
+        f"{row['package']} has no wheel for this platform and Python on PyPI"
+        for row in no_wheel
+    ]
     if reasons:
         return _gate(
             "host",
@@ -1560,6 +1712,19 @@ def _shortlist_row(
             for label in row.get("labels") or []
         ],
         "thread_read": thread is not None,
+        # Who has spoken, so a coordinator does not refetch every thread to
+        # find the triaged rows. None when the thread was past the read cap.
+        # https://github.com/wolfgang-aura/Mailman/issues/135
+        "maintainer_filed": row.get("author_association") in MAINTAINER_ASSOCIATIONS,
+        "maintainer_replied": (
+            any(
+                isinstance(comment, dict)
+                and comment.get("author_association") in MAINTAINER_ASSOCIATIONS
+                for comment in thread.get("comments") or []
+            )
+            if thread is not None
+            else None
+        ),
         "score": ranked["score"],
         "reasons": ranked["reasons"],
     }
@@ -2116,6 +2281,26 @@ def screen_repository(
     meta = gh.json(f"repos/{slug}")
     if not isinstance(meta, dict) or "full_name" not in meta:
         record["detail"] = f"{slug} could not be read"
+        record["read_failures"] = gh.failures
+        previous = load_screen(data_root, slug)
+        if previous and previous.get("success"):
+            # A refresh that read nothing is not a verdict. On 2026-09-17 a
+            # burst-limited batch replaced 34 full screens with empty ones;
+            # the previous verdict stays, with the failed attempt beside it.
+            # https://github.com/wolfgang-aura/Mailman/issues/117
+            unread = {
+                "attempted_at": record["screened_at"],
+                "detail": record["detail"],
+                "read_failures": gh.failures,
+            }
+            _write(data_root, {**previous, "unread": unread})
+            record["unread"] = unread
+            record["previous"] = {
+                "verdict": previous.get("verdict"),
+                "failed_gates": previous.get("failed_gates", []),
+                "screened_at": previous.get("screened_at"),
+            }
+            return record
         _write(data_root, record)
         return record
     record["archived"] = bool(meta.get("archived"))
@@ -2141,7 +2326,13 @@ def screen_repository(
         freshness,
         _ci_gate(gh, slug),
         python,
-        _host_gate(python["data"].pop("pyproject", "")),
+        _host_gate(
+            python["data"].pop("pyproject", ""),
+            requirements=_runtime_requirements(
+                gh, slug, set(python["data"].pop("root_names", []))
+            ),
+            wheel_files=lambda name: _wheel_files(gh, name),
+        ),
         _policy_gate(gh, slug),
         _assignment_gate(gh, slug),
         _saturation_gate(gh, slug, window_days, issue_window_days),
@@ -2177,8 +2368,22 @@ def render_screen(record: dict[str, Any]) -> str:
     """One line per gate, with the numbers that decided it."""
     slug = record.get("repository")
     if not record.get("success"):
-        return f"{slug}: unread, {record.get('detail', 'unknown failure')}"
+        line = f"{slug}: unread, {record.get('detail', 'unknown failure')}"
+        previous = record.get("previous")
+        if isinstance(previous, dict):
+            line += (
+                f"; kept the {previous.get('verdict')} verdict screened at "
+                f"{previous.get('screened_at')}"
+            )
+        return line
     lines = [f"screen {slug}"]
+    unread = record.get("unread")
+    if isinstance(unread, dict):
+        lines.append(
+            f"  unread refresh at {unread.get('attempted_at')}: "
+            f"{unread.get('detail')}; the verdict below is from "
+            f"{record.get('screened_at')}"
+        )
     for gate in record.get("gates", []):
         mark = "pass" if gate["passed"] else ("FAIL" if gate["blocking"] else "warn")
         lines.append(f"  {mark:<5} {gate['name']:<13} {gate['detail']}")

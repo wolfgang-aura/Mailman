@@ -952,6 +952,7 @@ def _hunt(arguments: argparse.Namespace) -> int:
                     "claims": claims,
                     "live": sorted({c["target"] for c in claims if c["live"]}),
                     "filed": sorted({c["target"] for c in claims if c["filed"]}),
+                    "workable": hunt.workable_targets(root),
                 },
                 indent=2,
             )
@@ -1222,7 +1223,7 @@ def _revision_response(arguments: argparse.Namespace) -> int:
 
 
 def _prescreen(arguments: argparse.Namespace) -> int:
-    from mailman import prescreen
+    from mailman import hunt, prescreen
 
     root = (arguments.data_root or default_data_root()).resolve()
     record = prescreen.prescreen_issue(
@@ -1233,6 +1234,9 @@ def _prescreen(arguments: argparse.Namespace) -> int:
         executable=arguments.executable,
         timeout_seconds=arguments.timeout,
     )
+    if arguments.deadline_hunt_id:
+        # Mailman #102: the hunt keeps what its prescreens decided.
+        hunt.record_prescreen(root, hunt.load_hunt(root, arguments.deadline_hunt_id), record)
     print(json.dumps(record, indent=2))
     return 0 if record["verdict"] == "pass" else 1
 

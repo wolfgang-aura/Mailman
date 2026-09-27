@@ -405,6 +405,124 @@ def holding_hunt(root: Path, target: str, *, exclude: str | None = None) -> dict
     return None
 
 
+# --- Prescreens and the next target ----------------------------------------
+#
+# Hunt 20260916T165859Z-0d3481 spent 45 of 56 minutes finding a target: 20
+# prescreens, 4 passes, one run, and hunt.json kept none of it, so the next
+# hunt re-derived the same rejects. A prescreen made for a hunt is now written
+# to it, and the next target is read from the screens rather than from issue
+# pages. See https://github.com/wolfgang-aura/Mailman/issues/102.
+
+#: A screen older than this is not read for targets; its shortlist has aged.
+TARGET_SCREEN_MAX_AGE_DAYS = 7
+
+
+def record_prescreen(root: Path, record: dict, prescreen_record: dict) -> dict | None:
+    """Append one prescreen verdict to the hunt; a repeat replaces the older row."""
+    if is_terminal(record):
+        return None
+    target = (
+        f"{repository_slug(prescreen_record['repository'])}"
+        f"#{prescreen_record['issue_number']}"
+    )
+    row = {
+        "target": target,
+        "verdict": prescreen_record.get("verdict"),
+        "rejects": list(prescreen_record.get("blocking") or []),
+        "screened_at": prescreen_record.get("screened_at"),
+    }
+    record["prescreens"] = [
+        *(entry for entry in record.get("prescreens", []) if entry.get("target") != target),
+        row,
+    ]
+    save(hunt_path(root, record["hunt_id"]), record)
+    return row
+
+
+def prescreen_counts(record: dict) -> dict:
+    rows = record.get("prescreens") or []
+    return {
+        "screened": len(rows),
+        "passed": sum(1 for row in rows if row.get("verdict") == "pass"),
+    }
+
+
+def open_pull_request_repositories(root: Path) -> set[str]:
+    """Repositories where a filed pull request of ours was not last seen closed.
+
+    The filed watch is the only local record of a pull request's state, so a
+    filing it has not read counts as open: one open pull request per
+    repository is the rule, and guessing closed would break it.
+    """
+    from mailman.filed_watch import filed_rows, watch_path
+
+    closed: set[tuple[str, int]] = set()
+    watch = read_object(watch_path(root)) or {}
+    for reading in watch.get("rows") or []:
+        if isinstance(reading, dict) and reading.get("state") == "closed":
+            closed.add((str(reading.get("repository", "")).lower(),
+                        int(reading.get("pull_request") or 0)))
+    return {
+        row["repository"]
+        for row in filed_rows(root)
+        if (row["repository"].lower(), row["pull_request"]) not in closed
+        and not row.get("superseded_by")
+    }
+
+
+def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
+                     max_age_days: int = TARGET_SCREEN_MAX_AGE_DAYS,
+                     now: datetime | None = None) -> list[dict]:
+    """Shortlisted issues from fresh passing screens that nobody has taken yet.
+
+    An issue is left out when it was prescreened, when a live hunt holds it,
+    or when its repository holds our open pull request. The order is each
+    screen's own shortlist order, newest screen first.
+    """
+    from mailman.prescreen import prescreen_path
+    from mailman.screen import SCREENS_DIRECTORY, screen_shortlist
+
+    moment = now or datetime.now(UTC)
+    held = {slug.lower() for slug in (
+        open_pull_request_repositories(root) if held_repositories is None
+        else held_repositories
+    )}
+    claimed = {claim["target"] for claim in target_claims(root) if claim["live"]}
+    screens = []
+    for path in sorted((root / SCREENS_DIRECTORY).glob("*.json")):
+        screen = read_object(path)
+        if not screen or not screen.get("success") or screen.get("verdict") != "pass":
+            continue
+        if not screen_is_current(screen):
+            continue
+        try:
+            screened = datetime.fromisoformat(str(screen.get("screened_at")))
+        except ValueError:
+            continue
+        if screened.tzinfo is None:
+            screened = screened.replace(tzinfo=UTC)
+        if moment - screened > timedelta(days=max_age_days):
+            continue
+        slug = repository_slug(str(screen.get("repository") or ""))
+        if slug.lower() in held:
+            continue
+        screens.append((screened, slug, screen))
+    targets = []
+    for screened, slug, screen in sorted(screens, key=lambda item: item[0], reverse=True):
+        for row in screen_shortlist(screen):
+            target = f"{slug}#{row.get('number')}"
+            if target in claimed or prescreen_path(root, slug, int(row["number"])).is_file():
+                continue
+            targets.append({
+                "target": target, "title": row.get("title"),
+                "age_days": row.get("age_days"), "reasons": row.get("reasons") or [],
+                "maintainer_filed": row.get("maintainer_filed"),
+                "maintainer_replied": row.get("maintainer_replied"),
+                "screened_at": screen.get("screened_at"),
+            })
+    return targets
+
+
 # --- Coordinator ownership ------------------------------------------------
 #
 # Two agent tasks attached to hunt 20260907T164341Z-1ca91a. Only one owned
@@ -728,6 +846,7 @@ def status(root: Path, record: dict) -> dict:
             if match is not None:
                 match["filed"] = filed["pr_url"]
     result["filed"] = sum(1 for row in record["runs"] if row.get("filed"))
+    result["prescreens"] = prescreen_counts(record)
     result["status"] = effective_status(record)
     if is_terminal(record):
         # A filed hunt's record is the provenance for live pull requests. The

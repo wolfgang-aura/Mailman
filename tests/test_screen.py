@@ -579,6 +579,45 @@ class ScreenTests(unittest.TestCase):
         self.assertIn("pure-python", record["failed_gates"])
         self.assertIn("compiler is in the build", _named(record, "pure-python")["detail"])
 
+    def test_compiled_fixture_bytes_under_a_pure_back_end_pass(self) -> None:
+        # sphinx-doc/sphinx: 245 bytes of Cython and 87 of C are test fixtures,
+        # the build is flit_core, and the Makefile builds the docs.
+        # https://github.com/wolfgang-aura/Mailman/issues/100
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    languages={"Python": 4879591, "Cython": 245, "C": 87},
+                    root=[{"name": "pyproject.toml"}, {"name": "Makefile"}],
+                    policies={
+                        "pyproject.toml": (
+                            "[build-system]\n"
+                            'requires = ["flit_core>=3.12"]\n'
+                            'build-backend = "flit_core.buildapi"\n'
+                        )
+                    },
+                ),
+            )
+        gate = _named(record, "pure-python")
+
+        self.assertNotIn("pure-python", record["failed_gates"], gate["detail"])
+        self.assertEqual(gate["data"]["compiled_share"], 0.0)
+        self.assertIn("fixtures", gate["detail"])
+
+    def test_compiled_fixture_bytes_beside_a_setup_py_still_fail(self) -> None:
+        # The same 332 bytes with a setup.py at the root may be an ext_modules
+        # entry, and this host cannot find out by building it.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    languages={"Python": 4879591, "Cython": 245},
+                    root=[{"name": "pyproject.toml"}, {"name": "setup.py"}],
+                ),
+            )
+
+        self.assertIn("pure-python", record["failed_gates"])
+
     def test_a_rust_workspace_fails_the_language_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(
@@ -755,6 +794,97 @@ class ScreenTests(unittest.TestCase):
         self.assertFalse(gate["passed"])
         self.assertFalse(gate["blocking"])
         self.assertEqual(gate["data"]["optional_blocked"], ["pyqt6"])
+
+    def test_electrums_native_library_shim_fails_the_host_gate(self) -> None:
+        # spesmilo/electrum#10969, 2026-09-16: the screen passed, then
+        # `import electrum_ecc` raised "Failed to load libsecp256k1". The
+        # pin lives in contrib/requirements, not in a pyproject. Mailman #94.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    root=[{"name": "setup.py"}, {"name": "contrib"}],
+                    policies={
+                        "contrib/requirements/requirements.txt": (
+                            "# runtime\nqrcode\nelectrum_ecc>=0.0.4,<0.1\n"
+                            "pyobjc; sys_platform == 'darwin'\n"
+                        )
+                    },
+                ),
+            )
+        gate = _named(record, "host")
+
+        self.assertIn("host", record["failed_gates"])
+        self.assertEqual(gate["data"]["native_shims"], ["electrum-ecc"])
+        self.assertIn("libsecp256k1", gate["detail"])
+
+    def test_a_required_package_with_no_wheel_fails_the_host_gate(self) -> None:
+        pages = FakePages(
+            {
+                "https://pypi.org/pypi/sdistonly/json": json.dumps(
+                    {"urls": [{"filename": "sdistonly-1.0.tar.gz"}]}
+                ),
+                "https://pypi.org/pypi/pure/json": json.dumps(
+                    {"urls": [{"filename": "pure-2.0-py3-none-any.whl"}]}
+                ),
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "pyproject.toml": (
+                            '[project]\nname = "p"\n'
+                            'dependencies = ["sdistonly>=1", "pure", "unlisted"]\n'
+                        )
+                    }
+                ),
+                pages,
+            )
+        gate = _named(record, "host")
+
+        self.assertIn("host", record["failed_gates"])
+        self.assertEqual(
+            gate["data"]["no_wheel"],
+            [{"package": "sdistonly", "files": ["sdistonly-1.0.tar.gz"]}],
+        )
+        self.assertEqual(gate["data"]["pypi_unchecked"], ["unlisted"])
+        self.assertIn("sdistonly", gate["detail"])
+
+    def test_required_packages_with_usable_wheels_pass_the_host_gate(self) -> None:
+        pages = FakePages(
+            {
+                "https://pypi.org/pypi/pure/json": json.dumps(
+                    {"urls": [{"filename": "pure-2.0-py3-none-any.whl"}]}
+                ),
+                "https://pypi.org/pypi/stable-abi/json": json.dumps(
+                    {
+                        "urls": [
+                            {"filename": "stable_abi-1.0.tar.gz"},
+                            {"filename": "stable_abi-1.0-cp39-abi3-win_amd64.whl"},
+                        ]
+                    }
+                ),
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "pyproject.toml": (
+                            '[project]\nname = "p"\n'
+                            'dependencies = ["pure", "stable_abi"]\n'
+                        )
+                    }
+                ),
+                pages,
+            )
+        gate = _named(record, "host")
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["data"]["no_wheel"], [])
 
     def test_a_plain_pyproject_passes_the_host_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1688,6 +1818,39 @@ class ScreenTests(unittest.TestCase):
         self.assertNotIn("verdict", record)
         self.assertIn("could not be read", record["detail"])
 
+    def test_an_unreadable_refresh_keeps_the_previous_verdict(self) -> None:
+        # 2026-09-17: a burst-limited refresh over 49 repositories replaced 34
+        # full verdicts with `success: false, gates: []`. The good record has
+        # to survive, marked unread with both timestamps. Mailman #117.
+        def failing(arguments, **keywords):
+            return _Result("", exit_code=1)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            good = _screen(root, FakeGitHub())
+            record = screen_repository(
+                "example/project",
+                data_root=root,
+                executable="gh",
+                working_directory=root,
+                _execute=failing,
+            )
+            kept = load_screen(root, "example/project")
+
+        self.assertFalse(record["success"])
+        self.assertIn("could not be read", record["detail"])
+        self.assertEqual(record["previous"]["verdict"], "pass")
+        self.assertEqual(record["previous"]["screened_at"], good["screened_at"])
+        # The file still holds the full verdict, with the failed attempt beside it.
+        self.assertTrue(kept["success"])
+        self.assertEqual(kept["verdict"], "pass")
+        self.assertEqual(kept["gates"], good["gates"])
+        self.assertEqual(kept["screened_at"], good["screened_at"])
+        self.assertIn("could not be read", kept["unread"]["detail"])
+        self.assertTrue(kept["unread"]["attempted_at"])
+        self.assertIn("unread", render_screen(kept))
+        self.assertIn(good["screened_at"], render_screen(record))
+
     def test_the_verdict_is_cached_so_a_candidate_is_screened_once(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -2087,6 +2250,49 @@ class ShortlistTests(unittest.TestCase):
 
         self.assertEqual([row["number"] for row in rows], [11, 10])
         self.assertEqual(rows[1]["reasons"], ["recent"])
+
+    def test_each_row_records_whether_a_maintainer_filed_or_replied(self) -> None:
+        # Mailman #135: finding the maintainer-engaged rows took a hand script
+        # and about 300 API calls over rows the screen had already read.
+        filed = _issue(11, days_old=5)
+        filed["author_association"] = "OWNER"
+        _, rows = self._shortlist(
+            FakeGitHub(
+                issues=[_issue(10, days_old=5), filed, _issue(12, days_old=5)],
+                issue_comments={
+                    10: [_reply("Can reproduce on main.", association="MEMBER")],
+                    11: [],
+                    12: [_reply("Same here.", association="NONE")],
+                },
+            )
+        )
+        by_number = {row["number"]: row for row in rows}
+
+        self.assertTrue(by_number[10]["maintainer_replied"])
+        self.assertFalse(by_number[10]["maintainer_filed"])
+        self.assertFalse(by_number[11]["maintainer_replied"])
+        self.assertTrue(by_number[11]["maintainer_filed"])
+        self.assertFalse(by_number[12]["maintainer_replied"])
+        self.assertFalse(by_number[12]["maintainer_filed"])
+
+    def test_a_maintainer_engaged_issue_outranks_a_recent_silent_one(self) -> None:
+        _, rows = self._shortlist(
+            FakeGitHub(
+                issues=[_issue(10, days_old=2), _issue(11, days_old=60)],
+                issue_comments={
+                    10: [],
+                    11: [
+                        _reply(
+                            "Confirmed, this is a bug.",
+                            association="COLLABORATOR",
+                            days_ago=30,
+                        )
+                    ],
+                },
+            )
+        )
+
+        self.assertEqual([row["number"] for row in rows], [11, 10])
 
     def test_the_rendered_screen_prints_the_shortlist_from_the_top(self) -> None:
         record, _ = self._shortlist(

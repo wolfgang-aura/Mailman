@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
@@ -228,6 +229,15 @@ def fetch_page(url: str, timeout_seconds: float) -> CommandResult:
     return _page_result(url, 0, raw.decode(charset, errors="replace"), "", timeout_seconds, started)
 
 
+#: What `gh api` prints when GitHub's secondary (burst) limit refuses a call.
+#: `rate_limit` still reports the hourly budget as full when this happens.
+_SECONDARY_LIMIT = re.compile(
+    r"secondary rate limit|abuse detection|retry[- ]after", re.IGNORECASE
+)
+SECONDARY_LIMIT_WAIT_SECONDS = 60
+SECONDARY_LIMIT_RETRIES = 2
+
+
 class _Gh:
     """One `gh api` caller that records every command it ran."""
 
@@ -246,6 +256,7 @@ class _Gh:
         self.fetch = fetch
         self.commands: list[dict[str, Any]] = []
         self.failures: list[str] = []
+        self.sleep: Callable[[float], None] = time.sleep
 
     def page(self, url: str) -> str | None:
         """The body of one web page, or None when it could not be read."""
@@ -263,6 +274,21 @@ class _Gh:
             timeout_seconds=self.timeout_seconds,
         )
         self.commands.append(result.to_dict())
+        for _ in range(SECONDARY_LIMIT_RETRIES):
+            if result.exit_code == 0 or not _SECONDARY_LIMIT.search(
+                str(getattr(result, "stderr", "") or "")
+            ):
+                break
+            # GitHub's burst limit answers in seconds, not the hourly budget,
+            # and failing fast turned 34 good screens into unread ones.
+            # https://github.com/wolfgang-aura/Mailman/issues/117
+            self.sleep(SECONDARY_LIMIT_WAIT_SECONDS)
+            result = self.run(
+                [self.executable, "api", path],
+                working_directory=self.working_directory,
+                timeout_seconds=self.timeout_seconds,
+            )
+            self.commands.append(result.to_dict())
         if result.timed_out or result.exit_code != 0:
             self.failures.append(path)
             return None

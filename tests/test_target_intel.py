@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from mailman.target_intel import (
+    _Gh,
     classify_claims,
     enforcement_markers,
     is_outside_human,
@@ -390,3 +391,52 @@ class TargetIntelGateTests(unittest.TestCase):
             assessment = assess_target(root)
         self.assertEqual(assessment.blocking, [])
         self.assertIn("fails-freshness-bar", assessment.warnings)
+
+
+class _LimitedResult:
+    def __init__(self, stdout: str, exit_code: int = 0, stderr: str = "") -> None:
+        self.stdout = stdout
+        self.stderr = stderr
+        self.exit_code = exit_code
+        self.timed_out = False
+
+    def to_dict(self) -> dict:
+        return {"exit_code": self.exit_code}
+
+
+class SecondaryLimitTests(unittest.TestCase):
+    """A burst-limited call waits and retries instead of failing fast.
+
+    https://github.com/wolfgang-aura/Mailman/issues/117
+    """
+
+    def _gh(self, answers: list) -> tuple:
+        calls: list = []
+
+        def run(arguments, **keywords):
+            calls.append(arguments)
+            return answers.pop(0)
+
+        gh = _Gh("gh", Path("."), 5, run)
+        waits: list = []
+        gh.sleep = waits.append
+        return gh, calls, waits
+
+    def test_a_secondary_limit_is_waited_out(self) -> None:
+        limited = _LimitedResult(
+            "", 1, "gh: You have exceeded a secondary rate limit. (HTTP 403)"
+        )
+        gh, calls, waits = self._gh([limited, _LimitedResult('{"ok": true}')])
+
+        self.assertEqual(gh.json("repos/a/b"), {"ok": True})
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(waits), 1)
+        self.assertEqual(gh.failures, [])
+
+    def test_an_ordinary_failure_is_not_retried(self) -> None:
+        gh, calls, waits = self._gh([_LimitedResult("", 1, "HTTP 404: Not Found")])
+
+        self.assertIsNone(gh.json("repos/a/b"))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(waits, [])
+        self.assertEqual(gh.failures, ["repos/a/b"])
