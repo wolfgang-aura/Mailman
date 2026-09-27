@@ -18,6 +18,7 @@ from mailman.handoff import (
     check_prior_art_freshness,
     first_person_claims,
     publish_command,
+    unsourced_specification_claims,
 )
 from mailman.models import AgentConfig, RunRecord
 from mailman.provenance import record_provenance
@@ -561,6 +562,81 @@ class PriorArtFreshnessTests(unittest.TestCase):
                 result["evidence"]["duplicate_search_age_minutes"], 180, delta=1
             )
             self.assertEqual(result["evidence"]["max_age_minutes"], 60)
+
+
+class SpecificationCitationTests(unittest.TestCase):
+    """A body that leans on a specification quotes the clause it leans on.
+
+    py-pdf/pypdf#4105 said "the specification says" with no clause and no
+    quote; the maintainer asked whether the specification had been read, and
+    the sentence (ISO 32000-1, 9.10.3) was found by hand afterwards.
+    See https://github.com/wolfgang-aura/Mailman/issues/124.
+    """
+
+    def test_an_unsourced_appeal_to_the_specification_is_found(self) -> None:
+        found = unsourced_specification_claims(
+            "Fix ToUnicode parsing.\n\nThe specification says a two-byte "
+            "code is read as one character.\n"
+        )
+        self.assertEqual(len(found), 1)
+        self.assertIn("specification says", found[0]["text"])
+
+    def test_each_named_standard_needs_the_same_support(self) -> None:
+        for text in (
+            "ISO 32000 requires this.",
+            "Per the spec, the field is optional.",
+            "RFC 3986 allows an empty authority.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(len(unsourced_specification_claims(text)), 1)
+
+    def test_a_clause_and_a_quoted_sentence_satisfy_it(self) -> None:
+        self.assertEqual(
+            unsourced_specification_claims(
+                'ISO 32000-1, 9.10.3: "If the font is a simple font, the '
+                'code is a single byte."'
+            ),
+            [],
+        )
+
+    def test_a_block_quote_after_the_citation_counts_as_the_quote(self) -> None:
+        self.assertEqual(
+            unsourced_specification_claims(
+                "RFC 3986 section 3.2 says:\n\n> The authority component is "
+                "preceded by a double slash.\n"
+            ),
+            [],
+        )
+
+    def test_a_clause_without_a_quote_is_still_unsourced(self) -> None:
+        self.assertEqual(
+            len(unsourced_specification_claims("See the specification, 9.10.3.")),
+            1,
+        )
+
+    @patch("mailman.handoff.foreign_pull_request", return_value=None)
+    @patch("mailman.handoff.check_authorship", return_value={"ok": True, "head": "x"})
+    def test_handoff_check_refuses_the_body(self, *_mocks) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            run, directory = _run_directory(root)
+            body_path = root / "body.md"
+            body_path.write_text(
+                BODY + "\nThe specification says this is the right reading.\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            build_handoff(
+                run_id=run.run_id,
+                run_directory=directory,
+                body_path=body_path,
+                kind="issue-comment",
+                repository="pmorissette/ffn",
+                issue_number=327,
+            )
+            result = check_handoff(directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "unsourced-specification-claims")
 
 
 if __name__ == "__main__":

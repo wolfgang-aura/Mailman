@@ -1549,6 +1549,7 @@ def _shortlist_row(
         linked_pull_requests=cited_elsewhere or bool(cited),
         maintainer_touched_at=(thread or {}).get("maintainer_touched_at"),
         now=now,
+        thread_read=thread is not None,
     )
     return {
         "number": row["number"],

@@ -22,6 +22,7 @@ from mailman.claims import (
     pull_request_references,
     read_claims,
     render_claims,
+    triage_warning,
 )
 
 
@@ -477,6 +478,80 @@ class TriageFieldsTests(unittest.TestCase):
             self.assertTrue(record["maintainer_replied"])
             self.assertEqual(record["issue_state"], "closed")
             self.assertEqual(record["issue_closed_at"], "2026-09-08T09:27:46Z")
+
+
+def _labelled(name: str, login: str, *, kind: str = "User") -> dict:
+    return {
+        "event": "labeled",
+        "actor": {"login": login, "type": kind},
+        "label": {"name": name},
+        "created_at": "2026-09-20T14:47:19Z",
+    }
+
+
+class MaintainerLabelTests(unittest.TestCase):
+    """A maintainer who triages by labelling has triaged the issue.
+
+    securo-finance/securo#972 carried `prio:high` and `risk:medium`, both added
+    by a committer, and no comment. The untriaged-issue question fired anyway.
+    See https://github.com/wolfgang-aura/Mailman/issues/139.
+    """
+
+    def _read(self, root: Path, timeline: list[dict]) -> dict:
+        ReadClaimsTests._run(self, root)
+        return read_claims(
+            root,
+            executable="gh",
+            execute=_FakeGh(
+                {
+                    "number": 972,
+                    "assignees": [],
+                    "state": "open",
+                    "author_association": "NONE",
+                    "user": {"login": "reporter", "type": "User"},
+                },
+                [],
+                timeline=timeline,
+            ),
+        )
+
+    def test_a_label_a_maintainer_added_counts_as_triage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record = self._read(
+                root,
+                [
+                    _labelled("prio:high", "tassionoronha"),
+                    _labelled("risk:medium", "tassionoronha"),
+                ],
+            )
+            self.assertEqual(
+                record["maintainer_labelled"],
+                [
+                    {
+                        "labels": ["prio:high", "risk:medium"],
+                        "actor": "tassionoronha",
+                        "at": "2026-09-20T14:47:19Z",
+                    }
+                ],
+            )
+            self.assertIsNone(triage_warning(root))
+
+    def test_a_label_the_reporter_added_is_not_triage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record = self._read(root, [_labelled("bug", "reporter")])
+            self.assertEqual(record["maintainer_labelled"], [])
+            self.assertIsNotNone(triage_warning(root))
+
+    def test_a_label_a_bot_added_is_not_triage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record = self._read(
+                root, [_labelled("needs-triage", "github-actions[bot]", kind="Bot")]
+            )
+            self.assertEqual(record["maintainer_labelled"], [])
+            self.assertIsNotNone(triage_warning(root))
 
 
 class PullRequestReferenceTests(unittest.TestCase):

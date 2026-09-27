@@ -2002,7 +2002,11 @@ class ShortlistTests(unittest.TestCase):
         self.assertEqual(
             by_number[12]["reasons"], ["maintainer-invited", "no-linked-pr"]
         )
-        self.assertEqual(by_number[10]["reasons"], ["no-linked-pr"])
+        # Sixty days old, reported from outside, nobody answered: demoted.
+        # Mailman #116.
+        self.assertEqual(
+            by_number[10]["reasons"], ["no-linked-pr", "unacknowledged"]
+        )
         self.assertGreater(by_number[12]["score"], by_number[10]["score"])
         self.assertEqual(gate["data"]["maintainer_invited"], 2)
         self.assertIn("2 asked for by a maintainer", gate["detail"])
@@ -2038,7 +2042,7 @@ class ShortlistTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(rows[0]["reasons"], ["no-linked-pr"])
+        self.assertEqual(rows[0]["reasons"], ["no-linked-pr", "unacknowledged"])
 
     def test_a_maintainer_written_on_thread_is_recent(self) -> None:
         _, rows = self._shortlist(
