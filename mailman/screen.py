@@ -2144,6 +2144,26 @@ def screen_repository(
     meta = gh.json(f"repos/{slug}")
     if not isinstance(meta, dict) or "full_name" not in meta:
         record["detail"] = f"{slug} could not be read"
+        record["read_failures"] = gh.failures
+        previous = load_screen(data_root, slug)
+        if previous and previous.get("success"):
+            # A refresh that read nothing is not a verdict. On 2026-09-17 a
+            # burst-limited batch replaced 34 full screens with empty ones;
+            # the previous verdict stays, with the failed attempt beside it.
+            # https://github.com/wolfgang-aura/Mailman/issues/117
+            unread = {
+                "attempted_at": record["screened_at"],
+                "detail": record["detail"],
+                "read_failures": gh.failures,
+            }
+            _write(data_root, {**previous, "unread": unread})
+            record["unread"] = unread
+            record["previous"] = {
+                "verdict": previous.get("verdict"),
+                "failed_gates": previous.get("failed_gates", []),
+                "screened_at": previous.get("screened_at"),
+            }
+            return record
         _write(data_root, record)
         return record
     record["archived"] = bool(meta.get("archived"))
@@ -2205,8 +2225,22 @@ def render_screen(record: dict[str, Any]) -> str:
     """One line per gate, with the numbers that decided it."""
     slug = record.get("repository")
     if not record.get("success"):
-        return f"{slug}: unread, {record.get('detail', 'unknown failure')}"
+        line = f"{slug}: unread, {record.get('detail', 'unknown failure')}"
+        previous = record.get("previous")
+        if isinstance(previous, dict):
+            line += (
+                f"; kept the {previous.get('verdict')} verdict screened at "
+                f"{previous.get('screened_at')}"
+            )
+        return line
     lines = [f"screen {slug}"]
+    unread = record.get("unread")
+    if isinstance(unread, dict):
+        lines.append(
+            f"  unread refresh at {unread.get('attempted_at')}: "
+            f"{unread.get('detail')}; the verdict below is from "
+            f"{record.get('screened_at')}"
+        )
     for gate in record.get("gates", []):
         mark = "pass" if gate["passed"] else ("FAIL" if gate["blocking"] else "warn")
         lines.append(f"  {mark:<5} {gate['name']:<13} {gate['detail']}")

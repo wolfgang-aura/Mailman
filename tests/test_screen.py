@@ -1727,6 +1727,39 @@ class ScreenTests(unittest.TestCase):
         self.assertNotIn("verdict", record)
         self.assertIn("could not be read", record["detail"])
 
+    def test_an_unreadable_refresh_keeps_the_previous_verdict(self) -> None:
+        # 2026-09-17: a burst-limited refresh over 49 repositories replaced 34
+        # full verdicts with `success: false, gates: []`. The good record has
+        # to survive, marked unread with both timestamps. Mailman #117.
+        def failing(arguments, **keywords):
+            return _Result("", exit_code=1)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            good = _screen(root, FakeGitHub())
+            record = screen_repository(
+                "example/project",
+                data_root=root,
+                executable="gh",
+                working_directory=root,
+                _execute=failing,
+            )
+            kept = load_screen(root, "example/project")
+
+        self.assertFalse(record["success"])
+        self.assertIn("could not be read", record["detail"])
+        self.assertEqual(record["previous"]["verdict"], "pass")
+        self.assertEqual(record["previous"]["screened_at"], good["screened_at"])
+        # The file still holds the full verdict, with the failed attempt beside it.
+        self.assertTrue(kept["success"])
+        self.assertEqual(kept["verdict"], "pass")
+        self.assertEqual(kept["gates"], good["gates"])
+        self.assertEqual(kept["screened_at"], good["screened_at"])
+        self.assertIn("could not be read", kept["unread"]["detail"])
+        self.assertTrue(kept["unread"]["attempted_at"])
+        self.assertIn("unread", render_screen(kept))
+        self.assertIn(good["screened_at"], render_screen(record))
+
     def test_the_verdict_is_cached_so_a_candidate_is_screened_once(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
