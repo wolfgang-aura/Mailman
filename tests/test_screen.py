@@ -795,6 +795,97 @@ class ScreenTests(unittest.TestCase):
         self.assertFalse(gate["blocking"])
         self.assertEqual(gate["data"]["optional_blocked"], ["pyqt6"])
 
+    def test_electrums_native_library_shim_fails_the_host_gate(self) -> None:
+        # spesmilo/electrum#10969, 2026-09-16: the screen passed, then
+        # `import electrum_ecc` raised "Failed to load libsecp256k1". The
+        # pin lives in contrib/requirements, not in a pyproject. Mailman #94.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    root=[{"name": "setup.py"}, {"name": "contrib"}],
+                    policies={
+                        "contrib/requirements/requirements.txt": (
+                            "# runtime\nqrcode\nelectrum_ecc>=0.0.4,<0.1\n"
+                            "pyobjc; sys_platform == 'darwin'\n"
+                        )
+                    },
+                ),
+            )
+        gate = _named(record, "host")
+
+        self.assertIn("host", record["failed_gates"])
+        self.assertEqual(gate["data"]["native_shims"], ["electrum-ecc"])
+        self.assertIn("libsecp256k1", gate["detail"])
+
+    def test_a_required_package_with_no_wheel_fails_the_host_gate(self) -> None:
+        pages = FakePages(
+            {
+                "https://pypi.org/pypi/sdistonly/json": json.dumps(
+                    {"urls": [{"filename": "sdistonly-1.0.tar.gz"}]}
+                ),
+                "https://pypi.org/pypi/pure/json": json.dumps(
+                    {"urls": [{"filename": "pure-2.0-py3-none-any.whl"}]}
+                ),
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "pyproject.toml": (
+                            '[project]\nname = "p"\n'
+                            'dependencies = ["sdistonly>=1", "pure", "unlisted"]\n'
+                        )
+                    }
+                ),
+                pages,
+            )
+        gate = _named(record, "host")
+
+        self.assertIn("host", record["failed_gates"])
+        self.assertEqual(
+            gate["data"]["no_wheel"],
+            [{"package": "sdistonly", "files": ["sdistonly-1.0.tar.gz"]}],
+        )
+        self.assertEqual(gate["data"]["pypi_unchecked"], ["unlisted"])
+        self.assertIn("sdistonly", gate["detail"])
+
+    def test_required_packages_with_usable_wheels_pass_the_host_gate(self) -> None:
+        pages = FakePages(
+            {
+                "https://pypi.org/pypi/pure/json": json.dumps(
+                    {"urls": [{"filename": "pure-2.0-py3-none-any.whl"}]}
+                ),
+                "https://pypi.org/pypi/stable-abi/json": json.dumps(
+                    {
+                        "urls": [
+                            {"filename": "stable_abi-1.0.tar.gz"},
+                            {"filename": "stable_abi-1.0-cp39-abi3-win_amd64.whl"},
+                        ]
+                    }
+                ),
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "pyproject.toml": (
+                            '[project]\nname = "p"\n'
+                            'dependencies = ["pure", "stable_abi"]\n'
+                        )
+                    }
+                ),
+                pages,
+            )
+        gate = _named(record, "host")
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["data"]["no_wheel"], [])
+
     def test_a_plain_pyproject_passes_the_host_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(Path(temporary), FakeGitHub())
