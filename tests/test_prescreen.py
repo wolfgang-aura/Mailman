@@ -21,6 +21,7 @@ from mailman.prescreen import (
     TRIVIAL,
     TRIVIAL_FIX,
     TRIVIAL_FIX_DIRECT_PUSH,
+    UNACKNOWLEDGED_ISSUE,
     UNKNOWN,
     check,
     estimate_fix_size,
@@ -33,7 +34,12 @@ from mailman.prescreen import (
     prescreen_path,
 )
 from mailman.screen import screen_path
-from mailman.shortlist import MAINTAINER_INVITED, NO_LINKED_PR, RECENT
+from mailman.shortlist import (
+    MAINTAINER_INVITED,
+    NO_LINKED_PR,
+    RECENT,
+    UNACKNOWLEDGED,
+)
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
     CITED_MERGED_IN_BODY,
@@ -199,6 +205,7 @@ class PrescreenTests(unittest.TestCase):
         timeline: list[dict] | None = None,
         timelines: dict[int, list[dict]] | None = None,
         pull_requests: dict[str, dict] | None = None,
+        issue_api: dict | None = None,
     ) -> str:
         """A `gh` that answers from fixture files, one per question asked.
 
@@ -235,6 +242,7 @@ class PrescreenTests(unittest.TestCase):
                     "html_url": issue.get("url"),
                     "state": "open",
                     "closed_at": None,
+                    **(issue_api or {}),
                 }
             ),
         }
@@ -467,9 +475,63 @@ class PrescreenTests(unittest.TestCase):
         )
 
         self.assertEqual(record["verdict"], "pass")
-        self.assertEqual(record["warnings"], [])
+        self.assertNotIn(TRIVIAL_FIX, record["warnings"])
         self.assertEqual(record["fix_size"]["estimate"], UNKNOWN)
         self.assertEqual(record["fix_size"]["direct_push_share"], 0.9)
+
+    def _aged(self, days: int) -> dict:
+        return {
+            "created_at": (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        }
+
+    def test_an_old_outside_report_nobody_answered_warns_before_a_run(self) -> None:
+        # urllib3#5053: 99 days old, reported from outside, no maintainer
+        # reply. The untriaged question fired on the decision page, after the
+        # run was spent. Mailman #116.
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub("[]", issue_api=self._aged(99)),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertIn(UNACKNOWLEDGED_ISSUE, record["warnings"])
+        self.assertTrue(record["acknowledgement"]["unacknowledged"])
+        self.assertIn("no owner, member or collaborator", record["next"])
+        self.assertLess(record["ranking"]["score"], 0)
+
+    def test_a_maintainer_reply_clears_the_unacknowledged_warning(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                issue_api=self._aged(99),
+                comments=[
+                    {
+                        "body": "Confirmed, thanks.",
+                        "author_association": "MEMBER",
+                        "created_at": "2026-09-02T00:00:00Z",
+                        "user": {"login": "maintainer", "type": "User"},
+                    }
+                ],
+            ),
+        )
+
+        self.assertNotIn(UNACKNOWLEDGED_ISSUE, record["warnings"])
+        self.assertFalse(record["acknowledgement"]["unacknowledged"])
+        self.assertGreaterEqual(record["ranking"]["score"], 0)
+
+    def test_a_report_inside_the_grace_window_is_not_yet_unacknowledged(
+        self,
+    ) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub("[]", issue_api=self._aged(5)),
+        )
+
+        self.assertNotIn(UNACKNOWLEDGED_ISSUE, record["warnings"])
 
     def test_each_symbol_in_the_issue_body_gets_its_own_narrow_search(self) -> None:
         # llama_index#22639: the body named the functions, two open rivals
@@ -1493,7 +1555,11 @@ class RankingTests(unittest.TestCase):
 
         self.assertEqual(record["verdict"], "pass")
         self.assertEqual(record["claims"]["invitations"], 0)
-        self.assertEqual(record["ranking"]["reasons"], [NO_LINKED_PR])
+        # Nor does it acknowledge the report: the issue is past the grace
+        # window with no maintainer reply, so it is demoted. Mailman #116.
+        self.assertEqual(
+            record["ranking"]["reasons"], [NO_LINKED_PR, UNACKNOWLEDGED]
+        )
 
 
 if __name__ == "__main__":

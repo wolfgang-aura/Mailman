@@ -22,7 +22,11 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from mailman.claims import invites_pull_request, is_maintainer_invitation
+from mailman.claims import (
+    MAINTAINER_ASSOCIATIONS,
+    invites_pull_request,
+    is_maintainer_invitation,
+)
 
 #: A maintainer asked for the pull request: in a comment, in the report when
 #: the reporter is a maintainer, or with a label that says so.
@@ -32,10 +36,20 @@ RECENT = "recent"
 #: No pull request is linked to or cited by the issue, open, merged or dormant.
 NO_LINKED_PR = "no-linked-pr"
 
-RECENT_DAYS = 14
+#: Reported from outside, older than the grace window, and nobody who speaks
+#: for the project has answered. A demotion, not a reason to rank higher: its
+#: weight outweighs every other reason together, so any acknowledged issue
+#: ranks above any unacknowledged one. urllib3#5053 spent a full run on an
+#: issue in this state and closed `not_planned`. Mailman #116.
+UNACKNOWLEDGED = "unacknowledged"
 
-REASONS = (MAINTAINER_INVITED, RECENT, NO_LINKED_PR)
-_WEIGHTS = {MAINTAINER_INVITED: 4, RECENT: 2, NO_LINKED_PR: 1}
+RECENT_DAYS = 14
+#: How long an outside report may wait for a maintainer before it counts as
+#: unacknowledged. The same fortnight as `screen.FIRST_RESPONSE_DAYS`.
+ACKNOWLEDGEMENT_GRACE_DAYS = 14
+
+REASONS = (MAINTAINER_INVITED, RECENT, NO_LINKED_PR, UNACKNOWLEDGED)
+_WEIGHTS = {MAINTAINER_INVITED: 4, RECENT: 2, NO_LINKED_PR: 1, UNACKNOWLEDGED: -8}
 
 #: Label spellings that ask for outside work. Compared with hyphens,
 #: underscores and case folded, because `help-wanted`, `help_wanted` and
@@ -88,8 +102,33 @@ def is_recent(
     )
 
 
+def is_unacknowledged(
+    *,
+    reporter_association: Any,
+    maintainer_answered: bool,
+    created_at: Any,
+    now: datetime | None = None,
+    days: int = ACKNOWLEDGEMENT_GRACE_DAYS,
+) -> bool:
+    """Say whether an outside report has waited past the grace window unanswered.
+
+    An issue whose age cannot be read is not called unacknowledged: the
+    warning is a claim about time, and it needs a timestamp to make it.
+    """
+    if reporter_association in MAINTAINER_ASSOCIATIONS or maintainer_answered:
+        return False
+    opened = _timestamp(created_at)
+    if opened is None:
+        return False
+    return (now or datetime.now(UTC)) - opened > timedelta(days=days)
+
+
 def ranking(
-    *, invited: bool, recent: bool, no_linked_pull_request: bool
+    *,
+    invited: bool,
+    recent: bool,
+    no_linked_pull_request: bool,
+    unacknowledged: bool = False,
 ) -> dict[str, Any]:
     """The score and its reasons, in the order the reasons rank."""
     reasons = [
@@ -98,6 +137,7 @@ def ranking(
             (MAINTAINER_INVITED, invited),
             (RECENT, recent),
             (NO_LINKED_PR, no_linked_pull_request),
+            (UNACKNOWLEDGED, unacknowledged),
         )
         if held
     ]
@@ -111,12 +151,14 @@ def rank_issue(
     linked_pull_requests: bool,
     maintainer_touched_at: Any = None,
     now: datetime | None = None,
+    thread_read: bool = True,
 ) -> dict[str, Any]:
     """Rank one issue from its list row, its thread and what cites it.
 
     `issue` is the row GitHub's issues list returns, so the report's own
     author association and body are read from it. `comments` is the thread,
-    when it was read; an issue past the thread cap is ranked on its row alone.
+    when it was read; an issue past the thread cap is ranked on its row alone,
+    and is never called unacknowledged, because nobody read whether it was.
     """
     thread = [comment for comment in comments if isinstance(comment, dict)]
     invited = (
@@ -125,8 +167,22 @@ def rank_issue(
         or any(is_maintainer_invitation(comment) for comment in thread)
     )
     recent = is_recent(issue.get("created_at"), maintainer_touched_at, now=now)
+    unacknowledged = thread_read and is_unacknowledged(
+        reporter_association=issue.get("author_association"),
+        # An invitation, by label or in words, is a maintainer's answer.
+        maintainer_answered=invited
+        or any(
+            comment.get("author_association") in MAINTAINER_ASSOCIATIONS
+            for comment in thread
+        ),
+        created_at=issue.get("created_at"),
+        now=now,
+    )
     return ranking(
-        invited=invited, recent=recent, no_linked_pull_request=not linked_pull_requests
+        invited=invited,
+        recent=recent,
+        no_linked_pull_request=not linked_pull_requests,
+        unacknowledged=unacknowledged,
     )
 
 
@@ -159,14 +215,17 @@ def render_shortlist(rows: list[dict[str, Any]], *, limit: int = 10) -> list[str
 
 
 __all__ = [
+    "ACKNOWLEDGEMENT_GRACE_DAYS",
     "INVITATION_LABELS",
     "MAINTAINER_INVITED",
     "NO_LINKED_PR",
     "REASONS",
     "RECENT",
     "RECENT_DAYS",
+    "UNACKNOWLEDGED",
     "invites_pull_request",
     "is_recent",
+    "is_unacknowledged",
     "label_invites",
     "rank_issue",
     "ranking",

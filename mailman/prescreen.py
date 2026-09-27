@@ -30,7 +30,13 @@ from mailman.screen import (
     load_screen,
     requires_prior_discussion,
 )
-from mailman.shortlist import is_recent, label_invites, ranking
+from mailman.shortlist import (
+    ACKNOWLEDGEMENT_GRACE_DAYS,
+    is_recent,
+    is_unacknowledged,
+    label_invites,
+    ranking,
+)
 from mailman.submission import (
     partition_duplicates,
     record_duplicate_search,
@@ -58,9 +64,11 @@ from mailman.targeting import (
 #: repository requires a maintainer reply before a pull request exists; 6 asks
 #: how long each cited attempt has been dormant; 7 asks whether the repository
 #: rejects duplicate pull requests, which decides whether a dormant one may be
-#: superseded at all; 8 asks who closed each closed attempt. A screen written
-#: before any of them never asked the question, so `check` sends it back.
-PRESCREEN_SCHEMA_VERSION = 8
+#: superseded at all; 8 asks who closed each closed attempt; 9 asks whether
+#: anybody who speaks for the project has acknowledged the report. A screen
+#: written before any of them never asked the question, so `check` sends it
+#: back.
+PRESCREEN_SCHEMA_VERSION = 9
 ISSUE_SCREENS = "issue-screens"
 #: A pre-screen filters a shortlist; it is not the filing gate. The run stage
 #: still re-runs the duplicate search under its own one-hour limit, and
@@ -83,6 +91,12 @@ TRIVIAL_FIX_DIRECT_PUSH = "trivial-fix-direct-push-repository"
 #: pull request somebody has to open.
 TRIVIAL_FIX = "trivial-fix"
 TRIVIAL = "trivial"
+#: Reported from outside, older than the grace window, and nobody who speaks
+#: for the project has replied or labelled it. A warning, not a block: it is
+#: printed with the verdict and ranks the issue below acknowledged ones, so the
+#: risk is seen before a run is opened. urllib3#5053 spent a full run in this
+#: state and closed `not_planned`. https://github.com/wolfgang-aura/Mailman/issues/116
+UNACKNOWLEDGED_ISSUE = "unacknowledged-issue"
 UNKNOWN = "unknown"
 #: Labels that name the size of the change rather than its subject.
 _TRIVIAL_LABELS = frozenset({"typo", "typos"})
@@ -364,6 +378,37 @@ def _citable(
     ]
 
 
+def _acknowledgement(claims: dict[str, Any]) -> dict[str, Any]:
+    """Whether anybody who speaks for the project has answered this report."""
+    unacknowledged = bool(claims.get("success")) and is_unacknowledged(
+        reporter_association=claims.get("reporter_association"),
+        maintainer_answered=bool(
+            claims.get("maintainer_replied")
+            or claims.get("maintainer_labelled")
+            or claims.get("invitations")
+        ),
+        created_at=claims.get("issue_created_at"),
+    )
+    return {
+        "unacknowledged": unacknowledged,
+        "reporter_association": claims.get("reporter_association"),
+        "maintainer_replied": claims.get("maintainer_replied"),
+        "maintainer_labelled": bool(claims.get("maintainer_labelled")),
+        "issue_created_at": claims.get("issue_created_at"),
+        "grace_days": ACKNOWLEDGEMENT_GRACE_DAYS,
+        "detail": (
+            f"reported from outside the project "
+            f"({claims.get('reporter_association')}), older than "
+            f"{ACKNOWLEDGEMENT_GRACE_DAYS} days, and no owner, member or "
+            "collaborator has replied or labelled it. Nobody who can speak for "
+            "the project has said they want this fixed; urllib3#5053 spent a "
+            "full run in this state and closed not_planned"
+            if unacknowledged
+            else None
+        ),
+    }
+
+
 def _ranking(
     claims: dict[str, Any], *, labels: Sequence[Any], linked: bool
 ) -> dict[str, Any]:
@@ -380,6 +425,7 @@ def _ranking(
             claims.get("issue_created_at"), claims.get("maintainer_touched_at")
         ),
         no_linked_pull_request=not linked,
+        unacknowledged=_acknowledgement(claims)["unacknowledged"],
     )
 
 
@@ -487,6 +533,9 @@ def prescreen_issue(
         "maintainer_replied": claims.get("maintainer_replied"),
         "maintainer_touched_at": claims.get("maintainer_touched_at"),
     }
+    record["acknowledgement"] = _acknowledgement(claims)
+    if record["acknowledgement"]["unacknowledged"]:
+        warnings.append(UNACKNOWLEDGED_ISSUE)
     cited = resolve_cited_pull_requests(
         directory,
         references=_citable(claims, slug=slug, directory=directory),
@@ -722,6 +771,11 @@ def prescreen_issue(
             f"mailman init-run --repository https://github.com/{slug}.git "
             f"--issue https://github.com/{slug}/issues/{number} ..."
         )
+        if UNACKNOWLEDGED_ISSUE in record["warnings"]:
+            record["next"] += (
+                f" -- but first weigh {UNACKNOWLEDGED_ISSUE}: "
+                + record["acknowledgement"]["detail"]
+            )
     _store_prescreen(data_root, slug, number, record)
     return record
 
