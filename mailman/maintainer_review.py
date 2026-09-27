@@ -17,6 +17,7 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from mailman.executor import CommandResult, execute
@@ -34,6 +35,14 @@ _PULL_REQUEST_URL = re.compile(
     r"^https://github\.com/(?P<repository>[\w.-]+/[\w.-]+)/pull/(?P<number>\d+)/?$"
 )
 _BODY_LIMIT = 4000
+#: A heading that introduces the list of things a maintainer wants changed.
+_CHANGE_HEADING = re.compile(
+    r"(what i(?:'d| would) change|changes? requested|requested changes|"
+    r"required changes|changes needed|blockers?|must[- ]fix|action items)",
+    re.IGNORECASE,
+)
+_HEADING_LINE = re.compile(r"^\s*(?:#{1,6}\s+(?P<hash>.+?)\s*#*|\*\*(?P<bold>[^*]+)\*\*:?|(?P<colon>[^\s].{0,80}):)\s*$")
+_LIST_ITEM = re.compile(r"^(?P<indent>\s{0,3})(?:\d+[.)]|[-*+])\s+(?P<text>\S.*)$")
 
 
 def parse_pull_request(url: str) -> tuple[str, int]:
@@ -46,6 +55,49 @@ def parse_pull_request(url: str) -> tuple[str, int]:
 def _trim(text: str | None) -> str:
     body = (text or "").strip()
     return body if len(body) <= _BODY_LIMIT else body[:_BODY_LIMIT] + "\n[truncated]"
+
+
+def _read_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        moment = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def _is_bot(user: dict[str, Any] | None) -> bool:
+    if not isinstance(user, dict):
+        return True
+    login = (user.get("login") or "").lower()
+    return (user.get("type") or "") == "Bot" or login.endswith(("[bot]", "-bot"))
+
+
+def split_points(body: str) -> list[str]:
+    """The numbered or bulleted items under a change heading, one per point.
+
+    A review whose body lists four requests is four things to answer, not
+    one: edgartools#1329 came back as `requested_changes: 1` and a single
+    `answered` covered all four. An empty list means keep the whole body.
+    https://github.com/wolfgang-aura/Mailman/issues/126
+    """
+    points: list[str] = []
+    inside = False
+    for line in (body or "").splitlines():
+        heading = _HEADING_LINE.match(line)
+        item = _LIST_ITEM.match(line)
+        if heading and not item:
+            title = heading["hash"] or heading["bold"] or heading["colon"] or ""
+            inside = bool(_CHANGE_HEADING.search(title))
+            continue
+        if not inside:
+            continue
+        if item:
+            points.append(item["text"].strip())
+        elif line.strip() and points and line.startswith((" ", "\t")):
+            points[-1] += " " + line.strip()
+    return points
 
 
 def _read_json(result: CommandResult) -> Any:
@@ -61,8 +113,10 @@ def fetch_review(
     pull_request: str,
     executable: str | None = None,
     timeout_seconds: float = 60,
+    acknowledge_foreign_commits: bool = False,
+    _execute: Callable[..., CommandResult] = execute,
 ) -> dict[str, Any]:
-    """Read the review bodies and inline comments on a filed pull request."""
+    """Read the reviews, inline comments and conversation on a filed pull request."""
     repository, number = parse_pull_request(pull_request)
     command = executable or resolve_tool(run_directory, "gh")
     record: dict[str, Any] = {
@@ -77,9 +131,9 @@ def fetch_review(
         "requested_changes": [],
         "commands": [],
     }
-    reviews = execute(
+    reviews = _execute(
         [command, "pr", "view", str(number), "--repo", repository,
-         "--json", "reviews,state,title,url"],
+         "--json", "author,commits,headRefOid,headRepositoryOwner,reviews,state,title,url"],
         working_directory=run_directory, timeout_seconds=timeout_seconds,
     )
     record["commands"].append(reviews.to_dict())
@@ -89,6 +143,9 @@ def fetch_review(
         return _write(run_directory, record)
     record["title"] = payload.get("title")
     record["pull_request_state"] = payload.get("state")
+    record["head_sha"] = payload.get("headRefOid")
+    record["foreign_commits"], record["foreign_approvals"] = foreign_changes(payload)
+    record["foreign_commits_acknowledged"] = bool(acknowledge_foreign_commits)
     for row in payload.get("reviews") or []:
         if not isinstance(row, dict):
             continue
@@ -99,7 +156,7 @@ def fetch_review(
             "submitted_at": row.get("submittedAt"),
             "body": _trim(row.get("body")),
         })
-    inline = execute(
+    inline = _execute(
         [command, "api", f"repos/{repository}/pulls/{number}/comments",
          "--paginate"],
         working_directory=run_directory, timeout_seconds=timeout_seconds,
@@ -123,11 +180,13 @@ def fetch_review(
                 "created_at": row.get("created_at"),
                 "body": _trim(row.get("body")),
             })
+    _read_conversation(record, payload, command, run_directory,
+                       timeout_seconds, _execute)
     record["requested_changes"] = [
-        {"id": item["id"], "author": item["author"], "kind": "review",
-         "state": item["state"]}
+        change
         for item in record["reviews"]
         if item["state"] in CHANGE_STATES and item["body"]
+        for change in _review_changes(item)
     ] + [
         {"id": item["id"], "author": item["author"], "kind": "comment",
          "path": item["path"], "line": item["line"]}
@@ -140,6 +199,142 @@ def fetch_review(
         render(record), encoding="utf-8", newline="\n"
     )
     return record
+
+
+def foreign_changes(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Commits on our head branch that we did not author, and approvals of them.
+
+    On openai-agents-python#4890 a maintainer pushed two commits to our branch
+    and another approved them; a day later a revision nearly force-pushed over
+    both. A commit counts as foreign when it names at least one GitHub login
+    and none is the fork owner's; a commit with no linked login is not judged.
+    https://github.com/wolfgang-aura/Mailman/issues/140
+    """
+    owners = {
+        login for login in (
+            (payload.get("author") or {}).get("login"),
+            (payload.get("headRepositoryOwner") or {}).get("login"),
+        ) if login
+    }
+    commits: list[dict[str, Any]] = []
+    for commit in payload.get("commits") or []:
+        if not isinstance(commit, dict):
+            continue
+        logins = [
+            (who or {}).get("login") for who in commit.get("authors") or []
+            if (who or {}).get("login")
+        ]
+        if logins and not owners.intersection(logins):
+            commits.append({
+                "sha": commit.get("oid"),
+                "authors": logins,
+                "committed_at": commit.get("committedDate"),
+                "headline": commit.get("messageHeadline"),
+            })
+    shas = {commit["sha"] for commit in commits}
+    head = payload.get("headRefOid")
+    approvals = [
+        {"id": f"review:{row.get('id')}",
+         "author": (row.get("author") or {}).get("login"),
+         "sha": (row.get("commit") or {}).get("oid"),
+         "submitted_at": row.get("submittedAt")}
+        for row in payload.get("reviews") or []
+        if isinstance(row, dict) and row.get("state") == "APPROVED"
+        and ((row.get("commit") or {}).get("oid") in shas
+             or (head in shas and not (row.get("commit") or {}).get("oid")))
+    ]
+    return commits, approvals
+
+
+def foreign_detail(record: dict[str, Any]) -> str | None:
+    """One sentence naming what someone else pushed, or None when nothing."""
+    commits = record.get("foreign_commits") or []
+    approvals = record.get("foreign_approvals") or []
+    if not commits and not approvals:
+        return None
+    parts = [
+        f"{str(c.get('sha'))[:7]} by {', '.join(c.get('authors') or [])}"
+        for c in commits
+    ]
+    text = (f"{len(commits)} commit(s) on the head branch were not pushed by us: "
+            + "; ".join(parts)) if commits else ""
+    if approvals:
+        text += ("; " if text else "") + "; ".join(
+            f"{a.get('author')} approved {str(a.get('sha'))[:7]}, a head we did not push"
+            for a in approvals
+        )
+    return text + (". Fetch the branch, build on its head, and never force-push "
+                   "over it; rerun fetch-review with --acknowledge-foreign-commits "
+                   "once this has been read")
+
+
+def _review_changes(item: dict[str, Any]) -> list[dict[str, Any]]:
+    base = {"author": item["author"], "kind": "review", "state": item["state"]}
+    points = split_points(item["body"])
+    if not points:
+        return [{"id": item["id"], **base}]
+    return [
+        {"id": f"{item['id']}:{index}", **base, "point": index, "text": _trim(text)}
+        for index, text in enumerate(points, start=1)
+    ]
+
+
+def _read_conversation(
+    record: dict[str, Any],
+    payload: dict[str, Any],
+    command: str,
+    run_directory: Path,
+    timeout_seconds: float,
+    run: Callable[..., CommandResult],
+) -> None:
+    """Add the conversation comments a maintainer wrote after our last commit.
+
+    Maintainers often decide in the pull request's conversation rather than in
+    a review: nicegui#6345 and pymc#8442 both did, and the review record came
+    back empty. Only comments by someone other than the author, newer than
+    the author's last commit, ask for the revision this run is making.
+    https://github.com/wolfgang-aura/Mailman/issues/128
+    """
+    author = (payload.get("author") or {}).get("login") or ""
+    last_own: datetime | None = None
+    for commit in payload.get("commits") or []:
+        if not isinstance(commit, dict):
+            continue
+        logins = {(who or {}).get("login") for who in commit.get("authors") or []}
+        at = _read_timestamp(commit.get("committedDate"))
+        if author in logins and at and (last_own is None or at > last_own):
+            last_own = at
+    result = run(
+        [command, "api", f"repos/{record['repository']}/issues/{record['number']}/comments",
+         "--paginate"],
+        working_directory=run_directory, timeout_seconds=timeout_seconds,
+    )
+    record["commands"].append(result.to_dict())
+    rows = _read_json(result)
+    if result.timed_out or result.exit_code != 0 or not isinstance(rows, list):
+        record["conversation_comments_read"] = False
+        return
+    record["conversation_comments_read"] = True
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        user = row.get("user") or {}
+        if user.get("login") == author or _is_bot(user):
+            continue
+        at = _read_timestamp(row.get("created_at"))
+        if last_own is not None and (at is None or at <= last_own):
+            continue
+        record["comments"].append({
+            "id": f"comment:{row.get('id')}",
+            "author": user.get("login"),
+            "path": None,
+            "line": None,
+            "created_at": row.get("created_at"),
+            "body": _trim(row.get("body")),
+            "source": "conversation",
+        })
 
 
 def _write(run_directory: Path, record: dict[str, Any]) -> dict[str, Any]:
@@ -178,6 +373,27 @@ def render(record: dict[str, Any]) -> str:
         "stays ruled out, and a constraint they named is not negotiable.",
         "",
     ]
+    foreign = foreign_detail(record)
+    if foreign:
+        lines += ["## Someone else pushed to this branch", ""]
+        lines += [
+            f"- `{str(c.get('sha'))[:7]}` by {', '.join(c.get('authors') or [])} "
+            f"at {c.get('committed_at')}: {c.get('headline') or ''}".rstrip(": ")
+            for c in record.get("foreign_commits") or []
+        ]
+        lines += [
+            f"- {a.get('author')} approved `{str(a.get('sha'))[:7]}` at "
+            f"{a.get('submitted_at')}, a head we did not push"
+            for a in record.get("foreign_approvals") or []
+        ]
+        lines += [
+            "", "Start the revision from the pull request's current head. A "
+            "force-push would discard these commits and the approval on them.", "",
+        ]
+    points: dict[str, list[dict[str, Any]]] = {}
+    for change in record.get("requested_changes", []):
+        if change.get("point"):
+            points.setdefault(change["id"].rsplit(":", 1)[0], []).append(change)
     for item in record.get("reviews", []):
         if not item.get("body"):
             continue
@@ -185,8 +401,17 @@ def render(record: dict[str, Any]) -> str:
             f"## {item['id']} by {item['author']} ({item['state']})", "",
             item["body"], "",
         ]
+        if item["id"] in points:
+            lines += ["Answer each point separately:", ""]
+            lines += [f"- `{change['id']}`: {change['text']}" for change in points[item["id"]]]
+            lines.append("")
     for item in record.get("comments", []):
-        where = f"{item.get('path')}:{item.get('line')}" if item.get("path") else "general"
+        if item.get("path"):
+            where = f"{item.get('path')}:{item.get('line')}"
+        elif item.get("source") == "conversation":
+            where = "the conversation"
+        else:
+            where = "general"
         lines += [
             f"## {item['id']} by {item['author']} on {where}", "",
             item.get("body", ""), "",
@@ -195,6 +420,12 @@ def render(record: dict[str, Any]) -> str:
         lines += [
             "Inline comments could not be read. Open the pull request and "
             "check for line comments before treating this as complete.", "",
+        ]
+    if record.get("conversation_comments_read") is False:
+        lines += [
+            "The pull request's conversation comments could not be read. Open "
+            "the pull request and read the conversation before treating this "
+            "as complete.", "",
         ]
     return "\n".join(lines).rstrip() + "\n"
 
@@ -240,6 +471,9 @@ def check_revision(run_directory: Path) -> dict[str, Any]:
     if not review or not review.get("success"):
         return {"ok": False, "reason": "no-review",
                 "detail": "no readable upstream review: run `mailman fetch-review RUN_ID --pr URL`"}
+    foreign = foreign_detail(review)
+    if foreign and not review.get("foreign_commits_acknowledged"):
+        return {"ok": False, "reason": "foreign-commits", "detail": foreign}
     wanted = {item["id"] for item in review.get("requested_changes", [])}
     if not wanted:
         return {"ok": True, "reason": "nothing-requested", "answered": [],

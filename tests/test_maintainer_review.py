@@ -107,6 +107,306 @@ class FetchReviewTests(unittest.TestCase):
         self.assertEqual(load_review(self.directory)["success"], False)
 
 
+class _Result:
+    """The slice of `CommandResult` that `fetch_review` reads."""
+
+    def __init__(self, stdout: str, exit_code: int = 0) -> None:
+        self.stdout = stdout
+        self.exit_code = exit_code
+        self.timed_out = False
+
+    def to_dict(self) -> dict:
+        return {"exit_code": self.exit_code, "stdout": self.stdout}
+
+
+class FakeGh:
+    """Answer the three `gh` calls `fetch_review` makes from canned payloads."""
+
+    def __init__(self, view: dict, inline: list | None = None,
+                 conversation: list | None = None,
+                 conversation_fails: bool = False) -> None:
+        self.view = view
+        self.inline = inline or []
+        self.conversation = conversation or []
+        self.conversation_fails = conversation_fails
+        self.asked: list[list[str]] = []
+
+    def __call__(self, arguments, **keywords):
+        self.asked.append(list(arguments))
+        if arguments[1] == "pr":
+            return _Result(json.dumps(self.view))
+        path = arguments[2]
+        if path.endswith("/pulls/42/comments"):
+            return _Result(json.dumps(self.inline))
+        if path.endswith("/issues/42/comments"):
+            if self.conversation_fails:
+                return _Result("gh: rate limited", 1)
+            return _Result(json.dumps(self.conversation))
+        raise AssertionError(f"unexpected call {arguments}")
+
+
+def _view(**extra) -> dict:
+    view = {
+        "title": "Fix the thing", "state": "OPEN",
+        "author": {"login": "wolfgang-aura"},
+        "reviews": [
+            {"id": "R1", "author": {"login": "maintainer"},
+             "state": "CHANGES_REQUESTED", "submittedAt": "2026-09-07T14:01:40Z",
+             "body": "Keep the original file until the replacement is committed."},
+        ],
+        "commits": [
+            {"oid": "a" * 40, "authors": [{"login": "wolfgang-aura"}],
+             "committedDate": "2026-09-06T10:00:00Z"},
+        ],
+    }
+    view.update(extra)
+    return view
+
+
+def _conversation(identifier: int, login: str, at: str, body: str) -> dict:
+    return {"id": identifier, "user": {"login": login, "type": "User"},
+            "created_at": at, "body": body}
+
+
+class ConversationCommentTests(unittest.TestCase):
+    """nicegui#6345 and pymc#8442: the maintainer decided in the conversation.
+
+    https://github.com/wolfgang-aura/Mailman/issues/128
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        root = Path(self.temporary.name) / "runs"
+        root.mkdir(parents=True)
+        _, self.directory = make_run(root)
+
+    def test_a_review_an_inline_comment_and_a_conversation_comment_are_three_entries(
+        self,
+    ) -> None:
+        gh = FakeGh(
+            _view(),
+            inline=[{"id": 7, "user": {"login": "maintainer"}, "path": "a.py",
+                     "line": 3, "created_at": "2026-09-07T14:02:00Z",
+                     "body": "Rename this."}],
+            conversation=[
+                _conversation(9, "maintainer", "2026-09-08T09:00:00Z",
+                              "Go with option C and make the reference a weakref."),
+                _conversation(10, "wolfgang-aura", "2026-09-08T10:00:00Z",
+                              "Will do."),
+                _conversation(11, "codecov[bot]", "2026-09-08T11:00:00Z",
+                              "Coverage report."),
+                _conversation(12, "maintainer", "2026-09-05T09:00:00Z",
+                              "Thanks for filing, before any commit."),
+            ],
+        )
+        record = fetch_review(self.directory, pull_request=PULL_REQUEST,
+                              executable="gh", _execute=gh)
+        self.assertTrue(record["success"])
+        self.assertEqual(
+            [item["id"] for item in record["requested_changes"]],
+            ["review:R1", "comment:7", "comment:9"],
+        )
+        conversation = next(c for c in record["comments"] if c["id"] == "comment:9")
+        self.assertIsNone(conversation["path"])
+        self.assertTrue(record["conversation_comments_read"])
+        text = (self.directory / REVIEW_MARKDOWN).read_text(encoding="utf-8")
+        self.assertIn("Go with option C and make the reference a weakref.", text)
+        self.assertNotIn("Coverage report.", text)
+        self.assertTrue(any("issues/42/comments" in " ".join(call)
+                            for call in gh.asked))
+
+    def test_an_unreadable_conversation_is_reported_not_refused(self) -> None:
+        gh = FakeGh(_view(), conversation_fails=True)
+        record = fetch_review(self.directory, pull_request=PULL_REQUEST,
+                              executable="gh", _execute=gh)
+        self.assertTrue(record["success"])
+        self.assertFalse(record["conversation_comments_read"])
+        text = (self.directory / REVIEW_MARKDOWN).read_text(encoding="utf-8")
+        self.assertIn("conversation comments could not be read", text)
+
+
+FOUR_POINT_REVIEW = """Thanks, the direction is right.
+
+## What I would change
+
+1. Fix the XBRL-only Notes builder
+   and its end-to-end assertion.
+2. Match the stem on a CamelCase segment boundary.
+3. Skip empty family keys.
+4. Extend or document the plural handling.
+
+## Nits
+
+- Typo in the docstring.
+"""
+
+
+class NumberedPointTests(unittest.TestCase):
+    """edgartools#1329: a four-point review was one requested change.
+
+    https://github.com/wolfgang-aura/Mailman/issues/126
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        root = Path(self.temporary.name) / "runs"
+        root.mkdir(parents=True)
+        _, self.directory = make_run(root)
+
+    def fetch(self, body: str) -> dict:
+        view = _view(reviews=[{
+            "id": "R1", "author": {"login": "dgunning"},
+            "state": "CHANGES_REQUESTED", "submittedAt": "2026-09-20T10:00:00Z",
+            "body": body,
+        }])
+        return fetch_review(self.directory, pull_request=PULL_REQUEST,
+                            executable="gh", _execute=FakeGh(view))
+
+    def test_a_four_point_review_is_four_requested_changes(self) -> None:
+        record = self.fetch(FOUR_POINT_REVIEW)
+        self.assertEqual(
+            [item["id"] for item in record["requested_changes"]],
+            ["review:R1:1", "review:R1:2", "review:R1:3", "review:R1:4"],
+        )
+        self.assertEqual(record["change_count"], 4)
+        self.assertIn("end-to-end assertion", record["requested_changes"][0]["text"])
+        text = (self.directory / REVIEW_MARKDOWN).read_text(encoding="utf-8")
+        self.assertIn("review:R1:3", text)
+
+    def test_a_revision_answering_one_point_of_four_is_refused(self) -> None:
+        self.fetch(FOUR_POINT_REVIEW)
+        init_response(self.directory)
+        path = self.directory / "revision-response.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["answers"][0].update(answer="answered", note="all of it")
+        path.write_text(json.dumps(record), encoding="utf-8")
+        checked = check_revision(self.directory)
+        self.assertFalse(checked["ok"])
+        self.assertEqual(checked["missing"],
+                         ["review:R1:2", "review:R1:3", "review:R1:4"])
+
+    def test_a_body_with_no_list_under_a_change_heading_stays_one_entry(self) -> None:
+        record = self.fetch("- a stray bullet\n\nPlease keep the original file.")
+        self.assertEqual([item["id"] for item in record["requested_changes"]],
+                         ["review:R1"])
+
+
+def _maintainer_pushed_view() -> dict:
+    """openai-agents-python#4890 on 2026-09-27: two maintainer commits, approved."""
+    return _view(
+        headRefOid="6edb43b" + "0" * 33,
+        commits=[
+            {"oid": "a" * 40, "authors": [{"login": "wolfgang-aura"}],
+             "committedDate": "2026-09-06T10:00:00Z"},
+            {"oid": "7586a91" + "0" * 33, "authors": [{"login": "jbeckwith-oai"}],
+             "committedDate": "2026-09-27T19:30:00Z"},
+            {"oid": "6edb43b" + "0" * 33, "authors": [{"login": "jbeckwith-oai"}],
+             "committedDate": "2026-09-27T19:33:00Z"},
+        ],
+        reviews=[
+            {"id": "R1", "author": {"login": "seratch"},
+             "state": "CHANGES_REQUESTED", "submittedAt": "2026-09-07T14:01:40Z",
+             "body": "Keep the original file.", "commit": {"oid": "a" * 40}},
+            {"id": "R2", "author": {"login": "markstuart-oai"},
+             "state": "APPROVED", "submittedAt": "2026-09-27T20:03:00Z",
+             "body": "", "commit": {"oid": "6edb43b" + "0" * 33}},
+        ],
+    )
+
+
+class ForeignCommitTests(unittest.TestCase):
+    """A maintainer pushed to our branch and approved; we nearly force-pushed.
+
+    https://github.com/wolfgang-aura/Mailman/issues/140
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name) / "runs"
+        self.root.mkdir(parents=True)
+        self.run, self.directory = make_run(self.root)
+
+    def answer_everything(self) -> None:
+        init_response(self.directory)
+        path = self.directory / "revision-response.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        for row in record["answers"]:
+            row.update(answer="answered", note="done")
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+    def test_commits_and_an_approval_we_did_not_push_are_reported(self) -> None:
+        record = fetch_review(self.directory, pull_request=PULL_REQUEST,
+                              executable="gh", _execute=FakeGh(_maintainer_pushed_view()))
+        self.assertEqual([c["sha"][:7] for c in record["foreign_commits"]],
+                         ["7586a91", "6edb43b"])
+        self.assertEqual(record["foreign_commits"][0]["authors"], ["jbeckwith-oai"])
+        self.assertEqual([a["author"] for a in record["foreign_approvals"]],
+                         ["markstuart-oai"])
+        self.assertFalse(record["foreign_commits_acknowledged"])
+        text = (self.directory / REVIEW_MARKDOWN).read_text(encoding="utf-8")
+        self.assertIn("7586a91", text)
+        self.assertIn("jbeckwith-oai", text)
+        self.assertIn("markstuart-oai approved", text)
+
+    def test_the_revision_gate_refuses_until_the_report_is_acknowledged(self) -> None:
+        fetch_review(self.directory, pull_request=PULL_REQUEST,
+                     executable="gh", _execute=FakeGh(_maintainer_pushed_view()))
+        self.answer_everything()
+        checked = check_revision(self.directory)
+        self.assertFalse(checked["ok"])
+        self.assertEqual(checked["reason"], "foreign-commits")
+        self.assertIn("--acknowledge-foreign-commits", checked["detail"])
+
+        fetch_review(self.directory, pull_request=PULL_REQUEST, executable="gh",
+                     _execute=FakeGh(_maintainer_pushed_view()),
+                     acknowledge_foreign_commits=True)
+        self.answer_everything()
+        self.assertTrue(check_revision(self.directory)["ok"])
+
+    def test_a_branch_with_only_our_commits_reports_nothing(self) -> None:
+        record = fetch_review(self.directory, pull_request=PULL_REQUEST,
+                              executable="gh", _execute=FakeGh(_view()))
+        self.assertEqual(record["foreign_commits"], [])
+        self.assertEqual(record["foreign_approvals"], [])
+
+    def test_the_command_exits_non_zero_and_leaves_the_run_until_acknowledged(
+        self,
+    ) -> None:
+        from unittest import mock
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from mailman import maintainer_review
+        from mailman.artifacts import write_run
+        from mailman.cli import main
+
+        self.run.status = RunStatus.READY_FOR_HUMAN_REVIEW
+        write_run(self.run, self.directory)
+        real = maintainer_review.fetch_review
+
+        def fake(*arguments, **keywords):
+            keywords["_execute"] = FakeGh(_maintainer_pushed_view())
+            return real(*arguments, **keywords)
+
+        base = ["fetch-review", self.run.run_id, "--pr", PULL_REQUEST,
+                "--executable", "gh", "--data-root", str(self.root)]
+        with mock.patch.object(maintainer_review, "fetch_review", fake):
+            with redirect_stdout(StringIO()) as out:
+                code = main(base)
+            self.assertEqual(code, 1)
+            self.assertIn("acknowledge-foreign-commits", out.getvalue())
+            status = json.loads(out.getvalue())["status"]
+            self.assertEqual(status, str(RunStatus.READY_FOR_HUMAN_REVIEW))
+            with redirect_stdout(StringIO()) as out:
+                code = main(base + ["--acknowledge-foreign-commits"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["status"],
+                         str(RunStatus.MAINTAINER_CHANGES_REQUESTED))
+
+
 class RevisionGateTests(FetchReviewTests):
     def prepare(self) -> None:
         fetch_review(self.directory, pull_request=PULL_REQUEST,

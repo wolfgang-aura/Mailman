@@ -59,8 +59,13 @@ class FakeGitHub:
     and `error` (a string that makes every call for it fail with that stderr).
     """
 
-    def __init__(self, pulls: dict[str, dict]) -> None:
+    def __init__(self, pulls: dict[str, dict], *, open_pulls: list[dict] | None = None,
+                 peer_statuses: dict[str, list] | None = None,
+                 annotations: dict[str, list] | None = None) -> None:
         self.pulls = pulls
+        self.open_pulls = open_pulls or []
+        self.peer_statuses = peer_statuses or {}
+        self.annotations = annotations or {}
         self.asked: list[str] = []
         self.mergeable_reads: dict[str, int] = {}
 
@@ -70,6 +75,14 @@ class FakeGitHub:
         base = path.split("?", 1)[0]
         parts = base.split("/")
         slug = f"{parts[1]}/{parts[2]}"
+        if len(parts) == 4 and parts[3] == "pulls":
+            return _Result(json.dumps(self.open_pulls))
+        if parts[3] == "check-runs":
+            return _Result(json.dumps(self.annotations.get(parts[4], [])))
+        if parts[3] == "commits" and parts[4] in self.peer_statuses:
+            if parts[5] == "status":
+                return _Result(json.dumps({"statuses": self.peer_statuses[parts[4]]}))
+            return _Result(json.dumps({"total_count": 0, "check_runs": []}))
         if parts[3] == "commits":
             sha = parts[4]
             key = next(
@@ -114,6 +127,10 @@ class FakeGitHub:
             return _Result(json.dumps(pull.get("reviews", [])))
         if tail == "comments":
             return _Result(json.dumps(pull.get("review_comments", [])))
+        if tail == "files":
+            return _Result(json.dumps(
+                [{"filename": name} for name in pull.get("files", [])]
+            ))
         if tail == "commits":
             return _Result(json.dumps(pull.get("commits", [
                 {"sha": "abc", "commit": {"committer": {"date": _at(3)},
@@ -401,6 +418,176 @@ class WatchTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         (row,) = result["rows"]
         self.assertEqual(row["status"], "ok")
+
+    def test_commits_and_an_approval_on_a_head_we_did_not_push_are_reported(
+        self,
+    ) -> None:
+        """openai-agents-python#4890: a maintainer pushed, another approved.
+
+        The watch read `approved; awaiting merge` and nobody looked at who
+        pushed the head for a day. https://github.com/wolfgang-aura/Mailman/issues/140
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "openai/openai-agents-python", 4890)
+            gh = FakeGitHub({"openai/openai-agents-python#4890": {
+                "checks": [_check("tests")],
+                "reviews": [{**_review("markstuart-oai", 0.5, "APPROVED"),
+                             "commit_id": "head-0"}],
+                "commits": [
+                    {"sha": "a" * 40, "author": {"login": AUTHOR},
+                     "commit": {"committer": {"date": _at(9)}, "author": {"date": _at(9)}}},
+                    {"sha": "head-0", "author": {"login": "jbeckwith-oai"},
+                     "commit": {"committer": {"date": _at(1)}, "author": {"date": _at(1)}}},
+                ],
+            }})
+
+            result = self._watch(root, gh)
+
+        (row,) = result["rows"]
+        self.assertEqual([c["sha"] for c in row["foreign_commits"]], ["head-0"])
+        self.assertEqual(row["foreign_commits"][0]["author"], "jbeckwith-oai")
+        self.assertEqual([a["login"] for a in row["foreign_approvals"]],
+                         ["markstuart-oai"])
+        text = render_watch(result)
+        self.assertIn("head-0 by jbeckwith-oai", text)
+        self.assertIn("markstuart-oai approved head-0", text)
+
+    def test_a_branch_with_only_our_commits_names_no_foreign_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "tqdm/tqdm", 1837)
+            gh = FakeGitHub({"tqdm/tqdm#1837": {
+                "checks": [_check("test")],
+                "commits": [{"sha": "abc", "author": {"login": AUTHOR},
+                             "commit": {"committer": {"date": _at(3)},
+                                        "author": {"date": _at(3)}}}],
+            }})
+
+            result = self._watch(root, gh)
+
+        self.assertEqual(result["rows"][0]["foreign_commits"], [])
+        self.assertNotIn("not pushed by us", render_watch(result))
+
+    def test_a_failure_in_files_the_pull_request_does_not_touch_is_inherited(
+        self,
+    ) -> None:
+        """tqdm#1837: B018 fired on lines already on master.
+
+        https://github.com/wolfgang-aura/Mailman/issues/134
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "tqdm/tqdm", 1837)
+            failing = {**_check("flake8", "failure"), "id": 55, "output": {
+                "annotations_count": 0,
+                "text": "benchmarks/benchmarks.py:20:5: B018 useless expression\n"
+                        "/home/runner/work/tqdm/tqdm/tqdm/std.py:88:9: B018 useless",
+            }}
+            gh = FakeGitHub({"tqdm/tqdm#1837": {
+                "checks": [_check("test"), failing], "files": ["tqdm/cli.py"],
+            }})
+
+            result = self._watch(root, gh)
+
+        self.assertTrue(result["ok"])
+        (row,) = result["rows"]
+        self.assertEqual(row["status"], "inherited")
+        self.assertEqual(list(row["inherited"]), ["flake8"])
+        self.assertEqual(row["reasons"], [])
+        text = render_watch(result)
+        self.assertIn("inherited", text)
+        self.assertIn("benchmarks/benchmarks.py", text)
+        self.assertIn("/home/runner/work/tqdm/tqdm/tqdm/std.py", text)
+        # The files told us; the other open pull requests were not asked.
+        self.assertFalse(any(path.startswith("repos/tqdm/tqdm/pulls?") for path in gh.asked))
+
+    def test_a_failure_annotated_on_a_touched_file_still_needs_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "tqdm/tqdm", 1837)
+            failing = {**_check("flake8", "failure"), "id": 56,
+                       "output": {"annotations_count": 1}}
+            gh = FakeGitHub(
+                {"tqdm/tqdm#1837": {"checks": [failing], "files": ["tqdm/cli.py"]}},
+                annotations={"56": [{"path": "tqdm/cli.py", "start_line": 3}]},
+            )
+
+            result = self._watch(root, gh)
+
+        self.assertFalse(result["ok"])
+        (row,) = result["rows"]
+        self.assertEqual(row["status"], "attention")
+        self.assertEqual(row["inherited"], {})
+        self.assertEqual(row["reasons"], ["failing check: flake8"])
+
+    def test_a_test_file_we_never_edited_is_not_proof_the_failure_is_inherited(
+        self,
+    ) -> None:
+        """edgartools#1329 broke tests/xbrl/test_statement_drilldown.py, a file it
+        never touched. https://github.com/wolfgang-aura/Mailman/issues/115
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "dgunning/edgartools", 1329)
+            failing = {**_check("Tests", "failure"), "id": 57, "output": {
+                "text": "tests/xbrl/test_statement_drilldown.py:41: TypeError"}}
+            gh = FakeGitHub({"dgunning/edgartools#1329": {
+                "checks": [failing], "files": ["edgar/xbrl/xbrl.py"]}})
+
+            result = self._watch(root, gh)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["rows"][0]["status"], "attention")
+        self.assertTrue(any(path.startswith("repos/dgunning/edgartools/pulls?")
+                            for path in gh.asked))
+
+    def test_a_check_most_other_open_pull_requests_fail_is_inherited(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "tqdm/tqdm", 1837)
+            gh = FakeGitHub(
+                {"tqdm/tqdm#1837": {"statuses": [
+                    {"context": "pre-commit.ci - pr", "state": "failure",
+                     "updated_at": _at(2)}]}},
+                open_pulls=[{"number": 1837, "head": {"sha": "head-7"}}] + [
+                    {"number": n, "head": {"sha": f"peer-{n}"}} for n in (1, 2, 3, 4)
+                ],
+                peer_statuses={
+                    "peer-1": [{"context": "pre-commit.ci - pr", "state": "failure"}],
+                    "peer-2": [{"context": "pre-commit.ci - pr", "state": "failure"}],
+                    "peer-3": [{"context": "pre-commit.ci - pr", "state": "failure"}],
+                    "peer-4": [{"context": "pre-commit.ci - pr", "state": "success"}],
+                },
+            )
+
+            result = self._watch(root, gh)
+
+        self.assertTrue(result["ok"])
+        (row,) = result["rows"]
+        self.assertEqual(row["status"], "inherited")
+        self.assertIn("3 of 4 other open pull requests",
+                      row["inherited"]["pre-commit.ci - pr"])
+
+    def test_a_check_only_we_fail_still_needs_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "tqdm/tqdm", 1837)
+            gh = FakeGitHub(
+                {"tqdm/tqdm#1837": {"statuses": [
+                    {"context": "pre-commit.ci - pr", "state": "failure",
+                     "updated_at": _at(2)}]}},
+                open_pulls=[{"number": n, "head": {"sha": f"peer-{n}"}} for n in (1, 2, 3)],
+                peer_statuses={
+                    f"peer-{n}": [{"context": "pre-commit.ci - pr", "state": "success"}]
+                    for n in (1, 2, 3)
+                },
+            )
+
+            result = self._watch(root, gh)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["rows"][0]["status"], "attention")
 
     def test_an_approved_pull_request_with_a_red_check_still_needs_work(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
