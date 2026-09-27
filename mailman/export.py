@@ -209,6 +209,73 @@ def _pull_request_markdown(
     return _PULL_REQUEST_TEMPLATE.format(branch=branch, heading=heading, closes=closes)
 
 
+_REBUILD_ON_BASE = (
+    "Rebuild the branch on the base (`git checkout --detach {base}` and "
+    "cherry-pick the candidate's own commits), or start a new run pinned to "
+    "the new base."
+)
+
+
+def _refuse_a_moved_base(
+    git_executable: str, workspace: Path, base_commit: str, *, timeout_seconds: float
+) -> None:
+    """Refuse a HEAD whose history since the base is not the candidate's alone.
+
+    The diff is taken against the pinned base, so after `git rebase origin/main`
+    every upstream commit since the base lands in the patch and the gates blame
+    the maintainers' commits (#136).
+    """
+    base = _git(
+        git_executable,
+        workspace,
+        ["rev-parse", "--verify", f"{base_commit}^{{commit}}"],
+        timeout_seconds=timeout_seconds,
+        detail="could not resolve the base commit",
+    ).strip()
+    try:
+        merge_base = _git(
+            git_executable,
+            workspace,
+            ["merge-base", "HEAD", base],
+            timeout_seconds=timeout_seconds,
+            detail="could not find the merge base of HEAD and the base commit",
+        ).strip()
+    except ValueError as error:
+        if "timed out" in str(error):
+            raise
+        merge_base = ""  # no common history at all
+    if merge_base != base:
+        raise ValueError(
+            f"base commit {base_commit} is not an ancestor of the workspace HEAD; "
+            "the branch was rebased or rebuilt elsewhere, so a diff against the "
+            "base would not be the candidate's change. "
+            + _REBUILD_ON_BASE.format(base=base_commit)
+        )
+    # Commits since the base that origin already has are upstream's, not ours.
+    since_base = _git(
+        git_executable,
+        workspace,
+        ["rev-list", "--count", f"{base}..HEAD"],
+        timeout_seconds=timeout_seconds,
+        detail="could not count the commits since the base",
+    ).strip()
+    ours = _git(
+        git_executable,
+        workspace,
+        ["rev-list", "--count", f"{base}..HEAD", "--not", "--remotes=origin"],
+        timeout_seconds=timeout_seconds,
+        detail="could not count the candidate's own commits",
+    ).strip()
+    upstream = int(since_base) - int(ours)
+    if upstream > 0:
+        raise ValueError(
+            f"HEAD carries {upstream} upstream commit(s) made after base commit "
+            f"{base_commit}; the candidate looks rebased onto newer upstream, and "
+            "a diff against the pinned base would include them. "
+            + _REBUILD_ON_BASE.format(base=base_commit)
+        )
+
+
 def export_patch(
     run: RunRecord,
     run_directory: Path,
@@ -229,6 +296,9 @@ def export_patch(
         )
     workspace_path = workspace.resolve(strict=True)
     git_executable = resolve_tool(run_directory, "git")
+    _refuse_a_moved_base(
+        git_executable, workspace_path, run.base_commit, timeout_seconds=timeout_seconds
+    )
 
     # New files stay invisible to `git diff` until the index knows their names,
     # and an export that silently dropped them would understate the change.

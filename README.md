@@ -295,6 +295,12 @@ export instead of being silently redacted. The command refuses a run that is not
 `BLOCKED` run's partial work gets read. Nothing is pushed, and the pull request
 text is a draft for a human to accept, edit, or discard.
 
+The diff is always taken against the run's pinned base commit, so the export
+refuses a workspace whose HEAD no longer descends from that base, or whose
+history since the base includes commits `origin` already has (a candidate
+rebased onto newer upstream). Rebuild the branch on the base and cherry-pick the
+candidate's own commits, or start a new run at the new base.
+
 A run refuses to start against an issue somebody else has already claimed:
 
 ```powershell

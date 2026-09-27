@@ -230,6 +230,70 @@ class ExportTests(unittest.TestCase):
                     run, run_directory, workspace=workspace, destination=root / "export"
                 )
 
+    def _upstream_with_a_newer_commit(self, root: Path) -> tuple[Path, str, str]:
+        """A clone whose origin moved on by one commit after the pinned base."""
+        upstream, base_commit = make_workspace(root / "upstream")
+        clone = root / "clone"
+        subprocess.run(
+            ["git", "clone", "--quiet", str(upstream), str(clone)],
+            check=True,
+            capture_output=True,
+            shell=False,
+        )
+        git(clone, "config", "user.name", "Fixture")
+        git(clone, "config", "user.email", "fixture@example.invalid")
+        git(clone, "checkout", "--quiet", "--detach", base_commit)
+        (upstream / "other.py").write_text("VALUE = 1\n", encoding="utf-8")
+        git(upstream, "add", "--", "other.py")
+        git(upstream, "commit", "-m", "upstream moved on")
+        git(clone, "fetch", "--quiet", "origin")
+        return clone, base_commit, git(clone, "rev-parse", "origin/main")
+
+    def test_refuses_a_candidate_rebased_onto_newer_upstream(self) -> None:
+        # #136: after `git rebase origin/main` the pinned base is still an
+        # ancestor, but the diff against it carries every upstream commit.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            clone, base_commit, upstream_head = self._upstream_with_a_newer_commit(root)
+            run, run_directory = make_ready_run(root, base_commit)
+            git(clone, "checkout", "--quiet", "--detach", upstream_head)
+            (clone / "code.py").write_text(
+                "def slugify(value):\n    return value.strip()\n", encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(ValueError, "rebase"):
+                export_patch(run, run_directory, workspace=clone, destination=root / "export")
+            self.assertFalse((root / "export" / "changes.diff").exists())
+
+    def test_refuses_a_head_that_does_not_descend_from_the_base(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workspace, base_commit = make_workspace(root)
+            git(workspace, "checkout", "--quiet", "--orphan", "elsewhere")
+            git(workspace, "commit", "--quiet", "-m", "unrelated root")
+            run, run_directory = make_ready_run(root, base_commit)
+            (workspace / "code.py").write_text("changed\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "not an ancestor.*rebase"):
+                export_patch(
+                    run, run_directory, workspace=workspace, destination=root / "export"
+                )
+
+    def test_exports_candidate_commits_on_top_of_the_base_in_a_clone(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            clone, base_commit, _ = self._upstream_with_a_newer_commit(root)
+            run, run_directory = make_ready_run(root, base_commit)
+            (clone / "code.py").write_text(
+                "def slugify(value):\n    return value.strip()\n", encoding="utf-8"
+            )
+            git(clone, "commit", "--quiet", "-am", "candidate")
+
+            record = export_patch(
+                run, run_directory, workspace=clone, destination=root / "export"
+            )
+            self.assertEqual(record["changed_files"], ["code.py"])
+
 
 if __name__ == "__main__":
     unittest.main()
