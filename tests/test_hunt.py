@@ -126,6 +126,46 @@ class HuntTests(OrchestratorHarness):
         self.assertIn("1 of 3 candidates ready", checkpoint.read_text(encoding="utf-8"))
         self.assertFalse(finish(self.data_root, hunt)["complete"])
 
+    def ask_ready_run(self):
+        """A verified candidate whose decision is ASK, with no PR handoff yet."""
+        directory = self.ready_run()
+        (directory / "handoff.json").unlink()
+        (directory / "offer-comment.md").write_text(
+            f"@maintainer This reproduces on `main` ({self.base_commit[:8]}). "
+            "A fix is ready; would you like a PR?\n",
+            encoding="utf-8",
+        )
+        decision = json.loads((directory / "decision.json").read_text(encoding="utf-8"))
+        decision["recommendation"] = "ASK"
+        decision["offer"] = {"path": "offer-comment.md"}
+        (directory / "decision.json").write_text(json.dumps(decision), encoding="utf-8")
+        return directory
+
+    def test_an_ask_first_candidate_is_counted_apart_and_never_as_a_pr(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/138
+
+        An answered ask-first question used to read as coordinator work, so a
+        complete candidate could never be ready. It is READY_TO_ASK now: listed
+        and packaged with its offer, but the PR quota does not move.
+        """
+        hunt = self.new_hunt()
+        directory = self.ask_ready_run()
+        add_run(self.data_root, hunt, directory.name)
+
+        result = status(self.data_root, hunt)
+
+        self.assertEqual(result["ready"], 0)
+        self.assertEqual(result["remaining"], 1)
+        self.assertEqual(result["ready_to_ask"], 1)
+        row = result["runs"][0]
+        self.assertFalse(row["ready"])
+        self.assertEqual(row["disposition"], "READY_TO_ASK")
+        self.assertIn("would you like a PR?",
+                      Path(result["checkpoint"]).read_text(encoding="utf-8"))
+        finished = finish(self.data_root, hunt)
+        self.assertFalse(finished["complete"])
+        self.assertEqual(finished["ready_to_ask"], 1)
+
     def test_no_checkpoint_is_written_when_nothing_is_ready(self):
         hunt = self.new_hunt(2)
         run, _ = self.make_run()
