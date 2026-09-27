@@ -99,6 +99,11 @@ TRIVIAL = "trivial"
 #: state and closed `not_planned`. https://github.com/wolfgang-aura/Mailman/issues/116
 UNACKNOWLEDGED_ISSUE = "unacknowledged-issue"
 UNKNOWN = "unknown"
+#: The coordinator read the thread and turned the issue down for a reason no
+#: rule decides yet. Recorded so the next hunt does not read the same thread:
+#: hunt 20260927T212801Z-67a9aa rejected marimo#6250, zarr-python#2706 and
+#: four others by hand, and `hunt targets` offered every one of them again.
+REJECTED_BY_COORDINATOR = "rejected-by-coordinator"
 #: A maintainer wrote in the thread that the issue is for human contributors,
 #: or that agent-written pull requests may be rejected. Blocking: our pull
 #: request is the one they described. beetbox/beets#6984 said so and had three
@@ -791,6 +796,45 @@ def prescreen_issue(
                 f" -- but first weigh {UNACKNOWLEDGED_ISSUE}: "
                 + record["acknowledgement"]["detail"]
             )
+    _store_prescreen(data_root, slug, number, record)
+    return record
+
+
+def reject_by_hand(
+    data_root: Path, issue: str, *, reason: str, evidence: str | None = None
+) -> dict[str, Any]:
+    """Record the coordinator's own rejection of an issue, with its reason.
+
+    A machine screen already on disk is kept and extended, so its evidence is
+    not lost; with none, the record carries only what the coordinator wrote.
+    """
+    reason = reason.strip()
+    if len(reason) < 10:
+        raise ValueError(
+            "a rejection needs a reason a later session can check, "
+            "at least a sentence long"
+        )
+    slug, number = issue_reference(issue)
+    record = load_prescreen(data_root, slug, number) or {
+        "repository": slug,
+        "issue_number": number,
+        "workspace": str(prescreen_directory(data_root, slug, number)),
+    }
+    blocking = [item for item in record.get("blocking") or [] if item != REJECTED_BY_COORDINATOR]
+    record.update(
+        {
+            "schema_version": PRESCREEN_SCHEMA_VERSION,
+            "screened_at": datetime.now(UTC).isoformat(),
+            "verdict": "reject",
+            "blocking": [*blocking, REJECTED_BY_COORDINATOR],
+            "warnings": record.get("warnings") or [],
+            "coordinator_rejection": {
+                "reason": reason,
+                "evidence": (evidence or "").strip() or None,
+            },
+            "next": f"Do not open a run on {slug}#{number}: {reason}",
+        }
+    )
     _store_prescreen(data_root, slug, number, record)
     return record
 

@@ -285,6 +285,15 @@ def _build_parser() -> argparse.ArgumentParser:
     prescreen.add_argument("--data-root", type=Path)
     prescreen.add_argument("--hunt", dest="deadline_hunt_id")
     prescreen.add_argument("--owner")
+    prescreen.add_argument(
+        "--reject",
+        metavar="REASON",
+        help="record your own rejection after reading the thread, without "
+        "screening again. `hunt targets` stops offering the issue",
+    )
+    prescreen.add_argument(
+        "--evidence", help="with --reject: the link or quote the reason rests on"
+    )
 
     init_run = subparsers.add_parser(
         "init-run", help="create a private local run record"
@@ -1226,14 +1235,21 @@ def _prescreen(arguments: argparse.Namespace) -> int:
     from mailman import hunt, prescreen
 
     root = (arguments.data_root or default_data_root()).resolve()
-    record = prescreen.prescreen_issue(
-        root,
-        arguments.issue,
-        query=arguments.query,
-        symbols=arguments.symbols or (),
-        executable=arguments.executable,
-        timeout_seconds=arguments.timeout,
-    )
+    if arguments.evidence and not arguments.reject:
+        raise ValueError("--evidence goes with --reject")
+    if arguments.reject:
+        record = prescreen.reject_by_hand(
+            root, arguments.issue, reason=arguments.reject, evidence=arguments.evidence
+        )
+    else:
+        record = prescreen.prescreen_issue(
+            root,
+            arguments.issue,
+            query=arguments.query,
+            symbols=arguments.symbols or (),
+            executable=arguments.executable,
+            timeout_seconds=arguments.timeout,
+        )
     if arguments.deadline_hunt_id:
         # Mailman #102: the hunt keeps what its prescreens decided.
         hunt.record_prescreen(root, hunt.load_hunt(root, arguments.deadline_hunt_id), record)

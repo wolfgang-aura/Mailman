@@ -173,6 +173,12 @@ own without a domain narrowing the pool before they see it.
    a whole run.
    `init-run` refuses an issue with no fresh passing pre-screen. Override with
    `--no-prescreen REASON` only when you mean it; the reason is recorded.
+   A maintainer comment that reserves the issue for human contributors, or
+   warns that agent-written pull requests may be rejected, blocks it under
+   `issue-reserved-for-humans`. When you turn an issue down yourself after
+   reading its thread, record it: `mailman prescreen OWNER/REPO#N --reject
+   REASON --evidence LINK --hunt HUNT_ID --owner TOKEN`. An unrecorded
+   rejection is offered again by `hunt targets` to the next session.
 3. Search narrow first inside the run too. Give `duplicate-search` the issue
    number and the symbols the change touches with `--symbol`; the broad listing
    runs after. A record whose `decided_by` is `narrow` already found a
