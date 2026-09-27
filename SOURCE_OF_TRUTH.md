@@ -278,6 +278,12 @@ opening the local packet URL during this session; visual state is unverified.
   `hunt abandon` on 2026-09-27. 146 run directories and 301 cached repository screens exist.
   Every hunt since 2026-09-18 ended with zero new candidates; on 2026-09-25 the operator chose
   to stop hunting new bugs and work the open PRs (hunt `20260925T144418Z-f692cc`).
+- 2026-09-27, hunt `20260927T070426Z-537a3d` (Claude `claude-opus-5-5` both roles, ask-first mode
+  approved by the operator): securo-finance/securo#1039 filed (run `20260927T072703Z-caa4d0`, fork
+  `wolfgang-aura/securo`). First CI failed `ty` in the new test (Application Control blocks `ty.exe`
+  here; Mailman #120). An ask-first offer was posted on dgunning/edgartools#1370 (run
+  `20260927T071330Z-0be859`); its PR waits for a maintainer reply. Tally now 20 filed, merged 4,
+  open 10, closed unmerged 6. Mailman #138 and #139 filed from this hunt.
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
   It still exists; deleting it is the operator's call.
 
