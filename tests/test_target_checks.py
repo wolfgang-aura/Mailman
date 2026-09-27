@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from mailman.executor import CommandResult
-from mailman.target_checks import run_offline_audit
+from mailman.target_checks import ruff_configuration, run_lint, run_offline_audit
 
 
 def _result(command: list[str], *, exit_code: int = 0, stdout: str = "",
@@ -117,6 +117,92 @@ class OfflineAuditTests(_Fixture):
         _, findings = self._run(Executor())
         self.assertEqual([f["code"] for f in findings], ["offline-audit-not-run"])
         self.assertTrue(findings[0]["blocking"])
+
+
+class RuffConfigurationTests(_Fixture):
+    def test_no_ruff_anywhere_is_no_configuration(self) -> None:
+        self.write("pyproject.toml", "[project]\nname = 'x'\n")
+        self.assertIsNone(ruff_configuration(self.workspace))
+
+    def test_pyproject_tool_ruff_and_a_workflow_pin_are_found(self) -> None:
+        # pypdf: pyproject configures ruff and CI runs a pinned `ruff check .`.
+        self.write("pyproject.toml", "[tool.ruff]\nline-length = 120\n")
+        self.write(
+            ".github/workflows/ci.yml",
+            "steps:\n  - run: pip install ruff==0.16.0\n  - run: ruff check .\n",
+        )
+        configuration = ruff_configuration(self.workspace)
+        self.assertEqual(
+            configuration["sources"], ["pyproject.toml", ".github/workflows/ci.yml"]
+        )
+        self.assertEqual(configuration["version"], "0.16.0")
+        self.assertFalse(configuration["format"])
+
+    def test_a_pre_commit_rev_pins_the_version_and_ruff_format_is_seen(self) -> None:
+        self.write(
+            ".pre-commit-config.yaml",
+            "repos:\n  - repo: https://github.com/astral-sh/ruff-pre-commit\n"
+            "    rev: v0.6.9\n    hooks:\n      - id: ruff\n      - id: ruff-format\n",
+        )
+        configuration = ruff_configuration(self.workspace)
+        self.assertEqual(configuration["version"], "0.6.9")
+        self.assertTrue(configuration["format"])
+
+
+class LintTests(_Fixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.write("pyproject.toml", "[tool.ruff]\n")
+        self.write(".github/workflows/ci.yml", "- run: pip install ruff==0.16.0\n")
+
+    def _run(self, executor: Executor, changed=("pkg/mod.py", "README.md")):
+        with patch("mailman.target_checks.execute", executor):
+            return run_lint(
+                self.run_directory, workspace=self.workspace, changed_paths=list(changed)
+            )
+
+    def test_ruff_runs_over_the_changed_python_files_and_passes(self) -> None:
+        executor = Executor()
+        record, findings = self._run(executor)
+        self.assertEqual(findings, [])
+        self.assertTrue(record["ran"])
+        self.assertEqual(record["reason"], "passed")
+        self.assertIsNone(record["install"])
+        self.assertEqual(
+            executor.calls[-1],
+            [str(self.python), "-m", "ruff", "check", "--no-cache", "--force-exclude",
+             "pkg/mod.py"],
+        )
+
+    def test_a_ruff_finding_blocks(self) -> None:
+        # pypdf#4105: B008 in a test helper, caught by CI 22 seconds after filing.
+        record, findings = self._run(Executor({"ruff check": 1}))
+        self.assertEqual(record["reason"], "failed")
+        self.assertEqual([f["code"] for f in findings], ["lint-failed"])
+        self.assertTrue(findings[0]["blocking"])
+
+    def test_a_missing_ruff_is_installed_at_the_pinned_version(self) -> None:
+        executor = Executor({"ruff --version": 1})
+        record, findings = self._run(executor)
+        self.assertEqual(findings, [])
+        self.assertEqual(record["install"]["requirement"], "ruff==0.16.0")
+        self.assertIn("ruff==0.16.0", executor.calls[1])
+        self.assertTrue(record["ran"])
+
+    def test_a_ruff_that_cannot_be_installed_is_recorded_as_skipped(self) -> None:
+        executor = Executor({"ruff --version": 1, "pip install": 1})
+        record, findings = self._run(executor)
+        self.assertFalse(record["ran"])
+        self.assertTrue(record["reason"].startswith("skipped:"))
+        self.assertEqual([f["code"] for f in findings], ["lint-skipped"])
+        self.assertFalse(findings[0]["blocking"])
+        self.assertFalse(any("ruff check" in " ".join(c) for c in executor.calls))
+
+    def test_a_diff_without_python_files_is_not_linted(self) -> None:
+        executor = Executor()
+        record, findings = self._run(executor, changed=("README.md",))
+        self.assertEqual(record["reason"], "no-changed-python-files")
+        self.assertEqual(executor.calls, [])
 
 
 if __name__ == "__main__":

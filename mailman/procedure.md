@@ -324,6 +324,13 @@ own without a domain narrowing the pool before they see it.
     also runs it on the changed test files with the run interpreter; a
     non-zero exit is `offline-audit-failed` and blocks (recorded under
     `offline_audit`).
+    When the target configures or runs ruff (`[tool.ruff]` in pyproject,
+    `ruff.toml`, `.pre-commit-config.yaml` or a workflow), it runs `ruff
+    check` (and `ruff format --check` when CI formats) over the changed Python
+    files with the run interpreter, installing the pinned version first if
+    needed. A finding is `lint-failed` and blocks; a ruff that cannot be
+    installed is recorded under `lint` as skipped with a non-blocking
+    `lint-skipped`. Other linters and type checkers are not run.
 14. Write decision.json using `decision --init` and the schema in
     docs/review-page-standard.md. Keep evidence classes distinct. Questions
     must be genuine user choices, never tasks you can do. Use [] otherwise.

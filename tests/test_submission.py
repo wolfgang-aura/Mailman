@@ -458,6 +458,18 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertIn("offline-audit-failed", record["blocking_codes"])
         self.assertEqual(record["offline_audit"]["exit_code"], 2)
 
+    def test_a_lint_finding_blocks_and_is_recorded(self) -> None:
+        # #120: pypdf#4105's first CI result was a ruff failure.
+        failing = (
+            {"tool": "ruff", "ran": True, "reason": "failed"},
+            [{"code": "lint-failed", "blocking": True, "detail": "B008"}],
+        )
+        with patch("mailman.target_checks.run_lint", return_value=failing):
+            record = self._prepare()
+        self.assertFalse(record["ready"])
+        self.assertIn("lint-failed", record["blocking_codes"])
+        self.assertEqual(record["lint"]["tool"], "ruff")
+
     def test_a_forbidding_policy_blocks(self) -> None:
         record = self._prepare(policy=_policy(stance="forbidden"))
         self.assertFalse(record["ready"])
