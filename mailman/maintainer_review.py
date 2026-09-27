@@ -35,6 +35,14 @@ _PULL_REQUEST_URL = re.compile(
     r"^https://github\.com/(?P<repository>[\w.-]+/[\w.-]+)/pull/(?P<number>\d+)/?$"
 )
 _BODY_LIMIT = 4000
+#: A heading that introduces the list of things a maintainer wants changed.
+_CHANGE_HEADING = re.compile(
+    r"(what i(?:'d| would) change|changes? requested|requested changes|"
+    r"required changes|changes needed|blockers?|must[- ]fix|action items)",
+    re.IGNORECASE,
+)
+_HEADING_LINE = re.compile(r"^\s*(?:#{1,6}\s+(?P<hash>.+?)\s*#*|\*\*(?P<bold>[^*]+)\*\*:?|(?P<colon>[^\s].{0,80}):)\s*$")
+_LIST_ITEM = re.compile(r"^(?P<indent>\s{0,3})(?:\d+[.)]|[-*+])\s+(?P<text>\S.*)$")
 
 
 def parse_pull_request(url: str) -> tuple[str, int]:
@@ -64,6 +72,32 @@ def _is_bot(user: dict[str, Any] | None) -> bool:
         return True
     login = (user.get("login") or "").lower()
     return (user.get("type") or "") == "Bot" or login.endswith(("[bot]", "-bot"))
+
+
+def split_points(body: str) -> list[str]:
+    """The numbered or bulleted items under a change heading, one per point.
+
+    A review whose body lists four requests is four things to answer, not
+    one: edgartools#1329 came back as `requested_changes: 1` and a single
+    `answered` covered all four. An empty list means keep the whole body.
+    https://github.com/wolfgang-aura/Mailman/issues/126
+    """
+    points: list[str] = []
+    inside = False
+    for line in (body or "").splitlines():
+        heading = _HEADING_LINE.match(line)
+        item = _LIST_ITEM.match(line)
+        if heading and not item:
+            title = heading["hash"] or heading["bold"] or heading["colon"] or ""
+            inside = bool(_CHANGE_HEADING.search(title))
+            continue
+        if not inside:
+            continue
+        if item:
+            points.append(item["text"].strip())
+        elif line.strip() and points and line.startswith((" ", "\t")):
+            points[-1] += " " + line.strip()
+    return points
 
 
 def _read_json(result: CommandResult) -> Any:
@@ -145,10 +179,10 @@ def fetch_review(
     _read_conversation(record, payload, command, run_directory,
                        timeout_seconds, _execute)
     record["requested_changes"] = [
-        {"id": item["id"], "author": item["author"], "kind": "review",
-         "state": item["state"]}
+        change
         for item in record["reviews"]
         if item["state"] in CHANGE_STATES and item["body"]
+        for change in _review_changes(item)
     ] + [
         {"id": item["id"], "author": item["author"], "kind": "comment",
          "path": item["path"], "line": item["line"]}
@@ -161,6 +195,17 @@ def fetch_review(
         render(record), encoding="utf-8", newline="\n"
     )
     return record
+
+
+def _review_changes(item: dict[str, Any]) -> list[dict[str, Any]]:
+    base = {"author": item["author"], "kind": "review", "state": item["state"]}
+    points = split_points(item["body"])
+    if not points:
+        return [{"id": item["id"], **base}]
+    return [
+        {"id": f"{item['id']}:{index}", **base, "point": index, "text": _trim(text)}
+        for index, text in enumerate(points, start=1)
+    ]
 
 
 def _read_conversation(
@@ -255,6 +300,10 @@ def render(record: dict[str, Any]) -> str:
         "stays ruled out, and a constraint they named is not negotiable.",
         "",
     ]
+    points: dict[str, list[dict[str, Any]]] = {}
+    for change in record.get("requested_changes", []):
+        if change.get("point"):
+            points.setdefault(change["id"].rsplit(":", 1)[0], []).append(change)
     for item in record.get("reviews", []):
         if not item.get("body"):
             continue
@@ -262,6 +311,10 @@ def render(record: dict[str, Any]) -> str:
             f"## {item['id']} by {item['author']} ({item['state']})", "",
             item["body"], "",
         ]
+        if item["id"] in points:
+            lines += ["Answer each point separately:", ""]
+            lines += [f"- `{change['id']}`: {change['text']}" for change in points[item["id"]]]
+            lines.append("")
     for item in record.get("comments", []):
         if item.get("path"):
             where = f"{item.get('path')}:{item.get('line')}"

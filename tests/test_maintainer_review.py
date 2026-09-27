@@ -226,6 +226,73 @@ class ConversationCommentTests(unittest.TestCase):
         self.assertIn("conversation comments could not be read", text)
 
 
+FOUR_POINT_REVIEW = """Thanks, the direction is right.
+
+## What I would change
+
+1. Fix the XBRL-only Notes builder
+   and its end-to-end assertion.
+2. Match the stem on a CamelCase segment boundary.
+3. Skip empty family keys.
+4. Extend or document the plural handling.
+
+## Nits
+
+- Typo in the docstring.
+"""
+
+
+class NumberedPointTests(unittest.TestCase):
+    """edgartools#1329: a four-point review was one requested change.
+
+    https://github.com/wolfgang-aura/Mailman/issues/126
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        root = Path(self.temporary.name) / "runs"
+        root.mkdir(parents=True)
+        _, self.directory = make_run(root)
+
+    def fetch(self, body: str) -> dict:
+        view = _view(reviews=[{
+            "id": "R1", "author": {"login": "dgunning"},
+            "state": "CHANGES_REQUESTED", "submittedAt": "2026-09-20T10:00:00Z",
+            "body": body,
+        }])
+        return fetch_review(self.directory, pull_request=PULL_REQUEST,
+                            executable="gh", _execute=FakeGh(view))
+
+    def test_a_four_point_review_is_four_requested_changes(self) -> None:
+        record = self.fetch(FOUR_POINT_REVIEW)
+        self.assertEqual(
+            [item["id"] for item in record["requested_changes"]],
+            ["review:R1:1", "review:R1:2", "review:R1:3", "review:R1:4"],
+        )
+        self.assertEqual(record["change_count"], 4)
+        self.assertIn("end-to-end assertion", record["requested_changes"][0]["text"])
+        text = (self.directory / REVIEW_MARKDOWN).read_text(encoding="utf-8")
+        self.assertIn("review:R1:3", text)
+
+    def test_a_revision_answering_one_point_of_four_is_refused(self) -> None:
+        self.fetch(FOUR_POINT_REVIEW)
+        init_response(self.directory)
+        path = self.directory / "revision-response.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["answers"][0].update(answer="answered", note="all of it")
+        path.write_text(json.dumps(record), encoding="utf-8")
+        checked = check_revision(self.directory)
+        self.assertFalse(checked["ok"])
+        self.assertEqual(checked["missing"],
+                         ["review:R1:2", "review:R1:3", "review:R1:4"])
+
+    def test_a_body_with_no_list_under_a_change_heading_stays_one_entry(self) -> None:
+        record = self.fetch("- a stray bullet\n\nPlease keep the original file.")
+        self.assertEqual([item["id"] for item in record["requested_changes"]],
+                         ["review:R1"])
+
+
 class RevisionGateTests(FetchReviewTests):
     def prepare(self) -> None:
         fetch_review(self.directory, pull_request=PULL_REQUEST,
