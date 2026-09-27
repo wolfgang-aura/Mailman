@@ -45,7 +45,7 @@ class CommandVersionTests(unittest.TestCase):
         def slow(*args, **kwargs):
             raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout", 10))
 
-        with mock.patch.object(doctor.shutil, "which", return_value="C:/tools/codex.CMD"):
+        with mock.patch.object(doctor, "find_executable", return_value="C:/tools/codex.CMD"):
             with mock.patch.object(doctor.subprocess, "run", side_effect=slow):
                 version = doctor._command_version("codex", ["--version"])
 

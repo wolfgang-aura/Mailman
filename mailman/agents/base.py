@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from mailman.hostpaths import find_executable
 from mailman.executor import CommandResult, StopExecution
 from mailman.transcript import TranscriptEvent, parse_line
 
@@ -40,7 +40,7 @@ def resolve_executable(name: str) -> str:
         if not candidate.is_file():
             raise FileNotFoundError(f"agent executable does not exist: {name}")
         return str(candidate.resolve())
-    found = shutil.which(name)
+    found = find_executable(name)
     if found is None:
         raise FileNotFoundError(
             f"agent executable {name!r} was not found on PATH. Install it, or "

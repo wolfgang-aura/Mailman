@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import platform
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from mailman.artifacts import default_data_root
+from mailman.hostpaths import find_executable
 from mailman.identity import (
     IdentityError,
     is_private_email,
@@ -28,7 +28,7 @@ COMMAND_VERSION_TIMEOUT_SECONDS = 10
 
 
 def _command_version(command: str, arguments: list[str]) -> str | None:
-    executable = shutil.which(command)
+    executable = find_executable(command)
     if not executable:
         return None
     try:

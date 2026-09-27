@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from collections.abc import Sequence
 from hashlib import sha256
 from pathlib import Path
 
 from mailman.executor import CommandResult, execute
+from mailman.hostpaths import find_executable
 
 
 _TOOL_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
@@ -103,7 +103,7 @@ def resolve_tool(run_directory: Path, name: str, *, fallback: str | None = None)
     pinned = toolchain_executable(run_directory, name)
     if pinned is not None:
         return pinned
-    found = shutil.which(fallback or name)
+    found = find_executable(fallback or name)
     if found is None:
         raise FileNotFoundError(
             f"{name!r} was not found on PATH. Install it, or register it for the "
