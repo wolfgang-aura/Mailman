@@ -17,6 +17,7 @@ See https://github.com/wolfgang-aura/Mailman/issues/115.
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -51,9 +52,18 @@ FAILING_STATUS_STATES = frozenset({"failure", "error"})
 #: second time.
 MERGEABLE_RETRY_SECONDS = 2.0
 
+#: How many other open pull requests to ask about a failing check before
+#: calling it the base branch's problem, and how many must answer.
+PEER_SAMPLE = 5
+PEER_MINIMUM = 3
+#: `path/to/file.ext:LINE` in a check run's output text or summary.
+_FILE_LINE = re.compile(r"(?<![\w/.-])(/?[\w.-]+(?:/[\w.-]+)*\.[A-Za-z]\w*):\d+")
+
 #: The one word the table prints per row, in the order they are worth reading.
 STATUS_ATTENTION = "attention"
 STATUS_UNKNOWN = "unknown"
+#: Every failing check is one the base branch or its tooling broke.
+STATUS_INHERITED = "inherited"
 STATUS_APPROVED = "approved"
 STATUS_OK = "ok"
 STATUS_MERGED = "merged"
@@ -157,10 +167,12 @@ def _is_standing_approval(last_outside: dict[str, Any] | None,
 
 def _reasons_for(pull: dict[str, Any], checks: dict[str, Any],
                  last_outside: dict[str, Any] | None,
-                 last_ours: datetime | None) -> list[str]:
+                 last_ours: datetime | None,
+                 inherited: dict[str, str] | None = None) -> list[str]:
     reasons: list[str] = []
-    if checks["failing"]:
-        reasons.append("failing check: " + ", ".join(checks["failing"]))
+    ours = [name for name in checks["failing"] if name not in (inherited or {})]
+    if ours:
+        reasons.append("failing check: " + ", ".join(ours))
     mergeable = pull.get("mergeable_state")
     if mergeable in STUCK_MERGEABLE_STATES:
         reasons.append(f"mergeable_state {mergeable}")
@@ -200,6 +212,7 @@ def inspect_pull_request(gh: _Gh, row: dict[str, Any], *,
         "last_ours_at": None,
         "foreign_commits": [],
         "foreign_approvals": [],
+        "inherited": {},
         "updated_at": None,
         "days_since_update": None,
         "status": STATUS_UNKNOWN,
@@ -239,7 +252,7 @@ def inspect_pull_request(gh: _Gh, row: dict[str, Any], *,
     if updated is not None:
         result["days_since_update"] = max(0, (moment - updated).days)
 
-    checks = _check_runs(gh, slug, result["head_sha"])
+    checks, latest_checks = _read_checks(gh, slug, result["head_sha"])
     result["checks"] = checks
 
     comments = gh.json(f"repos/{slug}/issues/{number}/comments?per_page=100")
@@ -309,15 +322,107 @@ def inspect_pull_request(gh: _Gh, row: dict[str, Any], *,
     if result["state"] != "open":
         result["status"] = STATUS_CLOSED
         return result
-    reasons = _reasons_for(pull, checks, last_outside, last_ours)
+    if checks["failing"]:
+        result["inherited"] = _classify_inherited(gh, slug, number, checks, latest_checks)
+    reasons = _reasons_for(pull, checks, last_outside, last_ours, result["inherited"])
     result["reasons"] = reasons
     if reasons:
         result["status"] = STATUS_ATTENTION
+    elif result["inherited"]:
+        result["status"] = STATUS_INHERITED
     elif _is_standing_approval(last_outside, last_ours):
         result["status"] = STATUS_APPROVED
     else:
         result["status"] = STATUS_OK
     return result
+
+
+def _classify_inherited(gh: _Gh, slug: str, number: int, checks: dict[str, Any],
+                        runs: dict[str, dict[str, Any]]) -> dict[str, str]:
+    """Each failing check the pull request did not cause, with the evidence.
+
+    tqdm#1837 failed `pre-commit.ci - pr` because a newer flake8-bugbear fired
+    on two lines already on master; 8 of 10 open tqdm pull requests failed it.
+    First evidence: the file:line locations the check reports, from its output
+    and annotations, all lie outside the files this pull request touches. A
+    test file is not evidence on its own, because a change can break a test it
+    never edits (edgartools#1329, #115). Failing that: most of up to five
+    other open pull requests fail the same check. The extra calls are made only for a row with a failing check, and
+    one that fails leaves the check counted against us.
+    https://github.com/wolfgang-aura/Mailman/issues/134
+    """
+    inherited: dict[str, str] = {}
+    touched: set[str] | None = None
+    undecided: list[str] = []
+    for name in checks["failing"]:
+        run = runs.get(name) or {}
+        paths = _reported_paths(gh, slug, run) if run.get("output") else set()
+        if paths and touched is None:
+            files = gh.json(f"repos/{slug}/pulls/{number}/files?per_page=100")
+            touched = {
+                entry.get("filename") for entry in files if isinstance(entry, dict)
+            } if isinstance(files, list) else set()
+        if not paths or (touched and not _overlaps(paths, touched)
+                         and any(_is_test_path(path) for path in paths)):
+            undecided.append(name)
+        elif touched and not _overlaps(paths, touched):
+            inherited[name] = (
+                "fails only in files this pull request does not touch: "
+                + ", ".join(sorted(paths))
+            )
+    if undecided:
+        inherited.update(_compare_with_peers(gh, slug, number, undecided))
+    return inherited
+
+
+def _overlaps(paths: set[str], touched: set[str]) -> bool:
+    """True when a reported path names a touched file, allowing for CI prefixes."""
+    return any(
+        path == file or path.endswith("/" + file) or file.endswith("/" + path)
+        for path in paths for file in touched
+    )
+
+
+def _is_test_path(path: str) -> bool:
+    parts = path.lower().split("/")
+    return any(part in ("test", "tests") for part in parts[:-1]) or parts[-1].startswith(
+        "test"
+    ) or parts[-1].rsplit(".", 1)[0].endswith("_test")
+
+
+def _reported_paths(gh: _Gh, slug: str, run: dict[str, Any]) -> set[str]:
+    output = run.get("output") or {}
+    text = f"{output.get('summary') or ''}\n{output.get('text') or ''}"
+    paths = {match.group(1).removeprefix("./") for match in _FILE_LINE.finditer(text)}
+    if output.get("annotations_count") and run.get("id"):
+        rows = gh.json(f"repos/{slug}/check-runs/{run['id']}/annotations?per_page=50")
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and row.get("path"):
+                paths.add(row["path"])
+    return paths
+
+
+def _compare_with_peers(gh: _Gh, slug: str, number: int,
+                        names: list[str]) -> dict[str, str]:
+    listing = gh.json(f"repos/{slug}/pulls?state=open&per_page={PEER_SAMPLE + 1}")
+    heads = [
+        (entry.get("head") or {}).get("sha")
+        for entry in (listing if isinstance(listing, list) else [])
+        if isinstance(entry, dict) and entry.get("number") != number
+    ][:PEER_SAMPLE]
+    tally = {name: [0, 0] for name in names}
+    for sha in filter(None, heads):
+        peer, seen = _read_checks(gh, slug, sha)
+        for name in names:
+            if name in seen:
+                tally[name][1] += 1
+                if name in peer["failing"]:
+                    tally[name][0] += 1
+    return {
+        name: f"{failed} of {asked} other open pull requests fail it too"
+        for name, (failed, asked) in tally.items()
+        if asked >= PEER_MINIMUM and failed * 2 > asked
+    }
 
 
 def _foreign_commits(commits: Any, owners: set[str]) -> list[dict[str, Any]]:
@@ -354,9 +459,15 @@ def _last_error(gh: _Gh) -> str | None:
 
 
 def _check_runs(gh: _Gh, slug: str, head_sha: str | None) -> dict[str, Any]:
+    return _read_checks(gh, slug, head_sha)[0]
+
+
+def _read_checks(gh: _Gh, slug: str, head_sha: str | None,
+                 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """The check summary for one commit, and the newest run or status per name."""
     checks: dict[str, Any] = {"total": 0, "pending": 0, "failing": []}
     if not head_sha:
-        return checks
+        return checks, {}
     payload = gh.json(f"repos/{slug}/commits/{head_sha}/check-runs?per_page=100")
     runs = payload.get("check_runs") if isinstance(payload, dict) else None
     combined = gh.json(f"repos/{slug}/commits/{head_sha}/status")
@@ -388,7 +499,7 @@ def _check_runs(gh: _Gh, slug: str, head_sha: str | None) -> dict[str, Any]:
             checks["pending"] += 1
         elif run.get("conclusion") in FAILING_CONCLUSIONS:
             checks["failing"].append(name)
-    return checks
+    return checks, latest
 
 
 def watch_filed(
@@ -456,7 +567,10 @@ def render_watch(result: dict[str, Any]) -> str:
         if row.get("status") == STATUS_UNKNOWN:
             check_text = "-"
         elif checks.get("failing"):
-            check_text = "FAIL " + ", ".join(checks["failing"])
+            check_text = "FAIL " + ", ".join(
+                name + (" (inherited)" if name in (row.get("inherited") or {}) else "")
+                for name in checks["failing"]
+            )
         elif checks.get("pending"):
             check_text = f"pending {checks['pending']}/{checks['total']}"
         elif checks.get("total"):
@@ -502,6 +616,8 @@ def render_watch(result: dict[str, Any]) -> str:
             )
     for row in rows:
         name = f"{row['repository']}#{row['pull_request']}"
+        for check, why in (row.get("inherited") or {}).items():
+            lines.append(f"  {name}: {check} is inherited, not ours: {why}")
         commits = row.get("foreign_commits") or []
         if commits:
             lines.append(
