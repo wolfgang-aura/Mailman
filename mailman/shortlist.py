@@ -8,9 +8,11 @@ project has said it wants the change and nobody has taken it up, so the
 pre-screen is less likely to find a rival and the maintainer is more likely to
 review what arrives. See https://github.com/wolfgang-aura/Mailman/issues/102.
 
-The order is a strict priority, not a blend: any invited issue outranks any
-uninvited one, then a recent issue outranks an old one, then an issue nobody
-has cited a pull request against outranks one with an attempt on record. The
+The order is a strict priority, not a blend: an issue a maintainer filed or
+answered outranks one nobody on the project has spoken on (#135), then any
+invited issue outranks any uninvited one, then a recent issue outranks an old
+one, then an issue nobody has cited a pull request against outranks one with
+an attempt on record. The
 weights are powers of two so the score is that priority and nothing else, and
 the reasons travel beside the score so a coordinator can see why an issue is
 first rather than trust that it is.
@@ -130,11 +132,22 @@ def rank_issue(
     )
 
 
+def maintainer_engaged(row: dict[str, Any]) -> bool:
+    """Whether a maintainer filed the issue or has written in its thread."""
+    return bool(row.get("maintainer_filed") or row.get("maintainer_replied"))
+
+
 def sort_shortlist(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Highest score first; among equals the newer issue, then the lower number."""
+    """Maintainer-engaged first, then highest score, the newer issue, the lower number.
+
+    An issue nobody on the project has spoken on is untriaged, and an
+    untriaged run never counts ready, so engagement outranks the score.
+    https://github.com/wolfgang-aura/Mailman/issues/135
+    """
     return sorted(
         rows,
         key=lambda row: (
+            not maintainer_engaged(row),
             -int(row.get("score") or 0),
             int(row.get("age_days") if row.get("age_days") is not None else 10**6),
             int(row.get("number") or 0),
@@ -146,7 +159,15 @@ def render_shortlist(rows: list[dict[str, Any]], *, limit: int = 10) -> list[str
     """One line per issue, top of the list first, the rest counted not printed."""
     lines: list[str] = []
     for row in rows[:limit]:
-        reasons = ", ".join(row.get("reasons") or []) or "-"
+        engaged = [
+            name
+            for name, held in (
+                ("maintainer-filed", row.get("maintainer_filed")),
+                ("maintainer-replied", row.get("maintainer_replied")),
+            )
+            if held
+        ]
+        reasons = ", ".join(engaged + list(row.get("reasons") or [])) or "-"
         age = row.get("age_days")
         age_text = f"{age}d" if age is not None else "?d"
         lines.append(
@@ -168,6 +189,7 @@ __all__ = [
     "invites_pull_request",
     "is_recent",
     "label_invites",
+    "maintainer_engaged",
     "rank_issue",
     "ranking",
     "render_shortlist",

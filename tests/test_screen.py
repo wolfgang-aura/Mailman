@@ -2247,6 +2247,49 @@ class ShortlistTests(unittest.TestCase):
         self.assertEqual([row["number"] for row in rows], [11, 10])
         self.assertEqual(rows[1]["reasons"], ["recent"])
 
+    def test_each_row_records_whether_a_maintainer_filed_or_replied(self) -> None:
+        # Mailman #135: finding the maintainer-engaged rows took a hand script
+        # and about 300 API calls over rows the screen had already read.
+        filed = _issue(11, days_old=5)
+        filed["author_association"] = "OWNER"
+        _, rows = self._shortlist(
+            FakeGitHub(
+                issues=[_issue(10, days_old=5), filed, _issue(12, days_old=5)],
+                issue_comments={
+                    10: [_reply("Can reproduce on main.", association="MEMBER")],
+                    11: [],
+                    12: [_reply("Same here.", association="NONE")],
+                },
+            )
+        )
+        by_number = {row["number"]: row for row in rows}
+
+        self.assertTrue(by_number[10]["maintainer_replied"])
+        self.assertFalse(by_number[10]["maintainer_filed"])
+        self.assertFalse(by_number[11]["maintainer_replied"])
+        self.assertTrue(by_number[11]["maintainer_filed"])
+        self.assertFalse(by_number[12]["maintainer_replied"])
+        self.assertFalse(by_number[12]["maintainer_filed"])
+
+    def test_a_maintainer_engaged_issue_outranks_a_recent_silent_one(self) -> None:
+        _, rows = self._shortlist(
+            FakeGitHub(
+                issues=[_issue(10, days_old=2), _issue(11, days_old=60)],
+                issue_comments={
+                    10: [],
+                    11: [
+                        _reply(
+                            "Confirmed, this is a bug.",
+                            association="COLLABORATOR",
+                            days_ago=30,
+                        )
+                    ],
+                },
+            )
+        )
+
+        self.assertEqual([row["number"] for row in rows], [11, 10])
+
     def test_the_rendered_screen_prints_the_shortlist_from_the_top(self) -> None:
         record, _ = self._shortlist(
             FakeGitHub(

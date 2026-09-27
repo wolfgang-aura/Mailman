@@ -1711,6 +1711,19 @@ def _shortlist_row(
             for label in row.get("labels") or []
         ],
         "thread_read": thread is not None,
+        # Who has spoken, so a coordinator does not refetch every thread to
+        # find the triaged rows. None when the thread was past the read cap.
+        # https://github.com/wolfgang-aura/Mailman/issues/135
+        "maintainer_filed": row.get("author_association") in MAINTAINER_ASSOCIATIONS,
+        "maintainer_replied": (
+            any(
+                isinstance(comment, dict)
+                and comment.get("author_association") in MAINTAINER_ASSOCIATIONS
+                for comment in thread.get("comments") or []
+            )
+            if thread is not None
+            else None
+        ),
         "score": ranked["score"],
         "reasons": ranked["reasons"],
     }
