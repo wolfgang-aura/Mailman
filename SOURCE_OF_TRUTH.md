@@ -1,6 +1,6 @@
 # Source of truth
 
-Last verified: 2026-09-26 in `Asia/Singapore`.
+Last verified: 2026-09-27 in `Asia/Singapore`.
 
 ## Luna work-order checkpoint
 
@@ -267,6 +267,17 @@ opening the local packet URL during this session; visual state is unverified.
   edgartools#1365. The open and closed rows are unchanged from the 2026-09-23 tally: open 9
   (pretix#6564, pymc#8442, nicegui#6345, tqdm#1837, openalgo#2021, openalgo#2022, poetry#11052,
   pdm#3883, openai-agents-python#4890), closed unmerged 6.
+- Upstream tally re-read 2026-09-27 06:40 UTC (`mailman contributions --refresh`, `mailman hunt
+  watch`): no state changed. 19 filed, merged 4, open 9, closed unmerged 6. Two runs never filed
+  (starlette `20260903T052426Z-ad8196`, mypy `20260910T094019Z-7d1e6e`, superseded by #21966).
+  `hunt watch` flags three: pretix#6564 (CLA unsigned), tqdm#1837 (`pre-commit.ci` B018 on two
+  master lines the PR does not touch; inherited, Mailman #134) and poetry#11052 (`behind`; poetry
+  has no branch protection requiring an up-to-date branch, so this does not block a merge).
+- Hunt totals, 2026-09-27: 23 hunts, 5 FILED, 18 ABANDONED. Hunts `20260918T115409Z-903d20` and
+  `20260924T231540Z-218236` were still marked RUNNING past their deadlines and were closed with
+  `hunt abandon` on 2026-09-27. 146 run directories and 301 cached repository screens exist.
+  Every hunt since 2026-09-18 ended with zero new candidates; on 2026-09-25 the operator chose
+  to stop hunting new bugs and work the open PRs (hunt `20260925T144418Z-f692cc`).
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
   It still exists; deleting it is the operator's call.
 
