@@ -445,6 +445,19 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertIn("Closes #7.", body)
         self.assertIn("python -m pytest -q", body)
 
+    def test_a_failing_offline_audit_blocks_and_is_recorded(self) -> None:
+        # #137: edgartools' CI audits changed test files; a failure there must
+        # block before filing, not after.
+        failing = (
+            {"ran": True, "exit_code": 2},
+            [{"code": "offline-audit-failed", "blocking": True, "detail": "exit 2"}],
+        )
+        with patch("mailman.target_checks.run_offline_audit", return_value=failing):
+            record = self._prepare()
+        self.assertFalse(record["ready"])
+        self.assertIn("offline-audit-failed", record["blocking_codes"])
+        self.assertEqual(record["offline_audit"]["exit_code"], 2)
+
     def test_a_forbidding_policy_blocks(self) -> None:
         record = self._prepare(policy=_policy(stance="forbidden"))
         self.assertFalse(record["ready"])

@@ -320,6 +320,10 @@ own without a domain narrowing the pool before they see it.
     `tests/xbrl/test_statement_drilldown.py`, a file that imports the changed
     module, that the primary never ran, and that fails locally in under a
     second. Pass `--workspace PATH` when the export did not record one.
+    When the target ships `scripts/check_offline_audit.py`, `prepare-submission`
+    also runs it on the changed test files with the run interpreter; a
+    non-zero exit is `offline-audit-failed` and blocks (recorded under
+    `offline_audit`).
 14. Write decision.json using `decision --init` and the schema in
     docs/review-page-standard.md. Keep evidence classes distinct. Questions
     must be genuine user choices, never tasks you can do. Use [] otherwise.
