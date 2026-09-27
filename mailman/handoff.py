@@ -127,6 +127,46 @@ def preservation_claims(text: str) -> list[dict[str, Any]]:
     return found
 
 
+# An appeal to a standard is a claim a maintainer checks against the text.
+# py-pdf/pypdf#4105 said "the specification says" with no clause and no quote,
+# and the maintainer asked whether the specification had been researched at
+# all. The sentence, ISO 32000-1 9.10.3, was found by hand afterwards.
+# See https://github.com/wolfgang-aura/Mailman/issues/124.
+_SPECIFICATION = re.compile(
+    r"\b(?:the\s+spec(?:ification)?s?\b|ISO(?:/IEC)?\s*\d{3,5}|RFC\b)",
+    re.IGNORECASE,
+)
+_CLAUSE = re.compile(
+    r"(?:§|\bsection\b|\bclause\b|\bsec\.)\s*\d+(?:\.\d+)*"
+    r"|(?<![\d.-])\d+(?:\.\d+)+(?![\d.])",
+    re.IGNORECASE,
+)
+_QUOTED_SENTENCE = re.compile(r'"[^"\n]{20,}"|“[^”\n]{20,}”')
+
+
+def unsourced_specification_claims(text: str) -> list[dict[str, Any]]:
+    """Every paragraph that cites a standard without its clause and its words.
+
+    A paragraph passes when it names a clause (`9.10.3`, `section 3.2`, `§4`)
+    and carries a quoted sentence, either inline or as a block quote in the
+    paragraph that follows it.
+    """
+    paragraphs = re.split(r"\n\s*\n", text.replace("\r\n", "\n"))
+    found: list[dict[str, Any]] = []
+    for index, paragraph in enumerate(paragraphs):
+        stripped = paragraph.strip()
+        if not stripped or stripped.startswith(">"):
+            continue
+        if not _SPECIFICATION.search(stripped):
+            continue
+        following = paragraphs[index + 1].strip() if index + 1 < len(paragraphs) else ""
+        quoted = bool(_QUOTED_SENTENCE.search(stripped)) or following.startswith(">")
+        if _CLAUSE.search(stripped) and quoted:
+            continue
+        found.append({"text": " ".join(stripped.split())})
+    return found
+
+
 def head_owner(head: str | None) -> str | None:
     """The account a pull request's head branch lives under, if it is named."""
     if not head or ":" not in head:
@@ -934,6 +974,18 @@ def check_handoff(
             "ok": False,
             "reason": "first-person-claims",
             "detail": "remove claims only the human can make true",
+        }
+    unsourced = unsourced_specification_claims(body_path.read_text(encoding="utf-8"))
+    if unsourced:
+        return {
+            "ok": False,
+            "reason": "unsourced-specification-claims",
+            "detail": (
+                "the body cites a standard without a clause number and a quoted "
+                "sentence; read the text and quote it, or drop the appeal: "
+                + " | ".join(row["text"][:160] for row in unsourced)
+            ),
+            "unsourced_specification_claims": unsourced,
         }
     # Read again rather than trusting the record: provenance can close the
     # case between the handoff and the publish, and that is the moment the
