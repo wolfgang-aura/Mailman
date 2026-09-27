@@ -16,6 +16,7 @@ from pathlib import Path
 from mailman.cli import main
 from mailman.hunt import create_hunt, hunt_path, save
 from mailman.prescreen import (
+    ISSUE_RESERVED_FOR_HUMANS,
     DECIDABLE,
     PRESCREEN_HOURS,
     TRIVIAL,
@@ -1134,6 +1135,45 @@ class StalePriorAttemptTests(PrescreenTests):
         self.assertEqual(
             record["stale_attempts"][0]["state"], "closed unmerged"
         )
+
+
+class ReservedForHumansTests(PrescreenTests):
+    """beetbox/beets#6984: the maintainer reserved it for human contributors."""
+
+    def test_a_reserved_issue_is_rejected_before_a_run_exists(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                comments=[
+                    {
+                        "body": (
+                            "Marked as `good first issue` for **human** "
+                            "contributors. Fully automated PRs from agents may "
+                            "be rejected."
+                        ),
+                        "author_association": "CONTRIBUTOR",
+                        "created_at": "2026-09-03T00:00:00Z",
+                        "user": {"login": "semohr", "type": "User"},
+                    }
+                ],
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [ISSUE_RESERVED_FOR_HUMANS])
+        self.assertIn("semohr", record["next"])
+        self.assertEqual(len(record["claims"]["agent_exclusions"]), 1)
+        self.assertNotIn("duplicate_search", record)
+
+    def test_an_ordinary_thread_is_not_reserved(self) -> None:
+        record = prescreen_issue(
+            self.root, "example/project#7", executable=self.stub("[]")
+        )
+
+        self.assertNotIn(ISSUE_RESERVED_FOR_HUMANS, record.get("blocking", []))
+        self.assertEqual(record["claims"]["agent_exclusions"], [])
 
 
 class PriorDiscussionTests(PrescreenTests):

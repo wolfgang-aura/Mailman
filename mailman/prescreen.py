@@ -65,10 +65,11 @@ from mailman.targeting import (
 #: how long each cited attempt has been dormant; 7 asks whether the repository
 #: rejects duplicate pull requests, which decides whether a dormant one may be
 #: superseded at all; 8 asks who closed each closed attempt; 9 asks whether
-#: anybody who speaks for the project has acknowledged the report. A screen
+#: anybody who speaks for the project has acknowledged the report; 10 asks
+#: whether a maintainer reserved the issue for human contributors. A screen
 #: written before any of them never asked the question, so `check` sends it
 #: back.
-PRESCREEN_SCHEMA_VERSION = 9
+PRESCREEN_SCHEMA_VERSION = 10
 ISSUE_SCREENS = "issue-screens"
 #: A pre-screen filters a shortlist; it is not the filing gate. The run stage
 #: still re-runs the duplicate search under its own one-hour limit, and
@@ -98,6 +99,11 @@ TRIVIAL = "trivial"
 #: state and closed `not_planned`. https://github.com/wolfgang-aura/Mailman/issues/116
 UNACKNOWLEDGED_ISSUE = "unacknowledged-issue"
 UNKNOWN = "unknown"
+#: A maintainer wrote in the thread that the issue is for human contributors,
+#: or that agent-written pull requests may be rejected. Blocking: our pull
+#: request is the one they described. beetbox/beets#6984 said so and had three
+#: closed attempts; the hunt reached it by hand after the prescreen passed it.
+ISSUE_RESERVED_FOR_HUMANS = "issue-reserved-for-humans"
 #: Labels that name the size of the change rather than its subject.
 _TRIVIAL_LABELS = frozenset({"typo", "typos"})
 #: Wordings that describe a change a maintainer writes in less time than he
@@ -530,6 +536,7 @@ def prescreen_issue(
         "assignments": len(claims.get("assignments", [])),
         "claims": len(claims.get("claims", [])),
         "invitations": len(claims.get("invitations", [])),
+        "agent_exclusions": claims.get("agent_exclusions", []),
         "maintainer_replied": claims.get("maintainer_replied"),
         "maintainer_touched_at": claims.get("maintainer_touched_at"),
     }
@@ -590,6 +597,8 @@ def prescreen_issue(
         "maintainer_replied": claims.get("maintainer_replied"),
     }
     thread_blocking: list[str] = []
+    if claims.get("agent_exclusions"):
+        thread_blocking.append(ISSUE_RESERVED_FOR_HUMANS)
     if required and claims.get("maintainer_replied") is False:
         thread_blocking.append(NO_MAINTAINER_REPLY)
     if record["maintainer_closed_attempts"]:
@@ -620,6 +629,12 @@ def prescreen_issue(
     )
     if thread_blocking:
         details = []
+        if ISSUE_RESERVED_FOR_HUMANS in thread_blocking:
+            first = claims["agent_exclusions"][0]
+            details.append(
+                f"{first.get('author')} ({first.get('association')}) reserved "
+                f"this issue for human work: {first.get('quote')!r}"
+            )
         if NO_MAINTAINER_REPLY in thread_blocking:
             details.append(
                 f"{slug} requires a maintainer to have answered the issue "

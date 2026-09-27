@@ -17,6 +17,7 @@ from mailman.claims import (
     CLAIMS_FILENAME,
     classify_comment,
     classify_thread,
+    excludes_agents,
     is_maintainer_invitation,
     load_claims,
     pull_request_references,
@@ -172,6 +173,41 @@ class ClassifyCommentTests(unittest.TestCase):
         comment["user"]["type"] = "Bot"
 
         self.assertIsNone(classify_comment(comment))
+
+
+BEETS_6984 = (
+    "Marked as `good first issue` for **human** contributors to explore how "
+    "plugins handle authentication and token files. Fully automated PRs from "
+    "agents may be rejected."
+)
+
+
+class AgentExclusionTests(unittest.TestCase):
+    def test_the_beets_wording_reserves_the_issue(self) -> None:
+        # GitHub stored the beets maintainer's comment as CONTRIBUTOR.
+        self.assertTrue(excludes_agents(_comment(BEETS_6984, association="CONTRIBUTOR")))
+
+    def test_common_refusals_are_read(self) -> None:
+        for body in (
+            "This one is for human contributors only.",
+            "We do not accept AI-generated PRs.",
+            "AI-generated pull requests will be closed.",
+            "No LLM-written patches, please.",
+        ):
+            with self.subTest(body=body):
+                self.assertTrue(excludes_agents(_comment(body, association="OWNER")))
+
+    def test_an_outsider_saying_it_is_not_the_project_speaking(self) -> None:
+        self.assertFalse(excludes_agents(_comment(BEETS_6984)))
+
+    def test_ordinary_replies_do_not_match(self) -> None:
+        for body in (
+            "PRs welcome!",
+            "The automated tests fail on Windows.",
+            "Human-readable output would be nicer here.",
+        ):
+            with self.subTest(body=body):
+                self.assertFalse(excludes_agents(_comment(body, association="MEMBER")))
 
 
 class ReadClaimsTests(unittest.TestCase):

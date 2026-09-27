@@ -67,6 +67,43 @@ _INVITATION = re.compile(
     re.IGNORECASE,
 )
 
+#: A maintainer who reserves the issue for people, or warns that agent-written
+#: pull requests may be refused. beetbox/beets#6984 was a `good first issue`
+#: whose maintainer wrote that it was marked "for **human** contributors" and
+#: that fully automated PRs from agents may be rejected; three such PRs had
+#: already been closed. Emphasis marks are stripped before matching.
+_AGENT_EXCLUSION = re.compile(
+    r"\b(?:"
+    r"for human contributors|human contributors only|humans? only"
+    r"|(?:no|not accepting|do not accept|don't accept|won't accept|will not accept)"
+    r" (?:ai|llm|agent|bot)[- ](?:generated |written |authored )?"
+    r"(?:prs?|pull requests?|patch(?:es)?|contributions?|code)"
+    r"|(?:fully |purely )?(?:automated|ai[- ]generated|llm[- ]generated|agent[- ]generated|agentic)"
+    r" (?:prs?|pull requests?|patch(?:es)?|contributions?)"
+    r"(?: from (?:agents?|bots?|ai|llms?))? (?:may|will|would) be (?:rejected|closed|declined)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def excludes_agents(comment: dict[str, Any]) -> bool:
+    """Say whether a project voice reserves the issue for human work.
+
+    `CONTRIBUTOR` counts here, unlike for an invitation. The beets maintainer
+    who wrote the refusal shows as CONTRIBUTOR because the org membership is
+    private, and wrongly honouring a refusal costs one skipped issue while
+    missing it costs a run and a closed pull request.
+    """
+    if not isinstance(comment, dict) or _is_bot(comment.get("user")):
+        return False
+    if comment.get("author_association") not in (
+        MAINTAINER_ASSOCIATIONS | {"CONTRIBUTOR"}
+    ):
+        return False
+    text = _matchable(_flat(comment.get("body"))).replace("*", "").replace("_", " ")
+    return bool(_AGENT_EXCLUSION.search(text))
+
+
 #: Asking after a bug is not claiming it. These run first, because several of
 #: them contain the words a claim is made of: "is anyone working on this" would
 #: otherwise read as "working on this".
@@ -543,6 +580,7 @@ def read_claims(
         "html_url": payload.get("html_url"),
     }
     record["invitations"] = []
+    record["agent_exclusions"] = []
     thread = [report, *comments]
     for comment, kind in zip(thread, classify_thread(thread)):
         if kind == "claim":
@@ -554,6 +592,8 @@ def read_claims(
         # invitations where the shortlist is concerned, and neither is a claim.
         if is_maintainer_invitation(comment):
             record["invitations"].append(_row(comment))
+        if excludes_agents(comment):
+            record["agent_exclusions"].append(_row(comment))
     record["comments_read"] = len(comments)
     record["issue_created_at"] = payload.get("created_at")
     record["maintainer_touched_at"] = maintainer_touched_at(thread)
@@ -616,6 +656,7 @@ def render_claims(record: dict[str, Any]) -> str:
         ("## Claims", "claims"),
         ("## Maintainer replies handing the work over", "assignments"),
         ("## Maintainer replies asking for a pull request", "invitations"),
+        ("## Maintainer replies reserving the issue for human work", "agent_exclusions"),
     ):
         rows = record.get(key) or []
         if not rows:
