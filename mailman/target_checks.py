@@ -165,7 +165,8 @@ LINT_TOOLS: tuple[LintTool, ...] = (
     ),
     LintTool(
         name="flake8",
-        invocation=re.compile(r"\bflake8\b"),
+        # `flake8-lazy` or `flake8-bugbear` is a plugin hook, not flake8 (#160).
+        invocation=re.compile(r"(?<![\w-])flake8(?![\w-])"),
         pre_commit_repo=r"pycqa/flake8",
         sections=("[flake8]", "[tool.flake8"),
         files=(".flake8",),

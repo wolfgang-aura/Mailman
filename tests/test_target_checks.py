@@ -281,6 +281,25 @@ class LintConfigurationTests(_Fixture):
         )
         self.assertEqual(self._tools(), ["black"])
 
+    def test_a_flake8_plugin_hook_is_not_flake8(self) -> None:
+        # nox (#160): its only flake8-named hook is flake8-lazy, which checks
+        # lazy imports under nox/; plain flake8 reported E501 CI never sees.
+        self.write(
+            ".pre-commit-config.yaml",
+            "repos:\n  - repo: https://github.com/henryiii/flake8-lazy\n"
+            "    rev: v0.9.0\n    hooks:\n      - id: flake8-lazy\n"
+            "        args: ['--apply=set']\n        files: '^nox/'\n",
+        )
+        self.assertEqual(self._tools(), [])
+
+    def test_the_flake8_hook_itself_is_still_found(self) -> None:
+        self.write(
+            ".pre-commit-config.yaml",
+            "repos:\n  - repo: https://github.com/pycqa/flake8\n"
+            "    rev: 7.1.0\n    hooks:\n      - id: flake8\n",
+        )
+        self.assertEqual(self._tools(), ["flake8"])
+
     def test_ty_is_not_found_in_unrelated_prose(self) -> None:
         self.write(".github/workflows/ci.yml", "name: pretty ty docs\nsteps: []\n")
         self.assertEqual(self._tools(), [])
