@@ -634,6 +634,34 @@ def unrecorded_submissions(data_root: Path) -> list[str]:
     return pending
 
 
+RUN_RECORDS_DIRECTORY = Path(__file__).resolve().parents[1] / "docs" / "runs"
+
+
+def undocumented_merges(
+    contributions: list[Contribution], run_records: Path = RUN_RECORDS_DIRECTORY
+) -> list[Contribution]:
+    """Merged pull requests that no public run record links to.
+
+    Provenance is private. A session that refreshed it could report the ledger
+    current while every tracked document still called the pull request open,
+    which is how openai-agents-python#4890 went unrecorded.
+    https://github.com/wolfgang-aura/Mailman/issues/165
+    """
+    text = ""
+    if run_records.is_dir():
+        text = "\n".join(
+            path.read_text(encoding="utf-8") for path in sorted(run_records.glob("*.md"))
+        )
+    missing = []
+    for entry in contributions:
+        if (entry.state or "").upper() != "MERGED" or not entry.pull_request:
+            continue
+        link = re.escape(f"github.com/{entry.repository}/pull/{entry.pull_request}")
+        if not re.search(link + r"(?!\d)", text):
+            missing.append(entry)
+    return missing
+
+
 def _run_status(run_directory: Path) -> str | None:
     try:
         payload = json.loads((run_directory / "run.json").read_text(encoding="utf-8"))

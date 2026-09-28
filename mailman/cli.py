@@ -81,6 +81,7 @@ from mailman.provenance import (
     record_not_filed,
     record_provenance,
     refresh_contributions,
+    undocumented_merges,
     render_contributions,
     unrecorded_submissions,
 )
@@ -2405,7 +2406,28 @@ def _contributions(arguments: argparse.Namespace) -> int:
             ),
             file=sys.stderr,
         )
-    return 1 if (unrecorded or failures or challenged) else 0
+    undocumented = undocumented_merges(found)
+    if undocumented:
+        # Provenance is private; a merge it knows about is not documented
+        # until a run record in docs/runs links the pull request.
+        # https://github.com/wolfgang-aura/Mailman/issues/165
+        print(
+            "\n".join(
+                [
+                    "",
+                    f"{len(undocumented)} merged pull request(s) have no run record "
+                    "in docs/runs. Write one, then update README.md and "
+                    "SOURCE_OF_TRUTH.md:",
+                    *(
+                        f"  {entry.repository}#{entry.pull_request} "
+                        f"(run {entry.run_id})"
+                        for entry in undocumented
+                    ),
+                ]
+            ),
+            file=sys.stderr,
+        )
+    return 1 if (unrecorded or failures or challenged or undocumented) else 0
 
 
 def _identity(arguments: argparse.Namespace) -> int:

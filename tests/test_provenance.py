@@ -24,6 +24,7 @@ from mailman.provenance import (
     render_contributions,
     repository_slug,
     state_is_stale,
+    undocumented_merges,
     unrecorded_submissions,
     upstream_issue_number,
     write_patch,
@@ -915,3 +916,59 @@ class ReadingAgeTests(unittest.TestCase):
         )
         self.assertNotIn("state read", rendered)
         self.assertNotIn("stale", rendered)
+
+
+class UndocumentedMergeTests(unittest.TestCase):
+    """A merge recorded only in private provenance must not read as documented.
+
+    openai-agents-python#4890 merged on 2026-09-28; the session that saw it
+    updated provenance and reported the ledger current while SOURCE_OF_TRUTH,
+    the README and docs/runs still said it was awaiting merge.
+    https://github.com/wolfgang-aura/Mailman/issues/165
+    """
+
+    def _entry(self, state: str, number: int = 4890):
+        from mailman.provenance import Contribution
+
+        return Contribution(
+            run_id="20260906T104815Z-29582c",
+            repository="openai/openai-agents-python",
+            pull_request=number,
+            state=state,
+        )
+
+    def test_a_merge_no_run_record_names_is_reported(self) -> None:
+        with TemporaryDirectory() as temporary:
+            runs = Path(temporary)
+            (runs / "0015-other.md").write_text(
+                "https://github.com/dgunning/edgartools/pull/1365", encoding="utf-8"
+            )
+            found = undocumented_merges([self._entry("MERGED")], runs)
+        self.assertEqual([entry.pull_request for entry in found], [4890])
+
+    def test_a_merge_a_run_record_links_is_documented(self) -> None:
+        with TemporaryDirectory() as temporary:
+            runs = Path(temporary)
+            (runs / "0016-agents.md").write_text(
+                "[#4890](https://github.com/openai/openai-agents-python/pull/4890)",
+                encoding="utf-8",
+            )
+            found = undocumented_merges([self._entry("MERGED")], runs)
+        self.assertEqual(found, [])
+
+    def test_a_longer_number_is_not_a_link_to_this_one(self) -> None:
+        with TemporaryDirectory() as temporary:
+            runs = Path(temporary)
+            (runs / "0016-agents.md").write_text(
+                "https://github.com/openai/openai-agents-python/pull/48901",
+                encoding="utf-8",
+            )
+            found = undocumented_merges([self._entry("MERGED")], runs)
+        self.assertEqual(len(found), 1)
+
+    def test_open_and_closed_pull_requests_need_no_record(self) -> None:
+        with TemporaryDirectory() as temporary:
+            found = undocumented_merges(
+                [self._entry("OPEN"), self._entry("CLOSED")], Path(temporary)
+            )
+        self.assertEqual(found, [])
