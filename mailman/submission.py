@@ -20,6 +20,7 @@ from mailman.reproduction import (
 from mailman.toolchain import resolve_tool
 from mailman.touched_tests import (
     TOUCHED_TESTS_CAP,
+    deselects_for,
     load_touched_tests,
     resolve_workspace,
     run_touched_tests,
@@ -575,6 +576,12 @@ def _touched_selection_changed(
     return [entry["path"] for entry in fresh["selected"]] != recorded
 
 
+def _touched_deselects_changed(record: dict[str, Any], run_directory: Path) -> bool:
+    """Whether Mailman would now deselect other tests than the record did (#161)."""
+    ran = [entry.get("path") for entry in record.get("selected") or []]
+    return deselects_for(run_directory, ran) != (record.get("deselected") or [])
+
+
 def _touched_tests_findings(record: dict[str, Any] | None) -> list[Finding]:
     """The touched-tests stage as findings: not run and failed both block."""
     findings: list[Finding] = []
@@ -948,6 +955,7 @@ def prepare_submission(
         or touched_tests.get("diff_sha256") != diff_digest
         or not touched_tests.get("ran")
         or _touched_selection_changed(touched_tests, touched_workspace, changed_paths)
+        or _touched_deselects_changed(touched_tests, run_directory)
     ):
         touched_tests = run_touched_tests(
             run_directory,

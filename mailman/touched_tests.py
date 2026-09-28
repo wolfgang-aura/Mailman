@@ -521,6 +521,15 @@ def verification_deselects(run_directory: Path) -> list[str]:
     return found
 
 
+
+def deselects_for(run_directory: Path, paths: list[str]) -> list[str]:
+    """The verification deselects whose test file is among `paths`."""
+    wanted = {path.replace("\\", "/") for path in paths}
+    return [
+        node for node in verification_deselects(run_directory)
+        if node.split("::", 1)[0].replace("\\", "/") in wanted
+    ]
+
 def _write(run_directory: Path, record: dict[str, Any]) -> dict[str, Any]:
     (run_directory / TOUCHED_TESTS_FILENAME).write_text(
         json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n"
@@ -612,11 +621,7 @@ def run_touched_tests(
         record["marker_filter"] = "not network"
 
     def deselect_for(paths: list[str]) -> list[str]:
-        wanted = {path.replace("\\", "/") for path in paths}
-        kept = [
-            node for node in verification_deselects(run_directory)
-            if node.split("::", 1)[0].replace("\\", "/") in wanted
-        ]
+        kept = deselects_for(run_directory, paths)
         record["deselected"] = kept
         return [argument for node in kept for argument in ("--deselect", node)]
 

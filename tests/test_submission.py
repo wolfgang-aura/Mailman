@@ -1101,6 +1101,23 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertEqual(len(self.touched_tests_calls), 1)
         self.assertNotIn("touched-tests-failed", record["blocking_codes"])
 
+    def test_a_stored_failure_is_rerun_when_the_deselects_would_change(self) -> None:
+        # #161: nox#302's stored failure predates carrying the verification
+        # deselects, and the same diff kept being refused on host-blocked tests.
+        stored = passing_touched_tests(SOURCE_DIFF, exit_code=1, failed=3)
+        (self.run_directory / TOUCHED_TESTS_FILENAME).write_text(
+            json.dumps(stored), encoding="utf-8"
+        )
+        path = stored["selected"][0]["path"]
+        with (
+            patch("mailman.submission.resolve_workspace", return_value=self.run_directory),
+            patch("mailman.submission.select_test_files", return_value=stored),
+            patch("mailman.submission.deselects_for", return_value=[f"{path}::test_host"]),
+        ):
+            record = self._prepare()
+        self.assertEqual(len(self.touched_tests_calls), 1)
+        self.assertNotIn("touched-tests-failed", record["blocking_codes"])
+
     def test_a_stored_failure_with_the_same_selection_is_not_rerun(self) -> None:
         stored = passing_touched_tests(SOURCE_DIFF, exit_code=1, failed=1)
         (self.run_directory / TOUCHED_TESTS_FILENAME).write_text(
