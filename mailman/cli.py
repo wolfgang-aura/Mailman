@@ -196,6 +196,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the full record instead of the table, for hunt watch",
     )
+    hunt.add_argument(
+        "--engaged-only",
+        action="store_true",
+        help="for hunt targets: list only issues a maintainer filed or replied "
+        "on. An untriaged run never counts ready, so start a hunt here",
+    )
     hunt.add_argument("hunt_id", nargs="?")
     hunt.add_argument("run_id", nargs="?")
     for role in ("primary", "reviewer"):
@@ -954,6 +960,16 @@ def _hunt(arguments: argparse.Namespace) -> int:
         return 0
     if arguments.action == "targets":
         claims = hunt.target_claims(root)
+        # Engaged rows first; --engaged-only drops the rest. The stale-screen
+        # warning covers every workable row, so filtering cannot hide it.
+        # https://github.com/wolfgang-aura/Mailman/issues/135
+        every = hunt.workable_targets(root)
+        warning = hunt.stale_screen_warning(every)
+        workable = (
+            [row for row in every if row["engagement"] == hunt.ENGAGED]
+            if arguments.engaged_only
+            else every
+        )
         print(
             json.dumps(
                 {
@@ -961,11 +977,15 @@ def _hunt(arguments: argparse.Namespace) -> int:
                     "claims": claims,
                     "live": sorted({c["target"] for c in claims if c["live"]}),
                     "filed": sorted({c["target"] for c in claims if c["filed"]}),
-                    "workable": hunt.workable_targets(root),
+                    "engaged_only": bool(arguments.engaged_only),
+                    "workable": workable,
+                    "warnings": [warning] if warning else [],
                 },
                 indent=2,
             )
         )
+        if warning:
+            print(warning, file=sys.stderr)
         return 0
     if arguments.action == "watch":
         # Every filed pull request, re-read from GitHub. Non-zero when one is

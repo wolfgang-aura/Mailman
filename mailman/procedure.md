@@ -46,6 +46,12 @@ that says `RUNNING` with a dead lease has no coordinator, and `hunt list`
 reports it as `ABANDONED` in `effective_status`. `hunt add` refuses a target
 another live hunt holds, and refuses one that any hunt already filed.
 
+Pick targets with `mailman hunt targets --engaged-only`: it lists only issues a
+maintainer filed or replied on, because an untriaged run never counts ready.
+Without the flag those rows still come first, and rows from screens written
+before the flags existed show `engagement: unknown`; refresh those screens with
+the command the warning prints.
+
 Keep what you print small. A coordinator is a conversation, so every command's
 output stays in context and is re-sent on every later turn. `hunt status` omits
 the reasons and evidence for replaced candidates by default; the record keeps

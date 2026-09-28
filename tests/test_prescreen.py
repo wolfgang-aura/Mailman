@@ -1270,6 +1270,91 @@ class PriorDiscussionTests(PrescreenTests):
         self.assertEqual(record["blocking"], [])
         self.assertTrue(record["prior_discussion"]["maintainer_replied"])
 
+    def record_shortlist_row(self, **flags) -> None:
+        """Add the screen's shortlist row for #7, with the given flags."""
+        path = screen_path(self.root, "example/project")
+        screen = json.loads(path.read_text(encoding="utf-8"))
+        screen["gates"].append(
+            {"name": "saturation", "data": {"shortlist": [{"number": 7, **flags}]}}
+        )
+        path.write_text(json.dumps(screen), encoding="utf-8")
+
+    def _unanswered(self) -> dict:
+        return prescreen_issue(
+            self.root, "example/project#7", executable=self.stub("[]")
+        )
+
+    def test_a_shortlist_reply_flag_is_triage_evidence(self) -> None:
+        # Mailman #135: the screen already read the thread. A reply it saw
+        # counts even when this read of the thread does not show one.
+        self.record_prior_discussion()
+        self.record_shortlist_row(maintainer_filed=False, maintainer_replied=True)
+
+        record = self._unanswered()
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertNotIn(NO_MAINTAINER_REPLY, record["blocking"])
+        self.assertTrue(record["prior_discussion"]["shortlist_engaged"])
+        self.assertFalse(record["prior_discussion"]["maintainer_replied"])
+        self.assertTrue(record["shortlist_engagement"]["engaged"])
+
+    def test_a_shortlist_filed_flag_is_triage_evidence(self) -> None:
+        self.record_prior_discussion()
+        self.record_shortlist_row(maintainer_filed=True, maintainer_replied=False)
+
+        record = self._unanswered()
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertNotIn(NO_MAINTAINER_REPLY, record["blocking"])
+
+    def test_a_shortlist_row_without_flags_keeps_the_gate(self) -> None:
+        # A screen written before f94d449: no flags, so the thread decides.
+        self.record_prior_discussion()
+        self.record_shortlist_row()
+
+        record = self._unanswered()
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [NO_MAINTAINER_REPLY])
+        self.assertFalse(record["shortlist_engagement"]["engaged"])
+
+    def test_false_or_unread_shortlist_flags_keep_the_gate(self) -> None:
+        self.record_prior_discussion()
+        self.record_shortlist_row(maintainer_filed=False, maintainer_replied=None)
+
+        record = self._unanswered()
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [NO_MAINTAINER_REPLY])
+
+    def test_a_shortlist_flag_clears_the_unacknowledged_warning(self) -> None:
+        self.record_prior_discussion()
+        self.record_shortlist_row(maintainer_filed=False, maintainer_replied=True)
+        aged = {"created_at": (datetime.now(UTC) - timedelta(days=99)).isoformat()}
+
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub("[]", issue_api=aged),
+        )
+
+        self.assertNotIn(UNACKNOWLEDGED_ISSUE, record["warnings"])
+        self.assertFalse(record["acknowledgement"]["unacknowledged"])
+        self.assertTrue(record["acknowledgement"]["shortlist_engaged"])
+
+    def test_without_a_shortlist_flag_the_old_report_still_warns(self) -> None:
+        self.record_prior_discussion()
+        self.record_shortlist_row(maintainer_filed=False, maintainer_replied=False)
+        aged = {"created_at": (datetime.now(UTC) - timedelta(days=99)).isoformat()}
+
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub("[]", issue_api=aged),
+        )
+
+        self.assertIn(UNACKNOWLEDGED_ISSUE, record["warnings"])
+
     def test_a_repository_without_the_rule_does_not_need_a_reply(self) -> None:
         record = prescreen_issue(
             self.root, "example/project#7", executable=self.stub("[]")

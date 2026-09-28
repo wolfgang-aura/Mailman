@@ -35,6 +35,7 @@ from mailman.hunt import (
     status,
     target_claims,
     workable_targets,
+    stale_screen_warning,
 )
 from mailman.identity import Identity, save_identity
 from mailman.models import AgentConfig
@@ -835,13 +836,14 @@ class PrescreenRecordTests(OrchestratorHarness):
         return {"repository": slug, "issue_number": number, "verdict": verdict,
                 "blocking": list(blocking), "screened_at": "2026-09-28T01:00:00+00:00"}
 
-    def _screen(self, slug, numbers, *, verdict="pass", days_old=0):
+    def _screen(self, slug, numbers, *, verdict="pass", days_old=0, flags=None):
         from mailman.screen import (FRESHNESS_WINDOW_DAYS, ISSUE_WINDOW_DAYS,
                                     RESPONSIVENESS_WINDOW_DAYS)
         path = screen_path(self.data_root, slug)
         path.parent.mkdir(parents=True, exist_ok=True)
         rows = [{"number": n, "title": f"bug {n}", "age_days": 3, "score": 1,
-                 "reasons": ["no-linked-pr"]} for n in numbers]
+                 "reasons": ["no-linked-pr"], **((flags or {}).get(n) or {})}
+                for n in numbers]
         path.write_text(json.dumps({
             "repository": slug, "success": True, "verdict": verdict,
             "screened_at": (datetime.now(UTC) - timedelta(days=days_old)).isoformat(),
@@ -906,6 +908,67 @@ class PrescreenRecordTests(OrchestratorHarness):
 
         self.assertEqual([row["target"] for row in rows], ["acme/widgets#1"])
         self.assertEqual(rows[0]["title"], "bug 1")
+
+    def _engagement_screens(self):
+        # acme/old predates f94d449: its rows carry no flags at all.
+        self._screen("acme/old", [1], days_old=1)
+        self._screen("acme/new", [2, 3, 4, 5], flags={
+            2: {"maintainer_filed": False, "maintainer_replied": False},
+            3: {"maintainer_filed": False, "maintainer_replied": True},
+            4: {"maintainer_filed": True, "maintainer_replied": None},
+            5: {"maintainer_filed": False, "maintainer_replied": None},
+        })
+
+    def test_workable_targets_rank_maintainer_engagement_first(self):
+        self._engagement_screens()
+
+        rows = workable_targets(self.data_root, held_repositories=set())
+
+        self.assertEqual(
+            [(row["target"], row["engagement"]) for row in rows],
+            [("acme/new#3", "engaged"), ("acme/new#4", "engaged"),
+             ("acme/new#5", "unknown"), ("acme/old#1", "unknown"),
+             ("acme/new#2", "not-engaged")],
+        )
+        by_target = {row["target"]: row for row in rows}
+        self.assertTrue(by_target["acme/new#3"]["maintainer_replied"])
+        self.assertTrue(by_target["acme/old#1"]["stale_screen"])
+        self.assertFalse(by_target["acme/new#5"]["stale_screen"])
+
+    def test_workable_targets_engaged_only(self):
+        self._engagement_screens()
+
+        rows = workable_targets(self.data_root, held_repositories=set(),
+                                engaged_only=True)
+
+        self.assertEqual([row["target"] for row in rows], ["acme/new#3", "acme/new#4"])
+
+    def test_stale_screen_warning_counts_rows_and_names_the_refresh(self):
+        self._engagement_screens()
+        rows = workable_targets(self.data_root, held_repositories=set())
+
+        warning = stale_screen_warning(rows)
+
+        self.assertIn("1 workable row(s)", warning)
+        self.assertIn("mailman screen-target acme/old --refresh", warning)
+        self.assertNotIn("acme/new", warning)
+        self.assertIsNone(stale_screen_warning(
+            [row for row in rows if not row["stale_screen"]]))
+
+    def test_hunt_targets_cli_filters_and_warns(self):
+        self._engagement_screens()
+        for flag, expected in (([], 5), (["--engaged-only"], 2)):
+            out, err = StringIO(), StringIO()
+            with redirect_stdout(out), mock.patch("sys.stderr", err):
+                code = main(["hunt", "targets", "--data-root",
+                             str(self.data_root), *flag])
+            self.assertEqual(code, 0)
+            payload = json.loads(out.getvalue())
+            self.assertEqual(len(payload["workable"]), expected)
+            self.assertEqual(payload["workable"][0]["target"], "acme/new#3")
+            # The stale warning still counts rows the filter dropped.
+            self.assertEqual(len(payload["warnings"]), 1)
+            self.assertIn("acme/old --refresh", err.getvalue())
 
     def test_a_repository_with_a_filed_pull_request_not_seen_closed_is_held(self):
         record = self.new_hunt()

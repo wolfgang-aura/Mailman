@@ -29,6 +29,7 @@ from mailman.screen import (
     forbids_duplicate_pull_requests,
     load_screen,
     requires_prior_discussion,
+    screen_shortlist,
 )
 from mailman.shortlist import (
     ACKNOWLEDGEMENT_GRACE_DAYS,
@@ -389,12 +390,42 @@ def _citable(
     ]
 
 
-def _acknowledgement(claims: dict[str, Any]) -> dict[str, Any]:
-    """Whether anybody who speaks for the project has answered this report."""
+def shortlist_engagement(
+    screen: dict[str, Any] | None, number: int
+) -> dict[str, Any] | None:
+    """What the repository screen's shortlist row recorded about maintainers.
+
+    None when the screen has no row for this issue. A row from a screen
+    written before f94d449 carries neither flag, and a flag the screen could
+    not read is None; only a True is evidence. `engaged` is that evidence.
+    https://github.com/wolfgang-aura/Mailman/issues/135
+    """
+    for row in screen_shortlist(screen):
+        if row.get("number") == number:
+            filed = row.get("maintainer_filed")
+            replied = row.get("maintainer_replied")
+            return {
+                "maintainer_filed": filed,
+                "maintainer_replied": replied,
+                "engaged": filed is True or replied is True,
+            }
+    return None
+
+
+def _acknowledgement(
+    claims: dict[str, Any], *, shortlist_engaged: bool = False
+) -> dict[str, Any]:
+    """Whether anybody who speaks for the project has answered this report.
+
+    `shortlist_engaged` is the screen's record that a maintainer filed or
+    replied on the issue. It can only clear the warning; without it the
+    thread this stage read decides, as before.
+    """
     unacknowledged = bool(claims.get("success")) and is_unacknowledged(
         reporter_association=claims.get("reporter_association"),
         maintainer_answered=bool(
-            claims.get("maintainer_replied")
+            shortlist_engaged
+            or claims.get("maintainer_replied")
             or claims.get("maintainer_labelled")
             or claims.get("invitations")
         ),
@@ -405,6 +436,7 @@ def _acknowledgement(claims: dict[str, Any]) -> dict[str, Any]:
         "reporter_association": claims.get("reporter_association"),
         "maintainer_replied": claims.get("maintainer_replied"),
         "maintainer_labelled": bool(claims.get("maintainer_labelled")),
+        "shortlist_engaged": shortlist_engaged,
         "issue_created_at": claims.get("issue_created_at"),
         "grace_days": ACKNOWLEDGEMENT_GRACE_DAYS,
         "detail": (
@@ -421,7 +453,8 @@ def _acknowledgement(claims: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ranking(
-    claims: dict[str, Any], *, labels: Sequence[Any], linked: bool
+    claims: dict[str, Any], *, labels: Sequence[Any], linked: bool,
+    shortlist_engaged: bool = False,
 ) -> dict[str, Any]:
     """The same score the screen's shortlist carries, from what this stage read.
 
@@ -436,7 +469,9 @@ def _ranking(
             claims.get("issue_created_at"), claims.get("maintainer_touched_at")
         ),
         no_linked_pull_request=not linked,
-        unacknowledged=_acknowledgement(claims)["unacknowledged"],
+        unacknowledged=_acknowledgement(
+            claims, shortlist_engaged=shortlist_engaged
+        )["unacknowledged"],
     )
 
 
@@ -495,6 +530,8 @@ def prescreen_issue(
     )
     screen = load_screen(data_root, slug)
     share = direct_push_share(screen)
+    shortlisted = shortlist_engagement(screen, number)
+    shortlist_engaged = bool(shortlisted and shortlisted["engaged"])
     warnings: list[str] = []
     if estimate == TRIVIAL:
         if share is not None and share >= DIRECT_PUSH_LIMIT:
@@ -545,7 +582,13 @@ def prescreen_issue(
         "maintainer_replied": claims.get("maintainer_replied"),
         "maintainer_touched_at": claims.get("maintainer_touched_at"),
     }
-    record["acknowledgement"] = _acknowledgement(claims)
+    # The shortlist row already says whether a maintainer filed or answered
+    # the issue. A True there is triage evidence even when this read of the
+    # thread misses it; its absence changes nothing. Mailman #135.
+    record["shortlist_engagement"] = shortlisted
+    record["acknowledgement"] = _acknowledgement(
+        claims, shortlist_engaged=shortlist_engaged
+    )
     if record["acknowledgement"]["unacknowledged"]:
         warnings.append(UNACKNOWLEDGED_ISSUE)
     cited = resolve_cited_pull_requests(
@@ -600,11 +643,12 @@ def prescreen_issue(
         "required": bool(required),
         "quote": required.get("quote") if required else None,
         "maintainer_replied": claims.get("maintainer_replied"),
+        "shortlist_engaged": shortlist_engaged,
     }
     thread_blocking: list[str] = []
     if claims.get("agent_exclusions"):
         thread_blocking.append(ISSUE_RESERVED_FOR_HUMANS)
-    if required and claims.get("maintainer_replied") is False:
+    if required and claims.get("maintainer_replied") is False and not shortlist_engaged:
         thread_blocking.append(NO_MAINTAINER_REPLY)
     if record["maintainer_closed_attempts"]:
         thread_blocking.append(MAINTAINER_CLOSED_ATTEMPT)
@@ -631,6 +675,7 @@ def prescreen_issue(
             cited[key]
             for key in ("open", "merged", "stale", "maintainer_closed")
         ),
+        shortlist_engaged=shortlist_engaged,
     )
     if thread_blocking:
         details = []
@@ -782,6 +827,7 @@ def prescreen_issue(
             or record["merged_attempts"]
             or record["closed_attempts"]
         ),
+        shortlist_engaged=shortlist_engaged,
     )
     record["verdict"] = "reject" if blocking else "pass"
     if blocking:

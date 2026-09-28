@@ -470,14 +470,54 @@ def open_pull_request_repositories(root: Path) -> set[str]:
     }
 
 
+ENGAGED = "engaged"
+NOT_ENGAGED = "not-engaged"
+ENGAGEMENT_UNKNOWN = "unknown"
+_ENGAGEMENT_RANK = {ENGAGED: 0, ENGAGEMENT_UNKNOWN: 1, NOT_ENGAGED: 2}
+
+
+def row_engagement(row: dict) -> str:
+    """Whether a maintainer filed or answered the issue, as far as the screen knows.
+
+    Unknown when the screen predates the flags (f94d449) or did not read the
+    thread: that row may be triaged, so it ranks above a known silence.
+    https://github.com/wolfgang-aura/Mailman/issues/135
+    """
+    filed, replied = row.get("maintainer_filed"), row.get("maintainer_replied")
+    if filed or replied:
+        return ENGAGED
+    if filed is False and replied is False:
+        return NOT_ENGAGED
+    return ENGAGEMENT_UNKNOWN
+
+
+def stale_screen_warning(targets: list[dict]) -> str | None:
+    """One line naming the screens too old to carry maintainer flags, or None."""
+    stale = [row for row in targets if row.get("stale_screen")]
+    if not stale:
+        return None
+    slugs = sorted({row["target"].rsplit("#", 1)[0] for row in stale})
+    commands = "; ".join(f"mailman screen-target {slug} --refresh" for slug in slugs)
+    return (
+        f"warning: {len(stale)} workable row(s) come from {len(slugs)} screen(s) "
+        f"written before maintainer engagement was recorded, so their engagement "
+        f"is unknown; refresh with: {commands}"
+    )
+
+
 def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
                      max_age_days: int = TARGET_SCREEN_MAX_AGE_DAYS,
-                     now: datetime | None = None) -> list[dict]:
+                     now: datetime | None = None,
+                     engaged_only: bool = False) -> list[dict]:
     """Shortlisted issues from fresh passing screens that nobody has taken yet.
 
     An issue is left out when it was prescreened, when a live hunt holds it,
-    or when its repository holds our open pull request. The order is each
-    screen's own shortlist order, newest screen first.
+    or when its repository holds our open pull request. Rows a maintainer
+    filed or replied on come first, then rows whose engagement is unknown,
+    then the rest; within each group, newest screen first in each screen's
+    own shortlist order. An untriaged run never counts ready, so a hunt that
+    starts on silent issues comes back empty (#135). `engaged_only` keeps
+    only the first group.
     """
     from mailman.prescreen import prescreen_path
     from mailman.screen import SCREENS_DIRECTORY, screen_shortlist
@@ -513,13 +553,20 @@ def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
             target = f"{slug}#{row.get('number')}"
             if target in claimed or prescreen_path(root, slug, int(row["number"])).is_file():
                 continue
+            engagement = row_engagement(row)
+            if engaged_only and engagement != ENGAGED:
+                continue
             targets.append({
                 "target": target, "title": row.get("title"),
                 "age_days": row.get("age_days"), "reasons": row.get("reasons") or [],
+                "engagement": engagement,
                 "maintainer_filed": row.get("maintainer_filed"),
                 "maintainer_replied": row.get("maintainer_replied"),
+                # A screen written before f94d449 has no flags at all.
+                "stale_screen": "maintainer_filed" not in row,
                 "screened_at": screen.get("screened_at"),
             })
+    targets.sort(key=lambda target: _ENGAGEMENT_RANK[target["engagement"]])
     return targets
 
 
