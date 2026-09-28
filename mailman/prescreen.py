@@ -124,7 +124,8 @@ DESIGN_UNDECIDED = "design-undecided"
 #: the pool they seemed to fill was empty. Mailman #152.
 REPOSITORY_SCREEN_FAILED = "repository-screen-failed"
 #: A feature request a maintainer asked for in the thread ("PR welcome",
-#: "happy to merge"). A warning, not a block: the maintainer bounded the work
+#: "happy to merge"), or labelled `help wanted` / `good first issue`. A
+#: warning, not a block: the maintainer bounded the work
 #: and invited it, but the diff is larger than a bug fix. Without the
 #: invitation the feature label still blocks. Mailman #155.
 INVITED_ENHANCEMENT = "invited-enhancement"
@@ -696,7 +697,9 @@ def prescreen_issue(
     }
     thread_blocking: list[str] = []
     if feature_pending:
-        if claims.get("invitations"):
+        # A `help wanted` or `good first issue` label is the same invitation
+        # written as triage: only somebody with triage rights can apply it.
+        if claims.get("invitations") or label_invites(captured.get("labels") or []):
             warnings.append(INVITED_ENHANCEMENT)
         else:
             thread_blocking.append(ISSUE_NOT_BOUNDED_FIX)

@@ -385,6 +385,17 @@ class PrescreenTests(unittest.TestCase):
         self.assertIn(INVITED_ENHANCEMENT, record["warnings"])
         self.assertEqual(record["claims"]["invitations"], 1)
 
+    def test_a_help_wanted_label_invites_an_enhancement(self) -> None:
+        issue = self.labelled("enhancement")
+        issue["labels"].append({"name": "help wanted"})
+        record = prescreen_issue(
+            self.root, "example/project#7", executable=self.stub("[]", issue)
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertIn(INVITED_ENHANCEMENT, record["warnings"])
+        self.assertEqual(record["claims"]["invitations"], 0)
+
     def test_an_invitation_from_outside_does_not_lift_the_block(self) -> None:
         outsider = {**self.invitation, "author_association": "NONE"}
         record = prescreen_issue(
