@@ -20,6 +20,7 @@ from mailman.prescreen import (
     DECIDABLE,
     DESIGN_UNDECIDED,
     PRESCREEN_HOURS,
+    REPOSITORY_SCREEN_FAILED,
     TRIVIAL,
     TRIVIAL_FIX,
     TRIVIAL_FIX_DIRECT_PUSH,
@@ -370,7 +371,7 @@ class PrescreenTests(unittest.TestCase):
         self.assertIn("issue-under-discussion", record["blocking"])
         self.assertNotIn("duplicate_search", record)
 
-    def record_direct_push_share(self, share: float) -> None:
+    def record_direct_push_share(self, share: float, verdict: str = "pass") -> None:
         """Write the screen record the pre-screen reads the habit out of."""
         path = screen_path(self.root, "example/project")
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -379,7 +380,7 @@ class PrescreenTests(unittest.TestCase):
                 {
                     "repository": "example/project",
                     "success": True,
-                    "verdict": "pass",
+                    "verdict": verdict,
                     "gates": [
                         {
                             "name": "direct-push",
@@ -443,6 +444,21 @@ class PrescreenTests(unittest.TestCase):
             )
 
         self.assertEqual(code, 1)
+
+    def test_an_issue_in_a_repository_whose_screen_failed_is_rejected(self) -> None:
+        # alembic#1390 and podman-compose#1549 passed here while their
+        # repositories' screens had failed. Mailman #152.
+        self.record_direct_push_share(0.05, verdict="fail")
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub("[]", self.typo_issue()),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertIn(REPOSITORY_SCREEN_FAILED, record["blocking"])
+        self.assertIn("screen-target example/project --refresh", record["next"])
+        self.assertNotIn("duplicate_search", record)
 
     def test_a_trivial_fix_in_a_reviewed_repository_is_only_a_warning(self) -> None:
         self.record_direct_push_share(0.05)

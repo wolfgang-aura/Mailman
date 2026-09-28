@@ -29,6 +29,7 @@ from mailman.screen import (
     forbids_duplicate_pull_requests,
     load_screen,
     requires_prior_discussion,
+    screen_is_current,
     screen_shortlist,
 )
 from mailman.shortlist import (
@@ -117,6 +118,11 @@ ISSUE_RESERVED_FOR_HUMANS = "issue-reserved-for-humans"
 #: nobody labelled them: zarr-python#2706, responses#744 and marimo#6250 were
 #: each turned down by hand after passing. Mailman #124.
 DESIGN_UNDECIDED = "design-undecided"
+#: The repository's own screen refused it. An issue there is not a candidate
+#: however clean its thread: alembic#1390 and podman-compose#1549 both passed
+#: this prescreen in repositories that failed freshness and responsiveness, and
+#: the pool they seemed to fill was empty. Mailman #152.
+REPOSITORY_SCREEN_FAILED = "repository-screen-failed"
 #: Labels that name the size of the change rather than its subject.
 _TRIVIAL_LABELS = frozenset({"typo", "typos"})
 #: Wordings that describe a change a maintainer writes in less time than he
@@ -536,6 +542,8 @@ def prescreen_issue(
         captured.get("title"), _captured_body(directory), captured.get("labels") or []
     )
     screen = load_screen(data_root, slug)
+    if screen and screen.get("success") and screen.get("verdict") != "pass":
+        issue_blocking.append(REPOSITORY_SCREEN_FAILED)
     share = direct_push_share(screen)
     shortlisted = shortlist_engagement(screen, number)
     shortlist_engaged = bool(shortlisted and shortlisted["engaged"])
@@ -564,6 +572,17 @@ def prescreen_issue(
                 + (
                     f". {record['fix_size']['detail']}"
                     if TRIVIAL_FIX_DIRECT_PUSH in issue_blocking
+                    else ""
+                )
+                + (
+                    (
+                        f". The recorded screen of {slug} failed; "
+                        f"`mailman screen-target {slug} --refresh` re-reads it"
+                        if screen_is_current(screen)
+                        else f". The screen of {slug} failed under older windows; "
+                        f"`mailman screen-target {slug} --refresh` may change it"
+                    )
+                    if REPOSITORY_SCREEN_FAILED in issue_blocking
                     else ""
                 ),
             }
