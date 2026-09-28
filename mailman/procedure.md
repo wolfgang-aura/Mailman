@@ -322,6 +322,16 @@ a time; a screen costs about 200 GitHub core calls.
 
 ## Complete the package
 
+Steps 13 to 15 are one command once the coordinator has written the target
+policy, the final body and decision.json (#167): `mailman package RUN_ID
+--policy target-policy.json --title TITLE --body body.md --repo OWNER/REPO
+--head FORK_OWNER:BRANCH`. It runs export-patch, prepare-submission,
+decision, finalize-review, the local commit of the exported paths,
+check-authors, handoff, handoff-check and review, and stops at the first
+failure with the stage name. Fix that finding and rerun it; finished stages
+are safe to repeat. The individual commands below remain the reference for
+what each stage checks.
+
 13. After engineering completes, export the patch and prepare the submission.
     Fix hygiene, missing coverage and formatting findings yourself. Write the
     final PR body with the trigger, before/after behaviour, cause, scope and

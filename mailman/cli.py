@@ -458,6 +458,28 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     handoff.add_argument("--data-root", type=Path)
 
+    package_parser = subparsers.add_parser(
+        "package",
+        help="after engineering: export, check the submission, validate the "
+        "decision, finalize, commit, check authors, hand off and check the "
+        "handoff, stopping at the first failure (#167)",
+    )
+    package_parser.add_argument("run_id")
+    package_parser.add_argument("--policy", type=Path, required=True,
+                                help="target policy JSON file")
+    package_parser.add_argument("--title", required=True, help="pull request title")
+    package_parser.add_argument("--body", type=Path, required=True,
+                                help="the final body, as it will be posted")
+    package_parser.add_argument("--repo", required=True, help="upstream OWNER/REPO")
+    package_parser.add_argument("--head", required=True,
+                                help="fork branch, for example OWNER:mailman/issue-N")
+    package_parser.add_argument("--base", help="upstream branch to target")
+    package_parser.add_argument(
+        "--commit-message", type=Path,
+        help="file holding the commit message; defaults to the title",
+    )
+    package_parser.add_argument("--data-root", type=Path)
+
     handoff_check = subparsers.add_parser(
         "handoff-check",
         help="refuse to publish when the body changed since the last handoff",
@@ -1871,6 +1893,56 @@ def _export_patch(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _package(arguments: argparse.Namespace) -> int:
+    from mailman.package import changed_paths, commit_candidate, run_stages
+
+    run, run_directory = load_run(arguments.run_id, arguments.data_root)
+    data_root = (arguments.data_root or default_data_root()).resolve()
+    root = ["--data-root", str(data_root)]
+    run_id = run.run_id
+    if ":" not in arguments.head:
+        raise ValueError("--head must be OWNER:BRANCH")
+    branch = arguments.head.split(":", 1)[1]
+    message = (
+        arguments.commit_message.read_text(encoding="utf-8")
+        if arguments.commit_message else arguments.title
+    )
+
+    def commit() -> int:
+        identity = resolve_identity(data_root)
+        if identity is None:
+            raise ValueError("no commit identity is configured: run `mailman identity`")
+        diff = (run_directory / "export" / "changes.diff").read_text(encoding="utf-8")
+        head = commit_candidate(
+            run_directory / "workspace", base_commit=run.base_commit, branch=branch,
+            message=message, identity=identity, paths=changed_paths(diff),
+        )
+        print(json.dumps({"branch": branch, "commit": head}, indent=2))
+        return 0
+
+    handoff = ["handoff", run_id, "--body", str(arguments.body), "--repo",
+               arguments.repo, "--head", arguments.head, "--title", arguments.title]
+    if arguments.base:
+        handoff += ["--base", arguments.base]
+    stages = [
+        ("export-patch", lambda: main(["export-patch", run_id, *root])),
+        ("prepare-submission", lambda: main([
+            "prepare-submission", run_id, "--policy", str(arguments.policy),
+            "--title", arguments.title, "--branch", branch, *root])),
+        ("decision", lambda: main(["decision", run_id, *root])),
+        ("finalize-review", lambda: main(["finalize-review", run_id, *root])),
+        ("commit", commit),
+        ("check-authors", lambda: main(["check-authors", run_id, *root])),
+        ("handoff", lambda: main([*handoff, *root])),
+        ("handoff-check", lambda: main(["handoff-check", run_id, *root])),
+        ("review", lambda: main(["review", run_id, "--no-open", *root])),
+    ]
+    code, record = run_stages(stages)
+    print(json.dumps({"run_id": run_id, "package": record,
+                      "complete": code == 0}, indent=2))
+    return code
+
+
 def _transition(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
     if RunStatus(arguments.target) is RunStatus.READY_FOR_HUMAN_REVIEW:
@@ -2916,6 +2988,7 @@ def _command_hunt(arguments: argparse.Namespace) -> dict | None:
         "finalize-review",
         "handoff",
         "handoff-check",
+        "package",
         "packet",
         "prepare-submission",
         "provenance",
@@ -3103,6 +3176,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _handoff(parsed)
         if parsed.subcommand == "handoff-check":
             return _handoff_check(parsed)
+        if parsed.subcommand == "package":
+            return _package(parsed)
         if parsed.subcommand == "duplicate-search":
             return _duplicate_search(parsed)
         if parsed.subcommand == "acknowledge-duplicates":
