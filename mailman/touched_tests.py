@@ -489,6 +489,38 @@ def missing_extra_collection_errors(
     return missing
 
 
+def verification_deselects(run_directory: Path) -> list[str]:
+    """Node IDs the run's recorded verification command deselects.
+
+    `build-prompts` freezes that command before the primary starts, and the
+    baseline check runs it on the clean base tree, so a deselect there names a
+    test that already failed on this host without the diff (nox#302: three
+    tests Application Control kills). It cannot have been chosen to hide what
+    the diff broke. See Mailman #161.
+    """
+    path = run_directory / "prompts.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    argv = payload.get("verification_command") if isinstance(payload, dict) else None
+    if not isinstance(argv, list):
+        return []
+    found: list[str] = []
+    for index, argument in enumerate(argv):
+        if not isinstance(argument, str):
+            continue
+        if argument == "--deselect" and index + 1 < len(argv):
+            value = argv[index + 1]
+        elif argument.startswith("--deselect="):
+            value = argument.split("=", 1)[1]
+        else:
+            continue
+        if isinstance(value, str) and value:
+            found.append(value)
+    return found
+
+
 def _write(run_directory: Path, record: dict[str, Any]) -> dict[str, Any]:
     (run_directory / TOUCHED_TESTS_FILENAME).write_text(
         json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n"
@@ -538,6 +570,7 @@ def run_touched_tests(
         "collection_retries": [],
         "command": None,
         "marker_filter": None,
+        "deselected": [],
         "exit_code": None,
         "timed_out": False,
         "duration_seconds": 0.0,
@@ -578,9 +611,21 @@ def run_touched_tests(
     if marker:
         record["marker_filter"] = "not network"
 
+    def deselect_for(paths: list[str]) -> list[str]:
+        wanted = {path.replace("\\", "/") for path in paths}
+        kept = [
+            node for node in verification_deselects(run_directory)
+            if node.split("::", 1)[0].replace("\\", "/") in wanted
+        ]
+        record["deselected"] = kept
+        return [argument for node in kept for argument in ("--deselect", node)]
+
     def command_for(paths: list[str]) -> list[str]:
         if runner == "pytest":
-            return [python, "-m", "pytest", *paths, "-q", "-p", "no:cacheprovider", *marker]
+            return [
+                python, "-m", "pytest", *paths, "-q", "-p", "no:cacheprovider",
+                *marker, *deselect_for(paths),
+            ]
         return [python, "-m", "unittest", *paths]
 
     record["runner"] = runner

@@ -424,6 +424,29 @@ class RunTouchedTestsTests(_RunFixture):
         self.assertIsNone(record["marker_filter"])
 
 
+    def test_a_frozen_verification_deselect_carries_over_to_its_file(self) -> None:
+        # #161: nox#302's verification deselected three tests Application
+        # Control kills on this host; touched tests ran them and blocked.
+        (self.run_directory / "prompts.json").write_text(
+            json.dumps({"verification_command": [
+                str(self.python), "-m", "pytest", "tests/test_xbrl.py",
+                "--deselect", "tests/test_xbrl.py::test_host_blocked",
+                "--deselect=tests/test_other.py::test_elsewhere",
+            ]}),
+            encoding="utf-8",
+        )
+        record = self._run(FakeExecutor())
+        self.assertEqual(
+            record["command"][-2:], ["--deselect", "tests/test_xbrl.py::test_host_blocked"]
+        )
+        self.assertEqual(record["deselected"], ["tests/test_xbrl.py::test_host_blocked"])
+
+    def test_no_prompts_record_means_nothing_deselected(self) -> None:
+        record = self._run(FakeExecutor())
+        self.assertNotIn("--deselect", record["command"])
+        self.assertEqual(record["deselected"], [])
+
+
 def _collection_error(path: str, error: str) -> str:
     return (
         "==================================== ERRORS ====================================\n"

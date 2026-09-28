@@ -345,7 +345,11 @@ a time; a screen costs about 200 GitHub core calls.
     module named 'x'` for a module outside the workspace (a missing optional
     extra) is moved to `omitted` with its reason under `omitted_reasons`, the
     rest run again, and a non-blocking `touched-tests-omitted` names it; if
-    every file is omitted the stage is `touched-tests-not-run`. The record in `submission.json` under
+    every file is omitted the stage is `touched-tests-not-run`. A `--deselect`
+    in the run's frozen verification command (`prompts.json`) is applied to
+    the touched run when its file is selected, recorded under `deselected`,
+    and reported as the non-blocking `touched-tests-deselected`: it was
+    chosen before the patch existed, for a test this host fails at base. The record in `submission.json` under
     `touched_tests` holds the files and why each was chosen, the exact
     command, exit code, passed and failed counts and duration. A failure is
     `touched-tests-failed`, a stage that could not run is

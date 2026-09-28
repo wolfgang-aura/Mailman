@@ -593,6 +593,19 @@ def _touched_tests_findings(record: dict[str, Any] | None) -> list[Finding]:
                 ),
             )
         )
+    deselected = (record or {}).get("deselected") or []
+    if deselected:
+        findings.append(
+            Finding(
+                code="touched-tests-deselected",
+                blocking=False,
+                detail=(
+                    "deselected because the run's frozen verification command "
+                    "deselects them for the baseline on this host: "
+                    + ", ".join(deselected)
+                ),
+            )
+        )
     omitted_reasons = (record or {}).get("omitted_reasons") or {}
     if omitted_reasons and (record or {}).get("reason") != "all-selected-omitted":
         findings.append(
