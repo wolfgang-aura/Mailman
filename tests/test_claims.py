@@ -136,6 +136,22 @@ class ClassifyCommentTests(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertEqual(classify_comment(_comment(body)), "claim")
 
+    def test_a_contributor_announcing_their_pull_request_is_a_claim(self) -> None:
+        # huggingface/peft#3804, 2026-09-29: three comments from the same
+        # contributor, the last naming their pull request, read as no claim,
+        # and prescreen passed an issue somebody was actively fixing.
+        for body in (
+            "Still planning to, yes, this is the one I confirmed on the 25th. "
+            "Will have a PR up.",
+            "PR is up: #3832. Went with strict_adapter_check as you suggested.",
+            "Opened a PR for this: #12",
+            "I've opened #3832 for this.",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(
+                    classify_comment(_comment(body, association="NONE")), "claim"
+                )
+
     def test_a_question_about_the_bug_is_not_a_claim(self) -> None:
         for body in (
             "Is anyone working on this?",

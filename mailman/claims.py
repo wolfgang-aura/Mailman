@@ -239,6 +239,14 @@ _CLAIM = re.compile(
     r"|(?:attached|linked|local|my) candidate"
     r"|candidate (?:patch|fix|source|diff|change)"
     r"|proposed (?:correction|fix|patch|change|diff)"
+    # A contributor whose pull request is on its way or already up, even
+    # after a bot closed it. huggingface/peft#3804 said "Will have a PR up"
+    # and "PR is up: #3832", and prescreen read neither as a claim.
+    r"|will have (?:a|the|my) (?:pr|pull request|patch|fix) (?:up|ready|open)"
+    r"|(?:my |the |a )?(?:pr|pull request) is (?:up|open|ready)\b"
+    r"|(?:i(?:'ve|ve| have) )?(?:opened|submitted|raised|sent) "
+    r"(?:a |the |my )?(?:pr|pull request|#\d+)"
+    r"|still planning to"
     r")",
     re.IGNORECASE,
 )
