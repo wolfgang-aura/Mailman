@@ -533,9 +533,13 @@ def watch_filed(
         reading for reading in readings
         if reading["status"] in (STATUS_ATTENTION, STATUS_UNKNOWN)
     ]
+    path = watch_path(data_root)
+    previous = _previous_reading(path)
     result = {
         "schema_version": FILED_WATCH_SCHEMA_VERSION,
         "checked_at": moment.isoformat(),
+        "previous_checked_at": previous.get("checked_at") if previous else None,
+        "changes": changes_since(previous, readings),
         "data_root": str(data_root),
         "rows": readings,
         "needs_work": [
@@ -546,13 +550,98 @@ def watch_filed(
         "ok": not needs_work,
         "gh_failures": list(gh.failures),
     }
-    path = watch_path(data_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
     result["path"] = str(path)
     return result
+
+
+def _previous_reading(path: Path) -> dict[str, Any] | None:
+    """The record the last watch wrote, or None when there is none to compare."""
+    try:
+        previous = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return previous if isinstance(previous, dict) else None
+
+
+def _outside_text(outside: dict[str, Any]) -> str:
+    kind = str(outside.get("kind") or "comment")
+    if outside.get("review_state"):
+        kind = f"{kind} ({str(outside['review_state']).lower()})"
+    return f"new {kind} from {outside.get('login')} at {outside.get('at')}"
+
+
+def changes_since(previous: dict[str, Any] | None,
+                  readings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What moved on each pull request since the last reading.
+
+    The status column says what needs work now; this says what is new, so a
+    scheduled watch can stay quiet when a row that already needed work has
+    not moved. A row either reading could not read reports only its status,
+    because a missing field there is a hole, not a change.
+    """
+    if not previous:
+        return []
+    before = {
+        str(row.get("url")): row
+        for row in previous.get("rows") or []
+        if isinstance(row, dict)
+    }
+    changes: list[dict[str, Any]] = []
+    for row in readings:
+        name = f"{row['repository']}#{row['pull_request']}"
+        old = before.get(str(row.get("url")))
+        if old is None:
+            changes.append({"url": row["url"], "pull_request": name,
+                            "changes": [f"now watched ({row.get('status')})"]})
+            continue
+        found: list[str] = []
+        if old.get("status") != row.get("status"):
+            found.append(f"status {old.get('status')} -> {row.get('status')}")
+        if STATUS_UNKNOWN not in (old.get("status"), row.get("status")):
+            outside = row.get("last_outside") or {}
+            old_outside = old.get("last_outside") or {}
+            if outside and (outside.get("at"), outside.get("login")) != (
+                    old_outside.get("at"), old_outside.get("login")):
+                found.append(_outside_text(outside))
+            failing = set((row.get("checks") or {}).get("failing") or [])
+            old_failing = set((old.get("checks") or {}).get("failing") or [])
+            for check in sorted(failing - old_failing):
+                found.append(f"check {check} now failing")
+            for check in sorted(old_failing - failing):
+                found.append(f"check {check} no longer failing")
+            if old.get("mergeable_state") != row.get("mergeable_state") and                     "unknown" not in (old.get("mergeable_state"), row.get("mergeable_state")):
+                found.append(
+                    f"mergeable_state {old.get('mergeable_state')} -> "
+                    f"{row.get('mergeable_state')}"
+                )
+            old_foreign = {c.get("sha") for c in old.get("foreign_commits") or []}
+            for commit in row.get("foreign_commits") or []:
+                if commit.get("sha") not in old_foreign:
+                    found.append(
+                        f"commit {str(commit.get('sha'))[:7]} pushed by {commit.get('author')}"
+                    )
+        if found:
+            changes.append({"url": row["url"], "pull_request": name, "changes": found})
+    return changes
+
+
+def _render_changes(result: dict[str, Any]) -> list[str]:
+    since = result.get("previous_checked_at")
+    if not since:
+        return ["no earlier reading to compare; this one is the baseline"]
+    changes = result.get("changes") or []
+    if not changes:
+        return [f"no changes since {since}"]
+    lines = [f"{len(changes)} pull request(s) changed since {since}:"]
+    for entry in changes:
+        for change in entry["changes"]:
+            # Matrix check names carry newlines; one change is one line.
+            lines.append(f"  {entry['pull_request']}: {' '.join(change.split())}")
+    return lines
 
 
 def render_watch(result: dict[str, Any]) -> str:
@@ -630,6 +719,7 @@ def render_watch(result: dict[str, Any]) -> str:
                 f"  {name}: {approval['login']} approved {str(approval['sha'])[:7]}, "
                 "a head we did not push"
             )
+    lines.extend(_render_changes(result))
     count = len(result.get("needs_work") or [])
     if count:
         lines.append(f"{count} pull request(s) need work; record at {result.get('path')}")

@@ -687,6 +687,45 @@ class WatchTests(unittest.TestCase):
         self.assertIn("every open pull request is green", outputs[0])
         self.assertIn("1 pull request(s) need work", outputs[1])
 
+    def test_a_second_reading_names_what_moved_and_a_third_is_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "tqdm/tqdm", 1837)
+            quiet = FakeGitHub({"tqdm/tqdm#1837": {"checks": [_check("test")]}})
+            moved = FakeGitHub({"tqdm/tqdm#1837": {
+                "checks": [_check("test", "failure")],
+                "comments": [_comment("maintainer", 0.1)],
+            }})
+
+            first = self._watch(root, quiet)
+            second = self._watch(root, moved)
+            third = self._watch(root, moved)
+
+        self.assertIsNone(first["previous_checked_at"])
+        self.assertEqual(first["changes"], [])
+        self.assertIn("this one is the baseline", render_watch(first))
+        (entry,) = second["changes"]
+        self.assertEqual(entry["pull_request"], "tqdm/tqdm#1837")
+        self.assertIn("status ok -> attention", entry["changes"])
+        self.assertIn("check test now failing", entry["changes"])
+        self.assertTrue(any(c.startswith("new comment from maintainer")
+                            for c in entry["changes"]))
+        self.assertIn("1 pull request(s) changed since", render_watch(second))
+        self.assertEqual(third["changes"], [])
+        self.assertIn("no changes since", render_watch(third))
+
+    def test_an_unreadable_row_reports_only_its_status_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "tqdm/tqdm", 1837)
+            self._watch(root, FakeGitHub({"tqdm/tqdm#1837": {
+                "checks": [_check("test")],
+                "comments": [_comment("maintainer", 2)]}}))
+            result = self._watch(root, FakeGitHub({}))
+
+        (entry,) = result["changes"]
+        self.assertEqual(entry["changes"], ["status attention -> unknown"])
+
     def test_an_empty_ledger_is_ok(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _Root(temporary)

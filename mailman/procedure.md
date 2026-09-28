@@ -492,6 +492,14 @@ about each one, prints one line per pull request, and writes the reading to
 watch completed; a stale one means nobody has looked. `--json` prints the
 record instead of the table.
 
+Each reading is compared with the one before it. The table ends with what
+moved since then: a status change, a new outside comment or review, a check
+that started or stopped failing, a `mergeable_state` change, or a commit
+somebody else pushed. `changes` in the record holds the same list, and it is
+empty when nothing moved, so a scheduled watch can stay quiet over a row that
+already needed work yesterday. The desktop scheduled task `pr-watch` runs the
+watch several times a day and notifies only on changes.
+
 The `STATUS` column decides. `ok` is an open pull request with green or
 pending checks, a base it can still merge onto, and no outside comment newer
 than our last commit or reply. `attention` names the reason on the next line:
