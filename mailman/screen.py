@@ -2417,11 +2417,26 @@ def screen_repository(
         ),
         _policy_gate(gh, slug),
         _assignment_gate(gh, slug),
-        _saturation_gate(gh, slug, window_days, issue_window_days),
-        _direct_push_gate(gh, slug, meta),
-        _responsiveness_gate(gh, slug, responsiveness_days),
-        _stars_gate(meta),
     ]
+    stars = _stars_gate(meta)
+    # The last three gates cost about 150 of a screen's ~220 reads and
+    # cannot turn a fail into a pass, so a repository an earlier gate
+    # already refused keeps them as unread placeholders.
+    # https://github.com/wolfgang-aura/Mailman/issues/170
+    refused = [
+        gate["name"]
+        for gate in [*gates, stars]
+        if gate["blocking"] and not gate["passed"]
+    ]
+    if refused:
+        gates += [_skipped_gate(name, refused) for name in EXPENSIVE_GATES]
+    else:
+        gates += [
+            _saturation_gate(gh, slug, window_days, issue_window_days),
+            _direct_push_gate(gh, slug, meta),
+            _responsiveness_gate(gh, slug, responsiveness_days),
+        ]
+    gates.append(stars)
     if gh.rate_limited:
         # A gate whose reads were refused reports a verdict it never saw:
         # on 2026-09-29 pypa/hatch "failed" ci, host, saturation and
@@ -2439,6 +2454,21 @@ def screen_repository(
     record["success"] = True
     _write(data_root, record)
     return record
+
+
+#: Gates skipped once a cheaper gate has already failed the repository.
+EXPENSIVE_GATES = ("saturation", "direct-push", "responsiveness")
+
+
+def _skipped_gate(name: str, refused: list[str]) -> dict[str, Any]:
+    """A gate left unread because the repository had already failed."""
+    return _gate(
+        name,
+        passed=False,
+        blocking=False,
+        detail=f"not read: the repository already failed {', '.join(refused)}",
+        data={"skipped": True},
+    )
 
 
 #: What an unread screen says when GitHub's hourly core budget ran out.

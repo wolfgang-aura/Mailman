@@ -313,6 +313,25 @@ class ScreenTests(unittest.TestCase):
             self.assertEqual(load_screen(root, "example/project"), record)
         self.assertIn("worth a run", render_screen(record))
 
+    def test_a_repository_already_refused_skips_the_costly_gates(self) -> None:
+        # 2026-09-29: 11 of 23 screens failed pure-python, policy or host and
+        # still paid ~150 reads each for saturation and responsiveness.
+        with tempfile.TemporaryDirectory() as temporary:
+            healthy = FakeGitHub()
+            _screen(Path(temporary), healthy)
+        with tempfile.TemporaryDirectory() as temporary:
+            refused = FakeGitHub(languages={"TypeScript": 900000, "Python": 100000})
+            record = _screen(Path(temporary), refused)
+
+        self.assertEqual(record["verdict"], "fail")
+        self.assertEqual(record["failed_gates"], ["pure-python"])
+        for name in ("saturation", "direct-push", "responsiveness"):
+            gate = _named(record, name)
+            self.assertTrue(gate["data"]["skipped"])
+            self.assertFalse(gate["blocking"])
+            self.assertIn("pure-python", gate["detail"])
+        self.assertLess(len(refused.asked), len(healthy.asked))
+
     def test_repeated_assignment_bot_closures_reject_the_repository(self) -> None:
         marker = {
             "user": {"login": "policy[bot]", "type": "Bot"},
