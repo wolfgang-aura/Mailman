@@ -183,6 +183,22 @@ class SelectionTests(unittest.TestCase):
         selection = select_test_files(self.workspace, ["edgar/xbrl/xbrl.py"])
         self.assertEqual([e["path"] for e in selection["selected"]], ["tests/test_xbrl.py"])
 
+    def test_a_package_only_match_outside_the_package_is_left_out_and_named(self) -> None:
+        # nilearn#6607: nilearn/_estimator_checks/tests/test_estimator_checks_nilearn.py
+        # imports `nilearn.glm.first_level` among every estimator in the
+        # library; matching `nilearn.glm` ran 1644 sklearn checks and the
+        # stage timed out at 20 minutes twice.
+        (self.workspace / "edgar" / "xbrl" / "tests").mkdir(parents=True)
+        self._test_file("edgar/xbrl/tests/test_facts.py", "from edgar.xbrl.facts import F\n")
+        self._test_file("tests/test_sweep.py", "from edgar.xbrl.facts import F\n")
+        self._test_file("tests/test_direct.py", "from edgar.xbrl.xbrl import X\n")
+        selection = select_test_files(self.workspace, ["edgar/xbrl/xbrl.py"])
+        self.assertEqual(
+            [e["path"] for e in selection["selected"]],
+            ["tests/test_direct.py", "edgar/xbrl/tests/test_facts.py"],
+        )
+        self.assertEqual(selection["indirect"], ["tests/test_sweep.py"])
+
     def test_without_testpaths_the_whole_tree_is_searched(self) -> None:
         self._test_file("tests/test_xbrl.py", "from edgar.xbrl import xbrl\n")
         self._test_file("examples/test_example.py", "from edgar.xbrl import xbrl\n")
@@ -314,6 +330,14 @@ class RunTouchedTestsTests(_RunFixture):
         stored = load_touched_tests(self.run_directory)
         self.assertEqual(stored["command"], record["command"])
         self.assertIsNone(touched_tests_verdict(record)[0])
+
+    def test_a_passing_verdict_names_the_package_only_files_left_out(self) -> None:
+        record = self._run(FakeExecutor(stdout="3 passed in 0.7s\n"))
+        record["indirect"] = ["tests/test_sweep.py"]
+        code, detail = touched_tests_verdict(record)
+        self.assertIsNone(code)
+        self.assertIn("left out 1 file(s)", detail)
+        self.assertIn("tests/test_sweep.py", detail)
 
     def test_a_failing_run_is_recorded_as_a_failure(self) -> None:
         record = self._run(FakeExecutor(exit_code=1, stdout="2 passed, 1 failed in 0.7s\n"))

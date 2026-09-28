@@ -216,6 +216,33 @@ def _directness(name: str, modules: dict[str, list[str]]) -> int:
     )
 
 
+def _package_only_from_outside(
+    relative: str, matched: list[str], modules: dict[str, list[str]]
+) -> bool:
+    """A file that names only a touched module's package, from outside it.
+
+    nilearn's estimator-check sweep imports `nilearn.glm.first_level` beside
+    every other estimator; matching `nilearn.glm` ran 1644 sklearn checks for
+    a one-line change in `nilearn/glm/regression.py` and the stage timed out.
+    Tests inside the package's own directory still count on the package name.
+    """
+    for source, names in modules.items():
+        if len(names) < 3:
+            continue
+        package = names[1]
+        if any(name != package for name in matched if name in names):
+            return False
+        if package not in matched:
+            continue
+        directory = source.replace("\\", "/").rsplit("/", 1)[0]
+        if relative.startswith(directory + "/"):
+            return False
+    return all(
+        any(len(names) >= 3 and name == names[1] for names in modules.values())
+        for name in matched
+    )
+
+
 def select_test_files(
     workspace: Path, changed_paths: list[str], *, cap: int = TOUCHED_TESTS_CAP
 ) -> dict[str, Any]:
@@ -232,6 +259,7 @@ def select_test_files(
         for name in names
     }
     selected: list[dict[str, Any]] = []
+    indirect: list[str] = []
     if patterns:
         # A test file the diff itself changes is the primary's own coverage of
         # the change; it runs first whether or not its text names the module.
@@ -249,6 +277,7 @@ def select_test_files(
                 {"path": relative, "matched": [], "reason": "changed by the diff"}
             )
         matched_by_import: list[dict[str, Any]] = []
+        indirect: list[str] = []
         for relative in _test_files(workspace):
             if relative in changed_tests:
                 continue
@@ -259,6 +288,9 @@ def select_test_files(
             except OSError:
                 continue
             matched = [name for name, pattern in patterns.items() if pattern.search(text)]
+            if matched and _package_only_from_outside(relative, matched, modules):
+                indirect.append(relative)
+                continue
             if matched:
                 matched_by_import.append(
                     {
@@ -284,6 +316,7 @@ def select_test_files(
         "capped": capped,
         "cap": cap,
         "omitted": omitted,
+        "indirect": indirect,
     }
 
 
@@ -651,10 +684,17 @@ def touched_tests_verdict(
             f"failed {record.get('failed')}, errors {record.get('errors')}): "
             f"{' '.join(record.get('command') or [])}",
         )
+    indirect = record.get("indirect") or []
     return (
         None,
         f"{len(record.get('selected') or [])} test file(s) ran, "
-        f"passed {record.get('passed')}, failed {record.get('failed')}",
+        f"passed {record.get('passed')}, failed {record.get('failed')}"
+        + (
+            f"; left out {len(indirect)} file(s) that name only the package from "
+            f"outside it: {', '.join(indirect)}"
+            if indirect
+            else ""
+        ),
     )
 
 
