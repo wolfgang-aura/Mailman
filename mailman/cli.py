@@ -448,6 +448,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="the one courtesy reply a closed or superseded run may still send",
     )
+    handoff.add_argument(
+        "--offer",
+        action="store_true",
+        help=(
+            "an ask-first offer comment on the run's issue; kept in "
+            "handoff-offer.json beside the pull request handoff"
+        ),
+    )
     handoff.add_argument("--data-root", type=Path)
 
     handoff_check = subparsers.add_parser(
@@ -455,6 +463,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="refuse to publish when the body changed since the last handoff",
     )
     handoff_check.add_argument("run_id")
+    handoff_check.add_argument(
+        "--offer",
+        action="store_true",
+        help="check the ask-first offer comment's handoff instead of the PR's",
+    )
     handoff_check.add_argument("--data-root", type=Path)
 
     prior_art = subparsers.add_parser(
@@ -1818,6 +1831,7 @@ def _handoff(arguments: argparse.Namespace) -> int:
         issue_number=arguments.issue,
         data_root=arguments.data_root,
         closing_reply=arguments.closing_reply,
+        offer=arguments.offer,
     )
     print(block)
     # A body claiming the human read it is not ready until the human says so.
@@ -1827,7 +1841,7 @@ def _handoff(arguments: argparse.Namespace) -> int:
 
 def _handoff_check(arguments: argparse.Namespace) -> int:
     _, run_directory = load_run(arguments.run_id, arguments.data_root)
-    result = check_handoff(run_directory)
+    result = check_handoff(run_directory, offer=arguments.offer)
     print(json.dumps(result, indent=2))
     return 0 if result["ok"] else 1
 

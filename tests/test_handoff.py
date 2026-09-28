@@ -12,11 +12,14 @@ from tempfile import TemporaryDirectory
 from mailman.cli import main
 from mailman.handoff import (
     HANDOFF_FILENAME,
+    OFFER_HANDOFF_FILENAME,
     body_digest,
     build_handoff,
     check_handoff,
     check_prior_art_freshness,
     first_person_claims,
+    load_handoff,
+    load_offer_handoff,
     publish_command,
     unsourced_specification_claims,
 )
@@ -962,3 +965,134 @@ class SilentCloseTests(unittest.TestCase):
             self._claims(directory)
             record, _ = self._pull_request(root, directory)
             self.assertIsNone(record["triage_warning"])
+
+
+OFFER = (
+    "@maintainer This reproduces on master at 01234567; the reproduction is "
+    "the two-line script in the issue. A fix is ready. Would you like a PR?\n"
+)
+
+
+class OfferHandoffTests(unittest.TestCase):
+    """An ask-first run carries its offer comment and its PR handoff at once.
+
+    `handoff --kind issue-comment` wrote the same `handoff.json` as the pull
+    request, so the offer and the PR replaced each other.
+    https://github.com/wolfgang-aura/Mailman/issues/138
+    """
+
+    def setUp(self):
+        authors = patch("mailman.handoff.check_authorship", return_value={"ok": True, "head": "fixture"})
+        authors.start()
+        self.addCleanup(authors.stop)
+
+    def _run(self, root: Path) -> tuple[RunRecord, Path]:
+        run, directory = _run_directory(root)
+        record = json.loads((directory / "run.json").read_text(encoding="utf-8"))
+        record["issue"] = "https://github.com/pmorissette/ffn/issues/327"
+        (directory / "run.json").write_text(json.dumps(record), encoding="utf-8")
+        (directory / "offer-comment.md").write_text(OFFER, encoding="utf-8", newline="\n")
+        _prior_art(directory)
+        return run, directory
+
+    def _offer(self, run: RunRecord, directory: Path, *, issue: int = 327, body: Path | None = None):
+        return build_handoff(
+            run_id=run.run_id,
+            run_directory=directory,
+            body_path=body or directory / "offer-comment.md",
+            kind="issue-comment",
+            repository="pmorissette/ffn",
+            issue_number=issue,
+            offer=True,
+            pull_request_lookup=lambda *_: None,
+        )
+
+    def test_the_offer_and_the_pull_request_handoffs_coexist(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            run, directory = self._run(root)
+            body_path = root / "body.md"
+            body_path.write_text(BODY, encoding="utf-8", newline="\n")
+            build_handoff(
+                run_id=run.run_id,
+                run_directory=directory,
+                body_path=body_path,
+                kind="pull-request",
+                repository="pmorissette/ffn",
+                title="Cache the rolling window",
+                head="Mailman-Fork:mailman/run-1",
+                base="master",
+            )
+            _, block = self._offer(run, directory)
+
+            self.assertTrue((directory / HANDOFF_FILENAME).is_file())
+            self.assertTrue((directory / OFFER_HANDOFF_FILENAME).is_file())
+            self.assertEqual(load_handoff(directory)["kind"], "pull-request")
+            self.assertEqual(load_offer_handoff(directory)["kind"], "issue-comment")
+            self.assertIn("gh issue comment 327 --repo pmorissette/ffn", block)
+            self.assertTrue(check_handoff(directory)["ok"])
+            offer = check_handoff(directory, offer=True)
+            self.assertTrue(offer["ok"], offer)
+            self.assertEqual(offer["issue_number"], 327)
+
+    def test_an_offer_to_another_thread_is_refused(self) -> None:
+        with TemporaryDirectory() as name:
+            run, directory = self._run(Path(name))
+            with self.assertRaisesRegex(ValueError, "this run's issue is #327"):
+                self._offer(run, directory, issue=999)
+            self.assertIsNone(load_offer_handoff(directory))
+
+    def test_an_offer_the_decision_would_refuse_is_refused(self) -> None:
+        with TemporaryDirectory() as name:
+            run, directory = self._run(Path(name))
+            long = directory / "long.md"
+            long.write_text(OFFER + "word " * 120, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "keep an offer under 120"):
+                self._offer(run, directory, body=long)
+            bare = directory / "bare.md"
+            bare.write_text("It reproduces. Would you like a PR for this?\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "does not name the base commit"):
+                self._offer(run, directory, body=bare)
+            self.assertIsNone(load_offer_handoff(directory))
+
+    def test_offer_check_fails_without_a_record_or_on_a_tampered_one(self) -> None:
+        with TemporaryDirectory() as name:
+            run, directory = self._run(Path(name))
+            missing = check_handoff(directory, offer=True)
+            self.assertFalse(missing["ok"])
+            self.assertEqual(missing["reason"], "no-offer-handoff")
+
+            self._offer(run, directory)
+            path = directory / OFFER_HANDOFF_FILENAME
+            record = json.loads(path.read_text(encoding="utf-8"))
+            record["issue_number"] = 12
+            path.write_text(json.dumps(record), encoding="utf-8")
+            tampered = check_handoff(directory, offer=True)
+            self.assertFalse(tampered["ok"])
+            self.assertEqual(tampered["reason"], "offer-invalid")
+
+    def test_offer_check_fails_when_the_draft_changes(self) -> None:
+        with TemporaryDirectory() as name:
+            run, directory = self._run(Path(name))
+            self._offer(run, directory)
+            (directory / "offer-comment.md").write_text(OFFER + "Thanks!\n", encoding="utf-8")
+            changed = check_handoff(directory, offer=True)
+            self.assertFalse(changed["ok"])
+            self.assertEqual(changed["reason"], "body-changed")
+
+    def test_the_cli_writes_and_checks_the_offer_record(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            run, directory = self._run(root)
+            stream = io.StringIO()
+            with redirect_stdout(stream):
+                made = main([
+                    "handoff", run.run_id, "--offer", "--kind", "issue-comment",
+                    "--issue", "327", "--repo", "pmorissette/ffn",
+                    "--body", str(directory / "offer-comment.md"),
+                    "--data-root", str(root),
+                ])
+                checked = main(["handoff-check", run.run_id, "--offer", "--data-root", str(root)])
+            self.assertEqual((made, checked), (0, 0), stream.getvalue())
+            self.assertFalse((directory / HANDOFF_FILENAME).exists())
+            self.assertTrue((directory / OFFER_HANDOFF_FILENAME).is_file())

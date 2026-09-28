@@ -635,6 +635,52 @@ class TriageFieldsTests(unittest.TestCase):
             self.assertEqual(record["issue_closed_at"], "2026-09-08T09:27:46Z")
 
 
+class OfferReplyTests(unittest.TestCase):
+    """A maintainer's answer to an ask-first offer is read from the thread.
+    See https://github.com/wolfgang-aura/Mailman/issues/138."""
+
+    ISSUE = {"number": 4775, "assignees": [], "state": "open",
+             "closed_at": None, "author_association": "NONE"}
+
+    def _read(self, root: Path, comments: list[dict], *, offer: bool = True) -> dict:
+        ReadClaimsTests._run(self, root)
+        if offer:
+            (root / "handoff-offer.json").write_text(
+                json.dumps({"kind": "issue-comment", "offer": True,
+                            "prepared_at": "2026-09-10T00:00:00+00:00"}),
+                encoding="utf-8",
+            )
+        return read_claims(root, executable="gh", execute=_FakeGh(self.ISSUE, comments))
+
+    @staticmethod
+    def _at(comment: dict, stamp: str) -> dict:
+        return {**comment, "created_at": stamp}
+
+    def test_only_a_maintainer_reply_after_the_offer_counts(self) -> None:
+        bot = _comment("Stale.", association="MEMBER", login="stale[bot]")
+        bot["user"]["type"] = "Bot"
+        with tempfile.TemporaryDirectory() as temporary:
+            record = self._read(Path(temporary), [
+                self._at(_comment("Earlier note.", association="OWNER", login="old"),
+                         "2026-09-09T23:59:59Z"),
+                self._at(_comment("+1, same here.", association="CONTRIBUTOR"),
+                         "2026-09-10T01:00:00Z"),
+                self._at(bot, "2026-09-10T02:00:00Z"),
+                self._at(_comment("Yes, please open a PR.", association="MEMBER",
+                                  login="keeper"), "2026-09-11T08:00:00Z"),
+            ])
+        self.assertEqual(record["offer_prepared_at"], "2026-09-10T00:00:00+00:00")
+        self.assertEqual([row["author"] for row in record["offer_replies"]], ["keeper"])
+        self.assertEqual(record["offer_replies"][0]["association"], "MEMBER")
+
+    def test_no_offer_means_no_offer_replies(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = self._read(Path(temporary), [
+                _comment("Yes, please open a PR.", association="OWNER"),
+            ], offer=False)
+        self.assertNotIn("offer_replies", record)
+
+
 def _labelled(name: str, login: str, *, kind: str = "User") -> dict:
     return {
         "event": "labeled",
