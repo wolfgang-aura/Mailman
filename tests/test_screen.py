@@ -932,6 +932,48 @@ class ScreenTests(unittest.TestCase):
         self.assertIn("policy", record["failed_gates"])
         self.assertIn("refuses AI-assisted work", _named(record, "policy")["detail"])
 
+    def test_a_ban_in_the_pull_request_template_fails_the_gate(self) -> None:
+        # sunpy/sunpy's .github/PULL_REQUEST_TEMPLATE.md, verbatim; sunpy has
+        # no guide in the repository and the gate passed it. Mailman #153.
+        template = (
+            "- **Do not post the output from Large Language Models or similar "
+            "generative AI as code or comments on GitHub or any other "
+            "platform.**\n"
+        )
+        for guide in ({}, {"CONTRIBUTING.md": "## Rules\n\nRun the tests.\n"}):
+            with self.subTest(guide=bool(guide)):
+                with tempfile.TemporaryDirectory() as temporary:
+                    record = _screen(
+                        Path(temporary),
+                        FakeGitHub(
+                            policies={
+                                ".github/PULL_REQUEST_TEMPLATE.md": template,
+                                **guide,
+                            }
+                        ),
+                    )
+                gate = _named(record, "policy")
+
+                self.assertIn("policy", record["failed_gates"])
+                self.assertIn("PULL_REQUEST_TEMPLATE.md refuses", gate["detail"])
+
+    def test_a_template_without_a_ban_leaves_the_guide_to_decide(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        ".github/PULL_REQUEST_TEMPLATE.md": (
+                            "## AI Assistance Disclosure\n\nRemoving this "
+                            "checklist may result in your pull request being "
+                            "automatically closed without a review.\n"
+                        )
+                    }
+                ),
+            )
+
+        self.assertNotIn("policy", record["failed_gates"])
+
     def test_cirqs_cla_clause_on_generated_code_fails_the_gate(self) -> None:
         # quantumlib/Cirq CONTRIBUTING.md, verbatim. The gate passed it with
         # "says nothing that closes AI-assisted work" and a reviewer-approved

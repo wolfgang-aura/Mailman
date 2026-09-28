@@ -266,6 +266,10 @@ _POLICY_BANS = re.compile(
     r"|ai[- ]generated\s+(?:code|pull requests?|prs?|contributions?)\s+"
     r"(?:are|will be)\s+(?:not\s+accepted|rejected|closed|banned)"
     r"|(?:do not|don't|please do not)\s+(?:use|submit)\s+(?:ai|llm|chatgpt|copilot)"
+    # sunpy's pull request template: "Do not post the output from Large
+    # Language Models or similar generative AI as code or comments". Mailman #153.
+    r"|(?:do not|don't|please do not)\W+(?:post|submit|send|open)\s+(?:the\s+)?"
+    r"output\s+(?:from|of)\s+(?:large\s+language\s+models?|llms?|generative\s+ai|ai\b|chatgpt)"
     r"|we\s+(?:do not|don't)\s+accept\s+ai"
     r"|ai[- ]?(?:assisted|written)\s+contributions?\s+are\s+not"
     r"|zero[- ]tolerance\s+.{0,40}\bai\b"
@@ -433,6 +437,17 @@ _POLICY_PATHS = (
     # urllib3 keeps its guide here, lower case, and the gate read none of it.
     "docs/contributing.rst",
     "AGENTS.md",
+)
+
+#: Where a project keeps the text every pull request opens with. A ban written
+#: there binds as surely as one in the guide: sunpy has no contributing guide in
+#: the repository and says "Do not post the output from Large Language Models"
+#: in its template, and the gate passed it. Mailman #153.
+_TEMPLATE_PATHS = (
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    ".github/pull_request_template.md",
+    "PULL_REQUEST_TEMPLATE.md",
+    "docs/pull_request_template.md",
 )
 
 #: The links a contributing guide carries, in the three spellings a guide
@@ -1362,7 +1377,26 @@ def _host_gate(
 
 
 def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
-    """Gate 4. Does the guide, or the policy it links, close an AI-assisted pull request?"""
+    """Gate 4. Does the guide, the policy it links, or the pull request template close an AI-assisted pull request?"""
+    for relative in _TEMPLATE_PATHS:
+        body = _decoded(gh.json(f"repos/{slug}/contents/{relative}"))
+        if not body:
+            continue
+        ban = _POLICY_BANS.search(" ".join(body.split()))
+        if ban:
+            return _gate(
+                "policy",
+                passed=False,
+                blocking=True,
+                detail=f"{relative} refuses AI-assisted work: {ban.group(0)!r}",
+                data={
+                    "source": relative,
+                    "guide": relative,
+                    "result": "refused",
+                    "quote": ban.group(0),
+                },
+            )
+        break
     for relative in _POLICY_PATHS:
         body = _decoded(gh.json(f"repos/{slug}/contents/{relative}"))
         if not body:
