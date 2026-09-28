@@ -19,6 +19,8 @@ from mailman.prescreen import (
     ISSUE_RESERVED_FOR_HUMANS,
     DECIDABLE,
     DESIGN_UNDECIDED,
+    INVITED_ENHANCEMENT,
+    ISSUE_NOT_BOUNDED_FIX,
     PRESCREEN_HOURS,
     REPOSITORY_SCREEN_FAILED,
     TRIVIAL,
@@ -344,9 +346,68 @@ class PrescreenTests(unittest.TestCase):
         self.assertEqual(record["verdict"], "reject")
         self.assertIn("issue-not-bounded-fix", record["blocking"])
         self.assertNotIn("duplicate_search", record)
-        self.assertEqual(
-            record["stages_skipped"], ["duplicate-search", "prior-art", "claims"]
+        # The thread is read, because an invitation there would lift the
+        # block; the search is still skipped. Mailman #155.
+        self.assertEqual(record["stages_skipped"], ["duplicate-search", "prior-art"])
+        self.assertIn("no maintainer in the thread asked", record["next"])
+
+    def labelled(self, label: str) -> dict:
+        return {
+            "number": 7,
+            "title": "Support reading gzip files",
+            "body": "It would help to read gzip-compressed input.",
+            "state": "OPEN",
+            "url": "https://github.com/example/project/issues/7",
+            "author": {"login": "reporter"},
+            "labels": [{"name": label}],
+            "createdAt": "2026-09-01T00:00:00Z",
+            "updatedAt": "2026-09-01T00:00:00Z",
+        }
+
+    invitation = {
+        "body": "Sounds reasonable, a PR would be welcome.",
+        "author_association": "MEMBER",
+        "created_at": "2026-09-02T00:00:00Z",
+        "user": {"login": "maintainer", "type": "User"},
+    }
+
+    def test_a_maintainer_invited_enhancement_passes_with_a_warning(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]", self.labelled("enhancement"), comments=[self.invitation]
+            ),
         )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(record["blocking"], [])
+        self.assertIn(INVITED_ENHANCEMENT, record["warnings"])
+        self.assertEqual(record["claims"]["invitations"], 1)
+
+    def test_an_invitation_from_outside_does_not_lift_the_block(self) -> None:
+        outsider = {**self.invitation, "author_association": "NONE"}
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub("[]", self.labelled("feature"), comments=[outsider]),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [ISSUE_NOT_BOUNDED_FIX])
+
+    def test_an_invitation_does_not_lift_a_tracking_label(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]", self.labelled("tracking"), comments=[self.invitation]
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertIn(ISSUE_NOT_BOUNDED_FIX, record["blocking"])
+        self.assertIn("claims", record["stages_skipped"])
 
     def test_an_issue_under_discussion_is_rejected_before_any_search(self) -> None:
         # py-pdf/pypdf#4035 carried `needs-discussion`; a run was built,

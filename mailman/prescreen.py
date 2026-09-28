@@ -123,6 +123,11 @@ DESIGN_UNDECIDED = "design-undecided"
 #: this prescreen in repositories that failed freshness and responsiveness, and
 #: the pool they seemed to fill was empty. Mailman #152.
 REPOSITORY_SCREEN_FAILED = "repository-screen-failed"
+#: A feature request a maintainer asked for in the thread ("PR welcome",
+#: "happy to merge"). A warning, not a block: the maintainer bounded the work
+#: and invited it, but the diff is larger than a bug fix. Without the
+#: invitation the feature label still blocks. Mailman #155.
+INVITED_ENHANCEMENT = "invited-enhancement"
 #: Labels that name the size of the change rather than its subject.
 _TRIVIAL_LABELS = frozenset({"typo", "typos"})
 #: Wordings that describe a change a maintainer writes in less time than he
@@ -168,12 +173,13 @@ _TRIVIAL_SIGNALS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
 )
-_NON_FIX_LABELS = frozenset(
+#: Feature labels a maintainer's invitation can lift; the rest of
+#: `_NON_FIX_LABELS` never names a change somebody can simply write.
+_FEATURE_LABELS = frozenset(
+    {"enhancement", "feature", "feature request", "feature-request"}
+)
+_NON_FIX_LABELS = _FEATURE_LABELS | frozenset(
     {
-        "enhancement",
-        "feature",
-        "feature request",
-        "feature-request",
         "meta",
         "project",
         "question",
@@ -259,6 +265,14 @@ def _store_prescreen(
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+def _feature_only(captured: dict[str, Any]) -> bool:
+    """Say whether the issue's only non-fix labels are feature labels."""
+    labels = {str(label).strip().lower() for label in captured.get("labels") or []}
+    return bool(labels & _FEATURE_LABELS) and not (
+        labels & (_NON_FIX_LABELS - _FEATURE_LABELS)
+    )
 
 
 def _issue_blocking(captured: dict[str, Any]) -> list[str]:
@@ -560,6 +574,14 @@ def prescreen_issue(
         "direct_push_limit": DIRECT_PUSH_LIMIT,
         "detail": _fix_size_detail(estimate, reason, share),
     }
+    # A feature label alone waits for the thread: a maintainer who wrote "PR
+    # welcome" has bounded and invited the work. Anything else blocking
+    # still ends the screen here, feature label included. Mailman #155.
+    feature_pending = issue_blocking == [ISSUE_NOT_BOUNDED_FIX] and _feature_only(
+        captured
+    )
+    if feature_pending:
+        issue_blocking = []
     if issue_blocking:
         record.update(
             {
@@ -673,6 +695,11 @@ def prescreen_issue(
         "shortlist_engaged": shortlist_engaged,
     }
     thread_blocking: list[str] = []
+    if feature_pending:
+        if claims.get("invitations"):
+            warnings.append(INVITED_ENHANCEMENT)
+        else:
+            thread_blocking.append(ISSUE_NOT_BOUNDED_FIX)
     if claims.get("agent_exclusions"):
         thread_blocking.append(ISSUE_RESERVED_FOR_HUMANS)
     if claims.get("design_undecided"):
@@ -747,6 +774,11 @@ def prescreen_issue(
                 f"already has one ({record['duplicate_policy']['quote']!r}), "
                 f"and {named} is open. Dormant or not, it is still the pull "
                 "request they count, so there is nothing to supersede"
+            )
+        if ISSUE_NOT_BOUNDED_FIX in thread_blocking:
+            details.append(
+                "it is labelled as a feature request and no maintainer in the "
+                "thread asked for a pull request"
             )
         if cited["decided_by"]:
             details.append(cited["detail"])

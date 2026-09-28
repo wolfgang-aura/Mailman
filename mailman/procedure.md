@@ -185,9 +185,12 @@ a time; a screen costs about 200 GitHub core calls.
    disagree with the pre-screen about which attempts are dormant. A stale
    attempt is prior art you owe work: read its diff and its review comments
    before starting, and carry it into step 13.
-   Closed issues and issues labelled as features,
-   enhancements, questions, projects or tracking work stop after the issue
-   read; do not spend search or agent work on them. Most targets fail here. One
+   Closed issues and issues labelled as questions, projects or tracking work
+   stop after the issue read; do not spend search or agent work on them. A
+   feature or enhancement label stops after the thread read unless a
+   maintainer there asked for a pull request ("PR welcome", "happy to
+   merge"); an invited one passes with an `invited-enhancement` warning and
+   counts toward the quota. Most targets fail here. One
    hunt opened 24 runs to file 3, and 14 of the 21 drops were "someone already
    fixed this": a question this answers for the price of one query instead of
    a whole run.
