@@ -366,6 +366,36 @@ def _cross_referenced_urls(timeline: Any) -> list[str]:
     return urls
 
 
+def rival_pull_requests(timeline: Any) -> list[str]:
+    """The open or merged pull requests GitHub cross-referenced to this issue.
+
+    A closed, unmerged one is an abandoned attempt and leaves the issue
+    workable. Of 55 maintainer-confirmed bugs read on 2026-09-28, 24 already
+    had one of these; the screen now finds them instead of a hand script.
+    """
+    if not isinstance(timeline, list):
+        return []
+    rivals: list[str] = []
+    for entry in timeline:
+        if not isinstance(entry, dict) or entry.get("event") != "cross-referenced":
+            continue
+        source = entry.get("source")
+        issue = source.get("issue") if isinstance(source, dict) else None
+        if not isinstance(issue, dict):
+            continue
+        pull = issue.get("pull_request")
+        if not isinstance(pull, dict):
+            continue
+        if issue.get("state") != "open" and not pull.get("merged_at"):
+            continue
+        url = str(issue.get("html_url") or "")
+        match = re.search(r"github\.com/([^/]+/[^/]+)/pull/(\d+)", url)
+        name = f"{match.group(1)}#{match.group(2)}" if match else url
+        if name and name not in rivals:
+            rivals.append(name)
+    return rivals
+
+
 def maintainer_labels(timeline: Any, *, reporter: str | None) -> list[dict[str, Any]]:
     """The labels somebody who can triage put on the issue, grouped per act.
 

@@ -43,8 +43,10 @@ from mailman.claims import (
     MAINTAINER_ASSOCIATIONS,
     classify_comment,
     classify_thread,
+    maintainer_labels,
     maintainer_touched_at,
     pull_request_references,
+    rival_pull_requests,
 )
 from mailman.executor import CommandResult, execute
 from mailman.target_intel import (
@@ -1784,6 +1786,42 @@ def _shortlist_row(
     }
 
 
+def _read_timelines(
+    gh: _Gh, slug: str, shortlist: list[dict[str, Any]], issues: list[dict[str, Any]]
+) -> None:
+    """Add label triage and rival pull requests to each shortlist row, in place.
+
+    A maintainer's label is triage in another form (#139), and `claims`
+    already counts it for a run; the screen counted only comments, so
+    `hunt targets --engaged-only` hid plotly/dash's P1-P3 bugs, which are
+    triaged by label alone. The same timeline page carries GitHub's own
+    cross-references, which is where a rival pull request usually shows.
+    One read per row, up to the thread cap; a row past it stays None.
+    """
+    reporters = {
+        str(row["number"]): (row.get("user") or {}).get("login")
+        for row in issues
+        if isinstance(row.get("user"), dict)
+    }
+    rows = [row for row in shortlist if row.get("thread_read")][:_COMMENT_THREAD_LIMIT]
+
+    def read(row: dict[str, Any]) -> list[Any]:
+        return gh.pages(
+            f"repos/{slug}/issues/{row['number']}/timeline?per_page=100", pages=1
+        )
+
+    with ThreadPoolExecutor(max_workers=RESPONSIVENESS_WORKERS) as pool:
+        timelines = list(pool.map(read, rows))
+    for row in shortlist:
+        row.setdefault("maintainer_labelled", None)
+        row.setdefault("rival_pull_requests", None)
+    for row, timeline in zip(rows, timelines):
+        row["maintainer_labelled"] = bool(
+            maintainer_labels(timeline, reporter=reporters.get(str(row["number"])))
+        )
+        row["rival_pull_requests"] = rival_pull_requests(timeline)
+
+
 def _saturation_gate(
     gh: _Gh, slug: str, window_days: int, issue_window_days: int
 ) -> dict[str, Any]:
@@ -1869,6 +1907,7 @@ def _saturation_gate(
                 now=now,
             )
         )
+    _read_timelines(gh, slug, shortlist, unclaimed)
     shortlist = sort_shortlist(shortlist)
     data = {
         "shortlist": shortlist,

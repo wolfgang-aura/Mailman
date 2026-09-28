@@ -434,10 +434,12 @@ def shortlist_engagement(
         if row.get("number") == number:
             filed = row.get("maintainer_filed")
             replied = row.get("maintainer_replied")
+            labelled = row.get("maintainer_labelled")
             return {
                 "maintainer_filed": filed,
                 "maintainer_replied": replied,
-                "engaged": filed is True or replied is True,
+                "maintainer_labelled": labelled,
+                "engaged": filed is True or replied is True or labelled is True,
             }
     return None
 

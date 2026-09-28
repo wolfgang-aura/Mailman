@@ -492,7 +492,8 @@ def row_engagement(row: dict) -> str:
     https://github.com/wolfgang-aura/Mailman/issues/135
     """
     filed, replied = row.get("maintainer_filed"), row.get("maintainer_replied")
-    if filed or replied:
+    # A label from somebody with triage access is triage too (#139).
+    if filed or replied or row.get("maintainer_labelled"):
         return ENGAGED
     if filed is False and replied is False:
         return NOT_ENGAGED
@@ -520,8 +521,9 @@ def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
     """Shortlisted issues from fresh passing screens that nobody has taken yet.
 
     An issue is left out when it was prescreened, when a live hunt holds it,
-    or when its repository holds our open pull request. Rows a maintainer
-    filed or replied on come first, then rows whose engagement is unknown,
+    when its repository holds our open pull request, or when an open or merged
+    pull request is cross-referenced to it. Rows a maintainer filed, replied
+    on or labelled come first, then rows whose engagement is unknown,
     then the rest; within each group, newest screen first in each screen's
     own shortlist order. An untriaged run never counts ready, so a hunt that
     starts on silent issues comes back empty (#135). `engaged_only` keeps
@@ -561,6 +563,10 @@ def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
             target = f"{slug}#{row.get('number')}"
             if target in claimed or prescreen_path(root, slug, int(row["number"])).is_file():
                 continue
+            # An open or merged pull request already answers it; racing one
+            # is how 24 of 55 confirmed bugs were lost on 2026-09-28.
+            if row.get("rival_pull_requests"):
+                continue
             engagement = row_engagement(row)
             if engaged_only and engagement != ENGAGED:
                 continue
@@ -570,6 +576,7 @@ def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
                 "engagement": engagement,
                 "maintainer_filed": row.get("maintainer_filed"),
                 "maintainer_replied": row.get("maintainer_replied"),
+                "maintainer_labelled": row.get("maintainer_labelled"),
                 # A screen written before f94d449 has no flags at all.
                 "stale_screen": "maintainer_filed" not in row,
                 "screened_at": screen.get("screened_at"),

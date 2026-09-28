@@ -61,6 +61,28 @@ def _issue(
     }
 
 
+def _labeled(name: str, actor: str) -> dict:
+    return {
+        "event": "labeled",
+        "actor": {"login": actor, "type": "User"},
+        "label": {"name": name},
+        "created_at": _days_ago(1),
+    }
+
+
+def _cross_reference(number: int, *, state: str, merged: bool = False) -> dict:
+    return {
+        "event": "cross-referenced",
+        "source": {
+            "issue": {
+                "html_url": f"https://github.com/example/project/pull/{number}",
+                "state": state,
+                "pull_request": {"merged_at": _days_ago(1) if merged else None},
+            }
+        },
+    }
+
+
 def _outside_pull(
     number: int,
     *,
@@ -178,6 +200,8 @@ class FakeGitHub:
         self.direct_pushes = set(overrides.pop("direct_pushes", ()))
         self.issues = overrides.pop("issues", [_issue(10), _issue(11)])
         self.issue_comments = overrides.pop("issue_comments", {})
+        #: Timeline events per issue number: labels and cross-references.
+        self.timelines = overrides.pop("timelines", {})
         self.languages = overrides.pop("languages", {"Python": 100000})
         self.workflows = overrides.pop(
             "workflows", {"ci.yml": HEALTHY_WORKFLOW}
@@ -246,6 +270,9 @@ class FakeGitHub:
             else:
                 rows = self.open_pulls if "state=open" in path else self.closed_pulls
             return rows if "page=1" in path or "page=" not in path else []
+        if base.endswith("/timeline"):
+            number = int(base.rsplit("/", 2)[-2])
+            return self.timelines.get(number, []) if "page=1" in path or "page=" not in path else []
         if "/comments" in base:
             # repos/<slug>/issues/<number>/comments, one thread per call.
             number = int(base.rsplit("/", 2)[-2])
@@ -2396,6 +2423,40 @@ class ShortlistTests(unittest.TestCase):
         self.assertTrue(by_number[11]["maintainer_filed"])
         self.assertFalse(by_number[12]["maintainer_replied"])
         self.assertFalse(by_number[12]["maintainer_filed"])
+
+    def test_each_row_records_label_triage_and_rival_pull_requests(self) -> None:
+        # plotly/dash triages with P1-P3 labels and no comment, and a rival
+        # pull request is on the timeline, not in the thread.
+        reported = _issue(10, days_old=5)
+        reported["user"] = {"login": "reporter"}
+        rivalled = _issue(11, days_old=5)
+        rivalled["user"] = {"login": "reporter"}
+        self_labelled = _issue(12, days_old=5)
+        self_labelled["user"] = {"login": "reporter"}
+        _, rows = self._shortlist(
+            FakeGitHub(
+                issues=[reported, rivalled, self_labelled],
+                issue_comments={10: [], 11: [], 12: []},
+                timelines={
+                    10: [_labeled("P2", "maintainer")],
+                    11: [
+                        _cross_reference(20, state="open"),
+                        _cross_reference(21, state="closed"),
+                        _cross_reference(22, state="closed", merged=True),
+                    ],
+                    12: [_labeled("bug", "reporter")],
+                },
+            )
+        )
+        by_number = {row["number"]: row for row in rows}
+
+        self.assertTrue(by_number[10]["maintainer_labelled"])
+        self.assertEqual(by_number[10]["rival_pull_requests"], [])
+        self.assertEqual(
+            by_number[11]["rival_pull_requests"],
+            ["example/project#20", "example/project#22"],
+        )
+        self.assertFalse(by_number[12]["maintainer_labelled"])
 
     def test_a_maintainer_engaged_issue_outranks_a_recent_silent_one(self) -> None:
         _, rows = self._shortlist(
