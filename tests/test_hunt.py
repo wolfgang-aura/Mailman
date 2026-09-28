@@ -331,7 +331,11 @@ class HuntTests(OrchestratorHarness):
         self.assertEqual(len(hunt["runs"]), 1)
 
     def test_a_hunt_records_one_deadline_for_every_candidate(self):
-        hunt = self.new_hunt()
+        hunt = create_hunt(
+            self.data_root, 1, primary="codex", primary_model="fixture-primary",
+            reviewer="claude", reviewer_model="fixture-reviewer",
+            time_budget_seconds=7200,
+        )
         created = datetime.fromisoformat(hunt["created_at"])
         deadline = datetime.fromisoformat(hunt["deadline_at"])
 
@@ -486,10 +490,38 @@ class TimeBudgetTests(HuntTests):
     https://github.com/wolfgang-aura/Mailman/issues/106
     """
 
-    def test_the_default_budget_is_two_hours(self):
+    def test_a_hunt_has_no_deadline_unless_asked(self):
+        """Each role's ten-minute limit already bounds a runaway model.
+
+        https://github.com/wolfgang-aura/Mailman/issues/166
+        """
         record = self.new_hunt()
 
-        self.assertEqual(record["time_budget_seconds"], 2 * 60 * 60)
+        self.assertIsNone(record["time_budget_seconds"])
+        self.assertIsNone(record["deadline_at"])
+        self.assertIsNone(deadline(record))
+
+    def test_a_hunt_without_a_deadline_takes_a_candidate_hours_later(self):
+        hunt = self.new_hunt()
+        hunt["created_at"] = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+        save(hunt_path(self.data_root, hunt["hunt_id"]), hunt)
+        run, directory = self.make_run()
+        run.primary = AgentConfig("codex", "fixture-primary")
+        run.reviewer = AgentConfig("claude", "fixture-reviewer")
+        write_run(run, directory)
+
+        add_run(self.data_root, hunt, run.run_id)
+        result = status(self.data_root, hunt)
+
+        self.assertEqual([row["run_id"] for row in hunt["runs"]], [run.run_id])
+        self.assertIsNone(result["deadline_at"])
+        self.assertFalse(result["deadline_expired"])
+
+    def test_a_record_from_before_the_change_keeps_its_two_hours(self):
+        record = self.new_hunt()
+        del record["deadline_at"]
+        record["time_budget_seconds"] = 7200
+
         self.assertEqual(
             deadline(record),
             datetime.fromisoformat(record["created_at"]) + timedelta(hours=2),

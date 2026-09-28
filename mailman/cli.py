@@ -27,7 +27,6 @@ from mailman.base_snippets import check_base_snippets
 from mailman.claims import read_claims, render_claims
 # The subparser for `hunt` is itself called `hunt` in the argument block, so
 # the module's own name is not available there.
-from mailman.hunt import HUNT_TIME_BUDGET_SECONDS
 from mailman.doctor import run_checks
 from mailman.environment import (
     environment_command,
@@ -228,10 +227,10 @@ def _build_parser() -> argparse.ArgumentParser:
     hunt.add_argument(
         "--time-budget-hours",
         type=float,
-        help="the hunt's whole clock, for hunt init. One fixed deadline is set "
-        "at creation and screening, setup, every candidate, review, repair and "
-        "replacement all spend it. Defaults to "
-        f"{HUNT_TIME_BUDGET_SECONDS / 3600:g} hours",
+        help="an optional clock for the whole hunt, for hunt init. One fixed "
+        "deadline is set at creation and screening, setup, every candidate, "
+        "review, repair and replacement all spend it. Without it the hunt has "
+        "no deadline and each run keeps its own budget (#166)",
     )
     hunt.add_argument("--attempted")
     hunt.add_argument("--why-user")
@@ -1063,9 +1062,7 @@ def _hunt(arguments: argparse.Namespace) -> int:
             reviewer=arguments.reviewer,
             reviewer_model=arguments.reviewer_model,
             owner=arguments.owner,
-            time_budget_seconds=(
-                hunt.HUNT_TIME_BUDGET_SECONDS if budget is None else budget * 3600
-            ),
+            time_budget_seconds=None if budget is None else budget * 3600,
         )
         print(json.dumps(record, indent=2))
         return 0
@@ -2121,16 +2118,18 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
                 f"run {run.run_id} was dropped from hunt {owning_hunt['hunt_id']}; "
                 "restore that run with evidence before resuming it"
             )
-        if arguments.time_budget_override_reason:
-            raise ValueError(
-                "an attached run cannot extend the hunt-wide deadline with "
-                "--time-budget-override-reason"
+        hunt_deadline = hunt.deadline(owning_hunt)
+        if hunt_deadline is not None:
+            if arguments.time_budget_override_reason:
+                raise ValueError(
+                    "an attached run cannot extend the hunt-wide deadline with "
+                    "--time-budget-override-reason"
+                )
+            deadline_at = hunt_deadline.isoformat()
+            time_budget_name = "hunt"
+            time_budget_seconds = float(
+                owning_hunt.get("time_budget_seconds") or hunt.HUNT_TIME_BUDGET_SECONDS
             )
-        deadline_at = hunt.deadline(owning_hunt).isoformat()
-        time_budget_name = "hunt"
-        time_budget_seconds = float(
-            owning_hunt.get("time_budget_seconds", hunt.HUNT_TIME_BUDGET_SECONDS)
-        )
     command = environment_command(
         run_directory,
         arguments.command or load_recorded_verification(run_directory) or [],
@@ -3040,11 +3039,14 @@ def main(arguments: list[str] | None = None) -> int:
     deadline_token = None
     try:
         deadline_hunt = _command_hunt(parsed)
+        hunt_deadline = None
         if deadline_hunt:
             from mailman.hunt import deadline
 
+            hunt_deadline = deadline(deadline_hunt)
+        if hunt_deadline is not None:
             deadline_token = set_deadline(
-                deadline(deadline_hunt),
+                hunt_deadline,
                 label=f"hunt {deadline_hunt['hunt_id']}",
             )
             clamp_timeout_seconds(1)

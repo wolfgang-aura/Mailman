@@ -31,9 +31,12 @@ PROCEDURE = Path(__file__).with_name("procedure.md")
 #: without an argument. Long enough to cover a reviewer stage, short enough
 #: that an abandoned hunt is not stuck for a day.
 LEASE_MINUTES = 90
-#: The default clock a hunt gets, overridable per hunt with
-#: `hunt init --time-budget-hours`. Screening, setup, every candidate, review,
-#: repair and replacement all spend it.
+#: The clock a hunt created before #166 got when its record carries no
+#: `deadline_at`. A new hunt has a deadline only when `hunt init
+#: --time-budget-hours` asks for one: each model role already has a
+#: ten-minute limit and each run its own budget, so a hunt-wide clock only
+#: stops a hunt from replacing candidates.
+#: https://github.com/wolfgang-aura/Mailman/issues/166
 HUNT_TIME_BUDGET_SECONDS = 2 * 60 * 60
 
 HUMAN_REASONS = ("authentication", "budget", "scope", "conflicting-instructions")
@@ -63,8 +66,10 @@ def is_terminal(record: dict) -> bool:
     return record.get("status") in TERMINAL_STATUSES
 
 
-def deadline(record: dict) -> datetime:
-    """Return the hunt's fixed deadline, including for older records."""
+def deadline(record: dict) -> datetime | None:
+    """Return the hunt's fixed deadline, None when it was created without one."""
+    if "deadline_at" in record and record["deadline_at"] is None:
+        return None
     value = record.get("deadline_at")
     if value:
         parsed = datetime.fromisoformat(value)
@@ -77,7 +82,7 @@ def deadline(record: dict) -> datetime:
 
 def require_time_remaining(record: dict, action: str) -> None:
     expires = deadline(record)
-    if datetime.now(UTC) >= expires:
+    if expires is not None and datetime.now(UTC) >= expires:
         raise ValueError(
             f"hunt {record['hunt_id']} reached its fixed deadline {expires.isoformat()} "
             f"before {action}. Abandon it or finish preserved ready work; a new "
@@ -125,12 +130,12 @@ def hunt_path(root: Path, hunt_id: str) -> Path:
 
 def create_hunt(root: Path, count: int, *, primary: str, primary_model: str,
                 reviewer: str, reviewer_model: str, owner: str | None = None,
-                time_budget_seconds: float = HUNT_TIME_BUDGET_SECONDS) -> dict:
+                time_budget_seconds: float | None = None) -> dict:
     if count < 1 or isinstance(count, bool):
         raise ValueError("the PR count must be positive")
     if not primary_model.strip() or not reviewer_model.strip():
         raise ValueError("ask for both model IDs before starting the hunt")
-    if time_budget_seconds <= 0:
+    if time_budget_seconds is not None and time_budget_seconds <= 0:
         raise ValueError("a hunt's time budget must be positive")
     created_at = utc_now()
     created = datetime.fromisoformat(created_at)
@@ -139,8 +144,9 @@ def create_hunt(root: Path, count: int, *, primary: str, primary_model: str,
         "data_root": str(root.resolve()), "created_at": created_at,
         "time_budget_seconds": time_budget_seconds,
         "deadline_at": (
-            created + timedelta(seconds=time_budget_seconds)
-        ).isoformat(),
+            None if time_budget_seconds is None
+            else (created + timedelta(seconds=time_budget_seconds)).isoformat()
+        ),
         "primary": {"agent": normalize_agent_name(primary), "model": primary_model},
         "reviewer": {"agent": normalize_agent_name(reviewer), "model": reviewer_model},
         "procedure_sha256": hashlib.sha256(PROCEDURE.read_bytes()).hexdigest(),
@@ -937,8 +943,8 @@ def status(root: Path, record: dict) -> dict:
               "next": "Prepare the approval packet." if ready >= record["requested"] else "Complete the next action or find a replacement candidate.",
               "escalations": record["escalations"]}
     expires = deadline(record)
-    result["deadline_at"] = expires.isoformat()
-    result["deadline_expired"] = datetime.now(UTC) >= expires
+    result["deadline_at"] = expires.isoformat() if expires else None
+    result["deadline_expired"] = expires is not None and datetime.now(UTC) >= expires
     if result["deadline_expired"] and result["remaining"]:
         result["next"] = (
             "The hunt deadline expired. Preserve its records and abandon the "

@@ -304,6 +304,70 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(factory.call_args.kwargs["reasoning_effort"], "max")
 
+    def test_a_run_in_a_hunt_without_a_deadline_keeps_its_own_budget(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/166"""
+        from mailman.artifacts import write_run
+        from mailman.hunt import add_run, create_hunt
+        from mailman.models import AgentConfig
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40,
+                primary="codex",
+                reviewer="claude",
+                data_root=data_root,
+            )
+            run.primary = AgentConfig("codex", "fixture-primary")
+            run.reviewer = AgentConfig("claude", "fixture-reviewer")
+            write_run(run, run_directory)
+            hunt = create_hunt(
+                data_root, 1, primary="codex", primary_model="fixture-primary",
+                reviewer="claude", reviewer_model="fixture-reviewer",
+            )
+            add_run(data_root, hunt, run.run_id)
+            (run_directory / "workspace").mkdir()
+            (run_directory / "environment.json").write_text(
+                json.dumps({"success": True}), encoding="utf-8"
+            )
+            for name in ("primary-task.md", "reviewer-task.md"):
+                (run_directory / name).write_text("prompt", encoding="utf-8")
+            outcome = SimpleNamespace(
+                run_id=run.run_id,
+                status="READY_FOR_HUMAN_REVIEW",
+                ready=True,
+                revisions_used=0,
+                review_cycles=1,
+                time_budget_seconds=7200,
+                deadline_at="2026-09-09T02:00:00+00:00",
+                record_path=run_directory / "run.json",
+            )
+            stderr = StringIO()
+            with (
+                patch("mailman.cli.orchestrate", return_value=outcome) as orchestrated,
+                patch("mailman.cli._pinned_agent_factory", return_value=object()),
+            ):
+                with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                    exit_code = main(
+                        [
+                            "orchestrate",
+                            run.run_id,
+                            "--data-root",
+                            str(data_root),
+                            "--time-budget-override-reason",
+                            "fixture",
+                            "--",
+                            "true",
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 0, stderr.getvalue())
+            kwargs = orchestrated.call_args.kwargs
+            self.assertIsNone(kwargs["deadline_at"])
+            self.assertEqual(kwargs["time_budget_name"], "run")
+
     def test_orchestrate_refuses_a_run_with_no_environment_record(self) -> None:
         """The verification result needs the provenance of its environment.
 

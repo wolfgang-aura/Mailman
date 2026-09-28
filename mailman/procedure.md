@@ -21,11 +21,12 @@ token. Keep that token: every action that changes the hunt takes `--owner
 TOKEN`. `mailman hunt status HUNT_ID` gives the next missing step and last-check
 timestamp. Update it after each run. Its records survive a new conversation.
 The coordinator performs the actions; the command does not spawn a background
-agent or discover targets itself. The hunt records one fixed deadline at
-creation, two hours unless `hunt init --time-budget-hours FLOAT` says
-otherwise. Ask for a different budget before creating the hunt: the deadline is
-written once and every later command reads it. Screening, setup, every
-candidate, review, repair and replacement all spend that same clock.
+agent or discover targets itself. A hunt has no deadline unless `hunt init
+--time-budget-hours FLOAT` sets one; each model role's ten-minute limit and
+each run's own budget already bound agent work (#166). When a budget is set it
+is one fixed deadline, written once and read by every later command, and
+screening, setup, every candidate, review, repair and replacement all spend
+that same clock.
 
 One hunt has one coordinator. If `hunt status` shows a live lease you do not
 hold, you are the second task on someone else's hunt. Do not poll it and do not
@@ -69,8 +70,8 @@ own without a domain narrowing the pool before they see it.
 Build the pool before the clock starts. `screen-target` and `prescreen` run
 without `--hunt` and spend no hunt time, and a passing pre-screen stays fresh
 for 24 hours. Do not run `hunt init N` until at least N+1 issues have passed
-both the pre-screen and your own read of the thread; the hunt's two hours are
-then spent on engineering. Go wide before deep: at most three pre-screens per
+both the pre-screen and your own read of the thread; the hunt's time is then
+spent on engineering. Go wide before deep: at most three pre-screens per
 repository, then move to the next one. Pre-screen only an issue where a
 maintainer confirmed the bug, reproduced it or asked for a fix. A maintainer
 reply on its own is not that. Hunt `20260928T094000Z-3b91d9` pre-screened 31
@@ -269,8 +270,9 @@ a time; a screen costs about 200 GitHub core calls.
 
 10. Run `orchestrate`. An `ENGINEERING_COMPLETE` outcome means finish the
     package. A `BLOCKED` run is a local stop, not a request for the user.
-    Every run uses the hunt's one cumulative deadline from `hunt init`, not a
-    fresh deadline per candidate or agent call. Mailman binds selection,
+    When the hunt has a deadline, every run uses that one cumulative deadline,
+    not a fresh one per candidate or agent call; without one, each run keeps
+    its own budget from its creation. Mailman binds selection,
     setup and agent commands to that deadline and clamps each subprocess to the
     remaining time when it starts. Once engineering completes, deterministic
     review-page, handoff and filing gates remain available after the deadline;
@@ -301,8 +303,8 @@ a time; a screen costs about 200 GitHub core calls.
     run `resume-review`. Do not restart a dirty primary workspace.
     Reviewer passes are budgeted per run, not per command: `--max-review-cycles`
     counts across every `orchestrate` and `resume-review`. When a run blocks on
-    a spent budget, replace the candidate only if the hunt deadline still has
-    time. An attached run cannot extend that deadline with
+    a spent budget, replace the candidate only if the hunt deadline, when it
+    has one, still has time. An attached run cannot extend that deadline with
     `--time-budget-override-reason`. Do not resume repeatedly to buy more
     passes. Keep agent shell
     output narrow: never print a whole large file or an unrestricted

@@ -35,10 +35,12 @@ behavior, not a complete PRHunt under 30 minutes.
 
 ## Current local procedure
 
-Code checkpoint `54bf8ed` on `main` starts one
-fixed two-hour deadline at `hunt init`. Every attached orchestration reads that
-deadline, and neither a replacement candidate nor
-`--time-budget-override-reason` can reset it. `hunt add` refuses an expired
+A hunt has a deadline only when `hunt init --time-budget-hours` sets one
+(#166, 2026-09-29; before that every hunt got a fixed two hours). When set,
+every attached orchestration reads that deadline, and neither a replacement
+candidate nor `--time-budget-override-reason` can reset it. Without one, an
+attached run keeps its own budget from run creation, and each model role keeps
+its ten-minute limit. `hunt add` refuses an expired
 hunt and any target already used by that hunt, including a dropped run.
 Agent work now requires a machine-checked reproduction. Before the primary
 starts, Mailman runs the exact verification argv recorded by `build-prompts`
