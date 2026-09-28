@@ -18,6 +18,7 @@ from mailman.hunt import create_hunt, hunt_path, save
 from mailman.prescreen import (
     ISSUE_RESERVED_FOR_HUMANS,
     DECIDABLE,
+    DESIGN_UNDECIDED,
     PRESCREEN_HOURS,
     TRIVIAL,
     TRIVIAL_FIX,
@@ -1174,6 +1175,62 @@ class ReservedForHumansTests(PrescreenTests):
 
         self.assertNotIn(ISSUE_RESERVED_FOR_HUMANS, record.get("blocking", []))
         self.assertEqual(record["claims"]["agent_exclusions"], [])
+
+
+class DesignUndecidedTests(PrescreenTests):
+    """Mailman #124: zarr-python#2706 and marimo#6250 passed with the design open."""
+
+    def maintainer(self, body: str, created_at: str) -> dict:
+        return {
+            "body": body,
+            "author_association": "MEMBER",
+            "created_at": created_at,
+            "user": {"login": "d-v-b", "type": "User"},
+        }
+
+    def test_an_open_design_question_rejects_the_issue(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                comments=[
+                    self.maintainer(
+                        "For the remaining work I'm not sure how we should "
+                        "handle nested filesystems.",
+                        "2026-09-03T00:00:00Z",
+                    )
+                ],
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [DESIGN_UNDECIDED])
+        self.assertIn("d-v-b", record["next"])
+        self.assertIn("not sure how we should", record["next"])
+        self.assertEqual(len(record["claims"]["design_undecided"]), 1)
+        self.assertNotIn("duplicate_search", record)
+
+    def test_a_settled_design_does_not_block(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                comments=[
+                    self.maintainer(
+                        "One option is to warn, another would be to raise.",
+                        "2026-09-03T00:00:00Z",
+                    ),
+                    self.maintainer(
+                        "Let's go with raising. PR welcome.", "2026-09-04T00:00:00Z"
+                    ),
+                ],
+            ),
+        )
+
+        self.assertNotIn(DESIGN_UNDECIDED, record.get("blocking", []))
+        self.assertEqual(record["claims"]["design_undecided"], [])
 
 
 class PriorDiscussionTests(PrescreenTests):

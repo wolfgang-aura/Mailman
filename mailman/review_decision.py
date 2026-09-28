@@ -70,6 +70,7 @@ _COMMIT_WORD = re.compile(r"\b[0-9a-f]{7,40}\b")
 OPTION_LABELS = "ABCDEFGH"
 
 from mailman.claims import triage_warning
+from mailman.target_intel import load_target_intel
 
 UNTRIAGED_GATE = "untriaged-issue"
 
@@ -523,6 +524,47 @@ def untriaged_question(warning: str) -> dict[str, Any]:
     }
 
 
+TOOL_COMPARISON_GATE = "tool-comparison"
+
+
+def tool_comparison_question(comparisons: list[dict[str, Any]]) -> dict[str, Any]:
+    """Ask whether the change goes against what the thread says other tools do.
+
+    Non-blocking: the sentence may support the change as easily as oppose it,
+    and only a person reading it can tell. pypdf#4035's thread said poppler,
+    mutool and pdf.js all behaved one way. Mailman #124.
+    """
+    quoted = "; ".join(f'"{entry.get("quote")}"' for entry in comparisons[:3])
+    return {
+        "question": (
+            f"The issue thread compares other tools: {quoted}. Does the change "
+            "match what they do?"
+        ),
+        "blocking": False,
+        "gate": TOOL_COMPARISON_GATE,
+        "options": [
+            {
+                "label": "A",
+                "text": "It matches them; say so in the pull request body.",
+                "cost": "One sentence of evidence in the description.",
+            },
+            {
+                "label": "B",
+                "text": "It departs from them; ask on the issue before filing.",
+                "cost": "Days of delay while a maintainer answers.",
+            },
+            {
+                "label": "C",
+                "text": "Drop the target.",
+                "cost": "The work done on the run.",
+            },
+        ],
+        "recommendation": (
+            "A - if the reproduction shows the change matches them; otherwise B."
+        ),
+    }
+
+
 def blank_decision(run_directory: Path | None = None) -> dict[str, Any]:
     """A skeleton an agent fills in. Every string here fails validation on purpose.
 
@@ -532,6 +574,10 @@ def blank_decision(run_directory: Path | None = None) -> dict[str, Any]:
     """
     warning = triage_warning(run_directory) if run_directory is not None else None
     seeded = [untriaged_question(warning)] if warning else []
+    intel = load_target_intel(run_directory) if run_directory is not None else None
+    comparisons = (intel or {}).get("tool_comparisons") or []
+    if comparisons:
+        seeded.append(tool_comparison_question(comparisons))
     return {
         "schema_version": DECISION_SCHEMA_VERSION,
         "recommendation": "HOLD",

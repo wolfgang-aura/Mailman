@@ -11,6 +11,7 @@ from pathlib import Path
 from mailman.claims import CLAIMS_FILENAME
 from mailman.review_decision import (
     DECISION_FILENAME,
+    TOOL_COMPARISON_GATE,
     UNTRIAGED_GATE,
     DecisionError,
     blank_decision,
@@ -20,6 +21,7 @@ from mailman.review_decision import (
     render_panels,
     render_questions,
 )
+from mailman.target_intel import TARGET_INTEL_FILENAME
 
 
 VALID = {
@@ -220,6 +222,46 @@ class UntriagedIssueGateTests(unittest.TestCase):
 
         self.assertEqual(decision.questions[0].gate, UNTRIAGED_GATE)
         self.assertEqual(len(decision.blocking_questions), 1)
+
+    def test_a_tool_comparison_seeds_a_non_blocking_question(self) -> None:
+        quote = "Poppler, mutool and pdf.js all keep the first /Outlines entry."
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / TARGET_INTEL_FILENAME).write_text(
+                json.dumps(
+                    {
+                        "success": True,
+                        "tool_comparisons": [
+                            {
+                                "author": "stefan6419846",
+                                "association": "MEMBER",
+                                "tools": ["mutool", "pdf.js", "poppler"],
+                                "quote": quote,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            seeded = blank_decision(directory)["questions"][0]
+            self.assertEqual(seeded["gate"], TOOL_COMPARISON_GATE)
+            self.assertFalse(seeded["blocking"])
+            self.assertIn(quote, seeded["question"])
+            data = copy.deepcopy(VALID)
+            data["questions"] = [seeded]
+            (directory / DECISION_FILENAME).write_text(json.dumps(data), encoding="utf-8")
+            decision = load_decision(directory)
+
+        self.assertEqual(decision.blocking_questions, [])
+
+    def test_no_tool_comparison_seeds_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / TARGET_INTEL_FILENAME).write_text(
+                json.dumps({"success": True, "tool_comparisons": None}),
+                encoding="utf-8",
+            )
+            self.assertEqual(blank_decision(directory)["questions"][0]["question"], "")
 
     def test_a_maintainer_reply_seeds_nothing_and_gates_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

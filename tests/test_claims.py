@@ -17,6 +17,7 @@ from mailman.claims import (
     CLAIMS_FILENAME,
     classify_comment,
     classify_thread,
+    design_open_questions,
     excludes_agents,
     is_maintainer_invitation,
     load_claims,
@@ -208,6 +209,124 @@ class AgentExclusionTests(unittest.TestCase):
         ):
             with self.subTest(body=body):
                 self.assertFalse(excludes_agents(_comment(body, association="MEMBER")))
+
+
+class DesignUndecidedTests(unittest.TestCase):
+    """Mailman #124: an open design choice in the thread, with no label on it."""
+
+    def test_the_zarr_2706_open_question_blocks(self) -> None:
+        thread = [
+            _comment("Opening zarr groups on nested fsspec filesystems fails."),
+            _comment(
+                "The simple case is fixed now. For the remaining work I'm not "
+                "sure how we should handle nested filesystems: one option is to "
+                "unwrap the inner filesystem, another is to require a URL chain.",
+                association="MEMBER",
+                login="d-v-b",
+            ),
+        ]
+        rows = design_open_questions(thread)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["author"], "d-v-b")
+        self.assertIn("not sure how we should", rows[0]["phrase"])
+        self.assertIn("nested filesystems", rows[0]["quote"])
+
+    def test_a_maintainer_with_no_design_blocks(self) -> None:
+        # getsentry/responses#744
+        thread = [
+            _comment("Matchers ignore the query string order."),
+            _comment(
+                "I haven't decided how this should work. Open to suggestions.",
+                association="OWNER",
+                login="markstory",
+            ),
+        ]
+        self.assertEqual(len(design_open_questions(thread)), 1)
+
+    def test_a_proposed_config_option_without_acceptance_blocks(self) -> None:
+        # marimo-team/marimo#6250
+        thread = [
+            _comment("Autoreload reruns cells I did not touch."),
+            _comment(
+                "We could add a config option to disable this behaviour.",
+                association="CONTRIBUTOR",
+                login="mscolnick",
+            ),
+        ]
+        self.assertEqual(len(design_open_questions(thread)), 1)
+
+    def test_common_open_phrasings_block(self) -> None:
+        for body in (
+            "Not sure what we want here.",
+            "Which approach do people prefer?",
+            "We need to decide whether this belongs in core.",
+            "This needs more discussion before anyone writes code.",
+            "Alternatively we could raise instead.",
+            "I’d like to hear from other users first.",
+            "This probably needs an RFC.",
+            "Thanks for the proposal.",
+            "Perhaps add a flag for strict mode.",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(
+                    len(design_open_questions([_comment(body, association="MEMBER")])),
+                    1,
+                )
+
+    def test_an_alternative_in_a_comment_ending_pr_welcome_does_not_block(self) -> None:
+        thread = [
+            _comment(
+                "Alternatively we could special-case empty strings, but the "
+                "check in `parse()` is the right place. PR welcome!",
+                association="MEMBER",
+            )
+        ]
+        self.assertEqual(design_open_questions(thread), [])
+
+    def test_a_later_maintainer_choice_settles_it(self) -> None:
+        thread = [
+            _comment(
+                "One option is to warn, another would be to raise.",
+                association="MEMBER",
+            ),
+            _comment("Raising seems cleaner to me."),
+            _comment("Let's go with raising. Happy to accept a PR.", association="OWNER"),
+        ]
+        self.assertEqual(design_open_questions(thread), [])
+
+    def test_a_question_reopened_after_settling_blocks(self) -> None:
+        thread = [
+            _comment("PRs welcome.", association="MEMBER"),
+            _comment(
+                "On reflection we need to decide on the API first.",
+                association="MEMBER",
+            ),
+        ]
+        self.assertEqual(len(design_open_questions(thread)), 1)
+
+    def test_outsiders_and_bots_neither_open_nor_settle(self) -> None:
+        opened = _comment("Which approach should we take?", association="MEMBER")
+        outsider_settle = _comment("Let's go with option A, PR welcome.")
+        bot = {
+            **_comment("Needs discussion.", association="MEMBER"),
+            "user": {"login": "stale[bot]", "type": "Bot"},
+        }
+        self.assertEqual(len(design_open_questions([opened, outsider_settle])), 1)
+        self.assertEqual(design_open_questions([_comment("Which approach?")]), [])
+        self.assertEqual(design_open_questions([bot]), [])
+
+    def test_ordinary_maintainer_replies_do_not_block(self) -> None:
+        for body in (
+            "Per RFC 3986 the fragment is optional.",
+            "See RFC-7230 section 3.2.",
+            "Thanks, I can reproduce this on main.",
+            "The option `strict=True` already exists; this is a bug in it.",
+            "Confirmed. The fix belongs in `_parse_header`.",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(
+                    design_open_questions([_comment(body, association="MEMBER")]), []
+                )
 
 
 class ReadClaimsTests(unittest.TestCase):

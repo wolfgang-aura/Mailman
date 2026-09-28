@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from mailman.executor import CommandResult, execute
+from mailman.issue import load_issue_record
 from mailman.toolchain import resolve_tool
 
 #: How recent an outside human merge has to be to count as fresh. Fourteen
@@ -64,6 +65,96 @@ _ISSUE_URL_REFERENCE = re.compile(r"issues/(\d{2,7})")
 #: Branch names carry the reference when the body forgets to: `fix/issue-104`,
 #: `issue_104`. Mailman's own convention, `mailman/issue-3497`, is one of these.
 _BRANCH_REFERENCE = re.compile(r"issue[-_]?(\d{2,7})", re.IGNORECASE)
+
+
+#: Tools an issue thread names when it says how everybody else behaves. The
+#: list leaves out names that are also ordinary words ("requests", "black",
+#: "git"), because a false comparison seeds a question nobody needs.
+#: https://github.com/wolfgang-aura/Mailman/issues/124
+_KNOWN_TOOLS = (
+    "poppler", "pdftotext", "mutool", "mupdf", "pdf.js", "pdfjs", "pdfium",
+    "qpdf", "ghostscript", "xpdf", "pdfminer", "pymupdf", "pikepdf",
+    "pdfplumber", "pypdf", "pypdf2", "acrobat", "firefox", "chromium",
+    "safari", "curl", "wget", "httpx", "aiohttp", "urllib3", "numpy",
+    "pandas", "polars", "pyarrow", "scipy", "gcc", "clang", "msvc", "ruff",
+    "flake8", "pylint", "isort", "mypy", "pyright", "prettier", "eslint",
+    "openssl", "libxml2", "lxml", "sqlite", "postgres", "postgresql",
+    "mysql", "zarr", "h5py", "netcdf4", "xarray", "dask", "fsspec", "s3fs",
+    "boto3", "pyyaml", "ruamel", "tomli", "tomllib", "orjson", "ujson",
+    "simplejson", "pydantic", "marshmallow", "django", "flask", "fastapi",
+    "starlette", "pytest", "ffmpeg", "imagemagick", "pillow", "libvips",
+)
+_TOOL_NAME = re.compile(
+    r"(?<![\w.-])(?:"
+    + "|".join(re.escape(name) for name in _KNOWN_TOOLS)
+    + r")(?![\w-])",
+    re.IGNORECASE,
+)
+_OTHER_TOOLS = re.compile(
+    r"\bother (?:tools|libraries|implementations|projects|parsers|readers|"
+    r"viewers|browsers|clients|packages|renderers|engines)\b",
+    re.IGNORECASE,
+)
+_QUANTIFIER = re.compile(r"\b(?:all|both|every|each|most|none|neither)\b", re.IGNORECASE)
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+_CODE_FENCE = re.compile(r"```.*?```", re.DOTALL)
+
+
+def tool_comparisons(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sentences in an issue thread that say how other tools behave.
+
+    A sentence counts when it names two known tools, or "other tools" (or
+    libraries, implementations...), together with "all", "both", "every" or
+    "most". pypdf#4035 read "poppler, mutool and pdf.js all do X", and the
+    requested change went the other way; the operator should see that before
+    approving a patch.
+    """
+    found: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for comment in comments:
+        if not isinstance(comment, dict) or _is_bot(comment.get("user")):
+            continue
+        body = _CODE_FENCE.sub(" ", str(comment.get("body") or ""))
+        for sentence in _SENTENCE_SPLIT.split(body):
+            sentence = " ".join(sentence.split())
+            if not sentence or not _QUANTIFIER.search(sentence):
+                continue
+            names = sorted(
+                {match.group(0).lower() for match in _TOOL_NAME.finditer(sentence)}
+            )
+            if len(names) < 2 and not _OTHER_TOOLS.search(sentence):
+                continue
+            quote = sentence if len(sentence) <= 300 else sentence[:297] + "..."
+            if quote in seen:
+                continue
+            seen.add(quote)
+            user = comment.get("user") or {}
+            found.append(
+                {
+                    "author": user.get("login") if isinstance(user, dict) else None,
+                    "association": comment.get("author_association"),
+                    "tools": names,
+                    "quote": quote,
+                }
+            )
+    return found
+
+
+def _thread_tool_comparisons(
+    gh: _Gh, run_directory: Path, slug: str
+) -> list[dict[str, Any]] | None:
+    """Read the run's own issue thread for tool comparisons; None when there is none."""
+    issue = load_issue_record(run_directory) or {}
+    reference = issue.get("reference") or {}
+    number = reference.get("number")
+    owner_name = f"{reference.get('owner')}/{reference.get('repository')}"
+    if not number or owner_name.lower() != slug.lower():
+        return None
+    payload = gh.json(f"repos/{slug}/issues/{number}")
+    if not isinstance(payload, dict):
+        return None
+    comments = gh.pages(f"repos/{slug}/issues/{number}/comments", pages=2)
+    return tool_comparisons([payload, *comments])
 
 
 def repository_slug(repository: str) -> str:
@@ -512,6 +603,9 @@ def collect_target_intel(
         "automated_enforcement": [entry["marker"] for entry in record["enforcement"]],
         "passes_freshness_bar": len(merged_recent) > 0,
     }
+    # Other tools the issue thread names as behaving one way. Not a gate: it
+    # seeds a question in `decision --init`. Mailman #124.
+    record["tool_comparisons"] = _thread_tool_comparisons(gh, run_directory, slug)
     record["commands"] = gh.commands
     record["read_failures"] = gh.failures
     record["success"] = True
@@ -552,6 +646,11 @@ def render_target_intel(record: dict[str, Any]) -> str:
             seen = ", ".join(f"#{number}" for number in entry.get("seen_on", [])[:4])
             lines.append(f"- `{entry['marker']}`, seen {entry['count']} time(s) on {seen}")
             lines.append(f"  > {entry['quote'][:300]}")
+        lines.append("")
+    if record.get("tool_comparisons"):
+        lines += ["## Other tools the issue thread compares against", ""]
+        for entry in record["tool_comparisons"]:
+            lines.append(f"- **{entry.get('author')}**: {entry.get('quote')}")
         lines.append("")
     lines += ["## What the merges that landed actually did", ""]
     held = assessment.get("merges_whose_author_held_the_assignment", 0)

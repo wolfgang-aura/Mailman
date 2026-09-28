@@ -104,6 +104,94 @@ def excludes_agents(comment: dict[str, Any]) -> bool:
     return bool(_AGENT_EXCLUSION.search(text))
 
 
+#: A project voice saying the design is still open. zarr-python#2706 left an
+#: open question about nested filesystems, responses#744 had a maintainer with
+#: no design at all, and marimo#6250's only proposal was a new config option
+#: nobody accepted. Each was turned down by hand after the prescreen passed it.
+#: https://github.com/wolfgang-aura/Mailman/issues/124
+_DESIGN_OPEN = re.compile(
+    r"\b(?:"
+    r"not (?:sure|certain) (?:what|how|whether|if) we(?:'d)? (?:should|want|would)"
+    r"|open to (?:other )?(?:ideas|suggestions|proposals)"
+    r"|which (?:approach|option|design|direction)\b"
+    r"|we (?:need|have|'ll need) to (?:decide|figure out)"
+    r"|needs? (?:more |further |some )?discussion"
+    r"|one (?:option|approach|way|possibility) (?:is|would be|could be)\b"
+    r".{0,400}?\banother\b"
+    r"|alternatively,? we could"
+    r"|i(?:'d| would) like to hear"
+    r"|rfc\b(?![\s-]*\d)"
+    r"|proposals?\b"
+    r"|(?:haven't|have not|not yet) decided"
+    # A maintainer floating a new knob has not accepted any fix yet.
+    r"|(?:(?:we|you) (?:could|can|might|may) (?:just |also )?"
+    r"(?:add|introduce|expose|provide)"
+    r"|(?:maybe|perhaps) (?:we )?(?:add|introduce|adding|introducing))"
+    r" (?:a |an )?(?:new )?(?:[\w-]+ )?"
+    r"(?:config(?:uration)?|option|flag|setting|parameter|knob|toggle)s?\b"
+    r")",
+    re.IGNORECASE,
+)
+
+#: A later project voice closing the question: an invitation to the pull
+#: request, or an explicit choice.
+_DESIGN_SETTLED = re.compile(
+    r"\b(?:"
+    r"let(?:'s| us) go with|we(?:'ll| will) go with|decided to go with"
+    r"|go ahead\b|i(?:'d| would) accept|sounds good|that works for (?:me|us)"
+    r")",
+    re.IGNORECASE,
+)
+
+_PROJECT_VOICES = MAINTAINER_ASSOCIATIONS | {"CONTRIBUTOR"}
+
+
+def _sentence_around(text: str, start: int, end: int, limit: int = 240) -> str:
+    left = max(text.rfind(mark, 0, start) for mark in (". ", "? ", "! "))
+    right_candidates = [
+        position for position in (text.find(mark, end) for mark in ".?!")
+        if position != -1
+    ]
+    right = min(right_candidates) + 1 if right_candidates else len(text)
+    sentence = text[left + 2 if left != -1 else 0 : right].strip()
+    return sentence if len(sentence) <= limit else sentence[: limit - 3] + "..."
+
+
+def design_open_questions(thread: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The project-voice comments that leave a design choice open, still unsettled.
+
+    Walked in order. A comment from a maintainer (or CONTRIBUTOR, as
+    `excludes_agents` counts them) whose last settling phrase ("PR welcome",
+    "let's go with", "I'd accept") comes after its last open phrase settles
+    everything before it; a later open phrase reopens the question. Outsiders
+    neither open nor settle anything.
+    """
+    unsettled: list[dict[str, Any]] = []
+    for comment in thread:
+        if not isinstance(comment, dict) or _is_bot(comment.get("user")):
+            continue
+        if comment.get("author_association") not in _PROJECT_VOICES:
+            continue
+        text = _matchable(_flat(comment.get("body")))
+        opens = list(_DESIGN_OPEN.finditer(text))
+        settles = list(_DESIGN_SETTLED.finditer(text)) + list(
+            _INVITATION.finditer(text)
+        )
+        last_settle = max((match.start() for match in settles), default=-1)
+        if last_settle != -1 and (not opens or last_settle > opens[-1].start()):
+            unsettled = []
+            continue
+        if not opens:
+            continue
+        match = opens[0]
+        phrase = match.group(0)
+        row = _row(comment)
+        row["phrase"] = phrase if len(phrase) <= 80 else phrase[:77] + "..."
+        row["quote"] = _sentence_around(text, match.start(), match.end())
+        unsettled.append(row)
+    return unsettled
+
+
 #: Asking after a bug is not claiming it. These run first, because several of
 #: them contain the words a claim is made of: "is anyone working on this" would
 #: otherwise read as "working on this".
@@ -594,6 +682,7 @@ def read_claims(
             record["invitations"].append(_row(comment))
         if excludes_agents(comment):
             record["agent_exclusions"].append(_row(comment))
+    record["design_undecided"] = design_open_questions(thread)
     record["comments_read"] = len(comments)
     record["issue_created_at"] = payload.get("created_at")
     record["maintainer_touched_at"] = maintainer_touched_at(thread)

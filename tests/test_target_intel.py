@@ -13,6 +13,7 @@ from mailman.target_intel import (
     referenced_issues,
     render_target_intel,
     repository_slug,
+    tool_comparisons,
 )
 from mailman.targeting import NO_TARGET_INTEL, assess_target
 
@@ -391,6 +392,56 @@ class TargetIntelGateTests(unittest.TestCase):
             assessment = assess_target(root)
         self.assertEqual(assessment.blocking, [])
         self.assertIn("fails-freshness-bar", assessment.warnings)
+
+
+class ToolComparisonTests(unittest.TestCase):
+    """Mailman #124: pypdf#4035 said poppler, mutool and pdf.js all agree."""
+
+    @staticmethod
+    def comment(body: str, login: str = "reporter") -> dict:
+        return {
+            "body": body,
+            "author_association": "NONE",
+            "user": {"login": login, "type": "User"},
+        }
+
+    def test_a_sentence_naming_several_tools_with_all_is_recorded(self) -> None:
+        found = tool_comparisons(
+            [
+                self.comment("The outline is empty after merging."),
+                self.comment(
+                    "I checked the file. Poppler, mutool and pdf.js all keep "
+                    "the first /Outlines entry and ignore the rest.",
+                    login="stefan6419846",
+                ),
+            ]
+        )
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["author"], "stefan6419846")
+        self.assertEqual(found[0]["tools"], ["mutool", "pdf.js", "poppler"])
+        self.assertTrue(found[0]["quote"].startswith("Poppler, mutool"))
+
+    def test_other_libraries_with_most_is_recorded(self) -> None:
+        found = tool_comparisons(
+            [self.comment("Most other libraries return None for a missing key.")]
+        )
+        self.assertEqual(found[0]["tools"], [])
+
+    def test_mentions_without_a_comparison_are_not_recorded(self) -> None:
+        self.assertEqual(
+            tool_comparisons(
+                [
+                    self.comment("I use numpy and pandas in this project."),
+                    self.comment("All tests pass with poppler installed."),
+                    self.comment("```\nall numpy pandas\n```"),
+                    {
+                        **self.comment("Both curl and wget agree."),
+                        "user": {"login": "ci[bot]", "type": "Bot"},
+                    },
+                ]
+            ),
+            [],
+        )
 
 
 class _LimitedResult:

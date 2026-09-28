@@ -175,7 +175,10 @@ own without a domain narrowing the pool before they see it.
    `--no-prescreen REASON` only when you mean it; the reason is recorded.
    A maintainer comment that reserves the issue for human contributors, or
    warns that agent-written pull requests may be rejected, blocks it under
-   `issue-reserved-for-humans`. When you turn an issue down yourself after
+   `issue-reserved-for-humans`. A maintainer comment that leaves the design
+   open ("not sure how we should", "one option is... another", "we could add
+   a config option") with no later maintainer comment settling it blocks it
+   under `design-undecided`. When you turn an issue down yourself after
    reading its thread, record it: `mailman prescreen OWNER/REPO#N --reject
    REASON --evidence LINK --hunt HUNT_ID --owner TOKEN`. An unrecorded
    rejection is offered again by `hunt targets` to the next session.

@@ -66,10 +66,11 @@ from mailman.targeting import (
 #: rejects duplicate pull requests, which decides whether a dormant one may be
 #: superseded at all; 8 asks who closed each closed attempt; 9 asks whether
 #: anybody who speaks for the project has acknowledged the report; 10 asks
-#: whether a maintainer reserved the issue for human contributors. A screen
+#: whether a maintainer reserved the issue for human contributors; 11 asks
+#: whether a maintainer left a design choice open in the thread. A screen
 #: written before any of them never asked the question, so `check` sends it
 #: back.
-PRESCREEN_SCHEMA_VERSION = 10
+PRESCREEN_SCHEMA_VERSION = 11
 ISSUE_SCREENS = "issue-screens"
 #: A pre-screen filters a shortlist; it is not the filing gate. The run stage
 #: still re-runs the duplicate search under its own one-hour limit, and
@@ -109,6 +110,12 @@ REJECTED_BY_COORDINATOR = "rejected-by-coordinator"
 #: request is the one they described. beetbox/beets#6984 said so and had three
 #: closed attempts; the hunt reached it by hand after the prescreen passed it.
 ISSUE_RESERVED_FOR_HUMANS = "issue-reserved-for-humans"
+#: A maintainer wrote in the thread that the design is open ("not sure how we
+#: should", "one option is... another", "we could add a config option") and no
+#: later maintainer comment settled it. The label check misses these because
+#: nobody labelled them: zarr-python#2706, responses#744 and marimo#6250 were
+#: each turned down by hand after passing. Mailman #124.
+DESIGN_UNDECIDED = "design-undecided"
 #: Labels that name the size of the change rather than its subject.
 _TRIVIAL_LABELS = frozenset({"typo", "typos"})
 #: Wordings that describe a change a maintainer writes in less time than he
@@ -542,6 +549,7 @@ def prescreen_issue(
         "claims": len(claims.get("claims", [])),
         "invitations": len(claims.get("invitations", [])),
         "agent_exclusions": claims.get("agent_exclusions", []),
+        "design_undecided": claims.get("design_undecided", []),
         "maintainer_replied": claims.get("maintainer_replied"),
         "maintainer_touched_at": claims.get("maintainer_touched_at"),
     }
@@ -604,6 +612,8 @@ def prescreen_issue(
     thread_blocking: list[str] = []
     if claims.get("agent_exclusions"):
         thread_blocking.append(ISSUE_RESERVED_FOR_HUMANS)
+    if claims.get("design_undecided"):
+        thread_blocking.append(DESIGN_UNDECIDED)
     if required and claims.get("maintainer_replied") is False:
         thread_blocking.append(NO_MAINTAINER_REPLY)
     if record["maintainer_closed_attempts"]:
@@ -639,6 +649,14 @@ def prescreen_issue(
             details.append(
                 f"{first.get('author')} ({first.get('association')}) reserved "
                 f"this issue for human work: {first.get('quote')!r}"
+            )
+        if DESIGN_UNDECIDED in thread_blocking:
+            last = claims["design_undecided"][-1]
+            details.append(
+                f"{last.get('author')} ({last.get('association')}) left the "
+                f"design open with {last.get('phrase')!r} ({last.get('quote')!r}) "
+                "and no later maintainer comment settled it. Comment with "
+                "evidence, or wait for a decision; do not open a run"
             )
         if NO_MAINTAINER_REPLY in thread_blocking:
             details.append(
