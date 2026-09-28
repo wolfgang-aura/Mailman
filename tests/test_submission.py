@@ -470,6 +470,18 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertIn("lint-failed", record["blocking_codes"])
         self.assertEqual(record["lint"]["tool"], "ruff")
 
+    def test_a_file_omitted_for_a_missing_extra_is_reported_without_blocking(self) -> None:
+        from mailman.submission import _touched_tests_findings
+
+        record = passing_touched_tests(SOURCE_DIFF)
+        record["omitted_reasons"] = {
+            "tests/test_arrow.py": "collection failed: No module named 'pyarrow'"
+        }
+        findings = _touched_tests_findings(record)
+        self.assertEqual([f.code for f in findings], ["touched-tests-omitted"])
+        self.assertFalse(findings[0].blocking)
+        self.assertIn("pyarrow", findings[0].detail)
+
     def test_a_lint_acknowledgement_for_this_diff_reaches_the_lint_stage(self) -> None:
         from mailman.target_checks import record_lint_acknowledgement
 

@@ -315,7 +315,11 @@ own without a domain narrowing the pool before they see it.
     rest named under `omitted`. Files importing the full dotted module rank
     ahead of package and bare-stem matches before the cap, and `-m "not
     network"` is added when the target registers a `network` marker
-    (recorded as `marker_filter`). The record in `submission.json` under
+    (recorded as `marker_filter`). A file that fails collection on `No
+    module named 'x'` for a module outside the workspace (a missing optional
+    extra) is moved to `omitted` with its reason under `omitted_reasons`, the
+    rest run again, and a non-blocking `touched-tests-omitted` names it; if
+    every file is omitted the stage is `touched-tests-not-run`. The record in `submission.json` under
     `touched_tests` holds the files and why each was chosen, the exact
     command, exit code, passed and failed counts and duration. A failure is
     `touched-tests-failed`, a stage that could not run is

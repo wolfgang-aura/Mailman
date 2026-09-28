@@ -579,6 +579,18 @@ def _touched_tests_findings(record: dict[str, Any] | None) -> list[Finding]:
                 ),
             )
         )
+    omitted_reasons = (record or {}).get("omitted_reasons") or {}
+    if omitted_reasons and (record or {}).get("reason") != "all-selected-omitted":
+        findings.append(
+            Finding(
+                code="touched-tests-omitted",
+                blocking=False,
+                detail=(
+                    "left out after failing to collect, and the rest ran again: "
+                    + "; ".join(f"{path}: {why}" for path, why in omitted_reasons.items())
+                ),
+            )
+        )
     return findings
 
 
