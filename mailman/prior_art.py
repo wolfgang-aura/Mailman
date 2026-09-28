@@ -29,8 +29,11 @@ CITED_PULL_REQUESTS_FILENAME = "cited-pull-requests.json"
 #: `author` is here so the closer can be compared against it: an author who
 #: closes their own pull request has withdrawn it, and a maintainer who closes
 #: it has rejected it. Those are opposite facts.
+#: `comments,reviews` answer whether the attempt is waiting on a maintainer
+#: rather than abandoned; see `awaits_maintainer`.
 _CITED_FIELDS = (
-    "number,state,mergedAt,mergeCommit,title,url,createdAt,updatedAt,isDraft,author"
+    "number,state,mergedAt,mergeCommit,title,url,createdAt,updatedAt,isDraft,author,"
+    "comments,reviews"
 )
 
 _PULL_REQUEST_FIELDS = (
@@ -81,6 +84,47 @@ def _comment_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def awaits_maintainer(payload: dict[str, Any]) -> bool:
+    """Whether the author answered a maintainer last, so the next move is theirs.
+
+    An open attempt that has sat for months is abandoned only if its author
+    stopped. When a maintainer reviewed it and the author replied after, the
+    silence is the maintainer's, and a second pull request would compete with
+    work they are still weighing. copier-org/copier#2754 is the case: reviewed
+    and answered the same day, then idle for 85 days. See
+    https://github.com/wolfgang-aura/Mailman/issues/157.
+
+    Empty-bodied reviews count: a reply to an inline thread is one.
+    """
+    writer = payload.get("author")
+    author = writer.get("login") if isinstance(writer, dict) else None
+    if not author:
+        return False
+    last_maintainer = last_author = ""
+    for source, stamp in (("comments", "createdAt"), ("reviews", "submittedAt")):
+        entries = payload.get(source)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            when = str(entry.get(stamp) or "")
+            if not when:
+                continue
+            who = entry.get("author")
+            login = who.get("login") if isinstance(who, dict) else None
+            association = (entry.get("authorAssociation") or "").upper()
+            if login == author:
+                last_author = max(last_author, when)
+            elif association in _MAINTAINER_ASSOCIATIONS:
+                last_maintainer = max(last_maintainer, when)
+    return bool(last_maintainer) and last_author > last_maintainer
+
+
+def row_state_open(payload: dict[str, Any]) -> bool:
+    return str(payload.get("state") or "").upper() == "OPEN"
+
+
 def _outcome(payload: dict[str, Any]) -> str:
     if payload.get("mergedAt"):
         return "merged"
@@ -118,6 +162,7 @@ def summarize_pull_request(payload: dict[str, Any]) -> dict[str, Any]:
         "closed_at": payload.get("closedAt"),
         "is_draft": payload.get("isDraft"),
         "withheld": outcome == "merged",
+        "awaiting_maintainer": outcome == "open" and awaits_maintainer(payload),
     }
     if outcome == "merged":
         summary["body"] = None
@@ -437,6 +482,7 @@ def resolve_cited_pull_requests(
             "author_association": None,
             "closed_by": None,
             "maintainer_closed": False,
+            "awaiting_maintainer": row_state_open(payload) and awaits_maintainer(payload),
             "merge_commit": (
                 merge_commit.get("oid") if isinstance(merge_commit, dict) else None
             ),

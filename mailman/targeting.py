@@ -176,6 +176,10 @@ def attempt_is_closed_unmerged(row: dict[str, Any]) -> bool:
     )
 
 
+def attempt_is_open(row: dict[str, Any]) -> bool:
+    return not attempt_is_merged(row) and not attempt_is_closed_unmerged(row)
+
+
 def attempt_is_maintainers(row: dict[str, Any]) -> bool:
     association = str(
         _first(row, "author_association", "authorAssociation") or ""
@@ -230,6 +234,9 @@ def is_stale_attempt(row: dict[str, Any], *, now: datetime | None = None) -> boo
         attempt_is_dormant(row, now=now)
         and not attempt_is_maintainers(row)
         and not attempt_is_maintainer_closed(row)
+        # The author answered a maintainer and is waiting: not abandoned.
+        # See prior_art.awaits_maintainer and Mailman #157.
+        and not (attempt_is_open(row) and bool(row.get("awaiting_maintainer")))
     )
 
 

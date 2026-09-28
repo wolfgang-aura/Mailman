@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 from mailman.models import AgentConfig, RunRecord
 from mailman.prior_art import render_prior_art, summarize_pull_request
+from mailman.targeting import is_stale_attempt
 from mailman.prompts import build_primary_prompt, build_reviewer_prompt
 
 
@@ -75,6 +76,26 @@ OPEN_PULL_REQUEST = {
 DORMANT_PULL_REQUEST = {**OPEN_PULL_REQUEST, "updatedAt": _LONG_AGO}
 
 
+#: A maintainer reviewed the dormant attempt and its author answered after:
+#: copier-org/copier#2754, Mailman #157. The reply is an empty-bodied review,
+#: which is what an inline-thread reply looks like.
+_REVIEW = {
+    "author": {"login": "maintainer"},
+    "authorAssociation": "MEMBER",
+    "state": "COMMENTED",
+    "body": "I have a conceptual question.",
+    "submittedAt": "2025-07-06T08:00:00Z",
+}
+_REPLY = {
+    "author": {"login": "someone"},
+    "authorAssociation": "CONTRIBUTOR",
+    "state": "COMMENTED",
+    "body": "",
+    "submittedAt": "2025-07-06T15:00:00Z",
+}
+AWAITING_PULL_REQUEST = {**DORMANT_PULL_REQUEST, "reviews": [_REVIEW, _REPLY]}
+
+
 def _run() -> RunRecord:
     return RunRecord(
         run_id="20260902T000000Z-abcdef",
@@ -119,6 +140,25 @@ class SummarizeTests(unittest.TestCase):
 
     def test_a_closed_pull_request_records_no_merge_commit(self) -> None:
         self.assertNotIn("merge_commit", summarize_pull_request(CLOSED_PULL_REQUEST))
+
+    def test_an_attempt_whose_author_answered_a_maintainer_is_not_stale(self) -> None:
+        summary = summarize_pull_request(AWAITING_PULL_REQUEST)
+        self.assertTrue(summary["awaiting_maintainer"])
+        self.assertFalse(is_stale_attempt(summary))
+
+    def test_an_attempt_the_maintainer_answered_last_is_still_stale(self) -> None:
+        payload = {**DORMANT_PULL_REQUEST, "reviews": [_REPLY, {**_REVIEW, "submittedAt": "2025-07-07T00:00:00Z"}]}
+        summary = summarize_pull_request(payload)
+        self.assertFalse(summary["awaiting_maintainer"])
+        self.assertTrue(is_stale_attempt(summary))
+
+    def test_an_author_reply_to_a_bystander_is_still_stale(self) -> None:
+        bystander = {**_REVIEW, "authorAssociation": "NONE", "author": {"login": "passerby"}}
+        payload = {**DORMANT_PULL_REQUEST, "reviews": [bystander, _REPLY]}
+        self.assertTrue(is_stale_attempt(summarize_pull_request(payload)))
+
+    def test_an_untouched_dormant_attempt_is_still_stale(self) -> None:
+        self.assertTrue(is_stale_attempt(summarize_pull_request(DORMANT_PULL_REQUEST)))
 
     def test_an_open_pull_request_is_reported_as_open(self) -> None:
         self.assertEqual(summarize_pull_request(OPEN_PULL_REQUEST)["outcome"], "open")
