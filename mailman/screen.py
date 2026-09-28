@@ -2384,29 +2384,7 @@ def screen_repository(
 
     meta = gh.json(f"repos/{slug}")
     if not isinstance(meta, dict) or "full_name" not in meta:
-        record["detail"] = f"{slug} could not be read"
-        record["read_failures"] = gh.failures
-        previous = load_screen(data_root, slug)
-        if previous and previous.get("success"):
-            # A refresh that read nothing is not a verdict. On 2026-09-17 a
-            # burst-limited batch replaced 34 full screens with empty ones;
-            # the previous verdict stays, with the failed attempt beside it.
-            # https://github.com/wolfgang-aura/Mailman/issues/117
-            unread = {
-                "attempted_at": record["screened_at"],
-                "detail": record["detail"],
-                "read_failures": gh.failures,
-            }
-            _write(data_root, {**previous, "unread": unread})
-            record["unread"] = unread
-            record["previous"] = {
-                "verdict": previous.get("verdict"),
-                "failed_gates": previous.get("failed_gates", []),
-                "screened_at": previous.get("screened_at"),
-            }
-            return record
-        _write(data_root, record)
-        return record
+        return _unread(data_root, slug, record, gh, f"{slug} could not be read")
     record["archived"] = bool(meta.get("archived"))
     if record["archived"]:
         record["gates"] = [
@@ -2444,6 +2422,12 @@ def screen_repository(
         _responsiveness_gate(gh, slug, responsiveness_days),
         _stars_gate(meta),
     ]
+    if gh.rate_limited:
+        # A gate whose reads were refused reports a verdict it never saw:
+        # on 2026-09-29 pypa/hatch "failed" ci, host, saturation and
+        # responsiveness in the minutes the hourly budget was spent.
+        # https://github.com/wolfgang-aura/Mailman/issues/169
+        return _unread(data_root, slug, record, gh, RATE_LIMITED_DETAIL)
     failed = [
         gate["name"] for gate in gates if gate["blocking"] and not gate["passed"]
     ]
@@ -2453,6 +2437,46 @@ def screen_repository(
     record["commands"] = gh.commands
     record["read_failures"] = gh.failures
     record["success"] = True
+    _write(data_root, record)
+    return record
+
+
+#: What an unread screen says when GitHub's hourly core budget ran out.
+RATE_LIMITED_DETAIL = (
+    "rate limited: the hourly GitHub core budget ran out during the screen; "
+    "rerun after it resets (`gh api -i` shows X-Ratelimit-Reset; the "
+    "rate_limit endpoint can still report it full)"
+)
+
+
+def _unread(
+    data_root: Path, slug: str, record: dict[str, Any], gh: _Gh, detail: str
+) -> dict[str, Any]:
+    """Record a screen that read too little to judge, keeping any verdict.
+
+    A refresh that read nothing is not a verdict. On 2026-09-17 a
+    burst-limited batch replaced 34 full screens with empty ones; the
+    previous verdict stays, with the failed attempt beside it.
+    https://github.com/wolfgang-aura/Mailman/issues/117
+    """
+    record["detail"] = detail
+    record["read_failures"] = gh.failures
+    record["rate_limited"] = gh.rate_limited
+    previous = load_screen(data_root, slug)
+    if previous and previous.get("success"):
+        unread = {
+            "attempted_at": record["screened_at"],
+            "detail": record["detail"],
+            "read_failures": gh.failures,
+        }
+        _write(data_root, {**previous, "unread": unread})
+        record["unread"] = unread
+        record["previous"] = {
+            "verdict": previous.get("verdict"),
+            "failed_gates": previous.get("failed_gates", []),
+            "screened_at": previous.get("screened_at"),
+        }
+        return record
     _write(data_root, record)
     return record
 

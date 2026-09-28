@@ -484,6 +484,18 @@ class SecondaryLimitTests(unittest.TestCase):
         self.assertEqual(len(waits), 1)
         self.assertEqual(gh.failures, [])
 
+    def test_a_spent_hourly_budget_is_flagged_and_not_waited_out(self) -> None:
+        # The rate_limit endpoint reported 5000 left while this came back.
+        spent = _LimitedResult(
+            "", 1, "gh: API rate limit exceeded for user ID 1. (HTTP 403)"
+        )
+        gh, calls, waits = self._gh([spent])
+
+        self.assertIsNone(gh.json("repos/a/b"))
+        self.assertTrue(gh.rate_limited)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(waits, [])
+
     def test_an_ordinary_failure_is_not_retried(self) -> None:
         gh, calls, waits = self._gh([_LimitedResult("", 1, "HTTP 404: Not Found")])
 
@@ -491,3 +503,4 @@ class SecondaryLimitTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(waits, [])
         self.assertEqual(gh.failures, ["repos/a/b"])
+        self.assertFalse(gh.rate_limited)

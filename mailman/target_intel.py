@@ -325,6 +325,10 @@ def fetch_page(url: str, timeout_seconds: float) -> CommandResult:
 _SECONDARY_LIMIT = re.compile(
     r"secondary rate limit|abuse detection|retry[- ]after", re.IGNORECASE
 )
+#: What `gh api` prints when the hourly core budget is spent. Waiting a
+#: minute does not help, and `rate_limit` has reported the budget full while
+#: every other call was refused (2026-09-29, Mailman #169).
+_PRIMARY_LIMIT = re.compile(r"API rate limit exceeded", re.IGNORECASE)
 SECONDARY_LIMIT_WAIT_SECONDS = 60
 SECONDARY_LIMIT_RETRIES = 2
 
@@ -348,6 +352,8 @@ class _Gh:
         self.commands: list[dict[str, Any]] = []
         self.failures: list[str] = []
         self.sleep: Callable[[float], None] = time.sleep
+        #: True once any call was refused for the spent hourly budget.
+        self.rate_limited = False
 
     def page(self, url: str) -> str | None:
         """The body of one web page, or None when it could not be read."""
@@ -381,6 +387,8 @@ class _Gh:
             )
             self.commands.append(result.to_dict())
         if result.timed_out or result.exit_code != 0:
+            if _PRIMARY_LIMIT.search(str(getattr(result, "stderr", "") or "")):
+                self.rate_limited = True
             self.failures.append(path)
             return None
         try:

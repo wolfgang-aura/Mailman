@@ -1977,6 +1977,37 @@ class ScreenTests(unittest.TestCase):
         self.assertIn("unread", render_screen(kept))
         self.assertIn(good["screened_at"], render_screen(record))
 
+    def test_a_budget_spent_mid_screen_records_no_verdict(self) -> None:
+        # 2026-09-29: pypa/hatch "failed" four gates in the minutes the hourly
+        # core budget ran out; its reads were refused, not answered. Mailman #169.
+        healthy = FakeGitHub()
+
+        def limited_after_meta(arguments, **keywords):
+            if arguments[-1].split("?", 1)[0].endswith("/workflows"):
+                result = _Result("", exit_code=1)
+                result.stderr = "gh: API rate limit exceeded for user ID 1. (HTTP 403)"
+                return result
+            return healthy(arguments, **keywords)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            good = _screen(root, FakeGitHub())
+            record = screen_repository(
+                "example/project",
+                data_root=root,
+                executable="gh",
+                working_directory=root,
+                _execute=limited_after_meta,
+                _fetch=FakePages(),
+            )
+            kept = load_screen(root, "example/project")
+
+        self.assertFalse(record["success"])
+        self.assertTrue(record["rate_limited"])
+        self.assertIn("rate limited", record["detail"])
+        self.assertEqual(kept["verdict"], "pass")
+        self.assertEqual(kept["gates"], good["gates"])
+
     def test_the_verdict_is_cached_so_a_candidate_is_screened_once(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
