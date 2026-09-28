@@ -163,8 +163,11 @@ class ContributionsCliTests(unittest.TestCase):
 class CliTests(unittest.TestCase):
     def test_post_engineering_packaging_is_not_stopped_by_hunt_deadline(self) -> None:
         for subcommand in (
+            "acknowledge-duplicates",
             "check-authors",
+            "claims",
             "decision",
+            "duplicate-search",
             "export-patch",
             "finalize-review",
             "handoff",

@@ -2883,9 +2883,14 @@ def _command_hunt(arguments: argparse.Namespace) -> dict | None:
     # The deadline bounds target selection, setup and agent work. Once those
     # stages finish, blocking deterministic packaging after the deadline makes
     # a valid candidate impossible to file and cannot save agent time.
+    # Handoff also refuses duplicate evidence older than an hour, so the
+    # searches that refresh it must run after the deadline too (#149).
     post_engineering_commands = {
+        "acknowledge-duplicates",
         "check-authors",
+        "claims",
         "decision",
+        "duplicate-search",
         "export-patch",
         "finalize-review",
         "handoff",
@@ -2910,14 +2915,11 @@ def _command_hunt(arguments: argparse.Namespace) -> dict | None:
         return None
 
     bounded_commands = {
-        "acknowledge-duplicates",
         "acknowledge-no-test",
         "acknowledge-lint",
         "build-prompts",
         "check-target",
-        "claims",
         "draft-environment",
-        "duplicate-search",
         "fetch-issue",
         "fetch-review",
         "init-run",
