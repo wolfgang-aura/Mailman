@@ -61,11 +61,13 @@ class FakeGitHub:
 
     def __init__(self, pulls: dict[str, dict], *, open_pulls: list[dict] | None = None,
                  peer_statuses: dict[str, list] | None = None,
-                 annotations: dict[str, list] | None = None) -> None:
+                 annotations: dict[str, list] | None = None,
+                 base_statuses: list | None = None) -> None:
         self.pulls = pulls
         self.open_pulls = open_pulls or []
         self.peer_statuses = peer_statuses or {}
         self.annotations = annotations or {}
+        self.base_statuses = base_statuses or []
         self.asked: list[str] = []
         self.mergeable_reads: dict[str, int] = {}
 
@@ -79,6 +81,10 @@ class FakeGitHub:
             return _Result(json.dumps(self.open_pulls))
         if parts[3] == "check-runs":
             return _Result(json.dumps(self.annotations.get(parts[4], [])))
+        if parts[3] == "commits" and parts[4] == "main":
+            if parts[5] == "status":
+                return _Result(json.dumps({"statuses": self.base_statuses}))
+            return _Result(json.dumps({"total_count": 0, "check_runs": []}))
         if parts[3] == "commits" and parts[4] in self.peer_statuses:
             if parts[5] == "status":
                 return _Result(json.dumps({"statuses": self.peer_statuses[parts[4]]}))
@@ -119,6 +125,7 @@ class FakeGitHub:
                 "updated_at": pull.get("updated_at", _at(2)),
                 "user": {"login": AUTHOR, "type": "User"},
                 "head": {"sha": pull.get("head_sha", "head-" + number[-1])},
+                "base": {"ref": "main"},
             }))
         tail = parts[5]
         if parts[3] == "issues":
@@ -588,6 +595,28 @@ class WatchTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["rows"][0]["status"], "attention")
+
+    def test_a_check_the_base_branch_fails_at_its_tip_is_inherited(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "pymc-devs/pymc", 8442)
+            failing = [{"context": "alternative_backends", "state": "failure",
+                        "updated_at": _at(1)}]
+            gh = FakeGitHub(
+                {"pymc-devs/pymc#8442": {"statuses": failing}},
+                open_pulls=[{"number": n, "head": {"sha": f"peer-{n}"}} for n in (1, 2, 3)],
+                peer_statuses={
+                    f"peer-{n}": [{"context": "alternative_backends", "state": "success"}]
+                    for n in (1, 2, 3)
+                },
+                base_statuses=failing,
+            )
+
+            result = self._watch(root, gh)
+
+        (row,) = result["rows"]
+        self.assertEqual(row["status"], "inherited")
+        self.assertIn("base branch main", row["inherited"]["alternative_backends"])
 
     def test_an_approved_pull_request_with_a_red_check_still_needs_work(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -323,7 +323,10 @@ def inspect_pull_request(gh: _Gh, row: dict[str, Any], *,
         result["status"] = STATUS_CLOSED
         return result
     if checks["failing"]:
-        result["inherited"] = _classify_inherited(gh, slug, number, checks, latest_checks)
+        result["inherited"] = _classify_inherited(
+            gh, slug, number, checks, latest_checks,
+            base_ref=(pull.get("base") or {}).get("ref"),
+        )
     reasons = _reasons_for(pull, checks, last_outside, last_ours, result["inherited"])
     result["reasons"] = reasons
     if reasons:
@@ -338,7 +341,8 @@ def inspect_pull_request(gh: _Gh, row: dict[str, Any], *,
 
 
 def _classify_inherited(gh: _Gh, slug: str, number: int, checks: dict[str, Any],
-                        runs: dict[str, dict[str, Any]]) -> dict[str, str]:
+                        runs: dict[str, dict[str, Any]], *,
+                        base_ref: str | None = None) -> dict[str, str]:
     """Each failing check the pull request did not cause, with the evidence.
 
     tqdm#1837 failed `pre-commit.ci - pr` because a newer flake8-bugbear fired
@@ -347,8 +351,10 @@ def _classify_inherited(gh: _Gh, slug: str, number: int, checks: dict[str, Any],
     and annotations, all lie outside the files this pull request touches. A
     test file is not evidence on its own, because a change can break a test it
     never edits (edgartools#1329, #115). Failing that: most of up to five
-    other open pull requests fail the same check. The extra calls are made only for a row with a failing check, and
-    one that fails leaves the check counted against us.
+    other open pull requests fail the same check. Failing that: the base
+    branch fails it at its own tip, as pymc main failed `test_step_args` under
+    pymc#8442 (#162). The extra calls are made only for a row with a failing
+    check, and one that fails leaves the check counted against us.
     https://github.com/wolfgang-aura/Mailman/issues/134
     """
     inherited: dict[str, str] = {}
@@ -372,6 +378,12 @@ def _classify_inherited(gh: _Gh, slug: str, number: int, checks: dict[str, Any],
             )
     if undecided:
         inherited.update(_compare_with_peers(gh, slug, number, undecided))
+    undecided = [name for name in undecided if name not in inherited]
+    if undecided and base_ref:
+        base = _read_checks(gh, slug, base_ref)[0]
+        for name in undecided:
+            if name in base["failing"]:
+                inherited[name] = f"the base branch {base_ref} fails it at its tip too"
     return inherited
 
 
