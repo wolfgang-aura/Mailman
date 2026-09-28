@@ -1,6 +1,6 @@
 # Source of truth
 
-Last verified: 2026-09-27 in `Asia/Singapore`.
+Last verified: 2026-09-29 in `Asia/Singapore`.
 
 ## Luna work-order checkpoint
 
@@ -291,13 +291,26 @@ opening the local packet URL during this session; visual state is unverified.
   approval, and re-requested review from seratch. After two more pushes (`3a8e95e` merge of
   main, `88e4572` Windows CI timeout), dpiet-oai and seratch both approved `88e4572` on
   2026-09-28 (06:35 and 06:44 UTC); seratch: "This looks good to merge". `reviewDecision`
-  APPROVED, merge state CLEAN, 21/21 checks pass; not yet merged. seratch filed a
+  APPROVED, merge state CLEAN, 21/21 checks pass; merged later that day (below). seratch filed a
   non-blocking follow-up for the maintainers: moves onto an existing hardlink destination now
   report an incomplete move instead of completing. Still our PR, with our nine commits under
   their five. Our own revision of the same blockers, which passed
   fork CI, was not pushed. It is parked locally as `local/4890-our-review` in
   `.mailman/scratch/agents-4890`. The fork's CI draft PR #1 and branch `ci/4890-review` were
   deleted 2026-09-28. Mailman #140 filed: nothing detects maintainer pushes to our PR branch.
+- Fifth upstream merge, 2026-09-28: openai-agents-python#4890 (run `20260906T104815Z-29582c`)
+  merged by jbeckwith-oai as `71306bf` at 15:08 UTC, with the maintainers' commits on top of
+  ours. `mailman contributions --refresh` reads `MERGED`. No run record written yet.
+- nilearn/nilearn#6611 filed 2026-09-28 13:25 UTC (run `20260928T095530Z-2005c8`, head
+  `wolfgang-aura:mailman/issue-6607`), open, no competing PR on #6607.
+- Upstream tally re-read 2026-09-29 (`mailman contributions --refresh`, cross-checked against a
+  GitHub search of PRs by `wolfgang-aura` outside the account): 21 filed. Merged 5: ffn#330
+  (maintainer re-land of our #328), openai-agents-python#4890, securo#875, edgartools#1329,
+  edgartools#1365. Open 10: pretix#6564, pymc#8442, nicegui#6345, tqdm#1837, openalgo#2021,
+  openalgo#2022, poetry#11052, pdm#3883, securo#1039, nilearn#6611. Closed unmerged 6:
+  pdm#3884, mypy#21961, pytest#14993, rqalpha#1040, skfolio#316, pypdf#4105. Ready runs
+  `20260928T190015Z-6a59bf` (nox#302) and `20260928T191349Z-27ec60` (ipython#9891) have no PR
+  and no provenance record.
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
   It still exists; deleting it is the operator's call.
 
