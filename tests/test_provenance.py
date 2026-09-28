@@ -423,6 +423,16 @@ class DeletionTests(unittest.TestCase):
         self.assertFalse(safe)
         self.assertIn("would close it", reason)
 
+    def test_a_patch_on_disk_does_not_free_an_open_pull_request(self) -> None:
+        with TemporaryDirectory() as name:
+            patch = Path(name) / "contribution.patch"
+            patch.write_text("From abc\n", encoding="utf-8")
+            safe, reason = deletion_is_safe(
+                {"state": "OPEN", "patch_path": str(patch)}
+            )
+            self.assertFalse(safe)
+            self.assertIn("would close it", reason)
+
     def test_a_patch_on_disk_frees_a_closed_pull_request(self) -> None:
         with TemporaryDirectory() as name:
             patch = Path(name) / "contribution.patch"

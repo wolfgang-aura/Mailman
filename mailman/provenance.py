@@ -743,16 +743,17 @@ def deletion_is_safe(record: dict[str, Any]) -> tuple[bool, str]:
 
     Two ways to be safe, and one of them does not depend on GitHub: the pull
     request merged, so the commits are on the upstream default branch; or the
-    patch is on this disk. Anything else and the diff dies with the fork.
+    patch is on this disk. Anything else and the diff dies with the fork. An
+    open pull request is never safe, patch or not: deleting its head closes it.
     """
     state = (record.get("state") or "").upper()
+    if state == "OPEN":
+        return False, "the pull request is open, and deleting the fork would close it"
     if state == "MERGED" or record.get("merge_commit"):
         return True, "the pull request merged, so the commits are upstream"
     patch = record.get("patch_path")
     if patch and Path(patch).is_file():
         return True, f"the patch is on disk at {patch}"
-    if state == "OPEN":
-        return False, "the pull request is open, and deleting the fork would close it"
     return False, (
         "nothing proves this work survives the fork: it has not merged and no "
         "patch was written. Run `mailman provenance` before deleting anything."
