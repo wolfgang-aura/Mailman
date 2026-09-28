@@ -19,7 +19,13 @@ _ISSUE_URL_PATTERN = re.compile(
     r"/issues/(?P<number>[1-9][0-9]*)$"
 )
 
-ISSUE_FIELDS = "number,title,body,state,url,author,labels,createdAt,updatedAt"
+ISSUE_FIELDS = "number,title,body,state,url,author,labels,createdAt,updatedAt,comments"
+#: Only these authors' comments reach the agents. An invited enhancement's
+#: design lives in a maintainer comment (pandera#742), while other comments
+#: carry claims, guesses and links to competing fixes.
+MAINTAINER_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
+_COMMENT_LIMIT = 3000
+_COMMENT_COUNT = 8
 
 
 @dataclass(frozen=True)
@@ -97,17 +103,50 @@ def render_issue(
     lines.extend(["", "## Issue body", ""])
     text = body if isinstance(body, str) and body.strip() else "_The issue has no body._"
     lines.append(redact(text).strip())
+    lines.extend(_maintainer_comment_lines(payload.get("comments")))
     lines.extend(
         [
             "",
             "## Capture boundary",
             "",
-            "This file is the only issue text the agents see. Comments, linked",
-            "pull requests, and any accepted upstream fix are deliberately absent.",
+            "This file is the only issue text the agents see. Comments from",
+            "anyone but a maintainer, linked pull requests, and any accepted",
+            "upstream fix are deliberately absent.",
             "",
         ]
     )
     return "\n".join(lines)
+
+
+def _maintainer_comment_lines(raw_comments: object) -> list[str]:
+    """The latest maintainer comments, oldest first, redacted and trimmed."""
+    kept: list[tuple[str, str, str, str]] = []
+    for comment in raw_comments if isinstance(raw_comments, list) else []:
+        if not isinstance(comment, dict):
+            continue
+        author = comment.get("author")
+        login = author.get("login") if isinstance(author, dict) else None
+        association = comment.get("authorAssociation")
+        body = comment.get("body")
+        if (
+            not isinstance(login, str)
+            or login.lower().endswith(("[bot]", "-bot"))
+            or association not in MAINTAINER_ASSOCIATIONS
+            or not isinstance(body, str)
+            or not body.strip()
+        ):
+            continue
+        created = str(comment.get("createdAt") or "")[:10]
+        kept.append((login, association, created, body.strip()))
+    if not kept:
+        return []
+    lines = ["", "## Maintainer comments", ""]
+    for login, association, created, body in kept[-_COMMENT_COUNT:]:
+        when = f", {created}" if created else ""
+        if len(body) > _COMMENT_LIMIT:
+            body = body[:_COMMENT_LIMIT] + "\n[truncated]"
+        lines.extend([f"### {login} ({association}{when})", "", redact(body), ""])
+    return lines
 
 
 def _write_record(run_directory: Path, record: dict[str, Any]) -> Path:

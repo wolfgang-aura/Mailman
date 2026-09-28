@@ -30,6 +30,11 @@ the accepted upstream fix are deliberately absent, because a historical issue
 replay whose prompt contains its own answer measures nothing. The rendered file
 says so, so an agent reading it cannot mistake the omission for an oversight.
 
+Amended 2026-09-29: comments by an OWNER, MEMBER or COLLABORATOR are now
+captured under "Maintainer comments". A live hunt works invited enhancements
+whose design exists only in a maintainer comment (pandera#742); leaving it out
+sent the agent in with a title and no spec. Everyone else's comments stay out.
+
 A `--from-file` path records text a human transcribed, with the source path and
 its SHA-256 digest, for hosts without `gh`. That is how the issue #9 rehearsal
 was done before this command existed.

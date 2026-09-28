@@ -85,7 +85,7 @@ class IssueRenderingTests(unittest.TestCase):
         self.assertIn("- Labels: bug, good first issue", markdown)
         self.assertNotIn("abcdef0123456789", markdown)
         self.assertIn("[REDACTED_SECRET]", markdown)
-        self.assertIn("accepted upstream fix are deliberately absent", markdown)
+        self.assertIn("upstream fix are deliberately absent", markdown)
 
     def test_renders_an_empty_body(self) -> None:
         markdown = render_issue(
@@ -95,6 +95,57 @@ class IssueRenderingTests(unittest.TestCase):
             captured_at="2026-09-02T00:00:00+00:00",
         )
         self.assertIn("_The issue has no body._", markdown)
+
+    def test_carries_maintainer_comments_and_drops_the_rest(self) -> None:
+        # pandera#742: the step-by-step spec came from a COLLABORATOR comment;
+        # without it the agent builds an invited enhancement from the title.
+        markdown = render_issue(
+            parse_issue_url(ISSUE_URL),
+            {
+                "title": "Add a schema-wide option",
+                "body": "Please add it.",
+                "comments": [
+                    {
+                        "author": {"login": "bystander"},
+                        "authorAssociation": "NONE",
+                        "body": "I would like to work on this.",
+                        "createdAt": "2023-05-01T00:00:00Z",
+                    },
+                    {
+                        "author": {"login": "keeper"},
+                        "authorAssociation": "COLLABORATOR",
+                        "body": "Add `nullable=None` to the constructor. api_key=abcdef0123456789",
+                        "createdAt": "2023-05-11T00:00:00Z",
+                    },
+                    {
+                        "author": {"login": "github-actions[bot]"},
+                        "authorAssociation": "MEMBER",
+                        "body": "This issue is stale.",
+                        "createdAt": "2024-01-01T00:00:00Z",
+                    },
+                ],
+            },
+            source="github-cli",
+            captured_at="2026-09-02T00:00:00+00:00",
+        )
+        self.assertIn("## Maintainer comments", markdown)
+        self.assertIn("keeper (COLLABORATOR, 2023-05-11)", markdown)
+        self.assertIn("Add `nullable=None` to the constructor.", markdown)
+        self.assertNotIn("abcdef0123456789", markdown)
+        self.assertNotIn("I would like to work on this.", markdown)
+        self.assertNotIn("This issue is stale.", markdown)
+        self.assertLess(markdown.index("## Maintainer comments"), markdown.index("## Capture boundary"))
+
+    def test_no_maintainer_comment_means_no_section(self) -> None:
+        markdown = render_issue(
+            parse_issue_url(ISSUE_URL),
+            {"title": "t", "body": "b", "comments": [
+                {"author": {"login": "x"}, "authorAssociation": "CONTRIBUTOR", "body": "me too"}
+            ]},
+            source="github-cli",
+            captured_at="2026-09-02T00:00:00+00:00",
+        )
+        self.assertNotIn("## Maintainer comments", markdown)
 
 
 class IssueCaptureTests(unittest.TestCase):

@@ -133,6 +133,7 @@ def issue_comparisons(issue_markdown: str) -> list[str]:
     maintainers have already been shown.
     """
     body = issue_markdown.split("## Issue body", 1)[-1].split("## Capture boundary", 1)[0]
+    body = body.split("## Maintainer comments", 1)[0]
     found: list[str] = []
     in_fence = False
     paragraph: list[str] = []
