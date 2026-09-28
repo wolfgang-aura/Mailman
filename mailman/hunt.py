@@ -12,9 +12,11 @@ from mailman import health
 from mailman.agents import normalize_agent_name
 from mailman.artifacts import load_run, new_run_id
 from mailman.completion import finalize_review, read_object
-from mailman.handoff import check_handoff, load_handoff
+from mailman.claims import load_claims
+from mailman.handoff import check_handoff, load_handoff, load_offer_handoff
 from mailman.models import RunStatus, utc_now
 from mailman.orchestrator import orchestration_step_names
+from mailman.provenance import upstream_issue_number
 from mailman.review_decision import UNTRIAGED_GATE, DecisionError, load_decision
 from mailman.screen import load_screen, screen_is_current
 from mailman.target_intel import repository_slug
@@ -639,7 +641,9 @@ def ask_ready(run, directory: Path, decision, action, warnings: list) -> dict:
 
     The untriaged question is the reason for asking, so it may stay blocking;
     any other blocking question is still coordinator work. No PR handoff is
-    required yet: the pull request is filed after a maintainer answers.
+    required yet: the pull request is filed after a maintainer answers. The
+    offer comment's own handoff is required, and once the claims record shows
+    a maintainer answered it, the candidate goes back to the SEND path.
     https://github.com/wolfgang-aura/Mailman/issues/138
     """
     other = [question for question in decision.blocking_questions
@@ -650,12 +654,32 @@ def ask_ready(run, directory: Path, decision, action, warnings: list) -> dict:
         finalize_review(directory)
     except (OSError, ValueError) as error:
         return action("finalize", f"mailman finalize-review {run.run_id}", str(error))
+    draft = (directory / decision.offer.path).resolve()
+    offer = load_offer_handoff(directory)
+    if not offer or Path(str(offer.get("body_path") or "")).resolve() != draft:
+        issue = upstream_issue_number(directory, run.repository) or "ISSUE"
+        return action("handoff", f"mailman handoff {run.run_id} --offer --kind issue-comment "
+                                 f"--issue {issue} --repo {repository_slug(run.repository)} "
+                                 f'--body "{draft}"')
+    checked = check_handoff(directory, offer=True)
+    if not checked["ok"]:
+        return action("handoff", f"mailman handoff-check {run.run_id} --offer", checked["detail"])
+    replies = (load_claims(directory) or {}).get("offer_replies") or []
+    if replies:
+        first = replies[0]
+        return action("decision", "maintainer replied to offer; switch decision to SEND",
+                      f"{first.get('author')} ({first.get('association')}) at "
+                      f"{first.get('created_at')}: {first.get('quote')} -- Read the reply. "
+                      "On a yes, set recommendation SEND, remove the offer block and do "
+                      "the PR handoff. A refusal ends the candidate.")
     row = {"run_id": run.run_id, "ready": False, "stage": "offer-approval",
            "disposition": READY_TO_ASK, "human_required": False,
            "offer": str(directory / decision.offer.path),
            "action": "Include the offer comment in the approval packet. Mailman "
                      "does not post it, and the pull request waits for a "
-                     "maintainer's answer; this is not a PR."}
+                     "maintainer's answer; this is not a PR. Once it is posted, "
+                     f"`mailman claims {run.run_id}` or `hunt refresh` reads "
+                     "the answer."}
     if warnings:
         row["warnings"] = list(warnings)
     return row
@@ -978,7 +1002,10 @@ def refresh(root: Path, record: dict, *, include_ready: bool = False) -> dict:
         # exactly the ones about to be pushed, and a duplicate has appeared 94
         # minutes after a run finished. `include_ready` is that pass.
         # https://github.com/wolfgang-aura/Mailman/issues/41
-        if (row["ready"] and not include_ready) or load_handoff(directory) is None:
+        # An ask-first candidate has only its offer handoff, and refreshing
+        # its claims is how a maintainer's answer to the offer is read. #138.
+        if (row["ready"] and not include_ready) or (
+                load_handoff(directory) is None and load_offer_handoff(directory) is None):
             continue
         outcome = {"run_id": run.run_id}
         search = read_object(directory / "duplicate-search.json")

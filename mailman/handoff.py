@@ -25,11 +25,18 @@ from mailman.claims import load_claims, triage_warning
 from mailman.completion import check_authorship
 from mailman.executor import clamp_timeout_seconds
 from mailman.provenance import load_provenance, upstream_issue_number
+from mailman.review_decision import Offer, offer_problems
 from mailman.submission import load_duplicate_search
 from mailman.target_intel import repository_slug
 from mailman.touched_tests import diff_sha256, touched_tests_verdict
 
 HANDOFF_FILENAME = "handoff.json"
+
+#: An ask-first offer comment is handed over on its own record, beside the pull
+#: request's. The offer goes out first and the pull request after a maintainer
+#: answers, so one run carries both and neither may overwrite the other.
+#: https://github.com/wolfgang-aura/Mailman/issues/138
+OFFER_HANDOFF_FILENAME = "handoff-offer.json"
 
 #: Written once, when the single closing reply a closed run may still send is
 #: handed over. Its presence is what makes the second one refuse.
@@ -595,10 +602,19 @@ def build_handoff(
     issue_number: int | None = None,
     data_root: Path | None = None,
     closing_reply: bool = False,
+    offer: bool = False,
     owner_type_lookup: Callable[[str], str | None] = github_owner_type,
     pull_request_lookup: Callable[[str, int], str | None] | None = None,
 ) -> tuple[dict[str, Any], str]:
-    """Record the body's digest and render the block that hands it over."""
+    """Record the body's digest and render the block that hands it over.
+
+    `offer` marks an ask-first offer comment. It is recorded in
+    `handoff-offer.json`, so the pull request handoff that follows a
+    maintainer's answer does not replace it, and it must pass the same checks
+    the decision's offer block does.
+    """
+    if offer and kind != "issue-comment":
+        raise ValueError("--offer is an issue comment; pass --kind issue-comment")
     closure = closed_threads(run_directory, repository)
     refusal = closure_refusal(closure, kind=kind, issue_number=issue_number)
     if refusal is None:
@@ -681,8 +697,13 @@ def build_handoff(
         "authorship": authorship,
         "closure": closure,
         "closing_reply": closing_reply,
+        "offer": offer,
     }
-    path = run_directory / HANDOFF_FILENAME
+    if offer:
+        problems = offer_handoff_problems(run_directory, record)
+        if problems:
+            raise ValueError(" ".join(problems))
+    path = run_directory / (OFFER_HANDOFF_FILENAME if offer else HANDOFF_FILENAME)
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n")
     if closing_reply:
         marker = run_directory / CLOSING_REPLY_FILENAME
@@ -702,8 +723,10 @@ def build_handoff(
     return record, render_handoff(record, body)
 
 
-def load_handoff(run_directory: Path) -> dict[str, Any] | None:
-    path = run_directory / HANDOFF_FILENAME
+def load_handoff(
+    run_directory: Path, filename: str = HANDOFF_FILENAME
+) -> dict[str, Any] | None:
+    path = run_directory / filename
     if not path.is_file():
         return None
     try:
@@ -711,6 +734,45 @@ def load_handoff(run_directory: Path) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def load_offer_handoff(run_directory: Path) -> dict[str, Any] | None:
+    """The ask-first offer comment's handoff, kept apart from the PR's."""
+    return load_handoff(run_directory, OFFER_HANDOFF_FILENAME)
+
+
+def offer_handoff_problems(run_directory: Path, record: dict[str, Any]) -> list[str]:
+    """What stops this offer handoff: wrong thread, or a draft the decision would refuse.
+
+    The destination is the run's own issue and nothing else. The body is held
+    to the decision's offer rules (inside the run directory, under the word
+    limit, naming the reproduction and the base commit), so an offer that
+    passed `mailman decision` cannot be swapped for one that would not.
+    """
+    problems: list[str] = []
+    repository = str(record.get("repository") or "")
+    issue = upstream_issue_number(run_directory, repository)
+    if record.get("kind") != "issue-comment":
+        problems.append("an offer is an issue comment, not a pull request.")
+    if issue is None:
+        problems.append(
+            f"this run names no issue in {repository or 'the repository'}; an "
+            "offer goes to the run's own issue."
+        )
+    elif record.get("issue_number") != issue:
+        problems.append(
+            f"the offer targets #{record.get('issue_number')}, and this run's "
+            f"issue is #{issue}."
+        )
+    root = Path(run_directory).resolve()
+    body = Path(str(record.get("body_path") or "")).resolve()
+    if not body.is_relative_to(root):
+        problems.append(
+            f"the offer body {body} must be the draft inside the run directory."
+        )
+        return problems
+    found, _ = offer_problems(root, Offer(body.relative_to(root).as_posix()))
+    return problems + found
 
 
 def _age_minutes(timestamp: object, now: datetime) -> float | None:
@@ -929,17 +991,26 @@ def check_touched_tests(run_directory: Path) -> dict[str, Any]:
 def check_handoff(
     run_directory: Path,
     *,
+    offer: bool = False,
     now: datetime | None = None,
     max_age_minutes: float = EVIDENCE_MAX_AGE_MINUTES,
 ) -> dict[str, Any]:
-    """Say whether the body still matches the text the last handoff showed."""
-    record = load_handoff(run_directory)
+    """Say whether the body still matches the text the last handoff showed.
+
+    `offer` checks the ask-first offer comment's record instead of the pull
+    request's.
+    """
+    record = load_offer_handoff(run_directory) if offer else load_handoff(run_directory)
     if record is None:
         return {
             "ok": False,
-            "reason": "no-handoff",
+            "reason": "no-offer-handoff" if offer else "no-handoff",
             "detail": (
-                "no handoff was generated for this run. Run `mailman handoff` "
+                "no offer handoff was generated for this run. Run `mailman "
+                "handoff --offer --kind issue-comment` and read the comment it "
+                "prints before posting it."
+                if offer
+                else "no handoff was generated for this run. Run `mailman handoff` "
                 "and read the body it prints before publishing anything."
             ),
         }
@@ -1013,6 +1084,18 @@ def check_handoff(
         "preservation_claims": record.get("preservation_claims") or [],
         "maintainer_edit_warning": record.get("maintainer_edit_warning"),
     }
+    if offer:
+        problems = offer_handoff_problems(run_directory, record)
+        if problems:
+            return {
+                "ok": False,
+                "reason": "offer-invalid",
+                "detail": " ".join(problems),
+                "digest": current,
+            }
+        unchanged["word_count"] = record.get("word_count")
+        unchanged["issue_number"] = record.get("issue_number")
+        return unchanged
     if record.get("kind") != "pull-request":
         return unchanged
     try:

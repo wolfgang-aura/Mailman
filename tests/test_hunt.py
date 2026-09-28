@@ -11,7 +11,8 @@ from mailman.artifacts import load_run, write_run
 from mailman.cli import main
 from mailman.completion import finalize_review
 from mailman.export import export_patch
-from mailman.handoff import build_handoff
+from mailman.claims import read_claims
+from mailman.handoff import build_handoff, load_handoff, load_offer_handoff
 from mailman.hunt import (
     abandon,
     add_run,
@@ -129,10 +130,11 @@ class HuntTests(OrchestratorHarness):
         self.assertIn("1 of 3 candidates ready", checkpoint.read_text(encoding="utf-8"))
         self.assertFalse(finish(self.data_root, hunt)["complete"])
 
-    def ask_ready_run(self):
-        """A verified candidate whose decision is ASK, with no PR handoff yet."""
+    def ask_ready_run(self, *, keep_pr_handoff=False, offer_handoff=True):
+        """A verified candidate whose decision is ASK, with its offer handed over."""
         directory = self.ready_run()
-        (directory / "handoff.json").unlink()
+        if not keep_pr_handoff:
+            (directory / "handoff.json").unlink()
         (directory / "offer-comment.md").write_text(
             f"@maintainer This reproduces on `main` ({self.base_commit[:8]}). "
             "A fix is ready; would you like a PR?\n",
@@ -142,7 +144,62 @@ class HuntTests(OrchestratorHarness):
         decision["recommendation"] = "ASK"
         decision["offer"] = {"path": "offer-comment.md"}
         (directory / "decision.json").write_text(json.dumps(decision), encoding="utf-8")
+        if offer_handoff:
+            build_handoff(run_id=directory.name, run_directory=directory,
+                          body_path=directory / "offer-comment.md", kind="issue-comment",
+                          repository="example/project", issue_number=1, offer=True)
         return directory
+
+    def test_an_ask_first_candidate_needs_its_offer_handoff(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/138"""
+        hunt = self.new_hunt()
+        directory = self.ask_ready_run(offer_handoff=False)
+        add_run(self.data_root, hunt, directory.name)
+
+        row = status(self.data_root, hunt)["runs"][0]
+
+        self.assertEqual(row["stage"], "handoff")
+        self.assertIn("--offer --kind issue-comment --issue 1", row["action"])
+        self.assertNotEqual(row["disposition"], "READY_TO_ASK")
+
+    def test_the_offer_handoff_and_the_pr_handoff_coexist(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/138
+
+        The offer used to overwrite `handoff.json`, so a run carried the offer
+        or the pull request, never both.
+        """
+        hunt = self.new_hunt()
+        directory = self.ask_ready_run(keep_pr_handoff=True)
+        add_run(self.data_root, hunt, directory.name)
+
+        self.assertEqual(load_handoff(directory)["kind"], "pull-request")
+        self.assertEqual(load_offer_handoff(directory)["kind"], "issue-comment")
+        result = status(self.data_root, hunt)
+        self.assertEqual(result["ready_to_ask"], 1)
+        self.assertEqual(result["ready"], 0)
+
+    def test_a_maintainer_reply_to_the_offer_moves_the_run_to_send(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/138"""
+        from tests.test_claims import _FakeGh, _comment
+
+        hunt = self.new_hunt()
+        directory = self.ask_ready_run()
+        add_run(self.data_root, hunt, directory.name)
+        prepared = datetime.fromisoformat(load_offer_handoff(directory)["prepared_at"])
+        later = (prepared + timedelta(hours=3)).isoformat()
+        reply = {**_comment("Yes, a PR would be welcome.", association="COLLABORATOR",
+                            login="keeper"), "created_at": later}
+        read_claims(directory, executable="gh", execute=_FakeGh(
+            {"number": 1, "assignees": [], "state": "open", "closed_at": None,
+             "author_association": "NONE"}, [reply]))
+
+        result = status(self.data_root, hunt)
+
+        row = result["runs"][0]
+        self.assertEqual(result["ready_to_ask"], 0)
+        self.assertEqual(row["stage"], "decision")
+        self.assertEqual(row["action"], "maintainer replied to offer; switch decision to SEND")
+        self.assertIn("keeper (COLLABORATOR)", row["detail"])
 
     def test_an_ask_first_candidate_is_counted_apart_and_never_as_a_pr(self):
         """https://github.com/wolfgang-aura/Mailman/issues/138

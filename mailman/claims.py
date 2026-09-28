@@ -392,6 +392,39 @@ def maintainer_touched_at(comments: Iterable[dict[str, Any]]) -> str | None:
     return max(stamps) if stamps else None
 
 
+def _moment(stamp: object) -> datetime | None:
+    if not isinstance(stamp, str) or not stamp.strip():
+        return None
+    try:
+        moment = datetime.fromisoformat(stamp.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def offer_replies(
+    comments: Iterable[dict[str, Any]], since: object
+) -> list[dict[str, Any]]:
+    """Maintainer comments written after the ask-first offer was handed over.
+
+    One of these is the answer the offer asked for, and the run moves from ASK
+    to the normal SEND path on it. `since` is the offer handoff's
+    `prepared_at`; no offer, no replies. Bots do not answer.
+    https://github.com/wolfgang-aura/Mailman/issues/138
+    """
+    start = _moment(since)
+    if start is None:
+        return []
+    return [
+        _row(comment)
+        for comment in comments
+        if isinstance(comment, dict)
+        and comment.get("author_association") in MAINTAINER_ASSOCIATIONS
+        and not _is_bot(comment.get("user"))
+        and (_moment(comment.get("created_at")) or start) > start
+    ]
+
+
 def _row(comment: dict[str, Any]) -> dict[str, Any]:
     user = comment.get("user") or {}
     return {
@@ -621,6 +654,13 @@ def read_claims(
         for comment in comments
         if isinstance(comment, dict)
     )
+    # Imported here: `handoff` reads this module at import time.
+    from mailman.handoff import load_offer_handoff
+
+    offer = load_offer_handoff(run_directory)
+    if offer is not None:
+        record["offer_prepared_at"] = offer.get("prepared_at")
+        record["offer_replies"] = offer_replies(comments, offer.get("prepared_at"))
     reporter = payload.get("user")
     record["maintainer_labelled"] = maintainer_labels(
         timeline,

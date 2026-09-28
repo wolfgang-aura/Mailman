@@ -388,9 +388,16 @@ without it. `hunt status` and `hunt finish` report these candidates as
 `ready_to_ask`, apart from `ready`. They never count toward N, so the finish
 exit code still reflects the PR quota alone. The offer text appears verbatim on
 the run page, the checkpoint and the packet, where the operator approves it.
-Mailman never posts the comment: the operator does. After a maintainer answers
-yes, change the decision to `SEND`, remove the `offer` block and do the PR
-handoff. A refusal ends the candidate.
+Mailman never posts the comment: the operator does. Hand the offer over with
+`mailman handoff RUN_ID --offer --kind issue-comment --issue N --repo
+OWNER/REPO --body <run>/offer-comment.md` and check it with `mailman
+handoff-check RUN_ID --offer`. It is kept in `handoff-offer.json`, apart from
+the pull request's `handoff.json`, and an ASK candidate is not ready to ask
+without it. `mailman claims` (and `hunt refresh`) records maintainer comments
+posted after the offer as `offer_replies`; `hunt status` then says "maintainer
+replied to offer; switch decision to SEND". Read the reply. After a yes, change
+the decision to `SEND`, remove the `offer` block and do the PR handoff. A
+refusal ends the candidate.
 
 ## What reaches the user
 
