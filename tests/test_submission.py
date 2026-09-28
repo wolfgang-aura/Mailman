@@ -470,6 +470,26 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertIn("lint-failed", record["blocking_codes"])
         self.assertEqual(record["lint"]["tool"], "ruff")
 
+    def test_a_lint_acknowledgement_for_this_diff_reaches_the_lint_stage(self) -> None:
+        from mailman.target_checks import record_lint_acknowledgement
+
+        record_lint_acknowledgement(
+            self.run_directory, tools=["ty"], note="ty.exe is blocked here",
+            diff=SOURCE_DIFF,
+        )
+        with patch(
+            "mailman.target_checks.run_lint", return_value=({"ran": False}, [])
+        ) as run_lint:
+            self._prepare()
+        self.assertEqual(
+            run_lint.call_args.kwargs["acknowledged"], {"ty": "ty.exe is blocked here"}
+        )
+        with patch(
+            "mailman.target_checks.run_lint", return_value=({"ran": False}, [])
+        ) as run_lint:
+            self._prepare(diff=SOURCE_DIFF + "\n")
+        self.assertEqual(run_lint.call_args.kwargs["acknowledged"], {})
+
     def test_a_forbidding_policy_blocks(self) -> None:
         record = self._prepare(policy=_policy(stance="forbidden"))
         self.assertFalse(record["ready"])

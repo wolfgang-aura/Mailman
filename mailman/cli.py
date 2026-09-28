@@ -517,6 +517,30 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     acknowledge_no_test.add_argument("--data-root", type=Path)
 
+    acknowledge_lint = subparsers.add_parser(
+        "acknowledge-lint",
+        help="record why a linter the target's CI runs cannot run on this host",
+    )
+    acknowledge_lint.add_argument("run_id")
+    acknowledge_lint.add_argument(
+        "--tool",
+        action="append",
+        required=True,
+        help="the tool named by lint-not-run; repeat for more than one",
+    )
+    acknowledge_lint.add_argument(
+        "--note",
+        required=True,
+        help="why it cannot run here and how the change was checked instead",
+    )
+    acknowledge_lint.add_argument(
+        "--diff",
+        type=Path,
+        help="unified diff to pin the record to, defaults to the run's exported "
+        "changes.diff",
+    )
+    acknowledge_lint.add_argument("--data-root", type=Path)
+
     intel = subparsers.add_parser(
         "target-intel",
         help="read how a target merges outside work, before a run is spent on it",
@@ -1549,6 +1573,30 @@ def _acknowledge_no_test(arguments: argparse.Namespace) -> int:
         "This covers only "
         + ", ".join(record["covered_paths"])
         + ". A diff that touches anything else is not acknowledged.",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _acknowledge_lint(arguments: argparse.Namespace) -> int:
+    from mailman.target_checks import record_lint_acknowledgement
+
+    _, run_directory = load_run(arguments.run_id, arguments.data_root)
+    diff_path = arguments.diff or (run_directory / "export" / "changes.diff")
+    if not diff_path.is_file():
+        raise ValueError(
+            f"no diff at {diff_path}. Run export-patch first, or pass --diff."
+        )
+    record = record_lint_acknowledgement(
+        run_directory,
+        tools=arguments.tool,
+        note=arguments.note,
+        diff=diff_path.read_text(encoding="utf-8", errors="replace"),
+    )
+    print(json.dumps(record, indent=2))
+    print(
+        "This covers lint-not-run for " + ", ".join(record["tools"])
+        + " on this exact diff only. A lint-failed finding is never acknowledged.",
         file=sys.stderr,
     )
     return 0
@@ -2830,6 +2878,7 @@ def _command_hunt(arguments: argparse.Namespace) -> dict | None:
     bounded_commands = {
         "acknowledge-duplicates",
         "acknowledge-no-test",
+        "acknowledge-lint",
         "build-prompts",
         "check-target",
         "claims",
@@ -3000,6 +3049,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _acknowledge_duplicates(parsed)
         if parsed.subcommand == "acknowledge-no-test":
             return _acknowledge_no_test(parsed)
+        if parsed.subcommand == "acknowledge-lint":
+            return _acknowledge_lint(parsed)
         if parsed.subcommand == "target-intel":
             return _target_intel(parsed)
         if parsed.subcommand == "claims":
