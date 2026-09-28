@@ -66,6 +66,20 @@ order the shortlist so finance targets are screened and worked first, and drop
 no repository for sitting outside that field. The gates reject enough on their
 own without a domain narrowing the pool before they see it.
 
+Build the pool before the clock starts. `screen-target` and `prescreen` run
+without `--hunt` and spend no hunt time, and a passing pre-screen stays fresh
+for 24 hours. Do not run `hunt init N` until at least N+1 issues have passed
+both the pre-screen and your own read of the thread; the hunt's two hours are
+then spent on engineering. Go wide before deep: at most three pre-screens per
+repository, then move to the next one. Pre-screen only an issue where a
+maintainer confirmed the bug, reproduced it or asked for a fix. A maintainer
+reply on its own is not that. Hunt `20260928T094000Z-3b91d9` pre-screened 31
+issues across 12 repositories and passed one: three repositories took 19 of
+the 31, and 21 of the 28 hand rejections were threads where a maintainer
+replied without confirming a bug (could not reproduce, works as designed,
+design still open, the reporter's own environment). Screen one repository at
+a time; a screen costs about 200 GitHub core calls.
+
 1. Read the target's contributor instructions and AI policy. Run
    `mailman screen-target OWNER/REPO --refresh --hunt HUNT_ID --owner TOKEN`.
    Reject a failed screen.
