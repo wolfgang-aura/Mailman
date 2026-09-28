@@ -258,6 +258,29 @@ class LintConfigurationTests(_Fixture):
         self.assertEqual(isort["version"], "5.13.2")
         self.assertEqual(isort["sources"], [".pre-commit-config.yaml"])
 
+    def test_a_hook_dependency_is_not_an_invocation(self) -> None:
+        # nilearn (#144): blacken-docs lists black under
+        # additional_dependencies; nilearn formats with ruff, not black.
+        self.write(
+            ".pre-commit-config.yaml",
+            "repos:\n-   repo: https://github.com/adamchainz/blacken-docs\n"
+            "    rev: 1.20.0\n    hooks:\n    -   id: blacken-docs\n"
+            "        additional_dependencies:\n        -   black\n"
+            "        # a comment\n        exclude: doc/\n"
+            "-   repo: https://github.com/pre-commit/mirrors-mypy\n"
+            "    rev: v1.0.0\n    hooks:\n    -   id: mypy\n"
+            "        additional_dependencies: [black==24.1.0, types-requests]\n",
+        )
+        self.assertEqual(self._tools(), ["mypy"])
+
+    def test_the_black_hook_itself_is_still_found(self) -> None:
+        self.write(
+            ".pre-commit-config.yaml",
+            "repos:\n  - repo: https://github.com/psf/black-pre-commit-mirror\n"
+            "    rev: 24.1.0\n    hooks:\n      - id: black\n",
+        )
+        self.assertEqual(self._tools(), ["black"])
+
     def test_ty_is_not_found_in_unrelated_prose(self) -> None:
         self.write(".github/workflows/ci.yml", "name: pretty ty docs\nsteps: []\n")
         self.assertEqual(self._tools(), [])

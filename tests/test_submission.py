@@ -1078,6 +1078,42 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertIn("failed 1", finding["detail"])
         self.assertIn("pytest", finding["detail"])
 
+    def test_a_stored_failure_is_rerun_when_the_selection_would_change(self) -> None:
+        # nilearn#6607: the stored failure was on gallery scripts that #145
+        # no longer selects, and the same diff kept being refused.
+        stored = passing_touched_tests(
+            SOURCE_DIFF,
+            exit_code=2,
+            selected=[
+                {"path": "tests/test_thing.py", "matched": [], "reason": "x"},
+                {"path": "examples/plot_thing_test.py", "matched": [], "reason": "x"},
+            ],
+        )
+        (self.run_directory / TOUCHED_TESTS_FILENAME).write_text(
+            json.dumps(stored), encoding="utf-8"
+        )
+        fresh = {"selected": [{"path": "tests/test_thing.py", "matched": [], "reason": "x"}]}
+        with (
+            patch("mailman.submission.resolve_workspace", return_value=self.run_directory),
+            patch("mailman.submission.select_test_files", return_value=fresh),
+        ):
+            record = self._prepare()
+        self.assertEqual(len(self.touched_tests_calls), 1)
+        self.assertNotIn("touched-tests-failed", record["blocking_codes"])
+
+    def test_a_stored_failure_with_the_same_selection_is_not_rerun(self) -> None:
+        stored = passing_touched_tests(SOURCE_DIFF, exit_code=1, failed=1)
+        (self.run_directory / TOUCHED_TESTS_FILENAME).write_text(
+            json.dumps(stored), encoding="utf-8"
+        )
+        with (
+            patch("mailman.submission.resolve_workspace", return_value=self.run_directory),
+            patch("mailman.submission.select_test_files", return_value=stored),
+        ):
+            record = self._prepare()
+        self.assertEqual(self.touched_tests_calls, [])
+        self.assertIn("touched-tests-failed", record["blocking_codes"])
+
     def test_a_touched_tests_stage_that_could_not_run_blocks(self) -> None:
         self.touched_tests.side_effect = lambda run_directory, *, diff, **_: (
             passing_touched_tests(

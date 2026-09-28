@@ -164,6 +164,34 @@ class SelectionTests(unittest.TestCase):
         selection = select_test_files(self.workspace, ["edgar/xbrl/xbrl.py"])
         self.assertEqual([e["path"] for e in selection["selected"]], ["tests/test_xbrl.py"])
 
+    def test_testpaths_limits_the_search_to_the_collected_tree(self) -> None:
+        # nilearn#6607 (#145): testpaths = ["nilearn"], yet
+        # examples/.../plot_second_level_association_test.py was selected and
+        # run as a test because its name ends in `_test.py`.
+        self._test_file(
+            "pyproject.toml", '[tool.pytest.ini_options]\ntestpaths = ["edgar", "tests"]\n'
+        )
+        self._test_file("tests/test_xbrl.py", "from edgar.xbrl import xbrl\n")
+        self._test_file("examples/plot_association_test.py", "from edgar.xbrl import xbrl\n")
+        selection = select_test_files(self.workspace, ["edgar/xbrl/xbrl.py"])
+        self.assertEqual([e["path"] for e in selection["selected"]], ["tests/test_xbrl.py"])
+
+    def test_testpaths_in_an_ini_file_is_honoured(self) -> None:
+        self._test_file("setup.cfg", "[tool:pytest]\ntestpaths =\n    tests\n")
+        self._test_file("tests/test_xbrl.py", "from edgar.xbrl import xbrl\n")
+        self._test_file("examples/test_example.py", "from edgar.xbrl import xbrl\n")
+        selection = select_test_files(self.workspace, ["edgar/xbrl/xbrl.py"])
+        self.assertEqual([e["path"] for e in selection["selected"]], ["tests/test_xbrl.py"])
+
+    def test_without_testpaths_the_whole_tree_is_searched(self) -> None:
+        self._test_file("tests/test_xbrl.py", "from edgar.xbrl import xbrl\n")
+        self._test_file("examples/test_example.py", "from edgar.xbrl import xbrl\n")
+        selection = select_test_files(self.workspace, ["edgar/xbrl/xbrl.py"])
+        self.assertEqual(
+            sorted(e["path"] for e in selection["selected"]),
+            ["examples/test_example.py", "tests/test_xbrl.py"],
+        )
+
     def test_a_test_file_the_diff_changes_runs_even_without_naming_the_module(
         self,
     ) -> None:

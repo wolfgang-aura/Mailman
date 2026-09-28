@@ -129,8 +129,61 @@ def _is_test_module(relative: str) -> bool:
     return name.startswith("test_") or name.endswith(("_test.py", "_tests.py"))
 
 
+def pytest_testpaths(workspace: Path) -> list[str]:
+    """The target's pytest `testpaths`, from the first file that sets it, or `[]`.
+
+    nilearn sets `testpaths = ["nilearn"]`; without it, a gallery script
+    `examples/.../plot_second_level_association_test.py` was run as a test (#145).
+    """
+    import configparser
+    import tomllib
+
+    for name, section in (
+        ("pytest.ini", "pytest"),
+        ("pyproject.toml", None),
+        ("tox.ini", "pytest"),
+        ("setup.cfg", "tool:pytest"),
+    ):
+        path = workspace / name
+        if not path.is_file():
+            continue
+        if section is None:
+            try:
+                data = tomllib.loads(path.read_text(encoding="utf-8"))
+            except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+                continue
+            options = data.get("tool", {}).get("pytest", {}).get("ini_options", {})
+            declared = options.get("testpaths") if isinstance(options, dict) else None
+            if isinstance(declared, str):
+                declared = declared.split()
+            if isinstance(declared, list) and declared:
+                return [str(entry).replace("\\", "/").strip("/") for entry in declared]
+            continue
+        parser = configparser.ConfigParser(interpolation=None)
+        try:
+            parser.read(path, encoding="utf-8")
+        except (OSError, configparser.Error, UnicodeDecodeError):
+            continue
+        if parser.has_option(section, "testpaths"):
+            entries = parser.get(section, "testpaths").split()
+            if entries:
+                return [entry.replace("\\", "/").strip("/") for entry in entries]
+    return []
+
+
+def _under(relative: str, roots: list[str]) -> bool:
+    return any(
+        root in ("", ".") or relative == root or relative.startswith(root + "/")
+        for root in roots
+    )
+
+
 def _test_files(workspace: Path) -> list[str]:
-    """Every collectable test file in the workspace, as a `/`-separated relative path."""
+    """Every collectable test file in the workspace, as a `/`-separated relative path.
+
+    Limited to the target's pytest `testpaths` when it sets them.
+    """
+    roots = pytest_testpaths(workspace)
     found: list[str] = []
     for root, directories, files in os.walk(workspace):
         # A `testing` directory inside a package is library code, not a test
@@ -149,6 +202,8 @@ def _test_files(workspace: Path) -> list[str]:
             relative = (relative_root / name).as_posix()
             if relative.startswith("./"):
                 relative = relative[2:]
+            if roots and not _under(relative, roots):
+                continue
             if _is_test_path(relative) and _is_test_module(relative):
                 found.append(relative)
     return found

@@ -19,9 +19,11 @@ from mailman.reproduction import (
 )
 from mailman.toolchain import resolve_tool
 from mailman.touched_tests import (
+    TOUCHED_TESTS_CAP,
     load_touched_tests,
     resolve_workspace,
     run_touched_tests,
+    select_test_files,
     touched_tests_verdict,
 )
 
@@ -561,6 +563,18 @@ def _evidence_findings(
     return findings
 
 
+def _touched_selection_changed(
+    record: dict[str, Any], workspace: Path | None, changed_paths: list[str]
+) -> bool:
+    """Whether Mailman would now choose other test files than the record ran."""
+    if workspace is None or not workspace.is_dir() or "selected" not in record:
+        return False
+    recorded = [entry.get("path") for entry in record.get("selected") or []]
+    cap = record.get("cap") or TOUCHED_TESTS_CAP
+    fresh = select_test_files(workspace, changed_paths, cap=cap)
+    return [entry["path"] for entry in fresh["selected"]] != recorded
+
+
 def _touched_tests_findings(record: dict[str, Any] | None) -> list[Finding]:
     """The touched-tests stage as findings: not run and failed both block."""
     findings: list[Finding] = []
@@ -910,18 +924,23 @@ def prepare_submission(
     findings.extend(_evidence_findings(run, verifications))
     diff_digest = hashlib.sha256(diff.encode("utf-8")).hexdigest()
     touched_tests = load_touched_tests(run_directory)
+    touched_workspace = resolve_workspace(run_directory, workspace)
     # A record for another diff, or one that never got to run, is retried; a
     # failure is not, because the diff it failed on is the one being filed.
+    # Nor is a record whose file selection Mailman would now make differently:
+    # nilearn#6607 kept failing on gallery scripts after #145 stopped
+    # selecting them, because the stored failure was for the same diff.
     if (
         touched_tests is None
         or touched_tests.get("diff_sha256") != diff_digest
         or not touched_tests.get("ran")
+        or _touched_selection_changed(touched_tests, touched_workspace, changed_paths)
     ):
         touched_tests = run_touched_tests(
             run_directory,
             diff=diff,
             changed_paths=changed_paths,
-            workspace=resolve_workspace(run_directory, workspace),
+            workspace=touched_workspace,
         )
     findings.extend(_touched_tests_findings(touched_tests))
     # The target's own CI checks on changed files, so CI is not the first to

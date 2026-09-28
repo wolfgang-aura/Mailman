@@ -226,7 +226,38 @@ def _lint_sources(workspace: Path) -> dict[str, str]:
     return sources
 
 
+_INLINE_DEPENDENCIES = re.compile(r"additional_dependencies:\s*\[[^\]]*\]")
+
+
+def _without_hook_dependencies(text: str) -> str:
+    """A pre-commit config minus every hook's `additional_dependencies`.
+
+    A package a hook installs is not a tool CI runs: nilearn's blacken-docs
+    hook lists `black` there while nilearn formats with ruff, and matching it
+    ran black over the diff and blocked the run (#144).
+    """
+    text = _INLINE_DEPENDENCIES.sub("", text)
+    kept: list[str] = []
+    block_indent: int | None = None
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        if block_indent is not None:
+            if not stripped or stripped.startswith("#") or indent > block_indent:
+                continue
+            if stripped.startswith("-") and indent == block_indent:
+                continue
+            block_indent = None
+        if stripped.startswith("additional_dependencies:"):
+            block_indent = indent
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def _mentions(tool: LintTool, name: str, text: str) -> bool:
+    if name == ".pre-commit-config.yaml":
+        text = _without_hook_dependencies(text)
     if name in tool.files:
         return True
     if name in _CONFIGURING_FILES:
