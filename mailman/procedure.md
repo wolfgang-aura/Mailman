@@ -318,7 +318,11 @@ own without a domain narrowing the pool before they see it.
     rest named under `omitted`. Files importing the full dotted module rank
     ahead of package and bare-stem matches before the cap, and `-m "not
     network"` is added when the target registers a `network` marker
-    (recorded as `marker_filter`). The record in `submission.json` under
+    (recorded as `marker_filter`). A file that fails collection on `No
+    module named 'x'` for a module outside the workspace (a missing optional
+    extra) is moved to `omitted` with its reason under `omitted_reasons`, the
+    rest run again, and a non-blocking `touched-tests-omitted` names it; if
+    every file is omitted the stage is `touched-tests-not-run`. The record in `submission.json` under
     `touched_tests` holds the files and why each was chosen, the exact
     command, exit code, passed and failed counts and duration. A failure is
     `touched-tests-failed`, a stage that could not run is
@@ -333,13 +337,18 @@ own without a domain narrowing the pool before they see it.
     also runs it on the changed test files with the run interpreter; a
     non-zero exit is `offline-audit-failed` and blocks (recorded under
     `offline_audit`).
-    When the target configures or runs ruff (`[tool.ruff]` in pyproject,
-    `ruff.toml`, `.pre-commit-config.yaml` or a workflow), it runs `ruff
-    check` (and `ruff format --check` when CI formats) over the changed Python
-    files with the run interpreter, installing the pinned version first if
-    needed. A finding is `lint-failed` and blocks; a ruff that cannot be
-    installed is recorded under `lint` as skipped with a non-blocking
-    `lint-skipped`. Other linters and type checkers are not run.
+    When the target configures or runs ruff, flake8, black, isort, mypy or
+    ty (a `[tool.x]` or `[x]` section in pyproject, setup.cfg or tox.ini, the
+    tool's own config file, `.pre-commit-config.yaml` or a workflow), it runs
+    each over the changed Python files with the run interpreter (`ruff
+    check`, plus `ruff format --check` when CI formats; `black --check`;
+    `isort --check-only`; `ty check`), installing the pinned version first if
+    needed. A finding is `lint-failed` and blocks. A tool that cannot be
+    installed or started here (ty.exe is blocked on this host) is
+    `lint-not-run` and blocks too; record why with `mailman acknowledge-lint
+    RUN_ID --tool NAME --note "..."`, which is pinned to the exported diff and
+    turns only `lint-not-run` non-blocking. A target with no linter
+    configured has no finding. Each tool's outcome is under `lint.tools`.
 14. Write decision.json using `decision --init` and the schema in
     docs/review-page-standard.md. Keep evidence classes distinct. Questions
     must be genuine user choices, never tasks you can do. Use [] otherwise.

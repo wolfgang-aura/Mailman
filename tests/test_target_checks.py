@@ -8,7 +8,14 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from mailman.executor import CommandResult
-from mailman.target_checks import ruff_configuration, run_lint, run_offline_audit
+from mailman.target_checks import (
+    lint_configurations,
+    load_lint_acknowledgement,
+    record_lint_acknowledgement,
+    ruff_configuration,
+    run_lint,
+    run_offline_audit,
+)
 
 
 def _result(command: list[str], *, exit_code: int = 0, stdout: str = "",
@@ -28,9 +35,12 @@ def _result(command: list[str], *, exit_code: int = 0, stdout: str = "",
 
 
 class Executor:
-    """Answers by the first matching fragment of the joined command."""
+    """Answers by the first matching fragment of the joined command.
 
-    def __init__(self, answers: dict[str, int] | None = None) -> None:
+    A list of exit codes is consumed one call at a time; the last one repeats.
+    """
+
+    def __init__(self, answers: dict[str, int | list[int]] | None = None) -> None:
         self.answers = answers or {}
         self.calls: list[list[str]] = []
 
@@ -39,6 +49,8 @@ class Executor:
         joined = " ".join(command)
         for fragment, exit_code in self.answers.items():
             if fragment in joined:
+                if isinstance(exit_code, list):
+                    exit_code = exit_code.pop(0) if len(exit_code) > 1 else exit_code[0]
                 return _result(list(command), exit_code=exit_code, stdout="output\n")
         return _result(list(command))
 
@@ -167,7 +179,8 @@ class LintTests(_Fixture):
         self.assertEqual(findings, [])
         self.assertTrue(record["ran"])
         self.assertEqual(record["reason"], "passed")
-        self.assertIsNone(record["install"])
+        self.assertEqual([tool["tool"] for tool in record["tools"]], ["ruff"])
+        self.assertIsNone(record["tools"][0]["install"])
         self.assertEqual(
             executor.calls[-1],
             [str(self.python), "-m", "ruff", "check", "--no-cache", "--force-exclude",
@@ -182,27 +195,163 @@ class LintTests(_Fixture):
         self.assertTrue(findings[0]["blocking"])
 
     def test_a_missing_ruff_is_installed_at_the_pinned_version(self) -> None:
-        executor = Executor({"ruff --version": 1})
+        executor = Executor({"ruff --version": [1, 0]})
         record, findings = self._run(executor)
         self.assertEqual(findings, [])
-        self.assertEqual(record["install"]["requirement"], "ruff==0.16.0")
+        self.assertEqual(record["tools"][0]["install"]["requirement"], "ruff==0.16.0")
         self.assertIn("ruff==0.16.0", executor.calls[1])
         self.assertTrue(record["ran"])
 
-    def test_a_ruff_that_cannot_be_installed_is_recorded_as_skipped(self) -> None:
+    def test_a_ruff_that_cannot_be_installed_blocks_as_not_run(self) -> None:
         executor = Executor({"ruff --version": 1, "pip install": 1})
         record, findings = self._run(executor)
         self.assertFalse(record["ran"])
-        self.assertTrue(record["reason"].startswith("skipped:"))
-        self.assertEqual([f["code"] for f in findings], ["lint-skipped"])
-        self.assertFalse(findings[0]["blocking"])
+        self.assertEqual(record["reason"], "not-run")
+        self.assertEqual([f["code"] for f in findings], ["lint-not-run"])
+        self.assertTrue(findings[0]["blocking"])
+        self.assertIn("ruff", findings[0]["detail"])
         self.assertFalse(any("ruff check" in " ".join(c) for c in executor.calls))
+
+    def test_a_missing_environment_blocks_as_not_run(self) -> None:
+        self.python.unlink()
+        executor = Executor()
+        _, findings = self._run(executor)
+        self.assertEqual([f["code"] for f in findings], ["lint-not-run"])
+        self.assertTrue(findings[0]["blocking"])
+        self.assertEqual(executor.calls, [])
 
     def test_a_diff_without_python_files_is_not_linted(self) -> None:
         executor = Executor()
         record, findings = self._run(executor, changed=("README.md",))
         self.assertEqual(record["reason"], "no-changed-python-files")
         self.assertEqual(executor.calls, [])
+
+
+class LintConfigurationTests(_Fixture):
+    def _tools(self) -> list[str]:
+        return [entry["tool"] for entry in lint_configurations(self.workspace)]
+
+    def test_a_target_with_no_linter_has_no_configuration_and_no_finding(self) -> None:
+        self.write("pyproject.toml", "[project]\nname = 'x'\ndependencies = ['mypy']\n")
+        self.write(".github/workflows/ci.yml", "steps:\n  - run: pytest\n")
+        self.assertEqual(self._tools(), [])
+        executor = Executor()
+        with patch("mailman.target_checks.execute", executor):
+            record, findings = run_lint(
+                self.run_directory, workspace=self.workspace, changed_paths=["pkg/mod.py"]
+            )
+        self.assertEqual(record["reason"], "no-linter-configured")
+        self.assertEqual(findings, [])
+        self.assertEqual(executor.calls, [])
+
+    def test_each_tool_is_found_where_ci_or_configuration_names_it(self) -> None:
+        self.write("setup.cfg", "[flake8]\nmax-line-length = 100\n")
+        self.write("pyproject.toml", "[tool.black]\nline-length = 100\n[tool.mypy]\n")
+        self.write(
+            ".pre-commit-config.yaml",
+            "repos:\n  - repo: https://github.com/PyCQA/isort\n    rev: 5.13.2\n"
+            "    hooks:\n      - id: isort\n",
+        )
+        self.write(".github/workflows/lint.yml", "steps:\n  - run: uv run ty check src\n")
+        self.assertEqual(self._tools(), ["flake8", "black", "isort", "mypy", "ty"])
+        isort = lint_configurations(self.workspace)[2]
+        self.assertEqual(isort["version"], "5.13.2")
+        self.assertEqual(isort["sources"], [".pre-commit-config.yaml"])
+
+    def test_ty_is_not_found_in_unrelated_prose(self) -> None:
+        self.write(".github/workflows/ci.yml", "name: pretty ty docs\nsteps: []\n")
+        self.assertEqual(self._tools(), [])
+
+    def test_a_ruff_isort_section_is_not_isort(self) -> None:
+        self.write("pyproject.toml", "[tool.ruff.lint.isort]\nknown-first-party = ['x']\n")
+        self.assertEqual(self._tools(), ["ruff"])
+
+
+class OtherLinterTests(_Fixture):
+    def _run(self, executor: Executor, acknowledged=None):
+        with patch("mailman.target_checks.execute", executor):
+            return run_lint(
+                self.run_directory,
+                workspace=self.workspace,
+                changed_paths=["pkg/mod.py"],
+                acknowledged=acknowledged,
+            )
+
+    def test_black_and_isort_run_in_check_mode_over_the_changed_files(self) -> None:
+        self.write("pyproject.toml", "[tool.black]\n[tool.isort]\n")
+        executor = Executor()
+        record, findings = self._run(executor)
+        self.assertEqual(findings, [])
+        self.assertEqual(record["reason"], "passed")
+        python = str(self.python)
+        self.assertIn([python, "-m", "black", "--check", "--diff", "pkg/mod.py"],
+                      executor.calls)
+        self.assertIn([python, "-m", "isort", "--check-only", "--diff", "pkg/mod.py"],
+                      executor.calls)
+
+    def test_a_mypy_error_blocks_as_lint_failed(self) -> None:
+        self.write("mypy.ini", "[mypy]\nstrict = True\n")
+        record, findings = self._run(Executor({"mypy pkg/mod.py": 1}))
+        self.assertEqual(record["reason"], "failed")
+        self.assertEqual([f["code"] for f in findings], ["lint-failed"])
+        self.assertIn("`mypy`", findings[0]["detail"])
+
+    def test_a_ty_that_installs_but_cannot_start_blocks_as_not_run(self) -> None:
+        # securo#1039: CI ran ty, which Application Control blocks on this
+        # host; the first CI run on the pull request failed.
+        self.write(".github/workflows/ci.yml", "- run: uvx ty check\n")
+        executor = Executor({"ty --version": 1})
+        record, findings = self._run(executor)
+        self.assertEqual(record["reason"], "not-run")
+        self.assertEqual([f["code"] for f in findings], ["lint-not-run"])
+        self.assertTrue(findings[0]["blocking"])
+        self.assertIn("ty", findings[0]["detail"])
+        self.assertIn("after install", findings[0]["detail"])
+        self.assertFalse(any("ty check" in " ".join(c) for c in executor.calls))
+
+    def test_an_acknowledged_tool_that_cannot_run_does_not_block(self) -> None:
+        self.write(".github/workflows/ci.yml", "- run: uvx ty check\n")
+        _, findings = self._run(
+            Executor({"ty --version": 1}),
+            acknowledged={"ty": "ty.exe is blocked; ran ty in CI on the fork"},
+        )
+        self.assertEqual([f["code"] for f in findings], ["lint-not-run"])
+        self.assertFalse(findings[0]["blocking"])
+        self.assertIn("ran ty in CI on the fork", findings[0]["detail"])
+
+    def test_an_acknowledgement_never_clears_a_failure(self) -> None:
+        self.write("mypy.ini", "[mypy]\n")
+        _, findings = self._run(Executor({"mypy pkg/mod.py": 1}),
+                                acknowledged={"mypy": "note"})
+        self.assertTrue(findings[0]["blocking"])
+
+
+class LintAcknowledgementTests(unittest.TestCase):
+    def test_the_record_is_pinned_to_the_diff(self) -> None:
+        with TemporaryDirectory() as temporary:
+            run_directory = Path(temporary)
+            record_lint_acknowledgement(
+                run_directory, tools=["ty"], note="blocked by policy", diff="diff A\n"
+            )
+            from hashlib import sha256
+
+            same = sha256(b"diff A\n").hexdigest()
+            other = sha256(b"diff B\n").hexdigest()
+            self.assertEqual(
+                load_lint_acknowledgement(run_directory, same), {"ty": "blocked by policy"}
+            )
+            self.assertEqual(load_lint_acknowledgement(run_directory, other), {})
+
+    def test_an_unknown_tool_or_empty_note_is_refused(self) -> None:
+        with TemporaryDirectory() as temporary:
+            with self.assertRaises(ValueError):
+                record_lint_acknowledgement(
+                    Path(temporary), tools=["pylint"], note="x", diff="d\n"
+                )
+            with self.assertRaises(ValueError):
+                record_lint_acknowledgement(
+                    Path(temporary), tools=["ty"], note="  ", diff="d\n"
+                )
 
 
 if __name__ == "__main__":

@@ -470,6 +470,38 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertIn("lint-failed", record["blocking_codes"])
         self.assertEqual(record["lint"]["tool"], "ruff")
 
+    def test_a_file_omitted_for_a_missing_extra_is_reported_without_blocking(self) -> None:
+        from mailman.submission import _touched_tests_findings
+
+        record = passing_touched_tests(SOURCE_DIFF)
+        record["omitted_reasons"] = {
+            "tests/test_arrow.py": "collection failed: No module named 'pyarrow'"
+        }
+        findings = _touched_tests_findings(record)
+        self.assertEqual([f.code for f in findings], ["touched-tests-omitted"])
+        self.assertFalse(findings[0].blocking)
+        self.assertIn("pyarrow", findings[0].detail)
+
+    def test_a_lint_acknowledgement_for_this_diff_reaches_the_lint_stage(self) -> None:
+        from mailman.target_checks import record_lint_acknowledgement
+
+        record_lint_acknowledgement(
+            self.run_directory, tools=["ty"], note="ty.exe is blocked here",
+            diff=SOURCE_DIFF,
+        )
+        with patch(
+            "mailman.target_checks.run_lint", return_value=({"ran": False}, [])
+        ) as run_lint:
+            self._prepare()
+        self.assertEqual(
+            run_lint.call_args.kwargs["acknowledged"], {"ty": "ty.exe is blocked here"}
+        )
+        with patch(
+            "mailman.target_checks.run_lint", return_value=({"ran": False}, [])
+        ) as run_lint:
+            self._prepare(diff=SOURCE_DIFF + "\n")
+        self.assertEqual(run_lint.call_args.kwargs["acknowledged"], {})
+
     def test_a_forbidding_policy_blocks(self) -> None:
         record = self._prepare(policy=_policy(stance="forbidden"))
         self.assertFalse(record["ready"])

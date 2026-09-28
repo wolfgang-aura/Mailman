@@ -235,7 +235,7 @@ class CountParsingTests(unittest.TestCase):
         self.assertIsNone(counts["passed"])
 
 
-class RunTouchedTestsTests(unittest.TestCase):
+class _RunFixture(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = TemporaryDirectory()
         root = Path(self._temporary.name)
@@ -265,6 +265,8 @@ class RunTouchedTestsTests(unittest.TestCase):
         with patch("mailman.touched_tests.execute", executor):
             return run_touched_tests(self.run_directory, **arguments)
 
+
+class RunTouchedTestsTests(_RunFixture):
     def test_the_record_holds_the_command_the_counts_and_the_selection(self) -> None:
         executor = FakeExecutor(stdout="3 passed in 0.7s\n")
         record = self._run(executor)
@@ -368,6 +370,106 @@ class RunTouchedTestsTests(unittest.TestCase):
         record = self._run(FakeExecutor())
         self.assertNotIn("not network", record["command"])
         self.assertIsNone(record["marker_filter"])
+
+
+def _collection_error(path: str, error: str) -> str:
+    return (
+        "==================================== ERRORS ====================================\n"
+        f"_____________________ ERROR collecting {path} _____________________\n"
+        f"ImportError while importing test module 'C:\\w\\{path}'.\n"
+        "Traceback:\n"
+        f"E   {error}\n"
+        "=========================== short test summary info ============================\n"
+        f"ERROR {path}\n"
+        "!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n"
+        "1 error in 0.40s\n"
+    )
+
+
+class SequenceExecutor(FakeExecutor):
+    """Answers each test run from a list of (exit_code, stdout) in order."""
+
+    def __init__(self, runs: list[tuple[int, str]]) -> None:
+        super().__init__()
+        self.runs = list(runs)
+
+    def __call__(self, command, *, working_directory, timeout_seconds, **_):
+        if command[1:] == ["-c", "import pytest"]:
+            return super().__call__(
+                command, working_directory=working_directory, timeout_seconds=timeout_seconds
+            )
+        self.calls.append({"command": list(command)})
+        exit_code, stdout = self.runs.pop(0)
+        return _result(list(command), exit_code=exit_code, stdout=stdout)
+
+
+class CollectionErrorTests(_RunFixture):
+    """#127: an optional extra missing at collection omits the file, not the stage."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.workspace / "tests" / "test_xbrl_arrow.py").write_text(
+            "import pyarrow\nfrom edgar.xbrl.xbrl import x\n", encoding="utf-8"
+        )
+
+    def test_a_missing_optional_extra_omits_the_file_and_reruns_the_rest(self) -> None:
+        executor = SequenceExecutor(
+            [
+                (2, _collection_error(
+                    "tests/test_xbrl_arrow.py",
+                    "ModuleNotFoundError: No module named 'pyarrow'",
+                )),
+                (0, "3 passed in 0.7s\n"),
+            ]
+        )
+        record = self._run(executor)
+        runs = [call["command"] for call in executor.calls if "pytest" in call["command"]]
+        self.assertEqual(len(runs), 2)
+        self.assertIn("tests/test_xbrl_arrow.py", runs[0])
+        self.assertNotIn("tests/test_xbrl_arrow.py", runs[1])
+        self.assertIn("tests/test_xbrl.py", runs[1])
+        self.assertEqual(record["exit_code"], 0)
+        self.assertIn("tests/test_xbrl_arrow.py", record["omitted"])
+        self.assertIn("pyarrow", record["omitted_reasons"]["tests/test_xbrl_arrow.py"])
+        self.assertEqual(
+            [entry["path"] for entry in record["selected"]], ["tests/test_xbrl.py"]
+        )
+        self.assertIsNone(touched_tests_verdict(record)[0])
+
+    def test_an_import_error_from_the_targets_own_package_still_fails(self) -> None:
+        # `cannot import name` from the package the diff changed may be the
+        # diff's own breakage; it is not an optional extra.
+        record = self._run(SequenceExecutor([
+            (2, _collection_error(
+                "tests/test_xbrl_arrow.py",
+                "ImportError: cannot import name 'x' from 'edgar.xbrl.xbrl'",
+            )),
+        ]))
+        self.assertEqual(record["omitted_reasons"], {})
+        self.assertEqual(touched_tests_verdict(record)[0], "touched-tests-failed")
+
+    def test_a_missing_module_inside_the_workspace_still_fails(self) -> None:
+        record = self._run(SequenceExecutor([
+            (2, _collection_error(
+                "tests/test_xbrl_arrow.py",
+                "ModuleNotFoundError: No module named 'edgar.xbrl.gone'",
+            )),
+        ]))
+        self.assertEqual(record["omitted_reasons"], {})
+        self.assertEqual(touched_tests_verdict(record)[0], "touched-tests-failed")
+
+    def test_when_every_file_is_omitted_the_stage_has_not_run(self) -> None:
+        output = _collection_error(
+            "tests/test_xbrl.py", "ModuleNotFoundError: No module named 'pyarrow'"
+        ) + _collection_error(
+            "tests/test_xbrl_arrow.py", "ModuleNotFoundError: No module named 'pyarrow'"
+        )
+        record = self._run(SequenceExecutor([(2, output)]))
+        self.assertFalse(record["ran"])
+        self.assertEqual(record["reason"], "all-selected-omitted")
+        code, detail = touched_tests_verdict(record)
+        self.assertEqual(code, "touched-tests-not-run")
+        self.assertIn("pyarrow", detail)
 
 
 if __name__ == "__main__":

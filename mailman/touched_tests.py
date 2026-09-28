@@ -362,6 +362,45 @@ def _tail(text: str, lines: int = 60) -> str:
     return "\n".join(text.splitlines()[-lines:])
 
 
+_COLLECTING = re.compile(r"(?m)^_{3,} ERROR collecting (.+?) _{3,}\s*$")
+_SECTION_END = re.compile(r"(?m)^(?:_{3,} |={3,})")
+_NO_MODULE = re.compile(r"(?:ModuleNotFoundError|ImportError): No module named '([\w.]+)'")
+
+
+def _is_local_module(workspace: Path, name: str) -> bool:
+    top = name.split(".", 1)[0]
+    for prefix in ("", *_LAYOUT_PREFIXES):
+        base = workspace / prefix if prefix else workspace
+        if (base / top).is_dir() or (base / f"{top}.py").is_file():
+            return True
+    return False
+
+
+def missing_extra_collection_errors(
+    output: str, workspace: Path, files: list[str]
+) -> dict[str, str]:
+    """`{test file: missing module}` for collection errors a missing extra caused.
+
+    A test file that imports an optional dependency the run environment does
+    not have fails at collection, and pytest stops the whole run with exit 2.
+    Only `No module named 'x'` for a module that is not part of the workspace
+    counts: `cannot import name` from the target's own package may be the diff's
+    fault and still fails the stage (#127).
+    """
+    wanted = {path.replace("\\", "/"): path for path in files}
+    missing: dict[str, str] = {}
+    for header in _COLLECTING.finditer(output):
+        path = header.group(1).strip().replace("\\", "/")
+        if path not in wanted:
+            continue
+        end = _SECTION_END.search(output, header.end())
+        section = output[header.end() : end.start() if end else len(output)]
+        found = _NO_MODULE.search(section)
+        if found and not _is_local_module(workspace, found.group(1)):
+            missing[wanted[path]] = found.group(1)
+    return missing
+
+
 def _write(run_directory: Path, record: dict[str, Any]) -> dict[str, Any]:
     (run_directory / TOUCHED_TESTS_FILENAME).write_text(
         json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n"
@@ -407,6 +446,8 @@ def run_touched_tests(
         "capped": False,
         "cap": cap,
         "omitted": [],
+        "omitted_reasons": {},
+        "collection_retries": [],
         "command": None,
         "marker_filter": None,
         "exit_code": None,
@@ -443,18 +484,53 @@ def run_touched_tests(
     )
     runner = "pytest" if probe.exit_code == 0 and not probe.timed_out else "unittest"
     files = [entry["path"] for entry in selection["selected"]]
-    if runner == "pytest":
-        command = [python, "-m", "pytest", *files, "-q", "-p", "no:cacheprovider"]
-        if network_marker_registered(workspace):
-            record["marker_filter"] = "not network"
-            command.extend(["-m", "not network"])
-    else:
-        command = [python, "-m", "unittest", *files]
+    marker = ["-m", "not network"] if runner == "pytest" and network_marker_registered(
+        workspace
+    ) else []
+    if marker:
+        record["marker_filter"] = "not network"
+
+    def command_for(paths: list[str]) -> list[str]:
+        if runner == "pytest":
+            return [python, "-m", "pytest", *paths, "-q", "-p", "no:cacheprovider", *marker]
+        return [python, "-m", "unittest", *paths]
+
     record["runner"] = runner
-    record["command"] = command
-    result: CommandResult = execute(
-        command, working_directory=workspace, timeout_seconds=timeout_seconds
-    )
+    record["omitted_reasons"] = {}
+    record["collection_retries"] = []
+    while True:
+        command = command_for(files)
+        record["command"] = command
+        result: CommandResult = execute(
+            command, working_directory=workspace, timeout_seconds=timeout_seconds
+        )
+        if runner != "pytest" or result.timed_out or result.exit_code not in (2, 4):
+            break
+        # A test file whose import needs an optional extra the environment
+        # lacks is left out with its reason, and the rest run again (#127).
+        missing = missing_extra_collection_errors(
+            result.stdout + "\n" + result.stderr, workspace, files
+        )
+        if not missing:
+            break
+        record["collection_retries"].append(
+            {"command": command, "exit_code": result.exit_code, "omitted": sorted(missing)}
+        )
+        for path, module in missing.items():
+            record["omitted"].append(path)
+            record["omitted_reasons"][path] = (
+                f"collection failed: No module named '{module}', an optional "
+                "dependency the run environment does not have"
+            )
+        record["selected"] = [
+            entry for entry in record["selected"] if entry["path"] not in missing
+        ]
+        files = [path for path in files if path not in missing]
+        if not files:
+            record["exit_code"] = result.exit_code
+            record["output_tail"] = _tail(result.stdout + "\n" + result.stderr)
+            record["reason"] = "all-selected-omitted"
+            return _write(run_directory, record)
     record["ran"] = True
     record["exit_code"] = result.exit_code
     record["timed_out"] = result.timed_out
@@ -485,6 +561,17 @@ def touched_tests_verdict(
             "touched-tests-not-run",
             "the touched-tests record belongs to an earlier export; run "
             "`mailman prepare-submission` again for the current diff.",
+        )
+    if record.get("reason") == "all-selected-omitted":
+        return (
+            "touched-tests-not-run",
+            "every selected test file failed to collect on a missing optional "
+            "dependency, so nothing ran: "
+            + "; ".join(
+                f"{path}: {why}"
+                for path, why in (record.get("omitted_reasons") or {}).items()
+            )
+            + ". Install the extra with `mailman prepare-environment` and rerun.",
         )
     if not record.get("ran"):
         reason = record.get("reason") or "unknown"

@@ -579,6 +579,18 @@ def _touched_tests_findings(record: dict[str, Any] | None) -> list[Finding]:
                 ),
             )
         )
+    omitted_reasons = (record or {}).get("omitted_reasons") or {}
+    if omitted_reasons and (record or {}).get("reason") != "all-selected-omitted":
+        findings.append(
+            Finding(
+                code="touched-tests-omitted",
+                blocking=False,
+                detail=(
+                    "left out after failing to collect, and the rest ran again: "
+                    + "; ".join(f"{path}: {why}" for path, why in omitted_reasons.items())
+                ),
+            )
+        )
     return findings
 
 
@@ -914,7 +926,11 @@ def prepare_submission(
     findings.extend(_touched_tests_findings(touched_tests))
     # The target's own CI checks on changed files, so CI is not the first to
     # run them (#137, #120).
-    from mailman.target_checks import run_lint, run_offline_audit
+    from mailman.target_checks import (
+        load_lint_acknowledgement,
+        run_lint,
+        run_offline_audit,
+    )
 
     check_workspace = resolve_workspace(run_directory, workspace)
     offline_audit, audit_findings = run_offline_audit(
@@ -922,7 +938,10 @@ def prepare_submission(
     )
     findings.extend(Finding(**entry) for entry in audit_findings)
     lint, lint_findings = run_lint(
-        run_directory, workspace=check_workspace, changed_paths=changed_paths
+        run_directory,
+        workspace=check_workspace,
+        changed_paths=changed_paths,
+        acknowledged=load_lint_acknowledgement(run_directory, diff_digest),
     )
     findings.extend(Finding(**entry) for entry in lint_findings)
     from mailman.targeting import stale_attempt_row
