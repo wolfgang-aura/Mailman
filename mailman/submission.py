@@ -982,6 +982,7 @@ def prepare_submission(
         workspace=check_workspace,
         changed_paths=changed_paths,
         acknowledged=load_lint_acknowledgement(run_directory, diff_digest),
+        base_commit=run.base_commit,
     )
     findings.extend(Finding(**entry) for entry in lint_findings)
     from mailman.targeting import stale_attempt_row

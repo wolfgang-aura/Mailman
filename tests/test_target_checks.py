@@ -338,6 +338,35 @@ class OtherLinterTests(_Fixture):
         self.assertEqual([f["code"] for f in findings], ["lint-failed"])
         self.assertIn("`mypy`", findings[0]["detail"])
 
+    def test_mypy_skips_files_the_target_config_excludes(self) -> None:
+        # ipython excludes `tests` from mypy; naming tests/test_history.py on
+        # the command line bypassed that and raised errors CI never sees.
+        self.write("pyproject.toml", "[tool.mypy]\nexclude = ['tests', 'test_.+\\\\.py']\n")
+        executor = Executor({"mypy pkg": 1})
+        with patch("mailman.target_checks.execute", executor):
+            record, findings = run_lint(
+                self.run_directory,
+                workspace=self.workspace,
+                changed_paths=["pkg/mod.py", "tests/test_mod.py"],
+            )
+        mypy_calls = [c for c in executor.calls if "mypy" in c and "--version" not in c
+                      and "pip" not in c]
+        self.assertEqual(mypy_calls, [[str(self.python), "-m", "mypy", "pkg/mod.py"]])
+        self.assertEqual([f["code"] for f in findings], ["lint-failed"])
+
+    def test_mypy_with_every_changed_file_excluded_does_not_run(self) -> None:
+        self.write("mypy.ini", "[mypy]\nexclude = tests\n")
+        executor = Executor({"mypy": 1})
+        with patch("mailman.target_checks.execute", executor):
+            record, findings = run_lint(
+                self.run_directory,
+                workspace=self.workspace,
+                changed_paths=["tests/test_mod.py"],
+            )
+        self.assertEqual(findings, [])
+        self.assertEqual(record["reason"], "passed")
+        self.assertEqual(executor.calls, [])
+
     def test_a_ty_that_installs_but_cannot_start_blocks_as_not_run(self) -> None:
         # securo#1039: CI ran ty, which Application Control blocks on this
         # host; the first CI run on the pull request failed.
@@ -366,6 +395,104 @@ class OtherLinterTests(_Fixture):
         _, findings = self._run(Executor({"mypy pkg/mod.py": 1}),
                                 acknowledged={"mypy": "note"})
         self.assertTrue(findings[0]["blocking"])
+
+
+class BaselineExecutor:
+    """Makes the base worktree on `git worktree add`; answers by directory."""
+
+    def __init__(self, workspace_output: str, base_output: str | None,
+                 base_files=("pkg/mod.py",)) -> None:
+        self.workspace_output = workspace_output
+        self.base_output = base_output
+        self.base_files = base_files
+        self.calls: list[tuple[list[str], str]] = []
+
+    def __call__(self, command, *, working_directory, timeout_seconds, **_):
+        self.calls.append((list(command), str(working_directory)))
+        if command[:3] == ["git", "worktree", "add"]:
+            base = Path(command[4])
+            for relative in self.base_files:
+                (base / relative).parent.mkdir(parents=True, exist_ok=True)
+                (base / relative).write_text("x = 1\n", encoding="utf-8")
+            return _result(list(command))
+        if command[0] == "git" or "--version" in command:
+            return _result(list(command))
+        if "lint-base" in str(working_directory):
+            if self.base_output is None:
+                return _result(list(command))
+            return _result(list(command), exit_code=1, stdout=self.base_output)
+        return _result(list(command), exit_code=1, stdout=self.workspace_output)
+
+
+class LintBaselineTests(_Fixture):
+    # ipython#9891: flake8, black and mypy each failed on lines the patch never
+    # touched, and the run was held on findings the base commit already had.
+    def setUp(self) -> None:
+        super().setUp()
+        self.write(".flake8", "[flake8]\n")
+
+    def _run(self, executor, base_commit="a" * 40):
+        with patch("mailman.target_checks.execute", executor):
+            return run_lint(
+                self.run_directory,
+                workspace=self.workspace,
+                changed_paths=["pkg/mod.py"],
+                base_commit=base_commit,
+            )
+
+    def test_a_finding_the_base_already_has_does_not_block(self) -> None:
+        executor = BaselineExecutor(
+            "pkg/mod.py:40:80: E501 line too long (91 > 79 characters)\n",
+            "pkg/mod.py:31:80: E501 line too long (91 > 79 characters)\n",
+        )
+        record, findings = self._run(executor)
+        self.assertEqual([f["code"] for f in findings], ["lint-preexisting"])
+        self.assertFalse(findings[0]["blocking"])
+        self.assertEqual(record["reason"], "preexisting")
+        self.assertIn(["git", "worktree", "remove", "--force",
+                       str(self.run_directory / "scratch" / "lint-base")],
+                      [call for call, _ in executor.calls])
+
+    def test_a_finding_the_patch_added_blocks_and_is_named(self) -> None:
+        executor = BaselineExecutor(
+            "pkg/mod.py:31:80: E501 line too long (91 > 79 characters)\n"
+            "pkg/mod.py:44:1: F401 'os' imported but unused\n",
+            "pkg/mod.py:31:80: E501 line too long (91 > 79 characters)\n",
+        )
+        record, findings = self._run(executor)
+        self.assertEqual([f["code"] for f in findings], ["lint-failed"])
+        self.assertTrue(findings[0]["blocking"])
+        self.assertIn("F401", findings[0]["detail"])
+        self.assertNotIn("E501", findings[0]["detail"])
+        self.assertEqual(record["reason"], "failed")
+
+    def test_a_base_that_passes_leaves_the_failure_blocking(self) -> None:
+        executor = BaselineExecutor("pkg/mod.py:1:1: F401 'os' imported but unused\n", None)
+        _, findings = self._run(executor)
+        self.assertEqual([f["code"] for f in findings], ["lint-failed"])
+        self.assertIn("the base commit passes", findings[0]["detail"])
+
+    def test_a_file_new_in_the_patch_is_not_compared(self) -> None:
+        executor = BaselineExecutor("pkg/mod.py:1:1: F401\n", "pkg/mod.py:1:1: F401\n",
+                                    base_files=())
+        _, findings = self._run(executor)
+        self.assertEqual([f["code"] for f in findings], ["lint-failed"])
+        self.assertTrue(findings[0]["blocking"])
+
+    def test_diff_context_holding_the_new_code_is_not_a_new_finding(self) -> None:
+        # black --diff printed the patch's own code as context next to an
+        # old reformat; only +/- lines tell the two runs apart.
+        base = "would reformat pkg/mod.py\n@@ -1,3 +1,3 @@\n x = 1\n-y=2\n+y = 2\n"
+        patched = ("would reformat pkg/mod.py\n@@ -1,4 +1,4 @@\n x = 1\n"
+                   " def added(pager): pass\n-y=2\n+y = 2\n@@ -9,2 +9,2 @@\n z = 3\n")
+        _, findings = self._run(BaselineExecutor(patched, base))
+        self.assertEqual([f["code"] for f in findings], ["lint-preexisting"])
+
+    def test_without_a_base_commit_no_worktree_is_made(self) -> None:
+        executor = BaselineExecutor("pkg/mod.py:1:1: F401\n", "pkg/mod.py:1:1: F401\n")
+        _, findings = self._run(executor, base_commit=None)
+        self.assertEqual([f["code"] for f in findings], ["lint-failed"])
+        self.assertFalse(any(call[0] == "git" for call, _ in executor.calls))
 
 
 class LintAcknowledgementTests(unittest.TestCase):

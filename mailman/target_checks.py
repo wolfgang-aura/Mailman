@@ -19,9 +19,12 @@ Each function returns `(record, findings)`; a finding is a dict with `code`,
 
 from __future__ import annotations
 
+import configparser
 import hashlib
 import json
 import re
+import tomllib
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -431,6 +434,7 @@ def _run_tool(
                     "exit_code": result.exit_code,
                     "timed_out": result.timed_out,
                     "output_tail": _tail(result.stdout + "\n" + result.stderr),
+                    "output": result.stdout + "\n" + result.stderr,
                 }
             )
     entry["ran"] = True
@@ -439,12 +443,160 @@ def _run_tool(
     return entry
 
 
+def _mypy_exclude_patterns(workspace: Path) -> list[str]:
+    """The target's mypy `exclude` regexes, from pyproject, mypy.ini or setup.cfg."""
+    patterns: list[str] = []
+    pyproject = workspace / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            data = tomllib.loads(_read(pyproject))
+        except tomllib.TOMLDecodeError:
+            data = {}
+        exclude = data.get("tool", {}).get("mypy", {}).get("exclude", [])
+        patterns.extend([exclude] if isinstance(exclude, str) else list(exclude))
+    for name in ("mypy.ini", ".mypy.ini", "setup.cfg"):
+        path = workspace / name
+        if not path.is_file():
+            continue
+        parser = configparser.ConfigParser()
+        try:
+            parser.read_string(_read(path))
+        except configparser.Error:
+            continue
+        value = parser.get("mypy", "exclude", fallback="")
+        patterns.extend(line.strip() for line in value.splitlines() if line.strip())
+    return patterns
+
+
+def _mypy_excluded(workspace: Path, path: str) -> bool:
+    """Whether CI's recursive `mypy` would skip `path` (#163).
+
+    mypy applies `exclude` only to files it discovers; a file named on the
+    command line is checked anyway. ipython excludes `tests`, and naming
+    tests/test_history.py raised errors CI never sees.
+    """
+    posix = path.replace(chr(92), "/")
+    for pattern in _mypy_exclude_patterns(workspace):
+        try:
+            if re.search(pattern, posix):
+                return True
+        except re.error:
+            continue
+    return False
+
+
+BASELINE_DIRECTORY = "lint-base"
+_DIGITS = re.compile(r"\d+")
+
+
+def _signatures(output: str, roots: tuple[Path, ...]) -> Counter[str]:
+    """Output lines with paths made relative and every number blanked.
+
+    Line numbers shift when a patch adds lines above a finding, and summary
+    counts change with it, so neither may tell an old finding from a new one.
+    """
+    lines: Counter[str] = Counter()
+    for line in output.splitlines():
+        # A diff's context lines can hold the patch's own well-formatted code
+        # next to an old reformat (ipython#9891, black); only +/- lines count.
+        # Hunk and file headers carry no finding, and their count moves with
+        # how the patch splits the hunks.
+        if line.startswith((" ", "@@", "--- ", "+++ ")):
+            continue
+        line = line.replace("\\", "/")
+        for root in roots:
+            line = line.replace(str(root).replace("\\", "/") + "/", "")
+        line = _DIGITS.sub("#", line).rstrip()
+        if line:
+            lines[line] += 1
+    return lines
+
+
+class _Baseline:
+    """A detached worktree at the base commit, made on the first failure (#163).
+
+    ipython#9891: flake8, black and mypy each failed on lines the patch never
+    touched. A finding only blocks when the base commit does not already
+    produce it.
+    """
+
+    def __init__(self, run_directory: Path, workspace: Path, base_commit: str) -> None:
+        self.workspace = workspace
+        self.base_commit = base_commit
+        self.path = run_directory / "scratch" / BASELINE_DIRECTORY
+        self.ready: bool | None = None
+        self.detail = ""
+
+    def prepare(self, timeout_seconds: float) -> bool:
+        if self.ready is None:
+            self._remove()
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            added = execute(
+                ["git", "worktree", "add", "--detach", str(self.path), self.base_commit],
+                working_directory=self.workspace,
+                timeout_seconds=timeout_seconds,
+            )
+            self.ready = (
+                added.exit_code == 0 and not added.timed_out and self.path.is_dir()
+            )
+            if not self.ready:
+                self.detail = _tail(added.stdout + "\n" + added.stderr, 3).strip()
+        return self.ready
+
+    def _remove(self) -> None:
+        execute(
+            ["git", "worktree", "remove", "--force", str(self.path)],
+            working_directory=self.workspace,
+            timeout_seconds=120,
+        )
+        execute(
+            ["git", "worktree", "prune"], working_directory=self.workspace, timeout_seconds=120
+        )
+
+    def close(self) -> None:
+        if self.ready is not None:
+            self._remove()
+
+
+def _new_findings(
+    result: dict[str, Any],
+    baseline: _Baseline,
+    *,
+    workspace: Path,
+    files: list[str],
+    timeout_seconds: float,
+) -> tuple[list[str] | None, str]:
+    """Lines of `result` the base commit does not produce, or None if unknown."""
+    if not baseline.prepare(timeout_seconds):
+        return None, f"the base worktree could not be made: {baseline.detail}"
+    base_files = [path for path in files if (baseline.path / path).is_file()]
+    if not base_files:
+        return None, "every linted file is new in this patch"
+    command = [*result["command"][: len(result["command"]) - len(files)], *base_files]
+    ran = execute(command, working_directory=baseline.path, timeout_seconds=timeout_seconds)
+    if ran.timed_out:
+        return None, "the base run timed out"
+    roots = (workspace.resolve(), baseline.path.resolve(), workspace, baseline.path)
+    patched = _signatures(result["output"], roots)
+    if ran.exit_code == 0:
+        return list(patched.elements()) or ["(output unchanged)"], "the base commit passes"
+    new = patched - _signatures(ran.stdout + "\n" + ran.stderr, roots)
+    lines = []
+    for line in result["output"].splitlines():
+        signature = next(iter(_signatures(line, roots)), None)
+        if signature is not None and new[signature] > 0:
+            new[signature] -= 1
+            lines.append(line.rstrip())
+    return lines, f"the base commit also exits {ran.exit_code}"
+
+
 def run_lint(
     run_directory: Path,
     *,
     workspace: Path | None,
     changed_paths: list[str],
     acknowledged: dict[str, str] | None = None,
+    base_commit: str | None = None,
     timeout_seconds: float = TARGET_CHECK_TIMEOUT_SECONDS,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Run the target's linters and type checkers over the changed files (#120).
@@ -452,7 +604,9 @@ def run_lint(
     A tool the target configures or runs in CI that cannot run here is
     `lint-not-run` and blocks, unless `acknowledged` (read from
     `lint-acknowledgement.json`) holds a note for it. A target with no linter
-    configured has no finding.
+    configured has no finding. With `base_commit`, a failure whose output the
+    base commit already produces is `lint-preexisting` and does not block
+    (#163).
     """
     record: dict[str, Any] = {"ran": False, "reason": None, "files": [], "tools": []}
     if workspace is None or not workspace.is_dir():
@@ -474,8 +628,71 @@ def run_lint(
     tools = {tool.name: tool for tool in LINT_TOOLS}
     findings: list[dict[str, Any]] = []
     entries: list[dict[str, Any]] = []
+    baseline = _Baseline(run_directory, workspace, base_commit) if base_commit else None
+    try:
+        _lint_each(
+            configurations,
+            tools,
+            acknowledged,
+            findings,
+            entries,
+            baseline,
+            python=python,
+            workspace=workspace,
+            files=files,
+            timeout_seconds=timeout_seconds,
+        )
+    finally:
+        if baseline is not None:
+            baseline.close()
+    for entry in entries:
+        for result in entry["results"]:
+            result.pop("output", None)
+    record["tools"] = entries
+    record["ran"] = any(entry["ran"] for entry in entries)
+    if any(finding["code"] == "lint-failed" for finding in findings):
+        record["reason"] = "failed"
+    elif not all(entry["ran"] for entry in entries):
+        record["reason"] = "not-run"
+    elif any(finding["code"] == "lint-preexisting" for finding in findings):
+        record["reason"] = "preexisting"
+    else:
+        record["reason"] = "passed"
+    return record, findings
+
+
+def _lint_each(
+    configurations: list[dict[str, Any]],
+    tools: dict[str, LintTool],
+    acknowledged: dict[str, str],
+    findings: list[dict[str, Any]],
+    entries: list[dict[str, Any]],
+    baseline: _Baseline | None,
+    *,
+    python: str | None,
+    workspace: Path,
+    files: list[str],
+    timeout_seconds: float,
+) -> None:
+    changed_files = files
     for configuration in configurations:
         tool = tools[configuration["tool"]]
+        files = changed_files
+        if tool.name == "mypy":
+            files = [path for path in files if not _mypy_excluded(workspace, path)]
+        if not files:
+            entries.append(
+                {
+                    **configuration,
+                    "ran": True,
+                    "reason": "excluded: the target's mypy configuration excludes "
+                    "every changed file",
+                    "install": None,
+                    "commands": [],
+                    "results": [],
+                }
+            )
+            continue
         entry = _run_tool(
             tool,
             configuration,
@@ -509,27 +726,44 @@ def run_lint(
             )
             continue
         for result in entry["results"]:
-            if result["timed_out"] or result["exit_code"] != 0:
-                findings.append(
-                    {
-                        "code": "lint-failed",
-                        "blocking": True,
-                        "detail": (
-                            f"`{result['label']}` exited {result['exit_code']} on "
-                            f"the changed files; the target's CI runs {tool.name} "
-                            "and will fail. " + _tail(result["output_tail"], 15)
-                        ),
-                    }
+            if not (result["timed_out"] or result["exit_code"] != 0):
+                continue
+            output = _tail(result["output_tail"], 15)
+            if baseline is not None and not result["timed_out"]:
+                new, why = _new_findings(
+                    result,
+                    baseline,
+                    workspace=workspace,
+                    files=files,
+                    timeout_seconds=timeout_seconds,
                 )
-    record["tools"] = entries
-    record["ran"] = any(entry["ran"] for entry in entries)
-    if any(finding["code"] == "lint-failed" for finding in findings):
-        record["reason"] = "failed"
-    elif not all(entry["ran"] for entry in entries):
-        record["reason"] = "not-run"
-    else:
-        record["reason"] = "passed"
-    return record, findings
+                result["baseline"] = why
+                if new == []:
+                    findings.append(
+                        {
+                            "code": "lint-preexisting",
+                            "blocking": False,
+                            "detail": (
+                                f"`{result['label']}` exited {result['exit_code']} on "
+                                f"the changed files, but {why} with the same "
+                                "output; the patch adds no finding. " + output
+                            ),
+                        }
+                    )
+                    continue
+                if new is not None:
+                    output = f"New since the base commit ({why}):\n" + "\n".join(new[:15])
+            findings.append(
+                {
+                    "code": "lint-failed",
+                    "blocking": True,
+                    "detail": (
+                        f"`{result['label']}` exited {result['exit_code']} on "
+                        f"the changed files; the target's CI runs {tool.name} "
+                        "and will fail. " + output
+                    ),
+                }
+            )
 
 __all__ = [
     "LINT_ACKNOWLEDGEMENT_FILENAME",
