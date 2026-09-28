@@ -35,6 +35,12 @@ NO_CLAIM_CHECK = "no-claim-check"
 ISSUE_ASSIGNED = "issue-assigned"
 WORK_HANDED_OVER = "work-handed-over"
 UNACKNOWLEDGED_CLAIM = "unacknowledged-claim"
+#: Every comment claim is older than STALE_ATTEMPT_DAYS and came from outside
+#: the project. The 2026-09-17 rule for dormant pull requests, applied to the
+#: offer that never became one: mne-python#12396 was blocked by a 2025 "I am
+#: interested in working on this" with no pull request since. A warning.
+#: Mailman #156.
+STALE_CLAIM = "stale-claim"
 NO_REPRODUCTION = "no-reproduction"
 BUG_NOT_REPRODUCED = "bug-not-reproduced"
 UNVERIFIED_REPRODUCTION = "reproduction-not-machine-checked"
@@ -134,6 +140,21 @@ def attempt_age_days(
     if last is None:
         return None
     return ((now or datetime.now(UTC)) - last).total_seconds() / 86400.0
+
+
+def claim_is_stale(row: dict[str, Any], *, now: datetime | None = None) -> bool:
+    """Whether a comment claim has sat long enough to stop holding the issue.
+
+    A maintainer's own "I'll take this" is their work in progress however old
+    it is, and a claim with no timestamp cannot be proved dormant.
+    """
+    if not isinstance(row, dict) or row.get("association") in _MAINTAINER_ASSOCIATIONS:
+        return False
+    created = _timestamp(row.get("created_at"))
+    if created is None:
+        return False
+    age = ((now or datetime.now(UTC)) - created).total_seconds() / 86400.0
+    return age >= STALE_ATTEMPT_DAYS
 
 
 def attempt_is_merged(row: dict[str, Any]) -> bool:
@@ -757,6 +778,10 @@ def assess_target(
         # A maintainer handing the work over is the assignee field written in
         # prose. Not overridable, for the same reason.
         blocking.append(WORK_HANDED_OVER)
+    elif claims.get("claims") and all(
+        claim_is_stale(row, now=now) for row in claims["claims"]
+    ):
+        warnings.append(STALE_CLAIM)
     elif claims.get("claims"):
         # An offer nobody answered is worth a human reading rather than a hard
         # stop, so this is the one claim state a flag can clear. Its own flag:

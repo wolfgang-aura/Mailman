@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from mailman.targeting import (
+    STALE_ATTEMPT_DAYS,
+    STALE_CLAIM,
     ALREADY_FIXED_UPSTREAM,
     STALE_PRIOR_ATTEMPT,
     BUG_NOT_REPRODUCED,
@@ -119,10 +121,11 @@ _MERGED = {
 }
 
 
+# Relative, because a claim past STALE_ATTEMPT_DAYS stops blocking.
 _CLAIM = {
     "author": "someone",
     "association": "NONE",
-    "created_at": "2026-09-01T00:00:00Z",
+    "created_at": (datetime.now(UTC) - timedelta(days=3)).isoformat(),
     "quote": "I'd like to work on this issue.",
 }
 _ASSIGNMENT = {
@@ -420,6 +423,42 @@ class AssessTargetTests(unittest.TestCase):
 
         self.assertTrue(assessment.may_start)
         self.assertIn(UNACKNOWLEDGED_CLAIM, assessment.warnings)
+
+    def test_a_claim_older_than_the_stale_window_only_warns(self) -> None:
+        # mne-tools/mne-python#12396: offers from 2024 and 2025, no pull
+        # request since. Mailman #156.
+        old = {
+            **_CLAIM,
+            "created_at": (
+                datetime.now(UTC) - timedelta(days=STALE_ATTEMPT_DAYS + 1)
+            ).isoformat(),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(
+                _record(Path(temporary), attempts=[], claims=[old, old])
+            )
+
+        self.assertTrue(assessment.may_start)
+        self.assertIn(STALE_CLAIM, assessment.warnings)
+        self.assertNotIn(UNACKNOWLEDGED_CLAIM, assessment.blocking)
+
+    def test_one_recent_claim_among_old_ones_still_blocks(self) -> None:
+        old = {**_CLAIM, "created_at": "2024-03-05T00:00:00Z"}
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(
+                _record(Path(temporary), attempts=[], claims=[old, _CLAIM])
+            )
+
+        self.assertIn(UNACKNOWLEDGED_CLAIM, assessment.blocking)
+
+    def test_a_maintainers_old_claim_still_blocks(self) -> None:
+        old = {**_CLAIM, "association": "MEMBER", "created_at": "2024-03-05T00:00:00Z"}
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(
+                _record(Path(temporary), attempts=[], claims=[old])
+            )
+
+        self.assertIn(UNACKNOWLEDGED_CLAIM, assessment.blocking)
 
     def test_acknowledging_prior_attempts_does_not_acknowledge_a_claim(self) -> None:
         # Two different questions, so two different flags.
