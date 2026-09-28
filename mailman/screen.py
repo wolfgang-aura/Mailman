@@ -32,6 +32,7 @@ import sys
 import tomllib
 from collections import Counter
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from html.parser import HTMLParser
@@ -161,6 +162,8 @@ RESPONSIVENESS_WINDOW_DAYS = 90
 #: API calls (reviews, review comments, issue comments), so the sample is
 #: capped and the count read is recorded beside the numbers it produced.
 RESPONSIVENESS_SAMPLE = 50
+#: Pull requests whose first maintainer response is read at the same time.
+RESPONSIVENESS_WORKERS = 4
 
 #: Below this many outside pull requests in the window, the numbers are
 #: arithmetic, not evidence. The gate reports `unknown`, and unknown fails:
@@ -174,10 +177,15 @@ RESPONSIVENESS_SAMPLE_MINIMUM = 3
 FIRST_RESPONSE_DAYS = 14
 FIRST_RESPONSE_SHARE = 0.5
 
-#: A repository that closes more outside pull requests than it merges is
-#: saying no more often than yes. Below this many decided (merged or closed
-#: unmerged) pull requests the ratio is not read, because two closes against
-#: one merge is a week, not a habit.
+#: A repository that merges under this share of the outside pull requests it
+#: decides is saying no as a habit. It was "more closed than merged" until
+#: 2026-09-29; a famous repository closes a stream of low-effort pull requests
+#: within a day, and huggingface_hub (20 merged, 21 closed, median answer 0.8
+#: days) failed on one pull request. Repositories merging 5 to 16 percent
+#: (black, pip, pytest, openai-agents-python) still fail.
+REJECTION_MERGE_SHARE = 0.3
+#: Below this many decided (merged or closed unmerged) pull requests the share
+#: is not read, because two closes against one merge is a week, not a habit.
 REJECTION_DECIDED_MINIMUM = 5
 
 #: Python has to be the language the repository is actually written in. On
@@ -2053,7 +2061,7 @@ def _responsiveness_gate(
     stranger's silence. This gate reads the outside pull requests opened in
     the window and asks three things of them: how long the median one waited
     for a maintainer to review or comment, what share got any response inside
-    `FIRST_RESPONSE_DAYS`, and whether more were closed unmerged than merged.
+    `FIRST_RESPONSE_DAYS`, and whether under `REJECTION_MERGE_SHARE` of the decided ones merged.
     An unanswered pull request has waited its whole age, and is counted at
     that, because a silence that has not ended is not a short wait.
     """
@@ -2083,9 +2091,17 @@ def _responsiveness_gate(
     responded_within = 0
     merged = 0
     closed_unmerged = 0
-    for row, opened in sample:
-        number = int(row.get("number") or 0)
-        wait = _first_maintainer_response(gh, slug, number, opened)
+    # Three reads per pull request, 150 in all, were two thirds of a screen's
+    # wall time run one after another. Four at a time stays under GitHub's
+    # burst limit, which `_Gh.json` retries anyway.
+    with ThreadPoolExecutor(max_workers=RESPONSIVENESS_WORKERS) as pool:
+        first_waits = list(pool.map(
+            lambda item: _first_maintainer_response(
+                gh, slug, int(item[0].get("number") or 0), item[1]
+            ),
+            sample,
+        ))
+    for (row, opened), wait in zip(sample, first_waits):
         merged_at = _timestamp(row.get("merged_at"))
         if merged_at is not None:
             # A merge is a maintainer's answer even when nobody wrote a word;
@@ -2126,6 +2142,7 @@ def _responsiveness_gate(
         "first_response_share": FIRST_RESPONSE_SHARE,
         "sample_minimum": RESPONSIVENESS_SAMPLE_MINIMUM,
         "decided_minimum": REJECTION_DECIDED_MINIMUM,
+        "merge_share_minimum": REJECTION_MERGE_SHARE,
     }
     if sampled < RESPONSIVENESS_SAMPLE_MINIMUM:
         return _gate(
@@ -2154,8 +2171,10 @@ def _responsiveness_gate(
             f"under {FIRST_RESPONSE_SHARE:.0%} were answered within "
             f"{FIRST_RESPONSE_DAYS} days"
         )
-    if decided >= REJECTION_DECIDED_MINIMUM and closed_unmerged > merged:
-        reasons.append("more outside pull requests were closed unmerged than merged")
+    if decided >= REJECTION_DECIDED_MINIMUM and merged / decided < REJECTION_MERGE_SHARE:
+        reasons.append(
+            f"under {REJECTION_MERGE_SHARE:.0%} of decided outside pull requests merged"
+        )
     data["result"] = "fail" if reasons else "pass"
     if reasons:
         return _gate(

@@ -2060,11 +2060,11 @@ class ResponsivenessTests(unittest.TestCase):
         self.assertIn("the median wait is over 14 days", gate["detail"])
         self.assertIn("under 50% were answered within 14 days", gate["detail"])
 
-    def test_a_repository_that_closes_more_than_it_merges_fails(self) -> None:
+    def test_a_repository_that_rarely_merges_fails(self) -> None:
         # Fast answers, and the answer is usually no.
         pulls = [
             _outside_pull(301, opened_days_ago=40, merged=True),
-            _outside_pull(302, opened_days_ago=35, merged=True),
+            _outside_pull(302, opened_days_ago=35, closed=True),
             _outside_pull(303, opened_days_ago=30, closed=True),
             _outside_pull(304, opened_days_ago=25, closed=True),
             _outside_pull(305, opened_days_ago=20, closed=True),
@@ -2081,13 +2081,36 @@ class ResponsivenessTests(unittest.TestCase):
         gate = _named(record, "responsiveness")
 
         self.assertFalse(gate["passed"])
-        self.assertEqual(gate["data"]["merged"], 2)
-        self.assertEqual(gate["data"]["closed_unmerged"], 4)
+        self.assertEqual(gate["data"]["merged"], 1)
+        self.assertEqual(gate["data"]["closed_unmerged"], 5)
         self.assertEqual(gate["data"]["response_share"], 1.0)
         self.assertEqual(
             gate["detail"].split(": ", 1)[1],
-            "more outside pull requests were closed unmerged than merged",
+            "under 30% of decided outside pull requests merged",
         )
+
+    def test_a_repository_merging_a_third_passes_though_it_closes_more(self) -> None:
+        """huggingface_hub merged 20 and closed 21, answered in 0.8 days, and
+        failed on one pull request under the old closed-over-merged rule."""
+        pulls = [
+            _outside_pull(311, opened_days_ago=40, merged=True),
+            _outside_pull(312, opened_days_ago=35, merged=True),
+            _outside_pull(313, opened_days_ago=30, closed=True),
+            _outside_pull(314, opened_days_ago=25, closed=True),
+            _outside_pull(315, opened_days_ago=20, closed=True),
+        ]
+        reviews = {
+            number: [_response(days - 1)]
+            for number, days in zip(range(311, 316), (40, 35, 30, 25, 20))
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary), FakeGitHub(all_pulls=pulls, reviews=reviews)
+            )
+        gate = _named(record, "responsiveness")
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["data"]["closed_unmerged"], 3)
 
     def test_a_close_heavy_ratio_over_too_few_decisions_is_not_read(self) -> None:
         pulls = [
