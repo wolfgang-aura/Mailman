@@ -82,6 +82,7 @@ from mailman.provenance import (
     refresh_contributions,
     undocumented_merges,
     render_contributions,
+    offered_submissions,
     unrecorded_submissions,
 )
 from mailman.reproduction import (
@@ -2414,18 +2415,34 @@ def _contributions(arguments: argparse.Namespace) -> int:
     else:
         found = collect_contributions(data_root)
     unrecorded = unrecorded_submissions(data_root)
+    offered = offered_submissions(data_root)
     if arguments.json:
         print(
             json.dumps(
                 {
                     "contributions": [entry.to_dict() for entry in found],
                     "unrecorded_submissions": unrecorded,
+                    "offered_submissions": offered,
                 },
                 indent=2,
             )
         )
     else:
         print(render_contributions(found))
+    if offered:
+        print(
+            "\n".join(
+                [
+                    "",
+                    f"{len(offered)} offer(s) posted on the issue, waiting for a "
+                    "maintainer before the pull request is filed:",
+                    *(
+                        f"  {entry['run_id']}  {entry['issue']}  posted {entry['posted_at']}"
+                        for entry in offered
+                    ),
+                ]
+            )
+        )
     if unrecorded:
         # A ready submission with no provenance is either a filed pull request
         # missing from this ledger or an unfinished run. Either way the ledger

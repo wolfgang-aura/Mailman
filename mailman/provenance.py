@@ -629,9 +629,43 @@ def unrecorded_submissions(data_root: Path) -> list[str]:
             continue
         if (submission_directory(directory) / NOT_FILED_FILENAME).is_file():
             continue
+        # An ask-first run posted an offer on the issue and files only after a
+        # maintainer answers; it has no pull request yet, and `offered_submissions`
+        # lists it instead. edgartools#1370 kept the exit code at 1 this way.
+        if (directory / OFFER_FILENAME).is_file():
+            continue
         if load_provenance(directory) is None:
             pending.append(directory.name)
     return pending
+
+
+OFFER_FILENAME = "offer-posted.json"
+
+
+def offered_submissions(data_root: Path) -> list[dict[str, Any]]:
+    """Ask-first runs whose offer is posted and whose pull request is not filed."""
+    offered: list[dict[str, Any]] = []
+    if not data_root.is_dir():
+        return offered
+    for directory in sorted(path for path in data_root.glob("*") if path.is_dir()):
+        offer = directory / OFFER_FILENAME
+        if not offer.is_file() or load_provenance(directory) is not None:
+            continue
+        if _run_status(directory) == "ABANDONED":
+            continue
+        if (submission_directory(directory) / NOT_FILED_FILENAME).is_file():
+            continue
+        try:
+            record = json.loads(offer.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            record = {}
+        offered.append({
+            "run_id": directory.name,
+            "issue": record.get("issue") if isinstance(record, dict) else None,
+            "comment_url": record.get("comment_url") if isinstance(record, dict) else None,
+            "posted_at": record.get("posted_at") if isinstance(record, dict) else None,
+        })
+    return offered
 
 
 RUN_RECORDS_DIRECTORY = Path(__file__).resolve().parents[1] / "docs" / "runs"

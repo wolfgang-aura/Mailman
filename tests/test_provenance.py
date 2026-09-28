@@ -25,6 +25,7 @@ from mailman.provenance import (
     repository_slug,
     state_is_stale,
     undocumented_merges,
+    offered_submissions,
     unrecorded_submissions,
     upstream_issue_number,
     write_patch,
@@ -309,6 +310,29 @@ class UnrecordedSubmissionTests(unittest.TestCase):
 
             self.assertEqual(record["reason"], "hunt abandoned before filing")
             self.assertEqual(unrecorded_submissions(data_root), [])
+
+    def test_a_posted_offer_waits_instead_of_counting_as_unrecorded(self) -> None:
+        """edgartools#1370 posted an ask-first offer and files only after a
+        maintainer answers. It kept `contributions` exiting 1 while it waited.
+        """
+        with TemporaryDirectory() as name:
+            data_root = Path(name)
+            directory = self._ready_run(data_root, "20260927T071330Z-0be859")
+            (directory / "offer-posted.json").write_text(
+                json.dumps({"issue": "dgunning/edgartools#1370", "posted_at": "2026-09-27"}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(unrecorded_submissions(data_root), [])
+            self.assertEqual(
+                [entry["issue"] for entry in offered_submissions(data_root)],
+                ["dgunning/edgartools#1370"],
+            )
+
+            (directory / "submission" / "provenance.json").write_text(
+                json.dumps({"run_id": "20260927T071330Z-0be859"}), encoding="utf-8"
+            )
+            self.assertEqual(offered_submissions(data_root), [])
 
     def test_not_filed_needs_a_reason(self) -> None:
         with TemporaryDirectory() as name:
