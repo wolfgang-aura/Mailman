@@ -448,6 +448,13 @@ conan-io/conan, copier-org/copier, ipython/ipython, redis/redis-py), and 43 of
 68 sampled workable issues there have an OWNER, MEMBER or COLLABORATOR in the
 thread. A cached verdict read under other windows is re-read, not reused.
 
+Changed on 2026-09-29 (`685200d`): the responsiveness gate rejects a
+repository when at least five outside pull requests were decided and under 30%
+of them merged. The old rule (more closed than merged) failed
+huggingface_hub at 20 merged and 21 closed. openai-agents-python still fails
+at about 5% merged; its merge of #4890 came from maintainers taking the branch
+over. A screen's first-response reads now run on four threads.
+
 Observed on 2026-09-17: `urllib3/urllib3` enforces its no-duplicate rule
 and treats an issue no maintainer acknowledged as no issue. Asked whether a
 second PR for #5053 would be taken given the dormant #5084, maintainer
