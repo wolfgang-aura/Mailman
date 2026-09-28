@@ -304,13 +304,14 @@ opening the local packet URL during this session; visual state is unverified.
 - nilearn/nilearn#6611 filed 2026-09-28 13:25 UTC (run `20260928T095530Z-2005c8`, head
   `wolfgang-aura:mailman/issue-6607`), open, no competing PR on #6607.
 - Upstream tally re-read 2026-09-29 (`mailman contributions --refresh`, cross-checked against a
-  GitHub search of PRs by `wolfgang-aura` outside the account): 21 filed. Merged 5: ffn#330
+  GitHub search of PRs by `wolfgang-aura` outside the account): 23 filed. Merged 5: ffn#330
   (maintainer re-land of our #328), openai-agents-python#4890, securo#875, edgartools#1329,
-  edgartools#1365. Open 10: pretix#6564, pymc#8442, nicegui#6345, tqdm#1837, openalgo#2021,
-  openalgo#2022, poetry#11052, pdm#3883, securo#1039, nilearn#6611. Closed unmerged 6:
-  pdm#3884, mypy#21961, pytest#14993, rqalpha#1040, skfolio#316, pypdf#4105. Ready runs
-  `20260928T190015Z-6a59bf` (nox#302) and `20260928T191349Z-27ec60` (ipython#9891) have no PR
-  and no provenance record.
+  edgartools#1365. Open 12: pretix#6564, pymc#8442, nicegui#6345, tqdm#1837, openalgo#2021,
+  openalgo#2022, poetry#11052, pdm#3883, securo#1039, nilearn#6611, nox#1191, ipython#15408.
+  Closed unmerged 6: pdm#3884, mypy#21961, pytest#14993, rqalpha#1040, skfolio#316, pypdf#4105.
+  Hunt `20260928T185953Z-92e95a` is FILED: runs `20260928T190015Z-6a59bf` (nox#302 ->
+  https://github.com/wntrblm/nox/pull/1191) and `20260928T191349Z-27ec60` (ipython#9891 ->
+  https://github.com/ipython/ipython/pull/15408), both from forks under `wolfgang-aura`.
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
   It still exists; deleting it is the operator's call.
 
