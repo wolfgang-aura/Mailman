@@ -308,6 +308,11 @@ _CLAIM = re.compile(
     r"|(?:i(?:'ve|ve| have) )?(?:opened|submitted|raised|sent) "
     r"(?:a |the |my )?(?:pr|pull request|#\d+)"
     r"|still planning to"
+    # A reporter settling the design before building it: biopython#5307
+    # "I'd like to check one more point before I start ... I'll follow
+    # whichever option you recommend". Mailman #204.
+    r"|before i (?:start|begin|get started|dive in)\b"
+    r"|i(?:'ll|ll| will) (?:follow|go with|implement) (?:whichever|whatever)"
     r")",
     re.IGNORECASE,
 )
@@ -523,9 +528,15 @@ def classify_comment(comment: dict[str, Any]) -> str | None:
     maintainer = comment.get("author_association") in MAINTAINER_ASSOCIATIONS
     if maintainer and _ASSIGNMENT.search(body):
         return "assignment"
-    if _NOT_A_CLAIM.search(body):
-        return None
-    return "claim" if _CLAIM.search(body) else None
+    # Judge each sentence on its own: a question in one ("if someone reports
+    # it later") must not cancel a claim in another. Mailman #204.
+    for sentence in _SENTENCE_BREAK.split(body):
+        if _CLAIM.search(sentence) and not _NOT_A_CLAIM.search(sentence):
+            return "claim"
+    return None
+
+
+_SENTENCE_BREAK = re.compile(r"(?<=[.?!;])\s+")
 
 
 def classify_thread(comments: Iterable[dict[str, Any]]) -> list[str | None]:

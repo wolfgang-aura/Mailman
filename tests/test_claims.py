@@ -175,6 +175,22 @@ class ClassifyCommentTests(unittest.TestCase):
             classify_comment(_comment(body, association="NONE")), "claim"
         )
 
+    def test_a_question_elsewhere_does_not_cancel_a_claim(self) -> None:
+        # biopython/biopython#5307, 2026-09-12, the reporter asking the
+        # maintainer which design to build. "if someone reports it later" read
+        # the whole comment as a question, and prescreen passed an issue its
+        # reporter was about to implement.
+        body = (
+            "Hi Peter, I'd like to check one more point before I start, since "
+            "it affects how the ambiguous= implementation would work. The one "
+            "downside is that we'd be leaving a known bug in place. If someone "
+            "reports it later, it would mean a second round of PR and review. "
+            "I'll follow whichever option you recommend."
+        )
+        self.assertEqual(
+            classify_comment(_comment(body, association="NONE")), "claim"
+        )
+
     def test_a_quoted_claim_is_not_a_claim(self) -> None:
         body = "> I'll work on this\n\nAny update on this?"
         self.assertIsNone(classify_comment(_comment(body, association="NONE")))
