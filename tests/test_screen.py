@@ -625,6 +625,71 @@ class ScreenTests(unittest.TestCase):
         self.assertIn("pure-python", record["failed_gates"])
         self.assertIn("compiler is in the build", _named(record, "pure-python")["detail"])
 
+    def _optional_extension(self, pages: FakePages, languages: dict[str, int]) -> dict:
+        # falconry/falcon: setup.py compiles Cython when it can, and PyPI ships
+        # falcon-4.3.1-py3-none-any.whl for everyone else.
+        # https://github.com/wolfgang-aura/Mailman/issues/175
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    languages=languages,
+                    root=[{"name": "pyproject.toml"}, {"name": "setup.py"}],
+                    policies={
+                        "pyproject.toml": (
+                            "[build-system]\n"
+                            'requires = ["setuptools>=61", "cython>=3.0.8"]\n'
+                            '[project]\nname = "falcon"\n'
+                        )
+                    },
+                ),
+                pages,
+            )
+        return _named(record, "pure-python") | {"failed": record["failed_gates"]}
+
+    def test_an_optional_extension_with_a_pure_wheel_passes(self) -> None:
+        pages = FakePages(
+            {
+                "https://pypi.org/pypi/falcon/json": json.dumps(
+                    {
+                        "urls": [
+                            {"filename": "falcon-4.3.1-cp314-cp314-win_amd64.whl"},
+                            {"filename": "falcon-4.3.1-py3-none-any.whl"},
+                        ]
+                    }
+                )
+            }
+        )
+        gate = self._optional_extension(pages, {"Python": 2000000, "Cython": 40000})
+
+        self.assertNotIn("pure-python", gate["failed"], gate["detail"])
+        self.assertEqual(gate["data"]["environment_plan"], "source-tree")
+        self.assertEqual(gate["data"]["pure_wheel"], "falcon-4.3.1-py3-none-any.whl")
+
+    def test_a_compiled_project_without_a_pure_wheel_still_fails(self) -> None:
+        pages = FakePages(
+            {
+                "https://pypi.org/pypi/falcon/json": json.dumps(
+                    {"urls": [{"filename": "falcon-4.3.1-cp314-cp314-win_amd64.whl"}]}
+                )
+            }
+        )
+        gate = self._optional_extension(pages, {"Python": 2000000, "Cython": 40000})
+
+        self.assertIn("pure-python", gate["failed"])
+
+    def test_rust_fails_even_with_a_pure_wheel(self) -> None:
+        pages = FakePages(
+            {
+                "https://pypi.org/pypi/falcon/json": json.dumps(
+                    {"urls": [{"filename": "falcon-4.3.1-py3-none-any.whl"}]}
+                )
+            }
+        )
+        gate = self._optional_extension(pages, {"Python": 2000000, "Rust": 40000})
+
+        self.assertIn("pure-python", gate["failed"])
+
     def test_compiled_fixture_bytes_under_a_pure_back_end_pass(self) -> None:
         # sphinx-doc/sphinx: 245 bytes of Cython and 87 of C are test fixtures,
         # the build is flit_core, and the Makefile builds the docs.

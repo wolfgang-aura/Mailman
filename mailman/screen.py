@@ -992,6 +992,22 @@ def _wheel_only_hook(pyproject: str) -> str | None:
     return None
 
 
+def _pure_wheel(gh: _Gh, slug: str, pyproject: str) -> str | None:
+    """The `py3-none-any` wheel of the project's latest release, if PyPI lists one."""
+    name = ""
+    try:
+        project = tomllib.loads(pyproject).get("project") if pyproject else None
+    except (tomllib.TOMLDecodeError, ValueError):
+        project = None
+    if isinstance(project, dict) and isinstance(project.get("name"), str):
+        name = project["name"]
+    name = name or slug.split("/")[-1]
+    for filename in _wheel_files(gh, name) or []:
+        if filename.endswith("-none-any.whl") and "-py3" in filename:
+            return filename
+    return None
+
+
 def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     """Gate 3. Is this Python we can build, and Python that is not generated?"""
     languages = gh.json(f"repos/{slug}/languages")
@@ -1056,7 +1072,32 @@ def _python_gate(gh: _Gh, slug: str) -> dict[str, Any]:
             ),
             data=data,
         )
-    if "Cargo.toml" in markers or (
+    # falconry/falcon compiles Cython when it can and ships a pure wheel for
+    # everyone else. A `py3-none-any` release says the extension is optional,
+    # so the source tree runs without a compiler (#175). Rust never is.
+    rust = "Cargo.toml" in markers or "Rust" in compiled
+    needs_compiler = (
+        ("Cython" in compiled and not fixture_only) or build_compilers
+    ) and not wheel_hook
+    if needs_compiler and not rust:
+        pure_wheel = _pure_wheel(gh, slug, pyproject)
+        if pure_wheel:
+            data["environment_plan"] = "source-tree"
+            data["pure_wheel"] = pure_wheel
+            return _gate(
+                "pure-python",
+                passed=True,
+                blocking=True,
+                detail=(
+                    f"Python is {python_share:.0%} of the source and the "
+                    f"extension is optional: PyPI ships {pure_wheel}. This host "
+                    "has no MSVC, so use the `source-tree` environment plan: "
+                    "install the dependencies, put the workspace on the path, "
+                    "never install the package."
+                ),
+                data=data,
+            )
+    if rust or (
         ("Cython" in compiled or "Rust" in compiled) and not fixture_only
     ):
         return _gate(
