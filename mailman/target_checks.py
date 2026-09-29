@@ -487,6 +487,7 @@ def _mypy_excluded(workspace: Path, path: str) -> bool:
 
 BASELINE_DIRECTORY = "lint-base"
 _DIGITS = re.compile(r"\d+")
+_NOTE = re.compile(r":\d+(?::\d+)?: note: ")
 
 
 def _signatures(output: str, roots: tuple[Path, ...]) -> Counter[str]:
@@ -590,6 +591,10 @@ def _new_findings(
         if signature is not None and new[signature] > 0:
             new[signature] -= 1
             lines.append(line.rstrip())
+    # mypy prints each missing-stubs hint once, beside whichever import it
+    # checks first, so the hint moves between the two runs. A note only
+    # elaborates on an error; a new error is caught on its own line (#179).
+    lines = [line for line in lines if not _NOTE.search(line)]
     return lines, f"the base commit also exits {ran.exit_code}"
 
 

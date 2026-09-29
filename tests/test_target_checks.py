@@ -499,6 +499,31 @@ class LintBaselineTests(_Fixture):
         _, findings = self._run(executor)
         self.assertEqual([f["code"] for f in findings], ["lint-preexisting"])
 
+    def test_a_hint_that_moved_between_imports_is_not_a_new_finding(self) -> None:
+        # pydata/xarray#10639 (#179): mypy prints the stubs hint once, beside
+        # whichever import of scipy it checks first.
+        errors = (
+            'pkg/a.py:3: error: Library stubs not installed for "scipy"  [import-untyped]\n'
+            'pkg/b.py:5: error: Library stubs not installed for "scipy"  [import-untyped]\n'
+        )
+        executor = BaselineExecutor(
+            errors + 'pkg/a.py:3: note: Hint: "python3 -m pip install scipy-stubs"\n',
+            errors + 'pkg/b.py:5: note: Hint: "python3 -m pip install scipy-stubs"\n',
+        )
+        _, findings = self._run(executor)
+        self.assertEqual([f["code"] for f in findings], ["lint-preexisting"])
+
+    def test_a_new_error_still_blocks_beside_its_note(self) -> None:
+        base = 'pkg/a.py:3: error: old  [misc]\n'
+        executor = BaselineExecutor(
+            base + 'pkg/a.py:9: error: new  [arg-type]\npkg/a.py:9: note: see here\n',
+            base,
+        )
+        _, findings = self._run(executor)
+        self.assertEqual([f["code"] for f in findings], ["lint-failed"])
+        self.assertIn("error: new", findings[0]["detail"])
+        self.assertNotIn("see here", findings[0]["detail"])
+
     def test_without_a_base_commit_no_worktree_is_made(self) -> None:
         executor = BaselineExecutor("pkg/mod.py:1:1: F401\n", "pkg/mod.py:1:1: F401\n")
         _, findings = self._run(executor, base_commit=None)
