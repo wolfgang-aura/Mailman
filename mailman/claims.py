@@ -205,6 +205,8 @@ _DECLINED = re.compile(
     r"|too many false positives"
     # pipenv#6715: "I am still not convinced its is a good idea". Mailman #205.
     r"|(?:i(?:'m| am)|we(?:'re| are)) (?:still |just |really )?not (?:yet )?convinced"
+    # docling#3528: "the rationale of docling not choosing sides". Mailman #234.
+    r"|the rationale (?:of|for|behind) (?:\S+ ){0,3}not \w+ing\b"
     r")",
     re.IGNORECASE,
 )

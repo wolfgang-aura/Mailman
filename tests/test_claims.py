@@ -1236,6 +1236,26 @@ class MaintainerDisputeTests(unittest.TestCase):
             maintainer_dispute([self._comment("This works as designed.")])
         )
 
+    def test_a_stated_reason_for_not_doing_it_is_a_decline(self):
+        # docling#3528, cau-git (MEMBER). Mailman #234.
+        from mailman.claims import maintainer_declines
+
+        self.assertTrue(
+            maintainer_declines([
+                self._comment(
+                    "@1313e the rationale of docling not choosing sides between "
+                    "`opencv-python-headless` and `opencv-python` is that one or "
+                    "the other must be preferred. More control is possible with "
+                    "`docling-slim`."
+                )
+            ])
+        )
+        self.assertFalse(
+            maintainer_declines([
+                self._comment("The reason for the crash is not obvious yet.")
+            ])
+        )
+
 
 class RemarksElsewhereTests(unittest.TestCase):
     """Mailman #187: pyinstaller#9224 held the maintainers' view of #9121."""
