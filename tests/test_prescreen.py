@@ -21,7 +21,9 @@ from mailman.prescreen import (
     DESIGN_UNDECIDED,
     INVITED_ENHANCEMENT,
     MAINTAINER_DECLINED,
+    MAINTAINER_DISPUTED,
     ISSUE_NOT_BOUNDED_FIX,
+    ISSUE_NOT_TRIAGED_HERE,
     PRESCREEN_HOURS,
     REPOSITORY_SCREEN_FAILED,
     TRIVIAL,
@@ -1480,6 +1482,76 @@ class MaintainerDeclinedTests(PrescreenTests):
         self.assertEqual(record["blocking"], [MAINTAINER_DECLINED])
         self.assertIn("turned the report down", record["next"])
         self.assertEqual(len(record["claims"]["declined"]), 1)
+
+
+class MaintainerDisputedTests(PrescreenTests):
+    """Mailman #193: one batch passed ten threads and none was workable."""
+
+    maintainer = DesignUndecidedTests.maintainer
+
+    def verdict(self, *comments: dict) -> dict:
+        return prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub("[]", comments=list(comments)),
+        )
+
+    def test_a_request_for_logs_rejects_the_issue(self) -> None:
+        # huggingface_hub#3974 and #3871, verbatim.
+        for body in (
+            "Can you attach the \"Full crash report\" and the \"Key stack "
+            "trace\" as stated in the description?",
+            "Could you share the logs located at `~/.cache/huggingface/xet/logs` "
+            "corresponding to a failed upload?",
+        ):
+            with self.subTest(body=body[:30]):
+                record = self.verdict(self.maintainer(body, "2026-09-03T00:00:00Z"))
+
+                self.assertEqual(record["verdict"], "reject")
+                self.assertEqual(record["blocking"], [MAINTAINER_DISPUTED])
+                self.assertIn("latest word", record["next"])
+
+    def test_a_redirect_to_another_project_rejects_the_issue(self) -> None:
+        # huggingface_hub#3795, verbatim.
+        record = self.verdict(self.maintainer(
+            "I'd recommend opening an issue in the "
+            "https://github.com/huggingface/xet-core repository, the Xet team "
+            "will be able to help.",
+            "2026-09-03T00:00:00Z",
+        ))
+
+        self.assertEqual(record["blocking"], [MAINTAINER_DISPUTED])
+
+    def test_a_later_confirmation_ends_the_dispute(self) -> None:
+        record = self.verdict(
+            self.maintainer("Could you share the logs?", "2026-09-03T00:00:00Z"),
+            self.maintainer("Thanks, confirmed on main.", "2026-09-05T00:00:00Z"),
+        )
+
+        self.assertNotIn(MAINTAINER_DISPUTED, record.get("blocking", []))
+        self.assertIsNone(record["claims"]["disputed"])
+
+    def test_an_upstream_or_needs_verification_label_rejects_the_issue(self) -> None:
+        # plotnine#975 and celery#9901.
+        for label in ("upstream-bug", "Status: Needs Verification \u2718"):
+            with self.subTest(label=label):
+                issue = {
+                    "number": 7,
+                    "title": "Figure options in Quarto",
+                    "body": "The size is ignored.",
+                    "state": "OPEN",
+                    "url": "https://github.com/example/project/issues/7",
+                    "author": {"login": "reporter"},
+                    "labels": [{"name": "bug"}, {"name": label}],
+                    "createdAt": "2026-09-01T00:00:00Z",
+                    "updatedAt": "2026-09-01T00:00:00Z",
+                }
+                record = prescreen_issue(
+                    self.root, "example/project#7", executable=self.stub("[]", issue)
+                )
+
+                self.assertEqual(record["verdict"], "reject")
+                self.assertIn(ISSUE_NOT_TRIAGED_HERE, record["blocking"])
 
 
 class PriorDiscussionTests(PrescreenTests):

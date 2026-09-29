@@ -76,7 +76,9 @@ from mailman.targeting import (
 #: whether a maintainer left a design choice open in the thread. A screen
 #: written before any of them never asked the question, so `check` sends it
 #: back.
-PRESCREEN_SCHEMA_VERSION = 11
+#: 12 asks whether the project's latest word disputes the report, and reads
+#: labels that send it upstream or wait on the reporter. Mailman #193.
+PRESCREEN_SCHEMA_VERSION = 12
 ISSUE_SCREENS = "issue-screens"
 #: A pre-screen filters a shortlist; it is not the filing gate. The run stage
 #: still re-runs the duplicate search under its own one-hour limit, and
@@ -126,6 +128,23 @@ DESIGN_UNDECIDED = "design-undecided"
 #: we want to implement this") and no later one invited the change. pint#2060
 #: and filesystem_spec#1741 each passed and were turned down by hand. Mailman #174.
 MAINTAINER_DECLINED = "maintainer-declined"
+#: The project's latest word asks for logs, a retry or a reproducer, says it
+#: could not reproduce, or sends the report to another project, and nobody
+#: who speaks for it confirmed the bug since. huggingface_hub#3974, #3871 and
+#: #3795 passed in one batch and none was workable. Mailman #193.
+MAINTAINER_DISPUTED = "maintainer-disputed"
+#: A label that says the bug is somebody else's, or that the project is still
+#: waiting to verify it: plotnine#975 `upstream-bug`, celery#9901
+#: `Status: Needs Verification`. Mailman #193.
+ISSUE_NOT_TRIAGED_HERE = "issue-not-triaged-here"
+_NOT_TRIAGED_LABEL = re.compile(
+    r"upstream|third[- ]party"
+    r"|needs?[- :]*(?:verification|verify|info|more[- ]info|feedback|repro"
+    r"|reproduction|reproducer|triage|response|confirmation)"
+    r"|awaiting|waiting[- ]for|more[- ]info[- ]needed|cannot[- ]reproduce"
+    r"|can'?t[- ]reproduce|not[- ]reproducible|unconfirmed|wont[- ]?fix|invalid",
+    re.IGNORECASE,
+)
 #: The repository's own screen refused it. An issue there is not a candidate
 #: however clean its thread: alembic#1390 and podman-compose#1549 both passed
 #: this prescreen in repositories that failed freshness and responsiveness, and
@@ -296,6 +315,8 @@ def _issue_blocking(captured: dict[str, Any]) -> list[str]:
         blocking.append(ISSUE_NOT_BOUNDED_FIX)
     if labels & _DISCUSSION_LABELS:
         blocking.append(ISSUE_UNDER_DISCUSSION)
+    if any(_NOT_TRIAGED_LABEL.search(label) for label in labels):
+        blocking.append(ISSUE_NOT_TRIAGED_HERE)
     return blocking
 
 
@@ -641,6 +662,7 @@ def prescreen_issue(
         "agent_exclusions": claims.get("agent_exclusions", []),
         "design_undecided": claims.get("design_undecided", []),
         "declined": claims.get("declined", []),
+        "disputed": claims.get("disputed"),
         "maintainer_replied": claims.get("maintainer_replied"),
         "maintainer_touched_at": claims.get("maintainer_touched_at"),
         "remarks_elsewhere": claims.get("remarks_elsewhere", []),
@@ -724,6 +746,8 @@ def prescreen_issue(
         thread_blocking.append(DESIGN_UNDECIDED)
     if claims.get("declined"):
         thread_blocking.append(MAINTAINER_DECLINED)
+    elif claims.get("disputed") and not claims.get("design_undecided"):
+        thread_blocking.append(MAINTAINER_DISPUTED)
     if required and claims.get("maintainer_replied") is False and not shortlist_engaged:
         thread_blocking.append(NO_MAINTAINER_REPLY)
     if record["maintainer_closed_attempts"]:
@@ -803,6 +827,12 @@ def prescreen_issue(
                 f"{last.get('author')} ({last.get('association')}) turned the "
                 f"report down: {last.get('quote')!r}. Nobody who speaks for the "
                 "project has invited the change since; do not open a run"
+            )
+        if MAINTAINER_DISPUTED in thread_blocking:
+            details.append(
+                f"the project's latest word disputes the report or waits on the "
+                f"reporter: {claims['disputed']!r}. Nobody who speaks for it "
+                "has confirmed the bug since; do not open a run"
             )
         if NO_MAINTAINER_REPLY in thread_blocking:
             details.append(

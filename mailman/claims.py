@@ -811,6 +811,9 @@ def read_claims(
             record["agent_exclusions"].append(_row(comment))
     record["design_undecided"] = design_open_questions(thread)
     record["declined"] = maintainer_declines(thread)
+    # The screen asked this of its rows since #150; prescreen never did, and
+    # passed threads waiting on logs or sent to another project. Mailman #193.
+    record["disputed"] = maintainer_dispute(thread)
     record["comments_read"] = len(comments)
     record["issue_created_at"] = payload.get("created_at")
     record["maintainer_touched_at"] = maintainer_touched_at(thread)
@@ -924,6 +927,30 @@ _NEEDS_INFO = re.compile(
     r"|(?:can|could) you (?:please )?(?:provide|share|post|give us|add)"
     r" (?:a |an |some )?(?:minimal|reproduc|repro|example|traceback|more)"
     r"|need(?:s)? (?:a |some )?more (?:info|information|details|context)"
+    # huggingface_hub#3974 "Can you attach the full crash report", #3871
+    # "Could you share the logs", #3747 "have you tried upload_large_folder",
+    # #3795 "Could you try disabling xet". Mailman #193.
+    r"|(?:can|could) you (?:please )?(?:attach|share|post|send|provide)"
+    r" (?:the |a |an |some |your |us )?[\"'“]?(?:full |complete |debug )?"
+    r"(?:logs?|crash|stack ?trace|output|details)"
+    r"|(?:can|could) you (?:please )?try\b"
+    r"|have you tried\b"
+    r")",
+    re.IGNORECASE,
+)
+
+#: A project voice sending the report to another project's tracker: the fix
+#: does not belong here. huggingface_hub#3795 was sent to xet-core, and
+#: plotnine#975 is "a known quarto issue". Mailman #193.
+_ELSEWHERE = re.compile(
+    r"\b(?:"
+    r"(?:open|opening|file|filing|report|reporting|raise|raising)"
+    r" (?:an? |this |the )?(?:issue|bug|report|it|this)"
+    r" (?:in|on|at|to|with|against) (?:the )?\S+ (?:repo|repository|project|tracker)"
+    r"|(?:is|looks like|seems like) (?:a |an )?(?:known )?\S+ (?:issue|bug)"
+    r" (?:in|with|upstream)\b"
+    r"|this is (?:a |an )?known \S+ (?:issue|bug)"
+    r"|upstream (?:issue|bug)\b"
     r")",
     re.IGNORECASE,
 )
@@ -960,7 +987,9 @@ def maintainer_dispute(thread: Iterable[dict[str, Any]]) -> str | None:
         text = _matchable(_flat(_unquoted(comment.get("body"))))
         found = [
             (match.start(), True, match)
-            for pattern in (_NOT_REPRODUCED, _DECLINED, _DESIGN_OPEN, _NEEDS_INFO)
+            for pattern in (
+                _NOT_REPRODUCED, _DECLINED, _DESIGN_OPEN, _NEEDS_INFO, _ELSEWHERE
+            )
             for match in pattern.finditer(text)
         ] + [
             (match.start(), False, match)

@@ -210,7 +210,12 @@ a time; a screen costs about 200 GitHub core calls.
    a config option") with no later maintainer comment settling it blocks it
    under `design-undecided`. A project voice turning the report down ("works
    as intended", "I don't think we want to implement this") with no later
-   invitation blocks it under `maintainer-declined`. A pull request cited from
+   invitation blocks it under `maintainer-declined`. A project voice whose
+   latest word asks for logs, a retry or a reproducer, could not reproduce,
+   or sends the report to another project blocks it under
+   `maintainer-disputed` until a later one confirms the bug. A label naming
+   the bug upstream or unverified (`upstream-bug`, `needs verification`,
+   `needs info`) blocks it under `issue-not-triaged-here`. A pull request cited from
    a repository under another owner is neither a rival nor a fix. When you turn an issue down yourself after
    reading its thread, record it: `mailman prescreen OWNER/REPO#N --reject
    REASON --evidence LINK --hunt HUNT_ID --owner TOKEN`. An unrecorded
