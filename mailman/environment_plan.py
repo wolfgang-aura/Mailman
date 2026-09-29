@@ -47,6 +47,33 @@ HOST_BLOCKED_RELEASES = (
 HOST_CONSTRAINTS_FILENAME = "host-constraints.txt"
 
 
+def _builds_compiled_extensions(workspace: Path) -> bool:
+    """Whether the target's setup.py compiles extension modules."""
+    setup = workspace / "setup.py"
+    if not setup.is_file():
+        return False
+    text = setup.read_text(encoding="utf-8", errors="replace")
+    return "Extension(" in text or "ext_modules" in text
+
+
+#: Copies the installed release's compiled modules into the workspace (the
+#: step's working directory) at the same relative paths. Targets gitignore
+#: them, so the tree stays clean. Mailman #213.
+_COPY_COMPILED = (
+    "import importlib.metadata as m,os,shutil,sys\n"
+    "d=m.distribution(sys.argv[1]);n=0\n"
+    "for f in d.files or []:\n"
+    " if f.suffix in ('.pyd','.so'):\n"
+    "  dst=os.path.join(os.getcwd(),str(f));os.makedirs(os.path.dirname(dst),exist_ok=True)\n"
+    "  shutil.copy2(f.locate(),dst);n+=1\n"
+    "print('copied',n,'compiled module(s)');sys.exit(0 if n else 1)"
+)
+_WORKSPACE_ON_PATH = (
+    "import os,sys,sysconfig,pathlib\n"
+    "pathlib.Path(sysconfig.get_paths()['purelib'],sys.argv[1]+'-workspace.pth').write_text(os.getcwd())"
+)
+
+
 def _hatch_test_dependencies(project: dict) -> tuple[list[str], list[str]]:
     """Requirements declared in the hatch environments tests run in.
 
@@ -114,18 +141,42 @@ def draft_plan(workspace: Path, destination: Path, *, python: str = sys.executab
     dependencies = list(dict.fromkeys([*dependencies, "setuptools"]))
     if "--no-build-isolation" in install and "-e" in install and _builds_editables_by_import(project):
         dependencies = list(dict.fromkeys([*dependencies, "editables"]))
+    review = "Read CI and contributing instructions before execution. This draft does not reproduce uv or poetry lock resolution. Adjust the interpreter to requires-python and the supported CI matrix."
+    # No compiler on the Windows host, so an editable build of C extensions
+    # cannot succeed. Borrow the release wheel's compiled modules and run the
+    # workspace's Python source over them. Mailman #213.
+    compiled = sys.platform == "win32" and _builds_compiled_extensions(workspace)
+    name = metadata.get("name")
+    if compiled and isinstance(name, str):
+        runtime = [entry for entry in metadata.get("dependencies", []) if isinstance(entry, str)]
+        dependencies = list(dict.fromkeys([*dependencies, *runtime, "pytest"]))
+        install_steps = [
+            {"name": "install-release-wheel-for-compiled-modules", "command": [interpreter, "-m", "pip", "install", *constraints, "--only-binary", ":all:", "--no-deps", name]},
+            {"name": "copy-compiled-modules-into-workspace", "command": [interpreter, "-c", _COPY_COMPILED, name]},
+            {"name": "remove-release-wheel", "command": [interpreter, "-m", "pip", "uninstall", "-y", name]},
+            {"name": "workspace-on-path", "command": [interpreter, "-c", _WORKSPACE_ON_PATH, name]},
+        ]
+        review += (
+            " setup.py builds compiled extensions and this host has no compiler: the compiled"
+            " modules come from the latest release wheel, not the base commit. A change to C"
+            " source cannot be tested here; pick another target for that."
+        )
+    else:
+        compiled = False
+        install_steps = [{"name": "install-target", "command": install}]
     plan = {
         "schema_version": 1,
         "steps": [
             {"name": "create-environment", "command": [python, "-m", "venv", "{environment}"], "working_directory": "run"},
             {"name": "install-build-and-test-dependencies", "command": [interpreter, "-m", "pip", "install", BINARY_POLICY, *constraints, *dependencies]},
-            {"name": "install-target", "command": install},
+            *install_steps,
         ],
         "register": [{"name": "python", "executable": interpreter}],
         "draft": {
             "source": str(source.resolve()), "requires_python": metadata.get("requires-python"),
             "extra": extra, "group": group, "hatch_environments": hatch_environments,
-            "review": "Read CI and contributing instructions before execution. This draft does not reproduce uv or poetry lock resolution. Adjust the interpreter to requires-python and the supported CI matrix.",
+            "compiled_extensions": compiled,
+            "review": review,
         },
     }
     destination.parent.mkdir(parents=True, exist_ok=True)

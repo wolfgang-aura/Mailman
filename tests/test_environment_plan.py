@@ -147,3 +147,40 @@ dependencies = ["mkdocs"]
                 )
             # A constraint installs nothing the target did not ask for.
             self.assertNotIn("scikit-learn!=1.9.1", plan["steps"][1]["command"])
+
+    def test_a_c_extension_target_on_windows_overlays_the_release_wheel(self):
+        # biopython: `pip install -e .` compiles C and this host has no
+        # compiler. The release wheel's compiled modules go into the workspace
+        # and the workspace goes on sys.path. Mailman #213.
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "pyproject.toml").write_text(
+                '[project]\nname = "biopython"\ndependencies = ["numpy"]\n'
+                '[dependency-groups]\ntest = ["pytest"]\n',
+                encoding="utf-8",
+            )
+            (root / "setup.py").write_text(
+                "from setuptools import Extension, setup\n"
+                "setup(ext_modules=[Extension('Bio.Align._aligncore', ['x.c'])])\n",
+                encoding="utf-8",
+            )
+            with mock.patch("mailman.environment_plan.sys.platform", "win32"):
+                plan = draft_plan(root, root / "run" / "plan.json")
+            names = [step["name"] for step in plan["steps"]]
+            flat = [" ".join(step["command"]) for step in plan["steps"]]
+            self.assertNotIn("install-target", names)
+            self.assertIn("numpy", plan["steps"][1]["command"])
+            self.assertTrue(any("--only-binary :all: --no-deps biopython" in c for c in flat))
+            self.assertTrue(any("uninstall -y biopython" in c for c in flat))
+            self.assertTrue(any(".pth" in c for c in flat))
+            self.assertIn("compiled", plan["draft"]["review"])
+            self.assertTrue(plan["draft"]["compiled_extensions"])
+
+    def test_a_c_extension_target_off_windows_keeps_the_editable_install(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "pyproject.toml").write_text('[project]\nname = "x"\n', encoding="utf-8")
+            (root / "setup.py").write_text("ext_modules=[Extension('x', ['x.c'])]\n", encoding="utf-8")
+            with mock.patch("mailman.environment_plan.sys.platform", "linux"):
+                plan = draft_plan(root, root / "run" / "plan.json")
+            self.assertEqual(plan["steps"][-1]["name"], "install-target")
