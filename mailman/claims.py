@@ -311,8 +311,11 @@ _CLAIM = re.compile(
     # https://github.com/wolfgang-aura/Mailman/issues/93.
     # robotframework#5774's report: "I'm happy to implement this via a pull
     # request". Mailman #198.
-    r"|i(?:'m|m| am) (?:glad|happy|pleased|willing) to "
-    r"(?:implement|prepare|open|submit|send|raise|take|work|fix|make|contribute)"
+    # terryyin/lizard#487 dropped the "I'm": "Happy to put that together with
+    # tests". Mailman #225.
+    r"|(?:i(?:'m|m| am) |^)(?:glad|happy|pleased|willing) to "
+    r"(?:implement|prepare|open|submit|send|raise|take|work|fix|make|contribute"
+    r"|put (?:that|this|it|one|something) together)"
     r"|i(?:'d| would) be (?:glad|happy|pleased) to "
     r"(?:prepare|open|submit|send|raise|help|take|work|fix|make|turn|contribute)"
     r"|(?:attached|linked|local|my) candidate"

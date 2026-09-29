@@ -163,9 +163,33 @@ class ClassifyCommentTests(unittest.TestCase):
             "Thanks for the quick reply, yes I can try implementing a solution.",
             "Ok, I'll try and implement (1).",
             "I will try to fix this over the weekend.",
+            # terryyin/lizard#487, verbatim; no "I'm" and a verb outside the
+            # list, so the owner's "yes, please go ahead" read as an open
+            # invitation. Mailman #225.
+            "Happy to put that together with tests if you would like it.",
+            "Glad to fix this if it helps.",
         ):
             with self.subTest(body=body):
                 self.assertEqual(classify_comment(_comment(body)), "claim")
+
+    def test_an_owner_accepting_a_bare_offer_is_a_handover_not_an_invitation(
+        self,
+    ) -> None:
+        # terryyin/lizard#487. Mailman #225.
+        thread = [
+            _comment("Happy to put that together with tests if you would like it."),
+            _comment(
+                "Hi @Eljees — yes, please go ahead. Happy to review a PR.",
+                login="terryyin",
+                association="OWNER",
+            ),
+        ]
+        self.assertEqual(
+            classify_thread(thread, maintainers=["terryyin"]), ["claim", "assignment"]
+        )
+
+    def test_a_maintainer_happy_to_review_is_not_a_claim(self) -> None:
+        self.assertIsNone(classify_comment(_comment("Happy to review a PR.")))
 
     def test_a_contributor_announcing_their_pull_request_is_a_claim(self) -> None:
         # huggingface/peft#3804, 2026-09-29: three comments from the same
