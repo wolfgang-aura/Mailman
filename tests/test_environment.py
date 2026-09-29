@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from mailman.artifacts import create_run
@@ -223,6 +225,44 @@ class EnvironmentPreparationTests(unittest.TestCase):
             )
             self.assertIn("python", toolchain["tools"])
             self.assertEqual(load_environment_record(run_directory)["success"], True)
+
+    def test_a_step_sees_its_interpreter_folder_first_on_path(self) -> None:
+        # marimo#9974: uv_build finds `uv-build` beside the venv interpreter
+        # through PATH. Mailman #200.
+        folder = str(Path(sys.executable).parent)
+        ambient = os.pathsep.join(
+            entry for entry in os.environ.get("PATH", "").split(os.pathsep)
+            if entry and Path(entry) != Path(folder)
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workspace = make_workspace(root)
+            _, run_directory = make_run(root)
+            plan = {
+                "schema_version": 1,
+                "steps": [
+                    {
+                        "name": "record-path",
+                        "command": [
+                            sys.executable,
+                            "-c",
+                            "import os,pathlib,sys;"
+                            "pathlib.Path(sys.argv[1],'path.txt')"
+                            ".write_text(os.environ['PATH'])",
+                            "{environment}",
+                        ],
+                    }
+                ],
+            }
+
+            with mock.patch.dict(os.environ, {"PATH": ambient}):
+                record = prepare_environment(
+                    run_directory, workspace=workspace, plan=plan, timeout_seconds=120
+                )
+
+            self.assertTrue(record["success"], record)
+            seen = (run_directory / "environment" / "path.txt").read_text()
+            self.assertEqual(Path(seen.split(os.pathsep)[0]), Path(folder))
 
     def test_stops_at_the_first_failing_step(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

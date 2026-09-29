@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -23,6 +24,20 @@ ENVIRONMENT_DIRECTORY = "environment"
 #: `mailman.screen` is what decides whether that target is worth trusting with
 #: it. See https://github.com/wolfgang-aura/Mailman/issues/48.
 PERMITTED_EXECUTABLES = ("git",)
+
+
+def _activated_path(executable: str) -> dict[str, str] | None:
+    """PATH with the executable's own folder first, as venv activation does.
+
+    A build back end can shell out to a console script installed beside the
+    interpreter: uv_build looks up `uv-build` with `shutil.which`, and under
+    `--no-build-isolation` that script lives only in the venv's Scripts
+    folder. marimo#9974 failed there. Mailman #200.
+    """
+    path = Path(executable)
+    if not path.is_absolute():
+        return None
+    return {"PATH": os.pathsep.join([str(path.parent), os.environ.get("PATH", "")])}
 
 
 def _executable_name(command: str) -> str:
@@ -181,7 +196,10 @@ def prepare_environment(
         location = locations[step.get("working_directory", "workspace")]
         announce(f"run  environment:{step['name']}: {' '.join(command)}")
         result = execute(
-            command, working_directory=location, timeout_seconds=timeout_seconds
+            command,
+            working_directory=location,
+            timeout_seconds=timeout_seconds,
+            environment=_activated_path(command[0]),
         )
         ok = not result.timed_out and result.exit_code == 0
         record["steps"].append(
