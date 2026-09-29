@@ -2204,6 +2204,50 @@ class ResponsivenessTests(unittest.TestCase):
         self.assertIn("3 of 3 answered within 14 days (100%)", rendered)
         self.assertIn("2 merged, 0 closed unmerged", rendered)
 
+    def test_a_maintainer_refusing_ai_work_in_a_comment_fails_the_policy_gate(
+        self,
+    ) -> None:
+        # davidhalter/jedi has no file that bans AI work. Its maintainer closed
+        # jedi#2091 with this sentence, and the gate passed. Mailman #154.
+        pulls = [
+            _outside_pull(301, opened_days_ago=30, merged=True),
+            _outside_pull(302, opened_days_ago=20, closed=True),
+            _outside_pull(303, opened_days_ago=10, merged=True),
+        ]
+        closing = _response(18, field="created_at")
+        closing["body"] = (
+            "Thanks, but no. I decided to not work at all with AI generated "
+            "pull requests/content."
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(all_pulls=pulls, issue_comments={302: [closing]}),
+            )
+        gate = _named(record, "policy")
+
+        self.assertFalse(gate["passed"])
+        self.assertIn("policy", record["failed_gates"])
+        self.assertEqual(gate["data"]["result"], "refused")
+        self.assertIn("AI generated pull requests", gate["data"]["quote"])
+        self.assertIn("/pull/302", gate["detail"])
+
+    def test_an_ai_remark_on_a_merged_pull_request_is_not_a_refusal(self) -> None:
+        pulls = [
+            _outside_pull(301, opened_days_ago=30, merged=True),
+            _outside_pull(302, opened_days_ago=20, merged=True),
+            _outside_pull(303, opened_days_ago=10, merged=True),
+        ]
+        remark = _response(18, field="created_at")
+        remark["body"] = "Merged. Please don't use an LLM for the changelog next time."
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(all_pulls=pulls, issue_comments={302: [remark]}),
+            )
+
+        self.assertTrue(_named(record, "policy")["passed"])
+
     def test_a_silent_merge_counts_as_the_maintainer_answering(self) -> None:
         # fsspec merges most outside work without a comment or a review.
         pulls = [

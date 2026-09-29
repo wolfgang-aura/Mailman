@@ -338,6 +338,21 @@ _AI_SUBJECT = re.compile(
     re.IGNORECASE,
 )
 
+#: A maintainer refusing AI work in a comment rather than a file.
+#: davidhalter/jedi#2091: "I decided to not work at all with AI generated pull
+#: requests/content"; jedi#2100: "don't use an LLM to answer me"; sunpy#8487:
+#: "not compliant with our (recently updated) AI policy". Mailman #154.
+_AI_CLOSING = re.compile(
+    r"(?:"
+    r"not\s+(?:to\s+)?(?:work|deal|engage)\s+(?:at\s+all\s+)?with\s+"
+    r"(?:ai|llm)[- ]generated"
+    r"|(?:do not|don't|please do not)\s+use\s+(?:an?\s+)?(?:ai|llms?|chatgpt)\b"
+    r"|(?:not\s+compliant\s+with|violat\w*|against)\s+(?:our\s+)?"
+    r"(?:\([^)]*\)\s+)?(?:\w+\s+){0,2}ai\s+policy"
+    r")",
+    re.IGNORECASE,
+)
+
 #: A guide that declines to review the *tool* is talking about who is
 #: accountable for the patch, not refusing the patch. `securo-finance/securo`
 #: says "We don't review the AI, we review you", and reading that as a ban
@@ -2136,15 +2151,20 @@ def _is_maintainer(row: dict[str, Any]) -> bool:
 
 def _first_maintainer_response(
     gh: _Gh, slug: str, number: int, opened: datetime
-) -> float | None:
+) -> tuple[float | None, str | None]:
     """Days from a pull request opening to the first word from a maintainer.
 
     A review, an inline review comment and an issue comment are three
     different endpoints, and a maintainer's first word can be any of them.
     Whichever came first counts. The author's own comments are never a
     response, and neither is a bot's.
+
+    The same rows are read for a maintainer refusing AI work, at no extra
+    cost: a refusal written only in a closing comment is still the policy.
+    Mailman #154.
     """
     stamps: list[datetime] = []
+    refusal: str | None = None
     for path, field in (
         (f"repos/{slug}/pulls/{number}/reviews", "submitted_at"),
         (f"repos/{slug}/pulls/{number}/comments", "created_at"),
@@ -2156,9 +2176,20 @@ def _first_maintainer_response(
             stamp = _timestamp(row.get(field))
             if stamp is not None and stamp >= opened:
                 stamps.append(stamp)
+            if refusal is None:
+                refusal = _ai_refusal(str(row.get("body") or ""))
     if not stamps:
-        return None
-    return (min(stamps) - opened).total_seconds() / 86400
+        return None, refusal
+    return (min(stamps) - opened).total_seconds() / 86400, refusal
+
+
+def _ai_refusal(body: str) -> str | None:
+    """The sentence of a maintainer comment that refuses AI work, if any."""
+    flat = " ".join(body.split())
+    match = _AI_CLOSING.search(flat) or _POLICY_BANS.search(flat)
+    if match:
+        return _sentence(flat, match.start(), match.end())
+    return _outcome_refusal(flat)
 
 
 def _responsiveness_gate(
@@ -2210,7 +2241,17 @@ def _responsiveness_gate(
             ),
             sample,
         ))
-    for (row, opened), wait in zip(sample, first_waits):
+    refusals: list[dict[str, Any]] = []
+    for (row, opened), (wait, refusal) in zip(sample, first_waits):
+        if refusal and not row.get("merged_at"):
+            refusals.append(
+                {
+                    "number": row.get("number"),
+                    "url": row.get("html_url")
+                    or f"https://github.com/{slug}/pull/{row.get('number')}",
+                    "quote": refusal,
+                }
+            )
         merged_at = _timestamp(row.get("merged_at"))
         if merged_at is not None:
             # A merge is a maintainer's answer even when nobody wrote a word;
@@ -2247,6 +2288,7 @@ def _responsiveness_gate(
         "closed_unmerged": closed_unmerged,
         "still_open": sampled - decided,
         "excluded_bot_authors": sorted(excluded_bots),
+        "ai_refusals": refusals,
         "first_response_days": FIRST_RESPONSE_DAYS,
         "first_response_share": FIRST_RESPONSE_SHARE,
         "sample_minimum": RESPONSIVENESS_SAMPLE_MINIMUM,
@@ -2506,6 +2548,7 @@ def screen_repository(
             _direct_push_gate(gh, slug, meta),
             _responsiveness_gate(gh, slug, responsiveness_days),
         ]
+        _policy_from_comments(gates)
     gates.append(stars)
     if gh.rate_limited:
         # A gate whose reads were refused reports a verdict it never saw:
@@ -2524,6 +2567,40 @@ def screen_repository(
     record["success"] = True
     _write(data_root, record)
     return record
+
+
+def _policy_from_comments(gates: list[dict[str, Any]]) -> None:
+    """Fail the policy gate on a maintainer's AI refusal in a pull request.
+
+    davidhalter/jedi passed the policy gate with no file saying anything,
+    while its maintainer closed AI pull requests with "I decided to not work
+    at all with AI generated pull requests/content". Mailman #154.
+    """
+    responsiveness = next(
+        (gate for gate in gates if gate["name"] == "responsiveness"), None
+    )
+    refusals = (responsiveness or {}).get("data", {}).get("ai_refusals") or []
+    if not refusals:
+        return
+    first = refusals[0]
+    for index, gate in enumerate(gates):
+        if gate["name"] == "policy" and gate["passed"]:
+            gates[index] = _gate(
+                "policy",
+                passed=False,
+                blocking=True,
+                detail=(
+                    f"a maintainer refused AI-assisted work on {first['url']}: "
+                    f"{first['quote']!r}"
+                ),
+                data={
+                    **gate.get("data", {}),
+                    "source": first["url"],
+                    "result": "refused",
+                    "quote": first["quote"],
+                    "comment_refusals": refusals,
+                },
+            )
 
 
 #: Gates skipped once a cheaper gate has already failed the repository.
