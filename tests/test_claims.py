@@ -137,6 +137,9 @@ class ClassifyCommentTests(unittest.TestCase):
             "source contributions, so it may take me some time. If no one is "
             "assigned yet, could this issue be assigned to me?",
             "Could this be assigned to me?",
+            # robotframework#5774's report, verbatim. Mailman #198.
+            "I'm happy to implement this via a pull request, but wanted to "
+            "check if this fits within the project's scope before writing the code.",
         ):
             with self.subTest(body=body):
                 self.assertEqual(classify_comment(_comment(body)), "claim")
@@ -237,6 +240,14 @@ class AgentExclusionTests(unittest.TestCase):
         ):
             with self.subTest(body=body):
                 self.assertTrue(excludes_agents(_comment(body, association="OWNER")))
+
+    def test_a_maintainer_calling_agent_work_slop_reserves_the_issue(self) -> None:
+        # pvlib#2864, verbatim. Mailman #198.
+        body = (
+            "My unique hesitation is that AI bots scrap for new issues and if I "
+            "review one more microslop hallucination I drop my career in software"
+        )
+        self.assertTrue(excludes_agents(_comment(body, association="MEMBER")))
 
     def test_a_mentoring_programme_earmark_reserves_the_issue(self) -> None:
         # django-debug-toolbar#2481 and #2482, verbatim. Mailman #194.

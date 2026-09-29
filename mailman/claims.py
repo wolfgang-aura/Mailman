@@ -86,6 +86,9 @@ _AGENT_EXCLUSION = re.compile(
     # ticket". Mailman #194.
     r"|(?:djangonaut(?: space)?|outreachy|gsoc|google summer of code"
     r"|mentee|mentorship)(?: program(?:me)?)? (?:ticket|issue|task|candidate)"
+    # pvlib#2864, a member: "if I review one more microslop hallucination I
+    # drop my career in software". Mailman #198.
+    r"|microslop|ai[- ]slop"
     r")",
     re.IGNORECASE,
 )
@@ -288,6 +291,10 @@ _CLAIM = re.compile(
     # each carried a candidate patch and an offer to turn it into a pull
     # request, and the gate read them as unclaimed. See
     # https://github.com/wolfgang-aura/Mailman/issues/93.
+    # robotframework#5774's report: "I'm happy to implement this via a pull
+    # request". Mailman #198.
+    r"|i(?:'m|m| am) (?:glad|happy|pleased|willing) to "
+    r"(?:implement|prepare|open|submit|send|raise|take|work|fix|make|contribute)"
     r"|i(?:'d| would) be (?:glad|happy|pleased) to "
     r"(?:prepare|open|submit|send|raise|help|take|work|fix|make|turn|contribute)"
     r"|(?:attached|linked|local|my) candidate"
