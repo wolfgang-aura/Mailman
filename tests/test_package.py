@@ -130,6 +130,7 @@ class PackageCommandTests(unittest.TestCase):
                 title="Fix it", body=Path("body.md"), repo="example/project",
                 head="fork:mailman/issue-7", base="main", commit_message=None,
             )
+            (data_root / run.run_id / "decision.json").write_text("{}", encoding="utf-8")
             export = data_root / run.run_id / "export"
             export.mkdir(parents=True, exist_ok=True)
             (export / "changes.diff").write_text("diff --git a/m.py b/m.py\n", encoding="utf-8")
@@ -149,6 +150,33 @@ class PackageCommandTests(unittest.TestCase):
         ])
         self.assertEqual(committed.call_args.kwargs["branch"], "mailman/issue-7")
         self.assertEqual(committed.call_args.kwargs["paths"], ["m.py"])
+
+    def test_a_missing_decision_stops_before_any_stage(self) -> None:
+        # pyinstaller run 20260929T022154Z-8fc17e exported and prepared the
+        # submission, then stopped at the decision stage. Mailman #186.
+        from mailman import cli
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, _ = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40, primary="codex", reviewer="claude",
+                data_root=data_root,
+            )
+            arguments = argparse.Namespace(
+                run_id=run.run_id, data_root=data_root, policy=Path("policy.json"),
+                title="Fix it", body=Path("body.md"), repo="example/project",
+                head="fork:mailman/issue-7", base="main", commit_message=None,
+            )
+            calls = []
+            with (
+                patch.object(cli, "main", side_effect=lambda argv: calls.append(argv[0]) or 0),
+                self.assertRaisesRegex(ValueError, "decision .* --init"),
+            ):
+                cli._package(arguments)
+
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

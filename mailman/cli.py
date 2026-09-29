@@ -1901,6 +1901,13 @@ def _package(arguments: argparse.Namespace) -> int:
     data_root = (arguments.data_root or default_data_root()).resolve()
     root = ["--data-root", str(data_root)]
     run_id = run.run_id
+    # Say so before the slow stages, not at the fourth one. Mailman #186.
+    if not (run_directory / DECISION_FILENAME).exists():
+        raise ValueError(
+            f"{run_directory / DECISION_FILENAME} does not exist: run "
+            f"`mailman decision {run_id} --init`, fill it in, and run "
+            f"`mailman decision {run_id}` until it passes before packaging"
+        )
     if ":" not in arguments.head:
         raise ValueError("--head must be OWNER:BRANCH")
     branch = arguments.head.split(":", 1)[1]
