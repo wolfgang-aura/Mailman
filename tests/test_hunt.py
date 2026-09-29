@@ -1216,8 +1216,9 @@ class PrescreenRecordTests(OrchestratorHarness):
 class _SearchGh:
     """Answers `search/issues` with canned items, one list per query."""
 
-    def __init__(self, answers):
+    def __init__(self, answers, timelines=None):
         self.answers = list(answers)
+        self.timelines = timelines or {}
         self.paths = []
         self.sleeps = []
         self.failures = []
@@ -1226,6 +1227,8 @@ class _SearchGh:
         self.sleeps.append(seconds)
 
     def json(self, path):
+        if "/timeline" in path:
+            return self.timelines.get(path.split("?")[0], [])
         self.paths.append(path)
         answer = self.answers.pop(0) if self.answers else {"items": []}
         if answer is None:
@@ -1237,6 +1240,7 @@ def _item(slug, number, *, comments=0, created="2026-09-20T00:00:00Z"):
     return {"repository_url": f"https://api.github.com/repos/{slug}",
             "number": number, "title": f"bug {number}", "comments": comments,
             "created_at": created, "author_association": "NONE",
+            "user": {"login": "reporter"},
             "html_url": f"https://github.com/{slug}/issues/{number}"}
 
 
@@ -1329,3 +1333,47 @@ class SweepTests(OrchestratorHarness):
 
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(out.getvalue())["failed"], ["repo:acme/a"])
+
+    def test_a_cross_referenced_pull_request_claims_the_row(self):
+        # moto#10176 and feast#6787 passed -linked:pr with open pull requests
+        # that only named them. Mailman #226.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        rival = {"event": "cross-referenced", "source": {"issue": {
+            "number": 12, "state": "open", "pull_request": {"merged_at": None}}}}
+        closed = {"event": "cross-referenced", "source": {"issue": {
+            "number": 13, "state": "closed", "pull_request": {"merged_at": None}}}}
+        gh = _SearchGh(
+            [{"items": [_item("acme/a", 1), _item("acme/a", 2)]}],
+            timelines={"repos/acme/a/issues/1/timeline": [rival],
+                       "repos/acme/a/issues/2/timeline": [closed]})
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual([row["target"] for row in result["rows"]], ["acme/a#2"])
+        self.assertEqual(result["claimed"], [{"target": "acme/a#1", "pull_requests": [12]}])
+
+    def test_a_maintainer_label_or_reply_ranks_the_row_engaged_first(self):
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        labelled = {"event": "labeled", "actor": {"login": "maintainer"},
+                    "label": {"name": "bug"}}
+        self_labelled = {"event": "labeled", "actor": {"login": "reporter"},
+                         "label": {"name": "bug"}}
+        replied = {"event": "commented", "author_association": "MEMBER",
+                   "actor": {"login": "maintainer"}}
+        gh = _SearchGh(
+            [{"items": [_item("acme/a", 1, comments=5), _item("acme/a", 2),
+                        _item("acme/a", 3, comments=1)]}],
+            timelines={"repos/acme/a/issues/1/timeline": [self_labelled],
+                       "repos/acme/a/issues/2/timeline": [labelled],
+                       "repos/acme/a/issues/3/timeline": [replied]})
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(
+            [(row["target"], row["engaged"]) for row in result["rows"]],
+            [("acme/a#3", True), ("acme/a#2", True), ("acme/a#1", False)],
+        )

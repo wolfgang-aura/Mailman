@@ -14,7 +14,7 @@ from mailman.artifacts import load_run, new_run_id
 from mailman.completion import finalize_review, read_object
 from mailman.claims import load_claims
 from mailman.handoff import check_handoff, load_handoff, load_offer_handoff
-from mailman.maintainers import load_maintainer_logins
+from mailman.maintainers import MAINTAINER_ASSOCIATIONS, load_maintainer_logins
 from mailman.models import RunStatus, utc_now
 from mailman.orchestrator import orchestration_step_names
 from mailman.provenance import upstream_issue_number
@@ -672,12 +672,46 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
                 "created_at": item.get("created_at"),
                 "author_association": item.get("author_association"),
                 "url": item.get("html_url"),
+                "_author": (item.get("user") or {}).get("login"),
             }
-    ordered = sorted(rows.values(), key=lambda row: str(row["created_at"] or ""),
-                     reverse=True)
-    ordered.sort(key=lambda row: row["comments"] == 0)
-    return {"queries": len(groups), "repositories": len(slugs),
-            "since": since, "failed": failed, "rows": ordered}
+    # `-linked:pr` misses a pull request that only names the issue: moto#10176
+    # and feast#6787 both had one open. One timeline read per row finds it and
+    # says whether a maintainer labelled or answered the report.
+    claimed_rows: list[dict] = []
+    kept: list[dict] = []
+    for row in rows.values():
+        slug, number = row["target"].rsplit("#", 1)
+        author = row.pop("_author")
+        events = gh.json(f"repos/{slug}/issues/{number}/timeline?per_page=100")
+        if not isinstance(events, list):
+            row["engaged"] = None
+            kept.append(row)
+            continue
+        rivals = sorted({
+            source["number"] for source in (
+                ((event.get("source") or {}).get("issue") or {}) for event in events
+                if isinstance(event, dict) and event.get("event") == "cross-referenced"
+            )
+            if source.get("pull_request") is not None
+            and isinstance(source.get("number"), int)
+            and (source.get("state") == "open"
+                 or (source.get("pull_request") or {}).get("merged_at"))
+        })
+        if rivals:
+            claimed_rows.append({"target": row["target"], "pull_requests": rivals})
+            continue
+        row["engaged"] = any(
+            (event.get("event") == "commented"
+             and event.get("author_association") in MAINTAINER_ASSOCIATIONS)
+            or (event.get("event") == "labeled"
+                and (event.get("actor") or {}).get("login") not in (None, author))
+            for event in events if isinstance(event, dict)
+        )
+        kept.append(row)
+    ordered = sorted(kept, key=lambda row: str(row["created_at"] or ""), reverse=True)
+    ordered.sort(key=lambda row: (row["engaged"] is not True, row["comments"] == 0))
+    return {"queries": len(groups), "repositories": len(slugs), "since": since,
+            "failed": failed, "claimed": claimed_rows, "rows": ordered}
 
 
 def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
