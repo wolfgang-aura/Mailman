@@ -1039,6 +1039,12 @@ _NEEDS_INFO = re.compile(
     # s3fs#999 "Could you please show the contents of fs.dircache". #195.
     r"|(?:can|could) you (?:please )?show (?:us |me )?(?:the |what|how|your)"
     r"|have you tried\b"
+    # prefect#22314 "have you checked out the database maintenance docs?"
+    r"|have you (?:checked|looked at|read|seen)\b"
+    # prefect#22334 "I'll check to see if I can reproduce": still verifying.
+    # Mailman #230.
+    r"|(?:check|see|try|look)(?: to see)? (?:if|whether) (?:i|we) (?:can|could)"
+    r" (?:reproduce|repro|replicate)\b"
     r")",
     re.IGNORECASE,
 )
@@ -1065,6 +1071,8 @@ _ELSEWHERE = re.compile(
 #: A project voice confirming the report: the answer that ends a dispute.
 _CONFIRMED = re.compile(
     r"\b(?:"
+    # A conditional is a promise to check, not a result. Mailman #230.
+    r"(?<!if )(?<!whether )"
     r"(?:i|we) (?:can|could|was able to|am able to|were able to) "
     r"(?:reproduce|repro|replicate)\b"
     r"|(?:confirmed|reproduced)\b"

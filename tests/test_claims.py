@@ -1163,6 +1163,19 @@ class MaintainerDisputeTests(unittest.TestCase):
             )
         )
 
+    def test_checking_whether_it_reproduces_is_not_a_confirmation(self):
+        # PrefectHQ/prefect#22334: the latest word promised a check. Mailman #230.
+        from mailman.claims import maintainer_dispute
+
+        for body in (
+            "Ah, gotcha, I'll check to see if I can reproduce the issue.",
+            "Let me see whether we can reproduce this on main.",
+            # prefect#22314 pointed the reporter at the docs.
+            "hi @cheepon - have you checked out the database maintenance docs?",
+        ):
+            with self.subTest(body=body):
+                self.assertIsNotNone(maintainer_dispute([self._comment(body)]))
+
     def test_an_outsider_saying_works_for_me_is_not_a_dispute(self):
         from mailman.claims import maintainer_dispute
 
