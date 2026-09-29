@@ -26,7 +26,15 @@ def default_data_root() -> Path:
     configured = os.environ.get(DATA_ROOT_VARIABLE)
     if configured and configured.strip():
         return Path(configured.strip()).expanduser()
-    return Path.cwd() / ".mailman" / "runs"
+    # A shell sitting inside `.mailman/runs/RUN_ID` still means this home, not
+    # a fresh `.mailman` under the run. Mailman #185.
+    here = Path.cwd()
+    for candidate in (here, *here.parents):
+        if candidate.name == ".mailman":
+            return candidate / "runs"
+        if (candidate / ".mailman" / "runs").is_dir():
+            return candidate / ".mailman" / "runs"
+    return here / ".mailman" / "runs"
 
 
 def _worktree_root(path: Path) -> Path | None:

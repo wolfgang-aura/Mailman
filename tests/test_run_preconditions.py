@@ -54,6 +54,23 @@ class DataRootTests(unittest.TestCase):
                 default_data_root(), Path.cwd() / ".mailman" / "runs"
             )
 
+    def test_inside_a_run_directory_the_root_is_the_enclosing_home(self) -> None:
+        # `mailman decision RUN_ID` from inside the run looked for
+        # RUN_ID/.mailman/runs and said the run did not exist. Mailman #185.
+        with TemporaryDirectory() as name:
+            runs = Path(name).resolve() / ".mailman" / "runs"
+            run = runs / "20260929T022154Z-8fc17e"
+            (run / "workspace").mkdir(parents=True)
+            previous = Path.cwd()
+            try:
+                with patch.dict(os.environ, {}, clear=True):
+                    os.chdir(run)
+                    self.assertEqual(default_data_root(), runs)
+                    os.chdir(run / "workspace")
+                    self.assertEqual(default_data_root(), runs)
+            finally:
+                os.chdir(previous)
+
     def test_a_directory_in_no_working_tree_is_accepted(self) -> None:
         with TemporaryDirectory() as name:
             check_data_root(Path(name) / ".mailman" / "runs")
