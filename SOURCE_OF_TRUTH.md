@@ -335,7 +335,15 @@ opening the local packet URL during this session; visual state is unverified.
   - xarray#11637: dcherian left two review comments on 2026-09-29 16:54-16:56 UTC on the new
     `dtype.kind == "M"` branch in `xarray/backends/zarr.py`: handle `timedelta` too, add a test,
     and "I dont understand this comment" about our code comment. Merge state `DIRTY`
-    (conflicts with main) and `pre-commit.ci` fails. Needs a revision; unanswered.
+    (conflicts with main) and `pre-commit.ci` fails. Revised 2026-09-30: `02958fa` (fork branch
+    `zarr-append-datetime64-encoding`, fast-forward push, `main` merged in) extends the fix to
+    `timedelta64` (a stored `timedelta64[s]` appended as `[3600, 6]` before), parametrizes the test
+    over both kinds (the timedelta case fails without the fix), and rewrites the comment. Local
+    `test_backends.py -k "Zarr and append"` 76 passed; ruff clean; upstream CI pending at push.
+    Reply draft in `.mailman/scratch/xarray-11637-reply.md`, not posted.
+  - nicegui#6345: falkoschindler pushed `cdb0892` and `475a454` to our branch (weak-reference None
+    check, merged tests) and set the `review` label on 2026-09-29 19:28 UTC. Checks green,
+    `REVIEW_REQUIRED`, `BEHIND`. Waiting on a maintainer approval; nothing for us to do.
   - anndata#2666, ipython#15408, pymc#8442 (other checks), tqdm#1837: red checks are inherited
     (fail only in `.github` files or on other open PRs), not ours.
   - PyPSA#1958 went `blocked` -> `clean`; py-shiny#2511 is `blocked` on required review only.
