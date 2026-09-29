@@ -678,6 +678,23 @@ class ScreenTests(unittest.TestCase):
 
         self.assertIn("pure-python", gate["failed"])
 
+    def test_a_release_list_past_the_page_cap_reads_the_latest_version(self) -> None:
+        # sqlalchemy/sqlalchemy: the full document is 5.3 MB and the page
+        # fetch stops at 2 MB, so the body arrives cut off mid-release-list.
+        truncated = '{"info": {"name": "falcon", "version": "4.3.1"}, "releases": {"0.1": [{'
+        pages = FakePages(
+            {
+                "https://pypi.org/pypi/falcon/json": truncated,
+                "https://pypi.org/pypi/falcon/4.3.1/json": json.dumps(
+                    {"urls": [{"filename": "falcon-4.3.1-py3-none-any.whl"}]}
+                ),
+            }
+        )
+        gate = self._optional_extension(pages, {"Python": 2000000, "Cython": 40000})
+
+        self.assertNotIn("pure-python", gate["failed"], gate["detail"])
+        self.assertEqual(gate["data"]["pure_wheel"], "falcon-4.3.1-py3-none-any.whl")
+
     def test_rust_fails_even_with_a_pure_wheel(self) -> None:
         pages = FakePages(
             {

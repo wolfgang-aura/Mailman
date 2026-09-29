@@ -1313,13 +1313,26 @@ def _runtime_requirements(gh: _Gh, slug: str, root_names: set[str]) -> set[str]:
 
 def _wheel_files(gh: _Gh, name: str) -> list[str] | None:
     """The files PyPI lists for the latest release, or None when unread."""
+    name = re.sub(r"[-_.]+", "-", name).lower()
     body = gh.page(f"https://pypi.org/pypi/{quote(name)}/json")
     if body is None:
         return None
     try:
         payload = json.loads(body)
     except ValueError:
-        return None
+        # sqlalchemy's document lists every release and runs past the page
+        # cap (#175). Its `info` block comes first and names the latest
+        # version, whose own document carries only that release's files.
+        version = re.search(r'"version"\s*:\s*"([^"]+)"', body)
+        if not version:
+            return None
+        body = gh.page(
+            f"https://pypi.org/pypi/{quote(name)}/{quote(version.group(1))}/json"
+        )
+        try:
+            payload = json.loads(body) if body is not None else None
+        except ValueError:
+            return None
     urls = payload.get("urls") if isinstance(payload, dict) else None
     if not isinstance(urls, list):
         return None
