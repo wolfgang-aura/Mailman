@@ -511,6 +511,27 @@ class CollectionErrorTests(_RunFixture):
         )
         self.assertIsNone(touched_tests_verdict(record)[0])
 
+    def test_a_dll_this_host_blocks_omits_the_file_and_reruns_the_rest(self) -> None:
+        # biopython: Tests/test_SeqIO_features.py imports Bio.PDB, whose
+        # ccealign DLL Application Control blocks here. Mailman #214.
+        executor = SequenceExecutor(
+            [
+                (2, _collection_error(
+                    "tests/test_xbrl_arrow.py",
+                    "ImportError: DLL load failed while importing ccealign: An "
+                    "Application Control policy has blocked this file.",
+                )),
+                (0, "3 passed in 0.7s\n"),
+            ]
+        )
+        record = self._run(executor)
+        self.assertEqual(record["exit_code"], 0)
+        self.assertIn("tests/test_xbrl_arrow.py", record["omitted"])
+        reason = record["omitted_reasons"]["tests/test_xbrl_arrow.py"]
+        self.assertIn("ccealign", reason)
+        self.assertIn("Application Control", reason)
+        self.assertIsNone(touched_tests_verdict(record)[0])
+
     def test_an_import_error_from_the_targets_own_package_still_fails(self) -> None:
         # `cannot import name` from the package the diff changed may be the
         # diff's own breakage; it is not an optional extra.

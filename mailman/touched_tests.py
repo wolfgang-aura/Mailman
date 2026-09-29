@@ -453,6 +453,12 @@ def _tail(text: str, lines: int = 60) -> str:
 _COLLECTING = re.compile(r"(?m)^_{3,} ERROR collecting (.+?) _{3,}\s*$")
 _SECTION_END = re.compile(r"(?m)^(?:_{3,} |={3,})")
 _NO_MODULE = re.compile(r"(?:ModuleNotFoundError|ImportError): No module named '([\w.]+)'")
+#: A compiled module Windows Application Control refuses to load on this host.
+#: The block is on a binary the diff did not build. Mailman #214.
+_HOST_BLOCKED_DLL = re.compile(
+    r"DLL load failed while importing ([\w.]+): An Application Control policy "
+    r"has blocked this file"
+)
 
 
 def _is_local_module(workspace: Path, name: str) -> bool:
@@ -467,13 +473,16 @@ def _is_local_module(workspace: Path, name: str) -> bool:
 def missing_extra_collection_errors(
     output: str, workspace: Path, files: list[str]
 ) -> dict[str, str]:
-    """`{test file: missing module}` for collection errors a missing extra caused.
+    """`{test file: reason}` for collection errors the host, not the diff, caused.
 
     A test file that imports an optional dependency the run environment does
     not have fails at collection, and pytest stops the whole run with exit 2.
     Only `No module named 'x'` for a module that is not part of the workspace
     counts: `cannot import name` from the target's own package may be the diff's
-    fault and still fails the stage (#127).
+    fault and still fails the stage (#127). A DLL this host's Application Control
+    blocks counts too, with its own reason (#214).
+
+    Returns `{test file: reason it was left out}`.
     """
     wanted = {path.replace("\\", "/"): path for path in files}
     missing: dict[str, str] = {}
@@ -484,8 +493,17 @@ def missing_extra_collection_errors(
         end = _SECTION_END.search(output, header.end())
         section = output[header.end() : end.start() if end else len(output)]
         found = _NO_MODULE.search(section)
+        blocked = _HOST_BLOCKED_DLL.search(section)
         if found and not _is_local_module(workspace, found.group(1)):
-            missing[wanted[path]] = found.group(1)
+            missing[wanted[path]] = (
+                f"collection failed: No module named '{found.group(1)}', an "
+                "optional dependency the run environment does not have"
+            )
+        elif blocked:
+            missing[wanted[path]] = (
+                f"collection failed: this host's Application Control blocks the "
+                f"compiled module '{blocked.group(1)}'; CI runs it"
+            )
     return missing
 
 
@@ -746,7 +764,8 @@ def run_touched_tests(
         if runner != "pytest" or result.timed_out or result.exit_code not in (2, 4):
             break
         # A test file whose import needs an optional extra the environment
-        # lacks is left out with its reason, and the rest run again (#127).
+        # lacks, or a DLL this host blocks, is left out with its reason, and
+        # the rest run again (#127, #214).
         missing = missing_extra_collection_errors(
             result.stdout + "\n" + result.stderr, workspace, files
         )
@@ -755,12 +774,9 @@ def run_touched_tests(
         record["collection_retries"].append(
             {"command": command, "exit_code": result.exit_code, "omitted": sorted(missing)}
         )
-        for path, module in missing.items():
+        for path, reason in missing.items():
             record["omitted"].append(path)
-            record["omitted_reasons"][path] = (
-                f"collection failed: No module named '{module}', an optional "
-                "dependency the run environment does not have"
-            )
+            record["omitted_reasons"][path] = reason
         record["selected"] = [
             entry for entry in record["selected"] if entry["path"] not in missing
         ]
