@@ -114,6 +114,10 @@ TRIVIAL = "trivial"
 #: state and closed `not_planned`. https://github.com/wolfgang-aura/Mailman/issues/116
 UNACKNOWLEDGED_ISSUE = "unacknowledged-issue"
 UNKNOWN = "unknown"
+#: Somebody in the thread says the bug is gone on main or the latest release.
+#: A warning: the claim is often right and cheap to check before `init-run`.
+#: pylint#10032 passed with "no longer reproduces on current `main`". Mailman #236.
+REPORTED_FIXED_ON_MAIN = "reported-fixed-on-main"
 #: The coordinator read the thread and turned the issue down for a reason no
 #: rule decides yet. Recorded so the next hunt does not read the same thread:
 #: hunt 20260927T212801Z-67a9aa rejected marimo#6250, zarr-python#2706 and
@@ -739,6 +743,9 @@ def prescreen_issue(
     )
     if record["acknowledgement"]["unacknowledged"]:
         warnings.append(UNACKNOWLEDGED_ISSUE)
+    record["reported_fixed"] = claims.get("reported_fixed")
+    if record["reported_fixed"]:
+        warnings.append(REPORTED_FIXED_ON_MAIN)
     cited = resolve_cited_pull_requests(
         directory,
         references=_citable(claims, slug=slug, directory=directory),
@@ -1104,6 +1111,11 @@ def prescreen_issue(
             record["next"] += (
                 f" -- but first weigh {UNACKNOWLEDGED_ISSUE}: "
                 + record["acknowledgement"]["detail"]
+            )
+        if REPORTED_FIXED_ON_MAIN in record["warnings"]:
+            record["next"] += (
+                f" -- but first check main, {REPORTED_FIXED_ON_MAIN}: "
+                + str(record["reported_fixed"])
             )
     _store_prescreen(data_root, slug, number, record)
     return record

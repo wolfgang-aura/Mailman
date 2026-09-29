@@ -927,6 +927,7 @@ def read_claims(
     # The screen asked this of its rows since #150; prescreen never did, and
     # passed threads waiting on logs or sent to another project. Mailman #193.
     record["disputed"] = maintainer_dispute(thread, maintainers=maintainers)
+    record["reported_fixed"] = reported_fixed(thread)
     record["comments_read"] = len(comments)
     record["issue_created_at"] = payload.get("created_at")
     record["maintainer_touched_at"] = maintainer_touched_at(
@@ -1100,6 +1101,55 @@ _CONFIRMED = re.compile(
     r")",
     re.IGNORECASE,
 )
+
+
+#: Anyone saying the bug is gone on the development head or the latest
+#: release. pylint#10032: "This no longer reproduces on current `main`", and
+#: prescreen passed it. Mailman #236.
+_HEAD = (
+    r"(?:the )?(?:current |latest |newest |most recent )?`?"
+    r"(?:main|master|dev|develop|head|trunk|latest|release|version)\b"
+)
+_REPORTED_FIXED = re.compile(
+    r"\b(?:"
+    r"(?:no longer|doesn't|does not|can't|cannot|couldn't|could not|can no longer)"
+    r" (?:reproduces?|repro|happens?|occurs?)"
+    r"(?: (?:this|it))?(?: (?:anymore|any more))?"
+    rf" (?:on|with|in|using|against) {_HEAD}"
+    rf"|(?:was |is |been |got )?(?:already )?(?:fixed|resolved) (?:on|in|by) {_HEAD}"
+    r")",
+    re.IGNORECASE,
+)
+_STILL_BROKEN = re.compile(
+    r"\b(?:still (?:happens|happening|reproduces|occurs|fails|broken|an issue|present)"
+    r"|(?:is |remains )?still (?:reproducible|there)"
+    r"|(?:can|could) still (?:reproduce|repro))\b",
+    re.IGNORECASE,
+)
+
+
+def reported_fixed(thread: Iterable[dict[str, Any]]) -> str | None:
+    """The sentence of the latest comment saying the bug no longer happens.
+
+    Any author counts, because the claim is cheap to check and expensive to
+    miss: the next stages are a clone, an environment and a reproduction. A
+    later comment saying it still happens cancels it.
+    """
+    latest: tuple[bool, str] | None = None
+    for comment in thread:
+        if not isinstance(comment, dict) or _is_bot(comment.get("user")):
+            continue
+        text = _matchable(_flat(_unquoted(comment.get("body"))))
+        found = [
+            (match.start(), True, match) for match in _REPORTED_FIXED.finditer(text)
+        ] + [
+            (match.start(), False, match) for match in _STILL_BROKEN.finditer(text)
+        ]
+        if not found:
+            continue
+        _, fixed, match = max(found, key=lambda item: item[0])
+        latest = (fixed, _sentence_around(text, match.start(), match.end()))
+    return latest[1] if latest and latest[0] else None
 
 
 def maintainer_dispute(

@@ -30,6 +30,7 @@ from mailman.prescreen import (
     TRIVIAL,
     TRIVIAL_FIX,
     TRIVIAL_FIX_DIRECT_PUSH,
+    REPORTED_FIXED_ON_MAIN,
     UNACKNOWLEDGED_ISSUE,
     UNKNOWN,
     check,
@@ -634,6 +635,29 @@ class PrescreenTests(unittest.TestCase):
         self.assertTrue(record["acknowledgement"]["unacknowledged"])
         self.assertIn("no owner, member or collaborator", record["next"])
         self.assertLess(record["ranking"]["score"], 0)
+
+    def test_a_comment_saying_main_is_fixed_warns_before_a_run(self) -> None:
+        # pylint#10032 passed with "This no longer reproduces on current
+        # `main`" as its last comment. Mailman #236.
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                comments=[
+                    {
+                        "body": "This no longer reproduces on current `main`.",
+                        "author_association": "NONE",
+                        "created_at": "2026-09-09T00:00:00Z",
+                        "user": {"login": "passerby", "type": "User"},
+                    }
+                ],
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertIn(REPORTED_FIXED_ON_MAIN, record["warnings"])
+        self.assertIn("no longer reproduces", record["next"])
 
     def test_a_maintainer_reply_clears_the_unacknowledged_warning(self) -> None:
         record = prescreen_issue(

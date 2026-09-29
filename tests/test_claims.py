@@ -1133,6 +1133,56 @@ class ReferenceRecordTests(unittest.TestCase):
         )
 
 
+class ReportedFixedTests(unittest.TestCase):
+    """Mailman #236: anyone saying the bug is gone on main is worth a warning."""
+
+    @staticmethod
+    def _comment(body, association="NONE", created="2026-09-01T00:00:00Z"):
+        return {
+            "body": body,
+            "author_association": association,
+            "user": {"login": "someone", "type": "User"},
+            "created_at": created,
+        }
+
+    def test_no_longer_reproduces_on_main_is_reported(self):
+        from mailman.claims import reported_fixed
+
+        # pylint#10032, 2026-09-09.
+        for body in (
+            "This no longer reproduces on current `main` (pylint 4.1.0-dev0, "
+            "astroid 4.2.0b5). It may be worth closing.",
+            "I can't reproduce this on master anymore.",
+            "Looks like this was fixed in the latest release.",
+            "This doesn't happen with the latest version.",
+        ):
+            with self.subTest(body=body):
+                self.assertIsNotNone(reported_fixed([self._comment(body)]))
+
+    def test_a_later_still_happening_reply_wins(self):
+        from mailman.claims import reported_fixed
+
+        thread = [
+            self._comment("This no longer reproduces on main."),
+            self._comment(
+                "It still happens for me on main, see the traceback.",
+                created="2026-09-02T00:00:00Z",
+            ),
+        ]
+        self.assertIsNone(reported_fixed(thread))
+
+    def test_an_ordinary_report_is_not_fixed(self):
+        from mailman.claims import reported_fixed
+
+        for body in (
+            "I can't reproduce this on 3.11 but it fails on 3.12.",
+            "This still reproduces on main.",
+            "Fixed my config, but the crash remains.",
+        ):
+            with self.subTest(body=body):
+                self.assertIsNone(reported_fixed([self._comment(body)]))
+
+
 class MaintainerDisputeTests(unittest.TestCase):
     """Mailman #150: a maintainer reply is triage only when it does not dispute."""
 
