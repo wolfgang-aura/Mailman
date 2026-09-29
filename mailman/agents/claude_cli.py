@@ -125,6 +125,11 @@ class ClaudeCliAgent(EngineeringAgent):
             "--output-format",
             "stream-json",
             "--verbose",
+            # The workspace is the target's checkout. Its .claude settings can
+            # carry hooks and permission rules; streamlit's Stop hook runs
+            # `make check` and kept the reviewer from writing a verdict (#237).
+            "--setting-sources",
+            "user",
             "--permission-mode",
             permission_mode,
             "--max-turns",

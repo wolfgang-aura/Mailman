@@ -341,6 +341,24 @@ class AgentAdapterTests(unittest.TestCase):
         # stream-json is rejected under --print without it.
         self.assertIn("--verbose", command)
 
+    def test_claude_ignores_the_target_repository_s_own_settings(self) -> None:
+        # streamlit ships a Stop hook that runs `make check`; loaded into the
+        # reviewer, it looped for 13 turns and no verdict was written (#237).
+        for role in ("primary", "reviewer"):
+            with self.subTest(role=role), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                request = AgentRequest(
+                    run_id="run-1",
+                    role=role,
+                    prompt_path=root / "prompt.md",
+                    workspace=root,
+                    report_path=root / f"{role}-report.md",
+                )
+                command = ClaudeCliAgent().build_command(request)
+
+                sources = command.index("--setting-sources")
+                self.assertEqual(command[sources + 1], "user")
+
     def test_claude_primary_may_run_the_run_s_own_verification_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
