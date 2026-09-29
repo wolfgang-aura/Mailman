@@ -56,6 +56,7 @@ from mailman.targeting import (
     CITED_MERGED_IN_BODY,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     MAINTAINER_CLOSED_ATTEMPT,
+    MAINTAINER_OWNED_FIX,
     NO_MAINTAINER_REPLY,
     STALE_PRIOR_ATTEMPT,
     NO_REPRODUCTION,
@@ -2048,6 +2049,103 @@ class MaintainerClosedAttemptTests(StalePriorAttemptTests):
         self.assertIsNone(closure["login"])
         self.assertFalse(closure["maintainer"])
         self.assertIn("could not be determined", closure["detail"])
+
+
+class MaintainerOwnedFixTests(StalePriorAttemptTests):
+    """A maintainer's own parked fix, where GitHub hides that he is one.
+
+    marimo-team/marimo#9862: mscolnick's draft said "Fixes #9808", the stale
+    bot closed it, and his organisation membership is private, so GitHub
+    called him CONTRIBUTOR and the issue passed with a stale-attempt warning.
+    The repository screen records who merges; that set decides. Mailman #203.
+    """
+
+    def parked(self, *, body: str = "Fixes #7") -> dict:
+        return {
+            **self.cited(days_old=59, association="CONTRIBUTOR"),
+            "state": "CLOSED",
+            "isDraft": True,
+            "title": "fix: guard the empty-input path",
+            "author": {"login": "mscolnick"},
+            "body": body,
+        }
+
+    def record_maintainers(self, logins: list[str]) -> None:
+        path = screen_path(self.root, "example/project")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "repository": "example/project",
+                    "success": True,
+                    "verdict": "pass",
+                    "gates": [],
+                    "maintainer_logins": logins,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def prescreen(self, pull: dict) -> dict:
+        return prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                self.issue(),
+                pull_requests={"example/project#8": pull},
+                timelines={
+                    8: [{"event": "closed", "actor": {"login": "github-actions[bot]"}}]
+                },
+            ),
+        )
+
+    def test_a_private_maintainers_parked_fix_rejects_the_issue(self) -> None:
+        self.record_maintainers(["MScolnick", "akshayka"])
+        record = self.prescreen(self.parked())
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [MAINTAINER_OWNED_FIX])
+        self.assertIn(MAINTAINER_OWNED_FIX, DECIDABLE)
+        self.assertEqual(record["stale_attempts"], [])
+        self.assertNotIn(STALE_PRIOR_ATTEMPT, record["warnings"])
+        self.assertEqual(record["cited_pull_requests"]["maintainer_owned"], [8])
+        owned = record["maintainer_owned_attempts"][0]
+        self.assertEqual(owned["number"], 8)
+        self.assertEqual(owned["author"], "mscolnick")
+        self.assertIn("maintainer", record["next"])
+
+    def test_without_a_screen_record_the_old_warning_stands(self) -> None:
+        record = self.prescreen(self.parked())
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertIn(STALE_PRIOR_ATTEMPT, record["warnings"])
+        self.assertEqual(record["stale_attempts"][0]["number"], 8)
+        self.assertEqual(record["cited_pull_requests"]["maintainer_owned"], [])
+
+    def test_a_maintainers_attempt_that_does_not_close_the_issue_passes(
+        self,
+    ) -> None:
+        # Read as a MEMBER's closed attempt always was: not a claim.
+        self.record_maintainers(["mscolnick"])
+        record = self.prescreen(self.parked(body="Related to #7, a first look."))
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(record["cited_pull_requests"]["maintainer_owned"], [])
+
+    def test_a_fix_for_another_issue_does_not_count(self) -> None:
+        self.record_maintainers(["mscolnick"])
+        record = self.prescreen(self.parked(body="Fixes #70"))
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(record["cited_pull_requests"]["maintainer_owned"], [])
+
+    def test_a_member_with_public_membership_is_caught_too(self) -> None:
+        pull = {**self.parked(), "authorAssociation": "MEMBER"}
+        record = self.prescreen(pull)
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [MAINTAINER_OWNED_FIX])
 
 
 class DuplicatePolicyTests(StalePriorAttemptTests):

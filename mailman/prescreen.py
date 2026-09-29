@@ -22,6 +22,7 @@ from typing import Any
 
 from mailman.claims import read_claims
 from mailman.issue import capture_issue_from_github
+from mailman.maintainers import maintainer_logins
 from mailman.prior_art import collect_prior_art, resolve_cited_pull_requests
 from mailman.screen import (
     DIRECT_PUSH_LIMIT,
@@ -52,6 +53,7 @@ from mailman.targeting import (
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     ISSUE_ASSIGNED,
     MAINTAINER_CLOSED_ATTEMPT,
+    MAINTAINER_OWNED_FIX,
     MAINTAINER_REMARK_ELSEWHERE,
     MERGED_BEFORE_ISSUE_DAYS,
     NO_DUPLICATE_SEARCH,
@@ -79,7 +81,10 @@ from mailman.targeting import (
 #: back.
 #: 12 asks whether the project's latest word disputes the report, and reads
 #: labels that send it upstream or wait on the reporter. Mailman #193.
-PRESCREEN_SCHEMA_VERSION = 12
+#: 13 reads maintainers from the repository screen's recorded set as well as
+#: from `author_association`, and refuses a maintainer's own parked fix.
+#: Mailman #203.
+PRESCREEN_SCHEMA_VERSION = 13
 ISSUE_SCREENS = "issue-screens"
 #: A pre-screen filters a shortlist; it is not the filing gate. The run stage
 #: still re-runs the duplicate search under its own one-hour limit, and
@@ -244,6 +249,7 @@ DECIDABLE = (
     STALE_PRIOR_ATTEMPT,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     MAINTAINER_CLOSED_ATTEMPT,
+    MAINTAINER_OWNED_FIX,
 )
 
 
@@ -558,11 +564,16 @@ def prescreen_issue(
     directory = prescreen_directory(data_root, slug, number)
     directory.mkdir(parents=True, exist_ok=True)
     issue_url = f"https://github.com/{slug}/issues/{number}"
+    # Who merges here, as the repository screen recorded it. GitHub calls a
+    # maintainer with a private membership CONTRIBUTOR. Empty without a
+    # screen, which leaves every check on the association alone. Mailman #203.
+    maintainers = maintainer_logins(load_screen(data_root, slug))
     captured = capture_issue_from_github(
         directory,
         issue_url=issue_url,
         executable=executable,
         timeout_seconds=timeout_seconds,
+        maintainers=maintainers,
     )
     record: dict[str, Any] = {
         "schema_version": PRESCREEN_SCHEMA_VERSION,
@@ -574,6 +585,7 @@ def prescreen_issue(
         "stale_attempts": [],
         "duplicate_blocked_attempts": [],
         "maintainer_closed_attempts": [],
+        "maintainer_owned_attempts": [],
         "issue": {
             "success": captured.get("success"),
             "state": captured.get("state"),
@@ -590,6 +602,7 @@ def prescreen_issue(
         captured.get("title"), _captured_body(directory), captured.get("labels") or []
     )
     screen = load_screen(data_root, slug)
+    record["maintainer_logins_known"] = len(maintainers)
     if screen and screen.get("success") and screen.get("verdict") != "pass":
         issue_blocking.append(REPOSITORY_SCREEN_FAILED)
     share = direct_push_share(screen)
@@ -652,7 +665,10 @@ def prescreen_issue(
     # draft implementation linked in the last line of the body.
     # https://github.com/wolfgang-aura/Mailman/issues/98
     claims = read_claims(
-        directory, executable=executable, timeout_seconds=timeout_seconds
+        directory,
+        executable=executable,
+        timeout_seconds=timeout_seconds,
+        maintainers=maintainers,
     )
     record["claims"] = {
         "success": claims.get("success"),
@@ -684,6 +700,9 @@ def prescreen_issue(
         references=_citable(claims, slug=slug, directory=directory),
         executable=executable,
         timeout_seconds=timeout_seconds,
+        repository=slug,
+        issue_number=number,
+        maintainers=maintainers,
     )
     record["cited_pull_requests"] = {
         "references": cited["references"],
@@ -696,6 +715,7 @@ def prescreen_issue(
         ],
         "stale": [row["number"] for row in cited["stale"]],
         "maintainer_closed": [row["number"] for row in cited["maintainer_closed"]],
+        "maintainer_owned": [row["number"] for row in cited["maintainer_owned"]],
         "decided_by": cited["decided_by"],
         "detail": cited["detail"],
     }
@@ -719,6 +739,9 @@ def prescreen_issue(
     # dormant branch. skfolio#307 and wagtail#14384 passed this stage as
     # supersedable stale attempts and were neither.
     record["maintainer_closed_attempts"] = list(cited["maintainer_closed"])
+    # A maintainer's own closed fix for this issue is parked work, not an
+    # abandoned attempt. marimo#9862. Mailman #203.
+    record["maintainer_owned_attempts"] = list(cited["maintainer_owned"])
     if stale_cited:
         warnings.append(STALE_PRIOR_ATTEMPT)
     # Whether we may file here at all, before whether this issue is worth it.
@@ -753,6 +776,8 @@ def prescreen_issue(
         thread_blocking.append(NO_MAINTAINER_REPLY)
     if record["maintainer_closed_attempts"]:
         thread_blocking.append(MAINTAINER_CLOSED_ATTEMPT)
+    if record["maintainer_owned_attempts"]:
+        thread_blocking.append(MAINTAINER_OWNED_FIX)
     if blocked_cited:
         thread_blocking.append(DUPLICATE_FORBIDDEN_OPEN_ATTEMPT)
     # A pull request under another owner neither answers this issue nor
@@ -818,7 +843,9 @@ def prescreen_issue(
         labels=labels,
         linked=any(
             cited[key]
-            for key in ("open", "merged", "stale", "maintainer_closed")
+            for key in (
+                "open", "merged", "stale", "maintainer_closed", "maintainer_owned"
+            )
         ),
         shortlist_engaged=shortlist_engaged,
     )
@@ -866,6 +893,18 @@ def prescreen_issue(
                 "a maintainer closed an earlier attempt at this issue: "
                 f"{named}. Somebody who speaks for the project read that "
                 "change and said no, so there is nothing dormant to supersede"
+            )
+        if MAINTAINER_OWNED_FIX in thread_blocking:
+            named = ", ".join(
+                f"#{row.get('number')} by {row.get('author')}"
+                for row in record["maintainer_owned_attempts"]
+            )
+            details.append(
+                f"a maintainer of {slug} wrote a fix for this issue and it was "
+                f"closed without merging: {named}. That is the project's own "
+                "work parked, not an abandoned attempt; a second pull request "
+                "would race the maintainer. Ask on the issue whether they want "
+                "help finishing it; do not open a run"
             )
         if DUPLICATE_FORBIDDEN_OPEN_ATTEMPT in thread_blocking:
             named = ", ".join(

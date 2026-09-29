@@ -31,7 +31,7 @@ import statistics
 import sys
 import tomllib
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -40,7 +40,6 @@ from typing import Any
 from urllib.parse import quote
 
 from mailman.claims import (
-    MAINTAINER_ASSOCIATIONS,
     classify_comment,
     classify_thread,
     maintainer_dispute,
@@ -50,6 +49,7 @@ from mailman.claims import (
     rival_pull_requests,
 )
 from mailman.executor import CommandResult, execute
+from mailman.maintainers import MERGERS_QUERY, is_maintainer, mergers
 from mailman.target_intel import (
     FRESHNESS_WINDOW_DAYS,
     _Gh,
@@ -1833,7 +1833,9 @@ def _age_in_days(row: dict[str, Any], now: datetime) -> int | None:
         return None
 
 
-def _read_thread(gh: _Gh, slug: str, number: str) -> dict[str, Any]:
+def _read_thread(
+    gh: _Gh, slug: str, number: str, maintainers: Collection[str] = ()
+) -> dict[str, Any]:
     """Read one issue's thread for a claim, and for what ranks it.
 
     The claim is the form GitHub itself does not track: a comment saying
@@ -1850,9 +1852,12 @@ def _read_thread(gh: _Gh, slug: str, number: str) -> dict[str, Any]:
     return {
         "comments": comments,
         "claimed": any(
-            kind in {"claim", "assignment"} for kind in classify_thread(comments)
+            kind in {"claim", "assignment"}
+            for kind in classify_thread(comments, maintainers=maintainers)
         ),
-        "maintainer_touched_at": maintainer_touched_at(comments),
+        "maintainer_touched_at": maintainer_touched_at(
+            comments, maintainers=maintainers
+        ),
         "cited": [
             comment.get("body") for comment in comments if isinstance(comment, dict)
         ],
@@ -1867,6 +1872,7 @@ def _shortlist_row(
     age: int,
     cited_elsewhere: bool,
     now: datetime,
+    maintainers: Collection[str] = (),
 ) -> dict[str, Any]:
     """One ranked shortlist entry, with the reasons that put it where it is."""
     cited = pull_request_references(
@@ -1881,6 +1887,7 @@ def _shortlist_row(
         maintainer_touched_at=(thread or {}).get("maintainer_touched_at"),
         now=now,
         thread_read=thread is not None,
+        maintainers=maintainers,
     )
     return {
         "number": row["number"],
@@ -1894,11 +1901,10 @@ def _shortlist_row(
         # Who has spoken, so a coordinator does not refetch every thread to
         # find the triaged rows. None when the thread was past the read cap.
         # https://github.com/wolfgang-aura/Mailman/issues/135
-        "maintainer_filed": row.get("author_association") in MAINTAINER_ASSOCIATIONS,
+        "maintainer_filed": is_maintainer(row, maintainers),
         "maintainer_replied": (
             any(
-                isinstance(comment, dict)
-                and comment.get("author_association") in MAINTAINER_ASSOCIATIONS
+                isinstance(comment, dict) and is_maintainer(comment, maintainers)
                 for comment in thread.get("comments") or []
             )
             if thread is not None
@@ -1906,7 +1912,7 @@ def _shortlist_row(
         ),
         # A reply that says "cannot reproduce" is not triage. Mailman #150.
         "maintainer_disputed": (
-            maintainer_dispute(thread.get("comments") or [])
+            maintainer_dispute(thread.get("comments") or [], maintainers=maintainers)
             if thread is not None
             else None
         ),
@@ -1952,7 +1958,11 @@ def _read_timelines(
 
 
 def _saturation_gate(
-    gh: _Gh, slug: str, window_days: int, issue_window_days: int
+    gh: _Gh,
+    slug: str,
+    window_days: int,
+    issue_window_days: int,
+    maintainers: Collection[str] = (),
 ) -> dict[str, Any]:
     """Gate 5. Is there any unclaimed work left, or has the tracker been mined?
 
@@ -1992,7 +2002,7 @@ def _saturation_gate(
     threads: dict[str, dict[str, Any]] = {}
     for row in candidates[:_COMMENT_THREAD_LIMIT]:
         number = str(row["number"])
-        threads[number] = _read_thread(gh, slug, number)
+        threads[number] = _read_thread(gh, slug, number, maintainers)
         if threads[number]["claimed"]:
             claimed_by_comment.add(number)
     claimed |= claimed_by_comment
@@ -2034,6 +2044,7 @@ def _saturation_gate(
                 age=age,
                 cited_elsewhere=number in claims["abandoned"],
                 now=now,
+                maintainers=maintainers,
             )
         )
     _read_timelines(gh, slug, shortlist, unclaimed)
@@ -2187,15 +2198,16 @@ def _timestamp(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def _is_maintainer(row: dict[str, Any]) -> bool:
-    return (
-        row.get("author_association") in MAINTAINER_ASSOCIATIONS
-        and not _is_bot(row.get("user"))
-    )
+def _is_maintainer(row: dict[str, Any], maintainers: Collection[str] = ()) -> bool:
+    return is_maintainer(row, maintainers) and not _is_bot(row.get("user"))
 
 
 def _first_maintainer_response(
-    gh: _Gh, slug: str, number: int, opened: datetime
+    gh: _Gh,
+    slug: str,
+    number: int,
+    opened: datetime,
+    maintainers: Collection[str] = (),
 ) -> tuple[float | None, str | None]:
     """Days from a pull request opening to the first word from a maintainer.
 
@@ -2216,7 +2228,7 @@ def _first_maintainer_response(
         (f"repos/{slug}/issues/{number}/comments", "created_at"),
     ):
         for row in gh.pages(path, pages=1):
-            if not isinstance(row, dict) or not _is_maintainer(row):
+            if not isinstance(row, dict) or not _is_maintainer(row, maintainers):
                 continue
             stamp = _timestamp(row.get(field))
             if stamp is not None and stamp >= opened:
@@ -2238,7 +2250,7 @@ def _ai_refusal(body: str) -> str | None:
 
 
 def _responsiveness_gate(
-    gh: _Gh, slug: str, responsiveness_days: int
+    gh: _Gh, slug: str, responsiveness_days: int, maintainers: Collection[str] = ()
 ) -> dict[str, Any]:
     """Gate 8. How long does a stranger's pull request wait for a first word?
 
@@ -2282,7 +2294,7 @@ def _responsiveness_gate(
     with ThreadPoolExecutor(max_workers=RESPONSIVENESS_WORKERS) as pool:
         first_waits = list(pool.map(
             lambda item: _first_maintainer_response(
-                gh, slug, int(item[0].get("number") or 0), item[1]
+                gh, slug, int(item[0].get("number") or 0), item[1], maintainers
             ),
             sample,
         ))
@@ -2537,6 +2549,11 @@ def screen_repository(
         "responsiveness_days": responsiveness_days,
         "gates": [],
         "success": False,
+        # Who merged recent pull requests: maintainers GitHub may report as
+        # CONTRIBUTOR because their membership is private. Read only for a
+        # repository no cheap gate refused. Mailman #203.
+        "maintainer_logins": [],
+        "maintainer_logins_read": False,
     }
 
     meta = gh.json(f"repos/{slug}")
@@ -2588,10 +2605,18 @@ def screen_repository(
     if refused:
         gates += [_skipped_gate(name, refused) for name in EXPENSIVE_GATES]
     else:
+        # One GraphQL call. Every later "is this a maintainer?" reads it.
+        owner, _, name = slug.partition("/")
+        answer = gh.graphql(MERGERS_QUERY % (owner, name))
+        maintainers = mergers(answer)
+        record["maintainer_logins"] = maintainers
+        record["maintainer_logins_read"] = answer is not None
         gates += [
-            _saturation_gate(gh, slug, window_days, issue_window_days),
+            _saturation_gate(
+                gh, slug, window_days, issue_window_days, maintainers
+            ),
             _direct_push_gate(gh, slug, meta),
-            _responsiveness_gate(gh, slug, responsiveness_days),
+            _responsiveness_gate(gh, slug, responsiveness_days, maintainers),
         ]
         _policy_from_comments(gates)
     gates.append(stars)

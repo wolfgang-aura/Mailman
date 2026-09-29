@@ -222,6 +222,9 @@ class FakeGitHub:
             },
         )
         self.missing_workflows = overrides.pop("missing_workflows", False)
+        #: Who merged recent pull requests, answered to the GraphQL query.
+        #: None answers it with `meta`, which names nobody.
+        self.mergers = overrides.pop("mergers", None)
         assert not overrides, f"unexpected fixture keys: {sorted(overrides)}"
         self.asked: list[str] = []
 
@@ -231,6 +234,12 @@ class FakeGitHub:
         return _Result(json.dumps(self._payload(path)))
 
     def _payload(self, path: str):
+        if path.startswith("query=") and self.mergers is not None:
+            nodes = [
+                {"mergedBy": {"login": login, "__typename": kind}}
+                for login, kind in self.mergers
+            ]
+            return {"data": {"repository": {"pullRequests": {"nodes": nodes}}}}
         base = path.split("?", 1)[0]
         if base == "search/issues":
             return {
@@ -331,6 +340,41 @@ class ScreenTests(unittest.TestCase):
             self.assertFalse(gate["blocking"])
             self.assertIn("pure-python", gate["detail"])
         self.assertLess(len(refused.asked), len(healthy.asked))
+
+    def test_the_screen_records_who_merges_in_one_graphql_call(self) -> None:
+        # Mailman #203: marimo's mscolnick merges with a private membership,
+        # so GitHub calls him CONTRIBUTOR. The screen stores the mergers for
+        # every later maintainer check.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            gh = FakeGitHub(
+                mergers=[
+                    ("mscolnick", "User"),
+                    ("renovate", "Bot"),
+                    ("akshayka", "User"),
+                ]
+            )
+            record = _screen(root, gh)
+            stored = load_screen(root, "example/project")
+
+        self.assertEqual(record["maintainer_logins"], ["akshayka", "mscolnick"])
+        self.assertTrue(record["maintainer_logins_read"])
+        self.assertEqual(stored["maintainer_logins"], ["akshayka", "mscolnick"])
+        queries = [path for path in gh.asked if path.startswith("query=")]
+        self.assertEqual(len(queries), 1)
+        self.assertIn('owner: "example", name: "project"', queries[0])
+
+    def test_a_refused_repository_reads_no_mergers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            gh = FakeGitHub(
+                languages={"TypeScript": 900000, "Python": 100000},
+                mergers=[("mscolnick", "User")],
+            )
+            record = _screen(Path(temporary), gh)
+
+        self.assertEqual(record["maintainer_logins"], [])
+        self.assertFalse(record["maintainer_logins_read"])
+        self.assertFalse(any(path.startswith("query=") for path in gh.asked))
 
     def test_repeated_assignment_bot_closures_reject_the_repository(self) -> None:
         marker = {

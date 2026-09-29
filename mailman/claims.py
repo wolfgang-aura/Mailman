@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
 from mailman.executor import CommandResult, execute
 from mailman.issue import load_issue_record
+from mailman.maintainers import MAINTAINER_ASSOCIATIONS, is_maintainer
 from mailman.target_intel import _is_bot
 from mailman.toolchain import resolve_tool
 
@@ -38,8 +39,9 @@ CLAIMS_FILENAME = "claims.json"
 CLAIMS_SCHEMA_VERSION = 1
 
 #: Who can hand out the work. `author_association` is GitHub's own answer to
-#: that question and the only one available without another API call.
-MAINTAINER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+#: that question, and `maintainers` below is the repository screen's recorded
+#: set for the maintainers it hides (Mailman #203). The set itself lives in
+#: `mailman.maintainers`; it is re-exported here for existing readers.
 
 _QUOTE_CHARACTER_LIMIT = 400
 
@@ -94,7 +96,9 @@ _AGENT_EXCLUSION = re.compile(
 )
 
 
-def excludes_agents(comment: dict[str, Any]) -> bool:
+def excludes_agents(
+    comment: dict[str, Any], *, maintainers: Collection[str] = ()
+) -> bool:
     """Say whether a project voice reserves the issue for human work.
 
     `CONTRIBUTOR` counts here, unlike for an invitation. The beets maintainer
@@ -104,8 +108,8 @@ def excludes_agents(comment: dict[str, Any]) -> bool:
     """
     if not isinstance(comment, dict) or _is_bot(comment.get("user")):
         return False
-    if comment.get("author_association") not in (
-        MAINTAINER_ASSOCIATIONS | {"CONTRIBUTOR"}
+    if not is_maintainer(
+        comment, maintainers, associations=MAINTAINER_ASSOCIATIONS | {"CONTRIBUTOR"}
     ):
         return False
     text = _matchable(_flat(comment.get("body"))).replace("*", "").replace("_", " ")
@@ -206,7 +210,9 @@ _DECLINED = re.compile(
 )
 
 
-def design_open_questions(thread: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+def design_open_questions(
+    thread: Iterable[dict[str, Any]], *, maintainers: Collection[str] = ()
+) -> list[dict[str, Any]]:
     """The project-voice comments that leave a design choice open, still unsettled.
 
     Walked in order. A comment from a maintainer (or CONTRIBUTOR, as
@@ -215,26 +221,31 @@ def design_open_questions(thread: Iterable[dict[str, Any]]) -> list[dict[str, An
     everything before it; a later open phrase reopens the question. Outsiders
     neither open nor settle anything.
     """
-    return _unsettled(thread, _DESIGN_OPEN)
+    return _unsettled(thread, _DESIGN_OPEN, maintainers=maintainers)
 
 
-def maintainer_declines(thread: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+def maintainer_declines(
+    thread: Iterable[dict[str, Any]], *, maintainers: Collection[str] = ()
+) -> list[dict[str, Any]]:
     """The project-voice comments turning the report down, not since reversed.
 
     The same walk as `design_open_questions`: a later invitation or explicit
     choice from the project undoes the refusal.
     """
-    return _unsettled(thread, _DECLINED)
+    return _unsettled(thread, _DECLINED, maintainers=maintainers)
 
 
 def _unsettled(
-    thread: Iterable[dict[str, Any]], pattern: re.Pattern[str]
+    thread: Iterable[dict[str, Any]],
+    pattern: re.Pattern[str],
+    *,
+    maintainers: Collection[str] = (),
 ) -> list[dict[str, Any]]:
     unsettled: list[dict[str, Any]] = []
     for comment in thread:
         if not isinstance(comment, dict) or _is_bot(comment.get("user")):
             continue
-        if comment.get("author_association") not in _PROJECT_VOICES:
+        if not is_maintainer(comment, maintainers, associations=_PROJECT_VOICES):
             continue
         text = _matchable(_flat(_unquoted(comment.get("body"))))
         opens = list(pattern.finditer(text))
@@ -523,7 +534,9 @@ def maintainer_labels(timeline: Any, *, reporter: str | None) -> list[dict[str, 
     return rows
 
 
-def classify_comment(comment: dict[str, Any]) -> str | None:
+def classify_comment(
+    comment: dict[str, Any], *, maintainers: Collection[str] = ()
+) -> str | None:
     """Say whether one comment claims the work, hands it over, or neither.
 
     Returns `"claim"`, `"assignment"`, or `None`. A bot never claims anything,
@@ -538,7 +551,7 @@ def classify_comment(comment: dict[str, Any]) -> str | None:
     body = _matchable(_flat(prose))
     if not body:
         return None
-    maintainer = comment.get("author_association") in MAINTAINER_ASSOCIATIONS
+    maintainer = is_maintainer(comment, maintainers)
     if maintainer and _ASSIGNMENT.search(body):
         return "assignment"
     # Judge each sentence on its own: a question in one ("if someone reports
@@ -552,7 +565,9 @@ def classify_comment(comment: dict[str, Any]) -> str | None:
 _SENTENCE_BREAK = re.compile(r"(?<=[.?!;])\s+")
 
 
-def classify_thread(comments: Iterable[dict[str, Any]]) -> list[str | None]:
+def classify_thread(
+    comments: Iterable[dict[str, Any]], *, maintainers: Collection[str] = ()
+) -> list[str | None]:
     """`classify_comment` over a thread, in order, with one contextual rule.
 
     "Feel free to open a PR" is a handover when it answers "can I take
@@ -567,11 +582,11 @@ def classify_thread(comments: Iterable[dict[str, Any]]) -> list[str | None]:
     kinds: list[str | None] = []
     claimed_before = False
     for comment in comments:
-        kind = classify_comment(comment)
+        kind = classify_comment(comment, maintainers=maintainers)
         if (
             kind == "assignment"
             and not claimed_before
-            and is_maintainer_invitation(comment)
+            and is_maintainer_invitation(comment, maintainers=maintainers)
         ):
             kind = "invitation"
         if kind == "claim":
@@ -585,7 +600,9 @@ def invites_pull_request(text: str | None) -> bool:
     return bool(_INVITATION.search(_matchable(_flat(text))))
 
 
-def is_maintainer_invitation(comment: dict[str, Any]) -> bool:
+def is_maintainer_invitation(
+    comment: dict[str, Any], *, maintainers: Collection[str] = ()
+) -> bool:
     """Say whether one comment is a maintainer asking for the pull request.
 
     The report itself counts when its author is a maintainer: a member who
@@ -596,18 +613,20 @@ def is_maintainer_invitation(comment: dict[str, Any]) -> bool:
     """
     if not isinstance(comment, dict) or _is_bot(comment.get("user")):
         return False
-    if comment.get("author_association") not in MAINTAINER_ASSOCIATIONS:
+    if not is_maintainer(comment, maintainers):
         return False
     return invites_pull_request(comment.get("body"))
 
 
-def maintainer_touched_at(comments: Iterable[dict[str, Any]]) -> str | None:
+def maintainer_touched_at(
+    comments: Iterable[dict[str, Any]], *, maintainers: Collection[str] = ()
+) -> str | None:
     """The newest timestamp at which somebody who speaks for the project wrote."""
     stamps = [
         str(comment.get("created_at"))
         for comment in comments
         if isinstance(comment, dict)
-        and comment.get("author_association") in MAINTAINER_ASSOCIATIONS
+        and is_maintainer(comment, maintainers)
         and not _is_bot(comment.get("user"))
         and comment.get("created_at")
     ]
@@ -625,7 +644,10 @@ def _moment(stamp: object) -> datetime | None:
 
 
 def offer_replies(
-    comments: Iterable[dict[str, Any]], since: object
+    comments: Iterable[dict[str, Any]],
+    since: object,
+    *,
+    maintainers: Collection[str] = (),
 ) -> list[dict[str, Any]]:
     """Maintainer comments written after the ask-first offer was handed over.
 
@@ -638,23 +660,30 @@ def offer_replies(
     if start is None:
         return []
     return [
-        _row(comment)
+        _row(comment, maintainers)
         for comment in comments
         if isinstance(comment, dict)
-        and comment.get("author_association") in MAINTAINER_ASSOCIATIONS
+        and is_maintainer(comment, maintainers)
         and not _is_bot(comment.get("user"))
         and (_moment(comment.get("created_at")) or start) > start
     ]
 
 
-def _row(comment: dict[str, Any]) -> dict[str, Any]:
+def _row(
+    comment: dict[str, Any], maintainers: Collection[str] = ()
+) -> dict[str, Any]:
     user = comment.get("user") or {}
-    return {
+    row = {
         "author": user.get("login") if isinstance(user, dict) else None,
         "association": comment.get("author_association"),
         "created_at": comment.get("created_at"),
         "quote": _flat(comment.get("body"))[:_QUOTE_CHARACTER_LIMIT],
     }
+    # The author is in the repository screen's maintainer set, whatever the
+    # association says. Only written when true, so older rows read the same.
+    if maintainers and is_maintainer(comment, maintainers, associations=()):
+        row["listed_maintainer"] = True
+    return row
 
 
 def _write(run_directory: Path, record: dict[str, Any]) -> Path:
@@ -695,6 +724,8 @@ def triage_warning(run_directory: Path) -> str | None:
         return None
     if reporter in MAINTAINER_ASSOCIATIONS or replied:
         return None
+    if claims.get("reporter_is_maintainer") is True:
+        return None
     # A label from somebody with triage access is triage in another form.
     # Mailman #139.
     if claims.get("maintainer_labelled"):
@@ -715,8 +746,14 @@ def read_claims(
     timeout_seconds: float = 60,
     execute: Callable[..., CommandResult] = execute,
     pages: int = 4,
+    maintainers: Collection[str] = (),
 ) -> dict[str, Any]:
-    """Record who has claimed the run's target issue, from its own thread."""
+    """Record who has claimed the run's target issue, from its own thread.
+
+    `maintainers` is the login set the repository screen recorded; a comment
+    by one of them counts as a maintainer's whatever GitHub's association
+    says. Empty, every check reads the association alone. Mailman #203.
+    """
     record: dict[str, Any] = {
         "schema_version": CLAIMS_SCHEMA_VERSION,
         "collected_at": datetime.now(UTC).isoformat(),
@@ -805,6 +842,13 @@ def read_claims(
     # outside, unanswered, and its premise was wrong; the fix filed against it
     # closed without a word. See wolfgang-aura/Mailman#88.
     record["reporter_association"] = payload.get("author_association")
+    record["reporter_is_maintainer"] = is_maintainer(
+        {
+            "author_association": payload.get("author_association"),
+            "user": payload.get("user"),
+        },
+        maintainers,
+    )
 
     comments: list[dict[str, Any]] = []
     for page in range(1, pages + 1):
@@ -837,26 +881,32 @@ def read_claims(
     record["invitations"] = []
     record["agent_exclusions"] = []
     thread = [report, *comments]
-    for comment, kind in zip(thread, classify_thread(thread)):
+    for comment, kind in zip(
+        thread, classify_thread(thread, maintainers=maintainers)
+    ):
         if kind == "claim":
-            record["claims"].append(_row(comment))
+            record["claims"].append(_row(comment, maintainers))
         elif kind == "assignment":
-            record["assignments"].append(_row(comment))
+            record["assignments"].append(_row(comment, maintainers))
         # Read apart from the claim question. The reply that hands the work
         # to one person and the reply that asks anybody for it are both
         # invitations where the shortlist is concerned, and neither is a claim.
-        if is_maintainer_invitation(comment):
-            record["invitations"].append(_row(comment))
-        if excludes_agents(comment):
-            record["agent_exclusions"].append(_row(comment))
-    record["design_undecided"] = design_open_questions(thread)
-    record["declined"] = maintainer_declines(thread)
+        if is_maintainer_invitation(comment, maintainers=maintainers):
+            record["invitations"].append(_row(comment, maintainers))
+        if excludes_agents(comment, maintainers=maintainers):
+            record["agent_exclusions"].append(_row(comment, maintainers))
+    record["design_undecided"] = design_open_questions(
+        thread, maintainers=maintainers
+    )
+    record["declined"] = maintainer_declines(thread, maintainers=maintainers)
     # The screen asked this of its rows since #150; prescreen never did, and
     # passed threads waiting on logs or sent to another project. Mailman #193.
-    record["disputed"] = maintainer_dispute(thread)
+    record["disputed"] = maintainer_dispute(thread, maintainers=maintainers)
     record["comments_read"] = len(comments)
     record["issue_created_at"] = payload.get("created_at")
-    record["maintainer_touched_at"] = maintainer_touched_at(thread)
+    record["maintainer_touched_at"] = maintainer_touched_at(
+        thread, maintainers=maintainers
+    )
     # Every pull request the thread names, unresolved. Deciding what each one
     # is costs a `gh pr view` per reference, so the read stops at collecting
     # them and `prescreen` pays for the ones it wants.
@@ -867,7 +917,7 @@ def read_claims(
     ]
     cross_referenced = _cross_referenced_urls(timeline)
     record["remarks_elsewhere"] = remarks_elsewhere(
-        timeline, api, repository=slug, number=int(number)
+        timeline, api, repository=slug, number=int(number), maintainers=maintainers
     )
     record["references"] = pull_request_references(
         [payload.get("body"), *comment_bodies, *cross_referenced],
@@ -880,7 +930,7 @@ def read_claims(
         ],
     )
     record["maintainer_replied"] = any(
-        comment.get("author_association") in MAINTAINER_ASSOCIATIONS
+        is_maintainer(comment, maintainers)
         for comment in comments
         if isinstance(comment, dict)
     )
@@ -890,7 +940,9 @@ def read_claims(
     offer = load_offer_handoff(run_directory)
     if offer is not None:
         record["offer_prepared_at"] = offer.get("prepared_at")
-        record["offer_replies"] = offer_replies(comments, offer.get("prepared_at"))
+        record["offer_replies"] = offer_replies(
+            comments, offer.get("prepared_at"), maintainers=maintainers
+        )
     reporter = payload.get("user")
     record["maintainer_labelled"] = maintainer_labels(
         timeline,
@@ -1014,7 +1066,9 @@ _CONFIRMED = re.compile(
 )
 
 
-def maintainer_dispute(thread: Iterable[dict[str, Any]]) -> str | None:
+def maintainer_dispute(
+    thread: Iterable[dict[str, Any]], *, maintainers: Collection[str] = ()
+) -> str | None:
     """The sentence of the project's latest word when that word disputes the bug.
 
     `hunt targets --engaged-only` counted any maintainer reply as triage, so
@@ -1027,7 +1081,7 @@ def maintainer_dispute(thread: Iterable[dict[str, Any]]) -> str | None:
     for comment in thread:
         if not isinstance(comment, dict) or _is_bot(comment.get("user")):
             continue
-        if comment.get("author_association") not in _PROJECT_VOICES:
+        if not is_maintainer(comment, maintainers, associations=_PROJECT_VOICES):
             continue
         text = _matchable(_flat(_unquoted(comment.get("body"))))
         found = [
@@ -1057,7 +1111,12 @@ _REMARK_SOURCES = 5
 
 
 def remarks_elsewhere(
-    timeline: Any, api: Any, *, repository: str, number: int
+    timeline: Any,
+    api: Any,
+    *,
+    repository: str,
+    number: int,
+    maintainers: Collection[str] = (),
 ) -> list[dict[str, Any]]:
     """Maintainer comments about this issue written in another issue.
 
@@ -1099,7 +1158,7 @@ def remarks_elsewhere(
         for comment in comments:
             if not isinstance(comment, dict) or _is_bot(comment.get("user")):
                 continue
-            if comment.get("author_association") not in MAINTAINER_ASSOCIATIONS:
+            if not is_maintainer(comment, maintainers):
                 continue
             # A markdown link's target is not prose: rokm's link to
             # `utils.py#L281` spent the quote before its reason was reached.
@@ -1109,7 +1168,7 @@ def remarks_elsewhere(
                 continue
             found.append(
                 {
-                    **_row(comment),
+                    **_row(comment, maintainers),
                     "quote": _sentence_around(
                         text, hit.start(), hit.end(), limit=400
                     ),

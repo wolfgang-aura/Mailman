@@ -14,6 +14,7 @@ from mailman.artifacts import load_run, new_run_id
 from mailman.completion import finalize_review, read_object
 from mailman.claims import load_claims
 from mailman.handoff import check_handoff, load_handoff, load_offer_handoff
+from mailman.maintainers import load_maintainer_logins
 from mailman.models import RunStatus, utc_now
 from mailman.orchestrator import orchestration_step_names
 from mailman.provenance import upstream_issue_number
@@ -1136,7 +1137,12 @@ def refresh(root: Path, record: dict, *, include_ready: bool = False) -> dict:
                 "matches": fresh.get("match_count", 0),
                 "decided_by": fresh.get("decided_by"),
             }
-        claims = read_claims(directory)
+        claims = read_claims(
+            directory,
+            maintainers=load_maintainer_logins(
+                root, repository_slug(str(run.repository or ""))
+            ),
+        )
         outcome["claims"] = {"success": claims.get("success"),
                              "assignees": claims.get("assignees")}
         refreshed.append(outcome)

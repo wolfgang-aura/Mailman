@@ -757,6 +757,51 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ListedMaintainerTests(unittest.TestCase):
+    """A maintainer GitHub reports as CONTRIBUTOR. Mailman #203.
+
+    marimo's mscolnick has a private membership. Only the login set the
+    repository screen recorded tells him apart from an outsider.
+    """
+
+    def test_a_listed_contributor_invites(self) -> None:
+        comment = _comment(
+            "PRs welcome!", association="CONTRIBUTOR", login="mscolnick"
+        )
+        self.assertFalse(is_maintainer_invitation(comment))
+        self.assertTrue(
+            is_maintainer_invitation(comment, maintainers={"mscolnick"})
+        )
+
+    def test_read_claims_counts_a_listed_reply_only_with_the_set(self) -> None:
+        issue = {
+            "number": 4775,
+            "assignees": [],
+            "author_association": "NONE",
+            "user": {"login": "reporter"},
+        }
+        comments = [
+            _comment(
+                "Thanks, confirmed.", association="CONTRIBUTOR", login="mscolnick"
+            )
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = ReadClaimsTests()._run(Path(temporary))
+            before = read_claims(
+                root, executable="gh", execute=_FakeGh(issue, comments)
+            )
+            after = read_claims(
+                root,
+                executable="gh",
+                execute=_FakeGh(issue, comments),
+                maintainers={"mscolnick"},
+            )
+
+        self.assertFalse(before["maintainer_replied"])
+        self.assertTrue(after["maintainer_replied"])
+        self.assertFalse(after["reporter_is_maintainer"])
+
+
 class TriageFieldsTests(unittest.TestCase):
     """What the record says about who reported the issue and who answered.
     See https://github.com/wolfgang-aura/Mailman/issues/88."""

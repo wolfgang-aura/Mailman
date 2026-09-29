@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+import re
+from collections.abc import Collection, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from mailman.executor import CommandResult, execute
+from mailman.maintainers import is_maintainer
 from mailman.redaction import redact
 from mailman.targeting import (
+    attempt_is_closed_unmerged,
     attempt_is_dormant,
+    attempt_is_maintainers,
     is_stale_attempt,
     stale_attempt_row,
 )
@@ -33,7 +37,7 @@ CITED_PULL_REQUESTS_FILENAME = "cited-pull-requests.json"
 #: rather than abandoned; see `awaits_maintainer`.
 _CITED_FIELDS = (
     "number,state,mergedAt,mergeCommit,title,url,createdAt,updatedAt,isDraft,author,"
-    "comments,reviews,closingIssuesReferences"
+    "comments,reviews,body,closingIssuesReferences"
 )
 
 _PULL_REQUEST_FIELDS = (
@@ -45,6 +49,10 @@ _PULL_REQUEST_FIELDS = (
 # these is a maintainer's decision; a comment from anyone else is an opinion.
 # The same list decides what a closure means: see `closing_actor`.
 _MAINTAINER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
+#: GitHub's closing keywords. A pull request body that uses one against an
+#: issue says the pull request is that issue's fix.
+_CLOSING_KEYWORD = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
 
 _BODY_CHARACTER_LIMIT = 1200
 _COMMENT_CHARACTER_LIMIT = 800
@@ -84,7 +92,9 @@ def _comment_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def awaits_maintainer(payload: dict[str, Any]) -> bool:
+def awaits_maintainer(
+    payload: dict[str, Any], maintainers: Collection[str] = ()
+) -> bool:
     """Whether the author answered a maintainer last, so the next move is theirs.
 
     An open attempt that has sat for months is abandoned only if its author
@@ -116,9 +126,28 @@ def awaits_maintainer(payload: dict[str, Any]) -> bool:
             association = (entry.get("authorAssociation") or "").upper()
             if login == author:
                 last_author = max(last_author, when)
-            elif association in _MAINTAINER_ASSOCIATIONS:
+            elif is_maintainer(
+                {"association": association, "login": login}, maintainers
+            ):
                 last_maintainer = max(last_maintainer, when)
     return bool(last_maintainer) and last_author > last_maintainer
+
+
+def closes_issue(body: Any, *, repository: str, number: int | None) -> bool:
+    """Whether a pull request body uses a closing keyword on this issue.
+
+    `Fixes #7`, `fixes owner/name#7` and `Closes <issue URL>` all count; a
+    mention without the keyword, or a keyword on another issue, does not.
+    """
+    if not isinstance(body, str) or not body or not isinstance(number, int):
+        return False
+    slug = re.escape(repository)
+    target = (
+        rf"(?:(?:{slug})?#{number}"
+        rf"|https?://github\.com/{slug}/issues/{number})(?![\w/])"
+    )
+    pattern = rf"\b{_CLOSING_KEYWORD}\b:?\s+{target}"
+    return re.search(pattern, body, flags=re.IGNORECASE) is not None
 
 
 def row_state_open(payload: dict[str, Any]) -> bool:
@@ -408,6 +437,9 @@ def resolve_cited_pull_requests(
     executable: str | None = None,
     timeout_seconds: float = 60,
     now: datetime | None = None,
+    repository: str | None = None,
+    issue_number: int | None = None,
+    maintainers: Collection[str] = (),
 ) -> dict[str, Any]:
     """Ask GitHub what each reference the issue names actually is.
 
@@ -423,6 +455,12 @@ def resolve_cited_pull_requests(
     An open attempt that has not moved for `STALE_ATTEMPT_DAYS`, and one closed
     without merging, is recorded under `stale` rather than `open`: it is a
     prior attempt to read, not a claim on the issue.
+
+    `maintainers` is the login set the repository screen recorded for
+    `repository`; it counts only for pull requests in that repository. A
+    closed, dormant attempt a maintainer wrote whose body closes
+    `issue_number` is recorded under `maintainer_owned`: the project's own
+    parked fix. Mailman #203.
     """
     command_executable = executable or resolve_tool(run_directory, "gh")
     record: dict[str, Any] = {
@@ -435,6 +473,7 @@ def resolve_cited_pull_requests(
         "merged": [],
         "stale": [],
         "maintainer_closed": [],
+        "maintainer_owned": [],
         "decided_by": None,
         "commands": [],
         "success": True,
@@ -481,6 +520,9 @@ def resolve_cited_pull_requests(
             continue
         merge_commit = payload.get("mergeCommit")
         writer = payload.get("author")
+        # The recorded maintainer set belongs to the issue's repository.
+        home = bool(repository) and slug.lower() == str(repository).lower()
+        known = maintainers if home else ()
         row = {
             "reference": reference.get("text"),
             "in": reference.get("in"),
@@ -495,9 +537,15 @@ def resolve_cited_pull_requests(
             "is_draft": payload.get("isDraft"),
             "author": writer.get("login") if isinstance(writer, dict) else None,
             "author_association": None,
+            "author_is_maintainer": False,
+            "closes_issue": home
+            and closes_issue(
+                payload.get("body"), repository=slug, number=issue_number
+            ),
             "closed_by": None,
             "maintainer_closed": False,
-            "awaiting_maintainer": row_state_open(payload) and awaits_maintainer(payload),
+            "awaiting_maintainer": row_state_open(payload)
+            and awaits_maintainer(payload, known),
             "merge_commit": (
                 merge_commit.get("oid") if isinstance(merge_commit, dict) else None
             ),
@@ -519,6 +567,11 @@ def resolve_cited_pull_requests(
                 timeout_seconds=timeout_seconds,
                 commands=record["commands"],
             )
+            row["author_is_maintainer"] = is_maintainer(
+                {"association": row["author_association"], "author": row["author"]},
+                known,
+                associations=frozenset({"OWNER", "MEMBER"}),
+            )
             if row["state"] == "CLOSED" and not row["merged_at"]:
                 # Who closed it decides what the closure meant, and the same
                 # rule applies: paid for only where it can change the answer.
@@ -530,11 +583,19 @@ def resolve_cited_pull_requests(
                     author=row["author"],
                     timeout_seconds=timeout_seconds,
                     commands=record["commands"],
+                    maintainers=known,
                 )
                 row["maintainer_closed"] = bool(row["closed_by"]["maintainer"])
         record["resolved"].append(row)
         if row["maintainer_closed"]:
             record["maintainer_closed"].append(stale_attempt_row(row, now=now))
+        elif (
+            row["closes_issue"]
+            and attempt_is_closed_unmerged(row)
+            and attempt_is_dormant(row, now=now)
+            and attempt_is_maintainers(row)
+        ):
+            record["maintainer_owned"].append(stale_attempt_row(row, now=now))
         elif is_stale_attempt(row, now=now):
             record["stale"].append(stale_attempt_row(row, now=now))
         elif row["state"] == "OPEN":
@@ -617,6 +678,7 @@ def closing_actor(
     author: str | None,
     timeout_seconds: float,
     commands: list[dict[str, Any]],
+    maintainers: Collection[str] = (),
 ) -> dict[str, Any]:
     """Who closed this pull request, and whether they speak for the project.
 
@@ -686,10 +748,11 @@ def closing_actor(
     if author and login == author:
         found["detail"] = f"{login} closed their own pull request"
         return found
-    if association in _MAINTAINER_ASSOCIATIONS:
+    if is_maintainer({"association": association, "login": login}, maintainers):
         found["maintainer"] = True
         found["detail"] = (
-            f"{login} ({association.lower()}) closed it, and did not write it"
+            f"{login} ({(association or 'maintainer').lower()}) closed it, "
+            "and did not write it"
         )
         return found
     found["detail"] = (
@@ -704,6 +767,7 @@ def _cited_detail(record: dict[str, Any]) -> str:
     decided = record.get("decided_by")
     stale = record.get("stale") or []
     rejected = record.get("maintainer_closed") or []
+    owned = record.get("maintainer_owned") or []
     if not decided:
         base = (
             f"{len(record.get('references') or [])} reference(s) read from the "
@@ -719,6 +783,15 @@ def _cited_detail(record: dict[str, Any]) -> str:
                 f". {len(rejected)} attempt(s) a maintainer closed: {named}. "
                 "That is a judgement about the change, not a dormant branch to "
                 "supersede"
+            )
+        if owned:
+            named = ", ".join(
+                f"{row.get('repository')}#{row.get('number')} by {row.get('author')}"
+                for row in owned
+            )
+            base += (
+                f". {len(owned)} closed fix(es) a maintainer wrote for this "
+                f"issue: {named}. The project's own fix is parked, not abandoned"
             )
         if not stale:
             return base

@@ -20,7 +20,7 @@ first rather than trust that it is.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -29,6 +29,7 @@ from mailman.claims import (
     invites_pull_request,
     is_maintainer_invitation,
 )
+from mailman.maintainers import is_maintainer
 
 #: A maintainer asked for the pull request: in a comment, in the report when
 #: the reporter is a maintainer, or with a label that says so.
@@ -111,13 +112,18 @@ def is_unacknowledged(
     created_at: Any,
     now: datetime | None = None,
     days: int = ACKNOWLEDGEMENT_GRACE_DAYS,
+    reporter_is_maintainer: bool = False,
 ) -> bool:
     """Say whether an outside report has waited past the grace window unanswered.
 
     An issue whose age cannot be read is not called unacknowledged: the
     warning is a claim about time, and it needs a timestamp to make it.
     """
-    if reporter_association in MAINTAINER_ASSOCIATIONS or maintainer_answered:
+    if (
+        reporter_association in MAINTAINER_ASSOCIATIONS
+        or reporter_is_maintainer
+        or maintainer_answered
+    ):
         return False
     opened = _timestamp(created_at)
     if opened is None:
@@ -154,6 +160,7 @@ def rank_issue(
     maintainer_touched_at: Any = None,
     now: datetime | None = None,
     thread_read: bool = True,
+    maintainers: Collection[str] = (),
 ) -> dict[str, Any]:
     """Rank one issue from its list row, its thread and what cites it.
 
@@ -165,18 +172,19 @@ def rank_issue(
     thread = [comment for comment in comments if isinstance(comment, dict)]
     invited = (
         label_invites(issue.get("labels"))
-        or is_maintainer_invitation(issue)
-        or any(is_maintainer_invitation(comment) for comment in thread)
+        or is_maintainer_invitation(issue, maintainers=maintainers)
+        or any(
+            is_maintainer_invitation(comment, maintainers=maintainers)
+            for comment in thread
+        )
     )
     recent = is_recent(issue.get("created_at"), maintainer_touched_at, now=now)
     unacknowledged = thread_read and is_unacknowledged(
         reporter_association=issue.get("author_association"),
+        reporter_is_maintainer=is_maintainer(issue, maintainers),
         # An invitation, by label or in words, is a maintainer's answer.
         maintainer_answered=invited
-        or any(
-            comment.get("author_association") in MAINTAINER_ASSOCIATIONS
-            for comment in thread
-        ),
+        or any(is_maintainer(comment, maintainers) for comment in thread),
         created_at=issue.get("created_at"),
         now=now,
     )

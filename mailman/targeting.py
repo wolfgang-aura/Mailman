@@ -104,6 +104,13 @@ DUPLICATE_FORBIDDEN_OPEN_ATTEMPT = "duplicate-forbidden-open-attempt"
 #: maintainers rejecting the change. tqdm#1816 and #1818 were closed by their
 #: own authors, which is the shape the stale rule is for.
 MAINTAINER_CLOSED_ATTEMPT = "maintainer-closed-attempt"
+#: A maintainer's own closed, unmerged pull request that says it fixes this
+#: issue. Not a stale attempt to supersede: the project's own fix is parked,
+#: and a second pull request over it races the maintainer. marimo#9862 was
+#: mscolnick's draft ("Fixes #9808"), closed by the stale bot; GitHub called
+#: him CONTRIBUTOR because his membership is private, and the issue passed
+#: with a `stale-prior-attempt` warning. Mailman #203.
+MAINTAINER_OWNED_FIX = "maintainer-owned-fix"
 
 #: How long an open pull request may sit untouched before it stops claiming the
 #: issue. Decided by the operator on 2026-09-17: the last hunt lost 40 of 66
@@ -169,6 +176,9 @@ def claim_is_stale(row: dict[str, Any], *, now: datetime | None = None) -> bool:
     """
     if not isinstance(row, dict) or row.get("association") in _MAINTAINER_ASSOCIATIONS:
         return False
+    # The login is in the repository screen's maintainer set. Mailman #203.
+    if row.get("listed_maintainer") is True:
+        return False
     created = _timestamp(row.get("created_at"))
     if created is None:
         return False
@@ -200,6 +210,11 @@ def attempt_is_open(row: dict[str, Any]) -> bool:
 
 
 def attempt_is_maintainers(row: dict[str, Any]) -> bool:
+    # Set by the stage that fetched the row when the author's login is in the
+    # repository screen's maintainer set: a private membership reads as
+    # CONTRIBUTOR. Mailman #203.
+    if row.get("author_is_maintainer") is True:
+        return True
     association = str(
         _first(row, "author_association", "authorAssociation") or ""
     ).upper()
@@ -259,6 +274,13 @@ def is_stale_attempt(row: dict[str, Any], *, now: datetime | None = None) -> boo
     )
 
 
+def _author_login(row: dict[str, Any]) -> str | None:
+    author = _first(row, "author", "login")
+    if isinstance(author, dict):
+        author = author.get("login")
+    return str(author) if author else None
+
+
 def stale_attempt_row(
     row: dict[str, Any], *, now: datetime | None = None
 ) -> dict[str, Any]:
@@ -274,7 +296,9 @@ def stale_attempt_row(
         "updated_at": last.isoformat() if last else None,
         "days_stale": round(age, 1) if age is not None else None,
         "is_draft": _first(row, "is_draft", "isDraft"),
+        "author": _author_login(row),
         "author_association": _first(row, "author_association", "authorAssociation"),
+        "author_is_maintainer": attempt_is_maintainers(row),
         # Who closed it, when the stage that fetched the row found out. `None`
         # means nobody asked or GitHub did not say, which the reader has to be
         # able to tell from "the author withdrew it".

@@ -365,8 +365,16 @@ class _Gh:
         return result.stdout
 
     def json(self, path: str) -> Any | None:
+        return self._api([path], path)
+
+    def graphql(self, query: str) -> Any | None:
+        """One GraphQL read, on GitHub's GraphQL budget rather than REST core."""
+        return self._api(["graphql", "-f", f"query={query}"], "graphql")
+
+    def _api(self, arguments: list[str], label: str) -> Any | None:
+        command = [self.executable, "api", *arguments]
         result: CommandResult = self.run(
-            [self.executable, "api", path],
+            command,
             working_directory=self.working_directory,
             timeout_seconds=self.timeout_seconds,
         )
@@ -381,7 +389,7 @@ class _Gh:
             # https://github.com/wolfgang-aura/Mailman/issues/117
             self.sleep(SECONDARY_LIMIT_WAIT_SECONDS)
             result = self.run(
-                [self.executable, "api", path],
+                command,
                 working_directory=self.working_directory,
                 timeout_seconds=self.timeout_seconds,
             )
@@ -389,12 +397,12 @@ class _Gh:
         if result.timed_out or result.exit_code != 0:
             if _PRIMARY_LIMIT.search(str(getattr(result, "stderr", "") or "")):
                 self.rate_limited = True
-            self.failures.append(path)
+            self.failures.append(label)
             return None
         try:
             return json.loads(result.stdout)
         except json.JSONDecodeError:
-            self.failures.append(path)
+            self.failures.append(label)
             return None
 
     def pages(self, path: str, *, pages: int) -> list[dict[str, Any]]:

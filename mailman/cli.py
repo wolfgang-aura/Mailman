@@ -60,6 +60,7 @@ from mailman.issue import (
 )
 from mailman.knowledge.collect import collect_retrospective, write_retrospective
 from mailman.knowledge.retrospective import RETROSPECTIVE_SECTIONS
+from mailman.maintainers import load_maintainer_logins
 from mailman.models import RunStatus
 from mailman.orchestrator import (
     DEFAULT_AGENT_TIMEOUT_SECONDS,
@@ -1395,6 +1396,7 @@ def _fetch_issue(arguments: argparse.Namespace) -> int:
             issue_url=run.issue,
             executable=arguments.executable,
             timeout_seconds=arguments.timeout,
+            maintainers=_screened_maintainers(run, run_directory),
         )
     summary = {
         "run_id": run.run_id,
@@ -1748,12 +1750,24 @@ def _screen_summary(record: dict) -> dict:
     }
 
 
+def _screened_maintainers(run: object, run_directory: Path) -> frozenset[str]:
+    """The maintainer logins the repository screen recorded for this run.
+
+    Screens live beside the runs, under the same data root. None recorded
+    means none: every check then reads the association alone. Mailman #203.
+    """
+    return load_maintainer_logins(
+        run_directory.parent, repository_slug(str(getattr(run, "repository", "") or ""))
+    )
+
+
 def _claims(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
     record = read_claims(
         run_directory,
         executable=arguments.executable,
         timeout_seconds=arguments.timeout,
+        maintainers=_screened_maintainers(run, run_directory),
     )
     _emit(render_claims(record))
     print(

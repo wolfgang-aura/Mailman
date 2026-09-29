@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -77,7 +78,12 @@ def _label_names(raw_labels: object) -> list[str]:
 
 
 def render_issue(
-    reference: IssueReference, payload: dict[str, Any], *, source: str, captured_at: str
+    reference: IssueReference,
+    payload: dict[str, Any],
+    *,
+    source: str,
+    captured_at: str,
+    maintainers: Collection[str] = (),
 ) -> str:
     """Render captured issue fields as the private `issue.md` briefing."""
     title = payload.get("title")
@@ -103,7 +109,9 @@ def render_issue(
     lines.extend(["", "## Issue body", ""])
     text = body if isinstance(body, str) and body.strip() else "_The issue has no body._"
     lines.append(redact(text).strip())
-    lines.extend(_maintainer_comment_lines(payload.get("comments")))
+    lines.extend(
+        _maintainer_comment_lines(payload.get("comments"), maintainers=maintainers)
+    )
     lines.extend(
         [
             "",
@@ -118,8 +126,16 @@ def render_issue(
     return "\n".join(lines)
 
 
-def _maintainer_comment_lines(raw_comments: object) -> list[str]:
-    """The latest maintainer comments, oldest first, redacted and trimmed."""
+def _maintainer_comment_lines(
+    raw_comments: object, *, maintainers: Collection[str] = ()
+) -> list[str]:
+    """The latest maintainer comments, oldest first, redacted and trimmed.
+
+    `maintainers` is the repository screen's recorded login set, for the
+    maintainers GitHub reports as CONTRIBUTOR. Compared here rather than
+    through `mailman.maintainers`, which imports this module. Mailman #203.
+    """
+    listed = {str(name).lower() for name in maintainers}
     kept: list[tuple[str, str, str, str]] = []
     for comment in raw_comments if isinstance(raw_comments, list) else []:
         if not isinstance(comment, dict):
@@ -131,7 +147,10 @@ def _maintainer_comment_lines(raw_comments: object) -> list[str]:
         if (
             not isinstance(login, str)
             or login.lower().endswith(("[bot]", "-bot"))
-            or association not in MAINTAINER_ASSOCIATIONS
+            or (
+                association not in MAINTAINER_ASSOCIATIONS
+                and login.lower() not in listed
+            )
             or not isinstance(body, str)
             or not body.strip()
         ):
@@ -163,6 +182,7 @@ def capture_issue_from_github(
     issue_url: str,
     executable: str | None = None,
     timeout_seconds: float = 60,
+    maintainers: Collection[str] = (),
 ) -> dict[str, Any]:
     """Capture one GitHub issue with the `gh` CLI and write `issue.md`."""
     reference = parse_issue_url(issue_url)
@@ -204,7 +224,11 @@ def capture_issue_from_github(
         return record
 
     markdown = render_issue(
-        reference, payload, source="github-cli", captured_at=captured_at
+        reference,
+        payload,
+        source="github-cli",
+        captured_at=captured_at,
+        maintainers=maintainers,
     )
     (run_directory / "issue.md").write_text(markdown, encoding="utf-8")
     record.update(
