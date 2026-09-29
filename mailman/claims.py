@@ -400,7 +400,18 @@ _PULL_REQUEST_URL = re.compile(
     re.IGNORECASE,
 )
 _HASH_REFERENCE = re.compile(
-    r"(?:\b([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+))?#(\d+)\b"
+    r"(?:\b([A-Za-z0-9_.-]+)/)?(?:\b([A-Za-z0-9_.-]+))?#(\d+)\b"
+)
+
+#: Words written straight before `#N` that name the kind of thing, not a
+#: repository: `PR#12`, `issue#13`. Any other bare name, `docling-core#466`,
+#: is a sibling repository under the same owner. Mailman #235.
+_NOT_A_REPOSITORY = frozenset(
+    {
+        "pr", "prs", "pull", "issue", "issues", "bug", "gh",
+        "fix", "fixes", "fixed", "close", "closes", "closed",
+        "resolve", "resolves", "resolved", "see",
+    }
 )
 
 #: How many references one thread may hand to the resolver. Each one is a `gh`
@@ -442,7 +453,12 @@ def pull_request_references(
         for pattern in (_PULL_REQUEST_URL, _HASH_REFERENCE):
             for match in pattern.finditer(flat):
                 owner, name, digits = match.groups()
-                slug = f"{owner}/{name}" if owner and name else repository
+                if owner and name:
+                    slug = f"{owner}/{name}"
+                elif name and name.lower() not in _NOT_A_REPOSITORY:
+                    slug = f"{repository.partition('/')[0]}/{name}"
+                else:
+                    slug = repository
                 number = int(digits)
                 key = (slug.lower(), number)
                 if key in seen or key in skip or number <= 0:

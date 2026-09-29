@@ -1049,6 +1049,27 @@ class PullRequestReferenceTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]["number"], 22722)
 
+    def test_a_sibling_repository_shorthand_keeps_its_repository(self) -> None:
+        # docling#2623: "docling-core#466 has been open since January" named
+        # the open fix, and the screen resolved docling#466 instead. Mailman #235.
+        found = pull_request_references(
+            [
+                "docling-core#466 has been open since January.",
+                "Tried PR#12, issue#13 and docling#14.",
+            ],
+            repository="docling-project/docling",
+        )
+
+        self.assertEqual(
+            [(row["repository"], row["number"]) for row in found],
+            [
+                ("docling-project/docling-core", 466),
+                ("docling-project/docling", 12),
+                ("docling-project/docling", 13),
+                ("docling-project/docling", 14),
+            ],
+        )
+
     def test_the_count_is_capped_because_each_reference_is_a_gh_call(self) -> None:
         body = " ".join(f"#{index}" for index in range(100, 130))
         self.assertEqual(len(pull_request_references([body], repository="a/b")), 10)
