@@ -999,6 +999,9 @@ _NOT_REPRODUCED = re.compile(
     r"\b(?:"
     r"(?:can(?:no|')?t|cannot|could(?:n't| not)|unable to|not able to|failed to)"
     r" (?:reproduce|repro|replicate)\b"
+    # jedi#2077: "I have tried to reproduce this, but couldn't." Mailman #210.
+    r"|tried (?:to )?(?:reproduc|repro|replicat)\w*(?:[^.!?\n]|(?<=\d)\.(?=\d)){0,60}?\bbut"
+    r" (?:couldn't|could not|can't|cannot|wasn't able|was not able|was unable|failed)\b"
     r"|works (?:fine )?for me\b"
     r"|no repro\b"
     r")",

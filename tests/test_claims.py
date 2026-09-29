@@ -1104,6 +1104,24 @@ class MaintainerDisputeTests(unittest.TestCase):
         )
         self.assertEqual(quote, "I could not reproduce this on main.")
 
+    def test_tried_to_reproduce_but_could_not_is_a_dispute(self):
+        # jedi#2077's owner split the verb, and prescreen read it as triage.
+        # Mailman #210.
+        from mailman.claims import maintainer_dispute
+
+        for body in (
+            "I have tried to reproduce this, but couldn't. Would have to look deeper inside.",
+            "Tried to replicate it on 3.12 but wasn't able to.",
+            "I tried reproducing with your script but failed.",
+        ):
+            with self.subTest(body=body):
+                self.assertIsNotNone(maintainer_dispute([self._comment(body)]))
+        self.assertIsNone(
+            maintainer_dispute(
+                [self._comment("I tried to reproduce this but it only fails on Windows, confirmed.")]
+            )
+        )
+
     def test_a_later_confirmation_ends_the_dispute(self):
         from mailman.claims import maintainer_dispute
 
