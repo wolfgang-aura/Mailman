@@ -901,6 +901,10 @@ def prescreen_issue(
         issue_number=number,
         symbols=typed,
         issue_symbols=from_body,
+        # The title query above ANDs every word of the title. The compact
+        # one keeps its few distinctive terms, which is what found open
+        # rival marimo#10915 after the title query missed it. #201.
+        title=str(captured.get("title") or ""),
         executable=executable,
         timeout_seconds=timeout_seconds,
     )
@@ -908,6 +912,7 @@ def prescreen_issue(
         "success": search["success"],
         "complete": search["complete"],
         "matches": search.get("match_count", 0),
+        "compact_terms": search.get("compact_terms", []),
         "failed_methods": search.get("failed_methods", []),
     }
     related = related_duplicates(search.get("matches"), issue_number=number)

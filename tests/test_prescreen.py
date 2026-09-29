@@ -195,6 +195,38 @@ if ARGUMENTS[:1] == ["api"]:
     if "/pulls/" in path:
         emit("pr-association-" + path.rsplit("/", 1)[-1] + ".json")
     emit("issue-api.json")
+if (HERE / "corpus-pr.json").is_file():
+    # A repository with real open pull requests, searched the way GitHub does:
+    # every query word must appear, so a long title finds nothing.
+    import json
+
+    corpus = json.loads((HERE / "corpus-pr.json").read_text(encoding="utf-8"))
+    if ARGUMENTS[:2] == ["pr", "list"] or ARGUMENTS[:2] == ["search", "prs"]:
+        if ARGUMENTS[0] == "search":
+            words = []
+            for argument in ARGUMENTS[2:]:
+                if argument.startswith("--"):
+                    break
+                words.append(argument)
+        elif "--search" in ARGUMENTS:
+            words = ARGUMENTS[ARGUMENTS.index("--search") + 1].split()
+        else:
+            limit = int(ARGUMENTS[ARGUMENTS.index("--limit") + 1])
+            sys.stdout.write(json.dumps(corpus[:limit]))
+            raise SystemExit(0)
+        found = [
+            entry
+            for entry in corpus
+            if all(
+                word.lower()
+                in (entry["title"] + " " + entry.get("body", "")).lower()
+                for word in words
+            )
+        ]
+        sys.stdout.write(json.dumps(found))
+        raise SystemExit(0)
+    sys.stdout.write("[]")
+    raise SystemExit(0)
 emit("payload.json")
 '''
 
@@ -216,6 +248,7 @@ class PrescreenTests(unittest.TestCase):
         timelines: dict[int, list[dict]] | None = None,
         pull_requests: dict[str, dict] | None = None,
         issue_api: dict | None = None,
+        open_pull_requests: list[dict] | None = None,
     ) -> str:
         """A `gh` that answers from fixture files, one per question asked.
 
@@ -258,6 +291,10 @@ class PrescreenTests(unittest.TestCase):
         }
         # One timeline per pull request, because who closed an attempt is read
         # from the attempt's own timeline and not from the issue's.
+        # With open pull requests, searches and listings answer from them as
+        # GitHub would, instead of every search returning `payload`.
+        if open_pull_requests is not None:
+            fixtures["corpus-pr.json"] = json.dumps(open_pull_requests)
         for number, events in (timelines or {}).items():
             fixtures[f"timeline-{number}.json"] = json.dumps(events)
         for reference, pull in (pull_requests or {}).items():
@@ -832,6 +869,118 @@ class PrescreenTests(unittest.TestCase):
         record, refusal = check(self.root, "example/project#7")
         self.assertIsNone(refusal)
         self.assertEqual(record["verdict"], "pass")
+
+
+class CompactQueryTests(unittest.TestCase):
+    """A long title ANDs every word, so the rival that matters goes unseen.
+
+    marimo#9974 passed pre-screen while open pull request #10915 fixed it: the
+    full-title search found nothing, and the listing matched 7 of its 11 words.
+    https://github.com/wolfgang-aura/Mailman/issues/201
+    """
+
+    # Borrowed rather than inherited, so PrescreenTests' own tests run once.
+    setUp = PrescreenTests.setUp
+    stub = PrescreenTests.stub
+
+    TITLE = (
+        "`mo.state` setter doesn't update the getters if the notebook is "
+        "embedded and the setter is called from an anywidget"
+    )
+    RIVAL = {
+        "number": 10915,
+        "title": "fix: mark owner cells stale when state setter crosses embedded app",
+        "state": "open",
+        "url": "https://github.com/marimo-team/marimo/pull/10915",
+        "createdAt": "2026-09-20T00:00:00Z",
+        "body": (
+            "When a `mo.state` setter runs inside an embedded notebook, the "
+            "getter cells in the owner app were never marked stale."
+        ),
+        "headRefName": "fix-embedded-state",
+        "author": {"login": "rival"},
+    }
+
+    def issue(self) -> dict:
+        return {
+            "number": 9974,
+            "title": self.TITLE,
+            "body": "Calling the setter from an anywidget leaves getters stale.",
+            "state": "OPEN",
+            "url": "https://github.com/marimo-team/marimo/issues/9974",
+            "author": {"login": "reporter"},
+            "labels": [],
+            "createdAt": "2026-09-01T00:00:00Z",
+            "updatedAt": "2026-09-01T00:00:00Z",
+        }
+
+    @staticmethod
+    def unrelated(count: int, start: int = 11000) -> list[dict]:
+        """Open pull requests that use the title's common words, not its rare ones."""
+        return [
+            {
+                "number": start + index,
+                "title": f"Improve embedded notebook anywidget layout {index}",
+                "state": "open",
+                "url": f"https://github.com/marimo-team/marimo/pull/{start + index}",
+                "createdAt": "2026-09-10T00:00:00Z",
+                "body": "The notebook renders the anywidget in an embedded frame.",
+                "headRefName": f"layout-{index}",
+                "author": {"login": "someone"},
+            }
+            for index in range(count)
+        ]
+
+    def test_a_rival_matching_only_the_rare_title_words_rejects(self) -> None:
+        corpus = [*self.unrelated(12), self.RIVAL]
+        record = prescreen_issue(
+            self.root,
+            "marimo-team/marimo#9974",
+            executable=self.stub(
+                "[]", self.issue(), open_pull_requests=corpus
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertIn(OPEN_PULL_REQUEST, record["blocking"])
+        self.assertEqual(record["open_attempts"], [10915])
+        self.assertEqual(
+            record["duplicate_search"]["compact_terms"],
+            ["mo.state", "setter", "getter"],
+        )
+
+    def test_a_rival_past_the_listing_limit_costs_one_search(self) -> None:
+        corpus = [*self.unrelated(100), self.RIVAL]
+        record = prescreen_issue(
+            self.root,
+            "marimo-team/marimo#9974",
+            executable=self.stub(
+                "[]", self.issue(), open_pull_requests=corpus
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["open_attempts"], [10915])
+        directory = prescreen_directory(self.root, "marimo-team/marimo", 9974)
+        search = json.loads(
+            (directory / "duplicate-search.json").read_text(encoding="utf-8")
+        )
+        compact = [
+            command for command in search["commands"] if command["method"] == "compact"
+        ]
+        self.assertEqual(len(compact), 1)
+
+    def test_common_title_words_alone_do_not_block(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "marimo-team/marimo#9974",
+            executable=self.stub(
+                "[]", self.issue(), open_pull_requests=self.unrelated(12)
+            ),
+        )
+
+        self.assertEqual(record["open_attempts"], [])
+        self.assertNotIn(OPEN_PULL_REQUEST, record["blocking"])
 
 
 class CitedPullRequestTests(PrescreenTests):

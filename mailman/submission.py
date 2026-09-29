@@ -1112,6 +1112,12 @@ def duplicate_is_related(row: dict[str, Any]) -> bool:
         reason.startswith("#") for reason in reasons
     ):
         return True
+    if row.get("compact_match"):
+        # Every distinctive title term was read in this row's own text, and
+        # one of them in its title. That is the listing's full-match standard
+        # on a query short enough for a rival to meet. The title-length query
+        # scored marimo#10915 as a 7-of-11 partial. #201.
+        return True
     # An older record has no `methods`, and its `matched_by` held the method
     # name for index hits. Read both so a run recorded before #31 still judges.
     methods = [str(method) for method in row.get("methods") or []] or reasons
@@ -1341,6 +1347,135 @@ def _query_terms(query: str) -> list[str]:
     ]
 
 
+# Words a bug title carries whatever the bug is. A compact query built from
+# them matches every other report in the repository.
+_COMPACT_STOPWORDS = frozenset(
+    """
+    about above after again against also always another any are aren been
+    before being below between both but called calls cannot case cases cause
+    causes caused could does doesn didn doing done during each either else even
+    ever every fail fails failed failing failure first from further get gets had
+    has hasn have having here how incorrect incorrectly instead into isn its
+    itself just like make makes many might more most much must need needs never
+    not now once only other ought our over own properly same should shouldn
+    since some still such than that the their them then there these they this
+    those through too trying under unexpected unexpectedly until use used uses
+    using very was wasn way were weren what when where whether which while who
+    whom why will with within without won work works working would wrong your
+    add adds added allow allows bug bugs error errors exception fix fixes fixed
+    issue issues missing new option options raise raises raised result results
+    return returns returned support supports supported update updates updated
+    value values behavior behaviour handle handles handled correctly broken
+    """.split()
+)
+#: How many terms a compact query keeps. GitHub ANDs them, so every extra one
+#: is another word a rival pull request has to happen to use.
+COMPACT_TERM_LIMIT = 3
+#: A term is distinctive when at most this share of the listed open items
+#: contains it, and never fewer than `COMPACT_TERM_FLOOR` of them, because the
+#: rival itself is one. On 293 stored prescreens a 10% share added four
+#: blocks, three of them real rivals, and found 4 of 9 known rivals; 20% found
+#: one more rival and added one more unrelated block.
+COMPACT_TERM_SHARE = 0.1
+COMPACT_TERM_FLOOR = 2
+
+
+def _compact_stem(word: str) -> str:
+    """Drop a plural `s`, so `getters` in a title matches `getter` in a body."""
+    if len(word) > 4 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def compact_terms(
+    title: str,
+    corpus: Sequence[object],
+    *,
+    repository: str = "",
+) -> list[str]:
+    """The two or three title terms a rival pull request would also use.
+
+    The duplicate search sends the whole title, and GitHub ANDs every word.
+    marimo#9974's eleven-word title found nothing, while the three words
+    `setter getter mo.state` all appear in open rival #10915. This keeps the title's
+    code spans and content words, drops the ones common in the repository's
+    own open items (`corpus`, the listing the search already read), and keeps
+    the rarest few. Fewer than two distinctive terms is no query at all: one
+    word decides nothing, and a common one blocks at random.
+    """
+    candidates: list[str] = []
+    for span in re.findall(r"`([^`\n]+)`", title or ""):
+        span = span.strip().strip("/").removesuffix("()")
+        if re.fullmatch(r"[A-Za-z_][\w.]*", span) and len(span) >= 3:
+            candidates.append(span.lower())
+        else:
+            candidates.extend(
+                word.lower() for word in re.findall(r"[A-Za-z_]\w{3,}", span)
+            )
+    prose = re.sub(r"`[^`\n]+`", " ", title or "")
+    for word in re.findall(r"[A-Za-z][A-Za-z0-9_']*", prose):
+        word = word.lower().split("'")[0]
+        if len(word) >= _MINIMUM_TERM_LENGTH and word not in _COMPACT_STOPWORDS:
+            candidates.append(_compact_stem(word))
+    # The project's own name is in half its pull requests.
+    project = set(re.findall(r"[a-z0-9]+", repository.lower()))
+    candidates = [
+        term
+        for term in dict.fromkeys(candidates)
+        if term not in project and term not in _COMPACT_STOPWORDS
+    ]
+    texts = [
+        f"{entry.get('title') or ''} {entry.get('body') or ''}".lower()
+        for entry in corpus
+        if isinstance(entry, dict)
+    ]
+    if not candidates or not texts:
+        return []
+    limit = max(COMPACT_TERM_FLOOR, COMPACT_TERM_SHARE * len(texts))
+    frequency = {term: sum(term in text for text in texts) for term in candidates}
+    distinctive = sorted(
+        (term for term in candidates if frequency[term] <= limit),
+        key=lambda term: (frequency[term], candidates.index(term)),
+    )[:COMPACT_TERM_LIMIT]
+    return distinctive if len(distinctive) >= 2 else []
+
+
+def _compact_matches(
+    payload: object, terms: Sequence[str], *, pull_request: bool
+) -> list[dict[str, Any]]:
+    """Rows whose own text carries every compact term, one of them in the title.
+
+    GitHub's index also matches comments Mailman never reads, so an index hit
+    alone is not the evidence. The title anchor is what kept the stored
+    prescreens from blocking on long template bodies: without it a 10% share
+    added eleven blocks, most of them a dependency bump's changelog.
+    """
+    if not terms or not isinstance(payload, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        title = str(entry.get("title") or "").lower()
+        text = " ".join(
+            str(entry.get(field) or "") for field in ("title", "body", "headRefName")
+        ).lower()
+        matched = [term for term in terms if term in text]
+        if len(matched) < len(terms) or not any(term in title for term in terms):
+            continue
+        for row in _match_rows(
+            [entry],
+            pull_request=pull_request,
+            method="compact",
+            reasons=["compact"],
+            matched_terms=matched,
+            term_count=len(terms),
+        ):
+            row["compact_match"] = True
+            rows.append(row)
+    return rows
+
+
 def _references_issue(text: str, issue_number: int | None) -> bool:
     """Does this text cite the issue, as a reference and not as a bare number?
 
@@ -1418,6 +1553,133 @@ def _local_matches(
     return rows
 
 
+def _add_match(
+    record: dict[str, Any], row: dict[str, Any], *, issue_number: int | None
+) -> None:
+    """Record one matched row, or fold it into the row already found."""
+    if (
+        issue_number is not None
+        and not row["pull_request"]
+        and row["number"] == issue_number
+    ):
+        # An index search returns the run's own issue. Issue #31.
+        return
+    existing = next(
+        (
+            candidate
+            for candidate in record["matches"]
+            if candidate["number"] == row["number"]
+            and candidate["pull_request"] == row["pull_request"]
+        ),
+        None,
+    )
+    if existing is None:
+        record["matches"].append(row)
+        return
+    # The same row found twice is stronger, not redundant. Keep
+    # every method and reason so the strength reads correctly.
+    for field in ("methods", "matched_by", "matched_terms"):
+        merged = list(existing.get(field) or [])
+        merged.extend(
+            item for item in row.get(field) or [] if item not in merged
+        )
+        existing[field] = merged
+    # Only `gh search` returns an author association, and only the
+    # pull request methods return `isDraft`, so the row that got
+    # here first may be missing what the staleness rule needs.
+    for field_name in ("updated_at", "is_draft", "author_association"):
+        if existing.get(field_name) is None:
+            existing[field_name] = row.get(field_name)
+    existing["term_count"] = max(
+        existing.get("term_count") or 0, row.get("term_count") or 0
+    )
+    existing["references_issue"] = bool(
+        existing.get("references_issue") or row.get("references_issue")
+    )
+    existing["compact_match"] = bool(
+        existing.get("compact_match") or row.get("compact_match")
+    )
+
+
+def _compact_search(
+    record: dict[str, Any],
+    run_directory: Path,
+    *,
+    title: str,
+    listed: dict[str, list[Any]],
+    slug: str,
+    executable: str,
+    issue_number: int | None,
+    timeout_seconds: float,
+    limit: int,
+    listing_limit: int,
+) -> None:
+    """Search open pull requests with the title's few distinctive terms.
+
+    The listing has already been read, so the terms are judged against it and
+    matched in it for free. The one index call is only spent when the listing
+    stopped at its limit and an open rival could sit past it. See
+    https://github.com/wolfgang-aura/Mailman/issues/201.
+    """
+    corpus = [
+        *listed.get("pr", []),
+        *[
+            entry
+            for entry in listed.get("issue", [])
+            if not (isinstance(entry, dict) and entry.get("number") == issue_number)
+        ],
+    ]
+    terms = compact_terms(title, corpus, repository=slug)
+    record["compact_terms"] = terms
+    if not terms:
+        return
+    rows = _compact_matches(listed.get("pr"), terms, pull_request=True)
+    if len(listed.get("pr") or []) >= listing_limit:
+        command = [
+            executable,
+            "search",
+            "prs",
+            *terms,
+            "--repo",
+            slug,
+            "--state",
+            "open",
+            "--limit",
+            str(limit),
+            "--json",
+            _INDEX_FIELDS["pr"] + ",body",
+        ]
+        result: CommandResult = execute(
+            command, working_directory=run_directory, timeout_seconds=timeout_seconds
+        )
+        record["commands"].append({"method": "compact", **result.to_dict()})
+        payload: object = None
+        if not result.timed_out and result.exit_code == 0:
+            try:
+                payload = json.loads(result.stdout or "[]")
+            except json.JSONDecodeError:
+                payload = None
+        if payload is None:
+            # The listing already decided whether the search is complete; a
+            # failed extra query is recorded, not a reason to distrust it.
+            record["failed_methods"].append(
+                {
+                    "kind": "pr",
+                    "method": "compact",
+                    "detail": "timed out"
+                    if result.timed_out
+                    else next(
+                        iter((result.stderr or "").strip().splitlines()),
+                        "unreadable output",
+                    ),
+                }
+            )
+        else:
+            rows.extend(_compact_matches(payload, terms, pull_request=True))
+    for row in rows:
+        _add_match(record, row, issue_number=issue_number)
+
+
 def record_duplicate_search(
     run_directory: Path,
     *,
@@ -1430,6 +1692,7 @@ def record_duplicate_search(
     listing_limit: int = 100,
     symbols: Sequence[str] = (),
     issue_symbols: Sequence[str] = (),
+    title: str | None = None,
 ) -> dict[str, Any]:
     """Search a target's pull requests and issues, and record what came back.
 
@@ -1456,11 +1719,13 @@ def record_duplicate_search(
         "symbols": list(symbols),
         "issue_symbols": list(issue_symbols),
         "decided_by": None,
+        "compact_terms": [],
         "matches": [],
         "methods": {},
         "failed_methods": [],
         "commands": [],
     }
+    listed: dict[str, list[Any]] = {}
     for kind in ("pr", "issue"):
         # Two searches disagree in useful ways. The global index finds a pull
         # request whose body says "Fixes #14324"; the repo-scoped list works on
@@ -1594,6 +1859,7 @@ def record_duplicate_search(
                 )
                 continue
             if method == "listing":
+                listed[kind] = payload if isinstance(payload, list) else []
                 rows = _local_matches(
                     payload,
                     pull_request=kind == "pr",
@@ -1642,45 +1908,7 @@ def record_duplicate_search(
                     payload, pull_request=kind == "pr", method=method
                 )
             for row in rows:
-                if (
-                    issue_number is not None
-                    and not row["pull_request"]
-                    and row["number"] == issue_number
-                ):
-                    # An index search returns the run's own issue. Issue #31.
-                    continue
-                existing = next(
-                    (
-                        candidate
-                        for candidate in record["matches"]
-                        if candidate["number"] == row["number"]
-                        and candidate["pull_request"] == row["pull_request"]
-                    ),
-                    None,
-                )
-                if existing is None:
-                    record["matches"].append(row)
-                    continue
-                # The same row found twice is stronger, not redundant. Keep
-                # every method and reason so the strength reads correctly.
-                for field in ("methods", "matched_by", "matched_terms"):
-                    merged = list(existing.get(field) or [])
-                    merged.extend(
-                        item for item in row.get(field) or [] if item not in merged
-                    )
-                    existing[field] = merged
-                # Only `gh search` returns an author association, and only the
-                # pull request methods return `isDraft`, so the row that got
-                # here first may be missing what the staleness rule needs.
-                for field_name in ("updated_at", "is_draft", "author_association"):
-                    if existing.get(field_name) is None:
-                        existing[field_name] = row.get(field_name)
-                existing["term_count"] = max(
-                    existing.get("term_count") or 0, row.get("term_count") or 0
-                )
-                existing["references_issue"] = bool(
-                    existing.get("references_issue") or row.get("references_issue")
-                )
+                _add_match(record, row, issue_number=issue_number)
             succeeded.append(method)
             if method == "narrow" and kind == "pr":
                 definite = [
@@ -1709,6 +1937,20 @@ def record_duplicate_search(
             record["match_count"] = len(record["matches"])
             _write_json(run_directory / DUPLICATE_SEARCH_FILENAME, record)
             return record
+
+    if title:
+        _compact_search(
+            record,
+            run_directory,
+            title=title,
+            listed=listed,
+            slug=slug,
+            executable=command_executable,
+            issue_number=issue_number,
+            timeout_seconds=timeout_seconds,
+            limit=limit,
+            listing_limit=listing_limit,
+        )
 
     record["success"] = True
     # The unfiltered listing reads every open pull request and issue and matches

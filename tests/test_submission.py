@@ -11,10 +11,12 @@ from tempfile import TemporaryDirectory
 from mailman.models import AgentConfig, RunRecord, RunStatus
 from mailman.submission import (
     TargetPolicy,
+    _compact_matches,
     _local_matches,
     _match_rows,
     _query_terms,
     analyze_diff,
+    compact_terms,
     duplicate_is_related,
     duplicate_strength,
     partition_duplicates,
@@ -393,6 +395,52 @@ def passing_touched_tests(diff: str, **overrides: object) -> dict[str, object]:
     }
     record.update(overrides)
     return record
+
+
+class CompactTermTests(unittest.TestCase):
+    """The few title words a rival pull request would share (#201)."""
+
+    TITLE = (
+        "`mo.state` setter doesn't update the getters if the notebook is "
+        "embedded and the setter is called from an anywidget"
+    )
+
+    @staticmethod
+    def corpus(text: str, count: int) -> list[dict[str, str]]:
+        return [{"title": f"{text} {index}", "body": text} for index in range(count)]
+
+    def test_keeps_the_code_span_and_the_rare_words(self) -> None:
+        corpus = self.corpus("embedded notebook anywidget", 20)
+        self.assertEqual(
+            compact_terms(self.TITLE, corpus, repository="marimo-team/marimo"),
+            ["mo.state", "setter", "getter"],
+        )
+
+    def test_fewer_than_two_distinctive_words_is_no_query(self) -> None:
+        corpus = self.corpus("setter getter mo.state notebook embedded", 20)
+        self.assertEqual(compact_terms(self.TITLE, corpus), [])
+        self.assertEqual(compact_terms("Crash on `x`", []), [])
+
+    def test_the_project_name_is_never_a_term(self) -> None:
+        terms = compact_terms(
+            "marimo kernel restarts drop widgets",
+            self.corpus("unrelated", 20),
+            repository="marimo-team/marimo",
+        )
+        self.assertNotIn("marimo", terms)
+
+    def test_a_match_needs_every_term_and_one_in_the_title(self) -> None:
+        terms = ["mo.state", "setter", "getter"]
+        anchored = {
+            "number": 1,
+            "title": "Fix setter across apps",
+            "body": "mo.state getter",
+        }
+        body_only = {"number": 2, "title": "Bump deps", "body": "mo.state setter getter"}
+        partial = {"number": 3, "title": "setter tweak", "body": "mo.state"}
+        rows = _compact_matches([anchored, body_only, partial], terms, pull_request=True)
+        self.assertEqual([row["number"] for row in rows], [1])
+        self.assertTrue(duplicate_is_related(rows[0]))
 
 
 class PrepareSubmissionTests(unittest.TestCase):
