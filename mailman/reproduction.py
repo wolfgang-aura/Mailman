@@ -206,6 +206,11 @@ def record_command_reproduction(
     return record
 
 
+def _is_binary(path: Path) -> bool:
+    with path.open("rb") as handle:
+        return b"\x00" in handle.read(8192)
+
+
 def _snapshot_command_artifacts(
     run_directory: Path, command: list[str], working_directory: Path
 ) -> list[dict[str, Any]]:
@@ -236,14 +241,17 @@ def _snapshot_command_artifacts(
             continue
         if source.is_relative_to(workspace):
             relative = source.relative_to(workspace)
-        elif source.is_relative_to(run_root) and not source.is_relative_to(
-            run_root / REPRODUCTION_ARTIFACT_DIRECTORY
+        elif (
+            source.is_relative_to(run_root)
+            and not source.is_relative_to(run_root / REPRODUCTION_ARTIFACT_DIRECTORY)
+            # The run's installed interpreter is a tool, not a reproducer. #208.
+            and not source.is_relative_to(run_root / "environment")
         ):
             relative = source.relative_to(run_root)
         else:
             continue
         size = source.stat().st_size
-        if size > REPRODUCTION_ARTIFACT_MAX_BYTES:
+        if size > REPRODUCTION_ARTIFACT_MAX_BYTES or _is_binary(source):
             continue
         seen.add(source)
         snapshot = run_directory / REPRODUCTION_ARTIFACT_DIRECTORY / relative

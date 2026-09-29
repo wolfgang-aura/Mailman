@@ -174,6 +174,47 @@ class RecordTests(unittest.TestCase):
             snapshot = root / record["artifacts"][0]["snapshot"]
             self.assertIn("default is None", snapshot.read_text(encoding="utf-8"))
 
+    def test_the_runs_interpreter_and_binaries_are_not_reproducer_sources(self) -> None:
+        # py-shiny#2497: `--pythonpath RUN/environment/Scripts/python.exe`
+        # was snapshotted and the executable pasted into the prompt. #208.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            interpreter = root / "environment" / "Scripts" / "python.exe"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_bytes(b"MZ\x90\x00\x03\x00\x00\x00")
+            blob = root / "scratch" / "data.bin"
+            blob.parent.mkdir(parents=True)
+            blob.write_bytes(b"\x00\x01binary")
+            source = root / "scratch" / "repro.py"
+            source.write_text("from shiny.types import Jsonifiable\n", encoding="utf-8")
+            result = _result(exit_code=1, stdout="error")
+            result = CommandResult(
+                **{
+                    **result.__dict__,
+                    "command": [
+                        "pyright.exe",
+                        "--pythonpath",
+                        str(interpreter),
+                        str(blob),
+                        str(source),
+                    ],
+                    "working_directory": str(workspace),
+                }
+            )
+
+            record = record_command_reproduction(
+                root,
+                result=result,
+                expectation=Expectation(exit_code=1),
+                working_directory=workspace,
+                command_record=1,
+            )
+
+            sources = [artifact["source"] for artifact in record["artifacts"]]
+            self.assertEqual(sources, ["scratch/repro.py"])
+
     def test_a_command_record_keeps_the_checks_it_ran(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
