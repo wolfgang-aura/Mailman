@@ -910,6 +910,24 @@ _NOT_REPRODUCED = re.compile(
     re.IGNORECASE,
 )
 
+#: A project voice asking for a retry or more detail has not triaged the
+#: report yet. kombu#2291's only maintainer word was "can you please try
+#: latest release ... and report back?", unanswered for 518 days, and it
+#: ranked engaged. Mailman #190.
+_NEEDS_INFO = re.compile(
+    r"\b(?:"
+    r"(?:try|test|check|retry)(?: it| this| again)?(?: (?:with|on|using|against))?"
+    r" (?:the )?(?:latest|newest|most recent|current)"
+    r" (?:release|version|main|master|dev|develop)"
+    r"|report back\b"
+    r"|(?:please |can you |could you )(?:upgrade|update)\b"
+    r"|(?:can|could) you (?:please )?(?:provide|share|post|give us|add)"
+    r" (?:a |an |some )?(?:minimal|reproduc|repro|example|traceback|more)"
+    r"|need(?:s)? (?:a |some )?more (?:info|information|details|context)"
+    r")",
+    re.IGNORECASE,
+)
+
 #: A project voice confirming the report: the answer that ends a dispute.
 _CONFIRMED = re.compile(
     r"\b(?:"
@@ -942,7 +960,7 @@ def maintainer_dispute(thread: Iterable[dict[str, Any]]) -> str | None:
         text = _matchable(_flat(_unquoted(comment.get("body"))))
         found = [
             (match.start(), True, match)
-            for pattern in (_NOT_REPRODUCED, _DECLINED, _DESIGN_OPEN)
+            for pattern in (_NOT_REPRODUCED, _DECLINED, _DESIGN_OPEN, _NEEDS_INFO)
             for match in pattern.finditer(text)
         ] + [
             (match.start(), False, match)

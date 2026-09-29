@@ -1005,6 +1005,29 @@ class MaintainerDisputeTests(unittest.TestCase):
             maintainer_dispute([self._comment("Works for me", association="NONE")])
         )
 
+    def test_a_request_to_retry_on_the_latest_release_is_not_triage(self):
+        # kombu#2291, unanswered for 518 days, ranked engaged. Mailman #190.
+        from mailman.claims import maintainer_dispute
+
+        self.assertIsNotNone(
+            maintainer_dispute([self._comment(
+                "can you please try latest release of kombu with the latest "
+                "release of celery and report back?"
+            )])
+        )
+        self.assertIsNotNone(
+            maintainer_dispute([self._comment(
+                "Could you provide a minimal reproducer?"
+            )])
+        )
+        self.assertIsNone(
+            maintainer_dispute([
+                self._comment("Could you provide a minimal reproducer?"),
+                self._comment("here it is", association="NONE"),
+                self._comment("Thanks, confirmed on main."),
+            ])
+        )
+
     def test_works_as_designed_is_a_dispute(self):
         from mailman.claims import maintainer_dispute
 
