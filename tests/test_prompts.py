@@ -184,6 +184,39 @@ class TaskPromptTests(unittest.TestCase):
                 self.assertIn("python repro.py", prompt)
                 self.assertIn("Do not spend time", prompt)
 
+    def test_the_reproducer_is_refused_as_the_verification_command(self) -> None:
+        # #182: the reproducer fails at base, so orchestrate's baseline
+        # verification stopped the run before the primary started.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, run_directory = make_run(Path(temporary_directory) / "runs")
+            (run_directory / "issue.md").write_text("# example/project#7: Crash\n", encoding="utf-8")
+            python = run_directory / "environment" / "Scripts" / "python.exe"
+            python.parent.mkdir(parents=True)
+            python.write_bytes(b"")
+            script = str(run_directory / "repro.py")
+            (run_directory / "reproduction.json").write_text(
+                json.dumps(
+                    {
+                        "success": True,
+                        "reproduced": True,
+                        "command": [str(python.resolve()).replace("\\", "/"), script],
+                        "exit_code": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "passes at the base"):
+                write_task_prompts(
+                    run, run_directory, verification_command=[str(python), script]
+                )
+            self.assertFalse((run_directory / "prompts.json").exists())
+
+            write_task_prompts(
+                run, run_directory, verification_command=[str(python), "-m", "pytest"]
+            )
+            self.assertTrue((run_directory / "prompts.json").exists())
+
     def test_builds_a_work_order_from_existing_paths_in_issue_and_reproducer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             run, run_directory = make_run(Path(temporary_directory) / "runs")

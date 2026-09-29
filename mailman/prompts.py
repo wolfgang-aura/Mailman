@@ -546,6 +546,38 @@ def resolve_verification_program(
     )
 
 
+def _same_command(left: Sequence[str], right: Sequence[str]) -> bool:
+    def normal(parts: Sequence[str]) -> list[str]:
+        return [str(part).replace("\\", "/").casefold() for part in parts]
+
+    return normal(left) == normal(right)
+
+
+def refuse_reproducer_as_verification(
+    run_directory: Path, verification_command: Sequence[str] | None
+) -> None:
+    """Refuse the reproducer as the verification command.
+
+    The reproducer fails at the base commit by construction, and orchestrate
+    runs verification there first, so the run stopped before any agent
+    started (pyinstaller/pyinstaller#9121, #182).
+    """
+    path = run_directory / "reproduction.json"
+    if not verification_command or not path.is_file():
+        return
+    record = json.loads(path.read_text(encoding="utf-8"))
+    command = record.get("command")
+    if record.get("reproduced") and isinstance(command, list) and _same_command(
+        command, verification_command
+    ):
+        raise ValueError(
+            "the verification command is the reproducer, which fails at the "
+            "base commit, and orchestrate runs verification there before the "
+            "primary starts. Name a test command that passes at the base "
+            "commit, such as the test module the fix will touch."
+        )
+
+
 def write_task_prompts(
     run: RunRecord,
     run_directory: Path,
@@ -557,6 +589,7 @@ def write_task_prompts(
     verification_command = resolve_verification_program(
         run_directory, verification_command
     )
+    refuse_reproducer_as_verification(run_directory, verification_command)
     issue_path = run_directory / "issue.md"
     if not issue_path.is_file():
         raise ValueError(
