@@ -134,6 +134,11 @@ _DESIGN_OPEN = re.compile(
     # A project voice declining for now and polling for demand. plotly/dash#3968.
     r"|inclined (?:not )?to (?:leave|keep) (?:it|this|that|them|the [\w ]{1,30}?) as[- ]is"
     r"|see if any\s?one else (?:would like|wants|needs)"
+    # robotframework#5783 "deciding how/where to register ... Alternatives:
+    # 1." and #5747 "do you have opinions on this?". Mailman #205.
+    r"|(?:is|are|be|means?) deciding (?:how|where|whether|what|which)"
+    r"|alternatives?:\s*(?:1[.)]|-|\*|a[.)])"
+    r"|(?:do|does) (?:you|any\s?one) have (?:any )?(?:opinions?|thoughts|views)"
     # A maintainer floating a new knob has not accepted any fix yet.
     r"|(?:(?:we|you) (?:could|can|might|may) (?:just |also )?"
     r"(?:add|introduce|expose|provide)"
@@ -194,6 +199,8 @@ _DECLINED = re.compile(
     # GenBank file format". Mailman #195.
     r"|(?:a |an )?limitation of the (?:\S+ ){0,3}(?:file )?format"
     r"|too many false positives"
+    # pipenv#6715: "I am still not convinced its is a good idea". Mailman #205.
+    r"|(?:i(?:'m| am)|we(?:'re| are)) (?:still |just |really )?not (?:yet )?convinced"
     r")",
     re.IGNORECASE,
 )

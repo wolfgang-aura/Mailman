@@ -347,12 +347,30 @@ class DesignUndecidedTests(unittest.TestCase):
             # for now and polling for demand. Prescreen passed it.
             "I'm inclined to leave the types as is, but I'll leave this open "
             "for now to see if anyone else would like to see a change.",
+            # robotframework#5783 and #5747, 2026-09-29: prescreen passed both
+            # while the maintainer was still weighing designs. Mailman #205.
+            "The first step with getting this done is deciding how/where to "
+            "register custom converters. Alternatives: 1. If we add support "
+            "for global converters, they should work also with user keywords.",
+            "Ping @aaltat, do you have opinions on this? UI side of the feature "
+            "should be pretty easy.",
         ):
             with self.subTest(body=body):
                 self.assertEqual(
                     len(design_open_questions([_comment(body, association="MEMBER")])),
                     1,
                 )
+
+    def test_a_maintainer_not_convinced_declines(self) -> None:
+        # pypa/pipenv#6715, 2026-09-02, verbatim. Prescreen passed it.
+        # Mailman #205.
+        body = (
+            "I can understand your request, but I am still not convinced its "
+            "is a good idea.  Will leave open for now though."
+        )
+        self.assertEqual(
+            len(maintainer_declines([_comment(body, association="MEMBER")])), 1
+        )
 
     def test_an_alternative_in_a_comment_ending_pr_welcome_does_not_block(self) -> None:
         thread = [
