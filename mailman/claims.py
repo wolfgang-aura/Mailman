@@ -187,6 +187,10 @@ _DECLINED = re.compile(
     # huggingface_hub#2742
     r"|not something (?:we|i) (?:want|plan|intend) to\b"
     r"|we (?:don't|do not) want to (?:raise|add|implement|support|change|expose)\b"
+    # biopython#5101: "too many false positives ... a limitation of the
+    # GenBank file format". Mailman #195.
+    r"|(?:a |an )?limitation of the (?:\S+ ){0,3}(?:file )?format"
+    r"|too many false positives"
     r")",
     re.IGNORECASE,
 )
@@ -939,6 +943,8 @@ _NEEDS_INFO = re.compile(
     r" (?:the |a |an |some |your |us )?[\"'“]?(?:full |complete |debug )?"
     r"(?:logs?|crash|stack ?trace|output|details)"
     r"|(?:can|could) you (?:please )?try\b"
+    # s3fs#999 "Could you please show the contents of fs.dircache". #195.
+    r"|(?:can|could) you (?:please )?show (?:us |me )?(?:the |what|how|your)"
     r"|have you tried\b"
     r")",
     re.IGNORECASE,

@@ -1024,6 +1024,20 @@ class MaintainerDisputeTests(unittest.TestCase):
             "a bit of work, but that's where we manage translations."
         )]))
 
+    def test_a_format_limitation_and_a_request_to_show_state_are_disputes(self):
+        # biopython#5101 and s3fs#999, verbatim. Mailman #195.
+        from mailman.claims import maintainer_dispute
+
+        for body in (
+            "I think your 'better solution' will have too many false positives "
+            "(words wrongly stuck together).\n\nI do agree that this is a "
+            "limitation of the GenBank file format.",
+            "Could you please show the contents of fs.dircache after each call? "
+            "That must be where things are changing.",
+        ):
+            with self.subTest(body=body[:30]):
+                self.assertIsNotNone(maintainer_dispute([self._comment(body)]))
+
     def test_a_request_to_retry_on_the_latest_release_is_not_triage(self):
         # kombu#2291, unanswered for 518 days, ranked engaged. Mailman #190.
         from mailman.claims import maintainer_dispute
