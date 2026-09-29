@@ -264,6 +264,37 @@ class NarrowFirstDuplicateSearchTests(unittest.TestCase):
             "a bare number in the body is not a citation",
         )
 
+    def test_a_run_search_reads_the_title_from_the_captured_issue(self):
+        """The run stage and the hunt refresh pass no title, so they skipped
+        the compact query that caught marimo#10915. Mailman #201."""
+        (self.directory / "issue.json").write_text(json.dumps({
+            "title": "`mo.state` setter doesn't update the getters if the "
+                     "notebook is embedded and the setter is called from an anywidget",
+        }), encoding="utf-8")
+        rival = {"number": 10915, "state": "OPEN", "createdAt": "2026-09-20",
+                 "url": "https://example.invalid/10915",
+                 "title": "fix: mark owner cells stale when state setter crosses embedded app",
+                 "body": "When a `mo.state` setter runs inside an embedded notebook, "
+                         "the getter cells were never marked stale.",
+                 "headRefName": "fix-embedded-state"}
+        others = [{"number": 11000 + index, "state": "OPEN", "createdAt": "2026-09-10",
+                   "url": f"https://example.invalid/{11000 + index}",
+                   "title": f"Improve embedded notebook anywidget layout {index}",
+                   "body": "The notebook renders the anywidget in an embedded frame.",
+                   "headRefName": f"layout-{index}"} for index in range(30)]
+        self._patch(lambda command: [rival, *others]
+                    if "pr" in command and "--search" not in command else [])
+        from mailman.submission import record_duplicate_search
+
+        record = record_duplicate_search(
+            self.directory, repository="https://github.com/marimo-team/marimo.git",
+            query="mo.state setter getters embedded anywidget",
+            issue_number=9974, executable="gh",
+        )
+        self.assertTrue(record["compact_terms"])
+        rival_row = next(row for row in record["matches"] if row["number"] == 10915)
+        self.assertTrue(rival_row.get("compact_match"))
+
     def test_a_search_with_nothing_narrow_to_go_on_is_unchanged(self):
         self._patch(lambda command: [])
         from mailman.submission import record_duplicate_search

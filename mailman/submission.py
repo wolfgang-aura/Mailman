@@ -1703,6 +1703,11 @@ def record_duplicate_search(
     """
     if not query.strip():
         raise ValueError("a duplicate search needs a query")
+    if title is None:
+        # The run stage and the hunt's pre-filing refresh pass no title; the
+        # captured issue has it. Without it they skip the compact query. #201.
+        captured = load_issue_record(run_directory) or {}
+        title = str(captured.get("title") or "")
     slug = repository.removesuffix(".git").rstrip("/")
     for prefix in ("https://github.com/", "git@github.com:", "ssh://git@github.com/"):
         slug = slug.removeprefix(prefix)
