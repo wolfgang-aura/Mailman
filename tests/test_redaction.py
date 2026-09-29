@@ -26,6 +26,32 @@ class RedactionTests(unittest.TestCase):
         self.assertIn("[REDACTED", result)
 
 
+    def test_redacting_a_json_document_leaves_it_parseable(self) -> None:
+        # A bazarr pull request body ended in "api_key=", and the value class
+        # ran through the closing quote, so gh api output stopped parsing and
+        # freshness read zero merges (#242).
+        import json
+
+        document = json.dumps(
+            [
+                {"body": "missing api_key=", "user": {"login": "a"}},
+                {"body": 'set secret: "hunter2" here', "n": 1},
+                {"body": "Authorization: Bearer abc.def", "n": 2},
+                {"body": "access_token=xyz\tail", "n": 3},
+            ]
+        )
+        result = redact(document)
+
+        parsed = json.loads(result)
+        self.assertEqual(parsed[0]["user"], {"login": "a"})
+        self.assertNotIn("hunter2", result)
+        self.assertNotIn("abc.def", result)
+        self.assertNotIn("xyz", result)
+
+    def test_a_quoted_value_is_still_redacted(self) -> None:
+        self.assertNotIn("hunter2", redact('api_key="hunter2"'))
+        self.assertNotIn("hunter2", redact("secret='hunter2'"))
+
 class DiffScopeTests(unittest.TestCase):
     diff = "\n".join(
         [

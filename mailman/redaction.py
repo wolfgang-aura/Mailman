@@ -9,11 +9,17 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"), "[REDACTED_API_KEY]"),
     (re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"), "[REDACTED_ANTHROPIC_KEY]"),
     (
-        re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+"),
+        re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s\"'\\]+"),
         r"\1[REDACTED_BEARER_TOKEN]",
     ),
     (
-        re.compile(r"(?i)((?:api[_-]?key|access[_-]?token|secret)\s*[=:]\s*)[^\s,;]+"),
+        # The value stops at a quote or backslash. Running through them ate the
+        # closing quote of a JSON string in gh api output, which then failed
+        # to parse and read as an empty page (#242).
+        re.compile(
+            r"(?i)((?:api[_-]?key|access[_-]?token|secret)\s*[=:]\s*(?:\\?[\"'])?)"
+            r"[^\s,;\"'\\]+"
+        ),
         r"\1[REDACTED_SECRET]",
     ),
 )

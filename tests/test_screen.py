@@ -605,6 +605,26 @@ class ScreenTests(unittest.TestCase):
         )
         self.assertIn("excluded staff ales-erjavec, janezd", freshness["detail"])
 
+    def test_an_unreadable_closed_pull_list_is_not_reported_as_no_merges(self) -> None:
+        # morpheus65535/bazarr on 2026-09-30: the page failed to parse and the
+        # gate said "latest is none found" about a repository that merged a
+        # dozen fork pull requests that week. #242.
+        class Unparseable(FakeGitHub):
+            def __call__(self, arguments, **keywords):
+                if "state=closed" in arguments[-1]:
+                    self.asked.append(arguments[-1])
+                    return _Result('[{"body": "api_key=[REDACTED],"user"')
+                return super().__call__(arguments, **keywords)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), Unparseable())
+        freshness = _named(record, "freshness")
+
+        self.assertFalse(freshness["passed"])
+        self.assertTrue(freshness["data"]["closed_pulls_unread"])
+        self.assertIn("could not be read", freshness["detail"])
+        self.assertNotIn("none found", freshness["detail"])
+
     def test_a_branch_pushed_to_the_repository_itself_is_not_outside(self) -> None:
         # streamlit/streamlit: sfc-gh-* staff push their branches to
         # streamlit/streamlit, which needs write access. A stranger's branch

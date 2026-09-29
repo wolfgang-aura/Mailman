@@ -837,8 +837,13 @@ def _freshness_gate(
     gh: _Gh, slug: str, window_days: int, maintainers: Collection[str] = ()
 ) -> dict[str, Any]:
     """Gate 1. Does outside work actually merge here, and by more than one person?"""
-    closed = gh.pages(
-        f"repos/{slug}/pulls?state=closed&sort=updated&direction=desc", pages=6
+    path = f"repos/{slug}/pulls?state=closed&sort=updated&direction=desc"
+    failed_before = len(gh.failures)
+    closed = gh.pages(path, pages=6)
+    # A page that failed to arrive or parse reads as an empty list, which the
+    # gate below would report as "no merges". Say it was not read (#242).
+    unread = any(
+        label.startswith(path) for label in gh.failures[failed_before:]
     )
     now = datetime.now(UTC)
     window = (now - timedelta(days=window_days)).date().isoformat()
@@ -903,7 +908,19 @@ def _freshness_gate(
         "pull_requests_scanned": len(closed),
         "window_days": window_days,
         "pattern_days": PATTERN_DAYS,
+        "closed_pulls_unread": unread,
     }
+    if unread and not recent:
+        return _gate(
+            "freshness",
+            passed=False,
+            blocking=True,
+            detail=(
+                f"closed pull requests could not be read after {len(closed)} "
+                "row(s); freshness is unknown, not failed"
+            ),
+            data=data,
+        )
     if not recent:
         return _gate(
             "freshness",
