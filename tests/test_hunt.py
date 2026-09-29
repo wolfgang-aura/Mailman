@@ -409,6 +409,28 @@ class HuntTests(OrchestratorHarness):
         self.assertEqual(result["stage"], "handoff")
         self.assertFalse(result["human_required"])
 
+    def own_words_run(self, codes):
+        """A ready run whose submission is held only by the named codes."""
+        directory = self.ready_run()
+        path = directory / "submission" / "submission.json"
+        submission = json.loads(path.read_text(encoding="utf-8"))
+        submission.update(ready=False, blocking_codes=codes)
+        path.write_text(json.dumps(submission), encoding="utf-8")
+        return directory
+
+    def test_a_run_held_only_for_the_own_words_rewrite_is_ready_for_the_human(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/181"""
+        result = next_action(self.own_words_run(["policy-requires-own-words"]))
+        self.assertTrue(result["ready"], result)
+        self.assertEqual(result["stage"], "filing-approval")
+        self.assertTrue(result["human_required"])
+        self.assertIn("own words", result["action"])
+
+    def test_another_blocking_code_beside_own_words_still_blocks(self):
+        result = next_action(self.own_words_run(["policy-requires-own-words", "lint-failed"]))
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["stage"], "submission")
+
     def test_acknowledged_closed_attempts_remain_ready_after_orchestration(self):
         directory = self.ready_run()
         (directory / "prior-art.json").write_text(

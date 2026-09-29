@@ -694,6 +694,12 @@ def require_lease(record: dict, owner: str | None) -> None:
 #: A candidate that is complete except for a maintainer's answer. It is listed
 #: and packaged with its offer comment, and it never counts as a pull request.
 READY_TO_ASK = "READY_TO_ASK"
+OWN_WORDS = "policy-requires-own-words"
+OWN_WORDS_ACTION = (
+    "Include in the final approval packet. Before filing, rewrite the pull "
+    "request body in your own words, set own_words_confirmed in the target "
+    "policy and rerun prepare-submission."
+)
 
 
 def ask_ready(run, directory: Path, decision, action, warnings: list) -> dict:
@@ -835,7 +841,13 @@ def next_action(directory: Path) -> dict:
             or exported["candidate_digest"] != candidate_digest(Path(exported["workspace"]), run.base_commit)):
         return action("export", f"mailman export-patch {run.run_id}")
     submission = read_object(directory / "submission" / "submission.json")
-    if (not submission.get("ready")
+    # A project that wants the description in the contributor's own words
+    # leaves one step only the human can do, and that step happens at filing
+    # approval, which is already theirs. Everything else about the candidate
+    # is checked; it counts as ready and names the rewrite.
+    # https://github.com/wolfgang-aura/Mailman/issues/181
+    own_words = submission.get("blocking_codes") == [OWN_WORDS]
+    if ((not submission.get("ready") and not own_words)
             or submission.get("diff_sha256") != hashlib.sha256(exported_diff.read_text(encoding="utf-8").encode("utf-8")).hexdigest()):
         return action("submission", f"mailman prepare-submission {run.run_id} --policy POLICY.json",
                       "; ".join(submission.get("blocking_codes", [])))
@@ -847,7 +859,7 @@ def next_action(directory: Path) -> dict:
         return ask_ready(run, directory, decision, action, warnings)
     if decision.recommendation != "SEND":
         return action("decision", "Resolve the HOLD or replace the candidate.", disposition="REPLACE" if decision.recommendation == "DROP" else "REPAIR")
-    if decision.blocking_questions:
+    if decision.blocking_questions and not own_words:
         return action("decision", "Resolve coordinator work; record a genuine user dependency with hunt escalate.")
     try:
         finalize_review(directory)
@@ -866,6 +878,8 @@ def next_action(directory: Path) -> dict:
     ready = {"run_id": run.run_id, "ready": True, "stage": "filing-approval",
              "disposition": "READY", "human_required": False,
              "action": "Include in the final approval packet."}
+    if own_words:
+        ready.update(human_required=True, action=OWN_WORDS_ACTION)
     if warnings:
         ready["warnings"] = list(warnings)
     return ready
