@@ -1258,6 +1258,36 @@ class ScreenTests(unittest.TestCase):
                 )
                 self.assertIn("policy", record["failed_gates"])
 
+    def test_a_pause_on_outside_pull_requests_fails_the_gate(self) -> None:
+        # streamlit/streamlit CONTRIBUTING.md, verbatim first sentence. The gate
+        # passed it and a run reached review before anyone read it. Mailman #238.
+        for sentence in (
+            "We have paused accepting pull requests from outside the Streamlit "
+            "maintainer team.",
+            "We are no longer accepting external contributions.",
+            "We have temporarily stopped accepting community pull requests.",
+        ):
+            with self.subTest(sentence=sentence), tempfile.TemporaryDirectory() as temporary:
+                record = _screen(
+                    Path(temporary),
+                    FakeGitHub(policies={"CONTRIBUTING.md": "> " + sentence + "\n"}),
+                )
+                self.assertIn("policy", record["failed_gates"])
+
+    def test_a_pause_on_one_kind_of_change_does_not_fail_the_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "CONTRIBUTING.md": (
+                            "We are not accepting new translations at the moment.\n"
+                        )
+                    }
+                ),
+            )
+        self.assertNotIn("policy", record["failed_gates"])
+
     def test_a_disclosure_rule_that_names_ai_first_is_read(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(

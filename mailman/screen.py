@@ -319,6 +319,13 @@ _POLICY_BANS = re.compile(
     r"(?:generative\s+ai|ai|llms?|large\s+language\s+models?)"
     r"|(?:does|do)\s+not\s+allow\s+the\s+inclusion\s+of\s+(?:the\s+)?"
     r"outputs?\s+(?:of|from)\s+(?:any\s+)?(?:generative\s+ai|ai|llms?)"
+    # streamlit CONTRIBUTING.md: "We have paused accepting pull requests from
+    # outside the Streamlit maintainer team." Not an AI rule, but it refuses
+    # every pull request this project could open. Mailman #238.
+    r"|(?:paused|stopped|suspended|no\s+longer)\s+accepting\s+"
+    r"(?:(?:external|outside|community|third[- ]party)\s+)?"
+    r"(?:pull\s+requests?|prs?|code\s+contributions?|contributions?)"
+    r"(?:\s+from\s+outside\b)?"
     r")",
     re.IGNORECASE,
 )
