@@ -521,8 +521,12 @@ def row_engagement(row: dict) -> str:
         return DISPUTED
     filed, replied = row.get("maintainer_filed"), row.get("maintainer_replied")
     # A label from somebody with triage access is triage too (#139).
-    if filed or replied or row.get("maintainer_labelled"):
+    if filed or row.get("maintainer_labelled"):
         return ENGAGED
+    if replied:
+        # A screen from before #150 never asked whether the reply disputes
+        # the bug, and jedi#2077's "couldn't reproduce" ranked engaged. #192.
+        return ENGAGED if "maintainer_disputed" in row else ENGAGEMENT_UNKNOWN
     if filed is False and replied is False:
         return NOT_ENGAGED
     return ENGAGEMENT_UNKNOWN

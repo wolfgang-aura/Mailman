@@ -1025,7 +1025,8 @@ class PrescreenRecordTests(OrchestratorHarness):
         self._screen("acme/old", [1], days_old=1)
         self._screen("acme/new", [2, 3, 4, 5], flags={
             2: {"maintainer_filed": False, "maintainer_replied": False},
-            3: {"maintainer_filed": False, "maintainer_replied": True},
+            3: {"maintainer_filed": False, "maintainer_replied": True,
+                "maintainer_disputed": None},
             4: {"maintainer_filed": True, "maintainer_replied": None},
             5: {"maintainer_filed": False, "maintainer_replied": None},
         })
@@ -1126,6 +1127,22 @@ class PrescreenRecordTests(OrchestratorHarness):
             [("acme/disputes#10", "not-engaged"), ("acme/disputes#9", "disputed")],
         )
         self.assertEqual(engaged, [])
+
+    def test_a_reply_from_a_screen_without_the_dispute_flag_is_unknown(self):
+        # jedi#2077's owner "couldn't reproduce", and a screen from before
+        # #150 offered it as engaged. Mailman #192.
+        self._screen("acme/prior", [11, 12], flags={
+            11: {"maintainer_filed": False, "maintainer_replied": True},
+            12: {"maintainer_filed": False, "maintainer_replied": True,
+                 "maintainer_disputed": None},
+        })
+
+        rows = workable_targets(self.data_root, held_repositories=set())
+
+        self.assertEqual(
+            [(row["target"], row["engagement"]) for row in rows],
+            [("acme/prior#12", "engaged"), ("acme/prior#11", "unknown")],
+        )
 
     def test_stale_screen_warning_counts_rows_and_names_the_refresh(self):
         self._engagement_screens()
