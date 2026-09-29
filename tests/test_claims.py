@@ -90,6 +90,25 @@ def _cross_reference(url: str) -> dict:
 
 
 class ClassifyCommentTests(unittest.TestCase):
+    def test_pasted_tool_output_in_a_code_block_hands_nothing_over(self) -> None:
+        # posit-dev/py-shiny#2497: pyright's "cannot be assigned to parameter"
+        # in a fenced block read as "assigned to". Mailman #207.
+        body = (
+            "Returning a dict from a renderer fails to type-check.\n\n"
+            "```\n"
+            'error: Argument of type "() -> dict[str, int]" cannot be assigned '
+            'to parameter "_fn"\n'
+            "```\n\n"
+            "pyright 1.1.x, shiny from `main`."
+        )
+        self.assertIsNone(classify_comment(_comment(body, association="COLLABORATOR")))
+
+    def test_a_handover_outside_a_code_block_still_counts(self) -> None:
+        body = "```\nprint('x')\n```\n\nGo ahead, it's all yours."
+        self.assertEqual(
+            classify_comment(_comment(body, association="MEMBER")), "assignment"
+        )
+
     def test_the_openai_agents_comment_reads_as_a_claim(self) -> None:
         self.assertEqual(
             classify_comment(_comment("I'd like to work on this issue.")), "claim"

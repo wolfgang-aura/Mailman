@@ -362,6 +362,9 @@ def _unquoted(text: str | None) -> str:
     )
 
 
+_CODE_FENCE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[^\n]*$", re.MULTILINE | re.DOTALL)
+
+
 def _matchable(text: str) -> str:
     return text.translate(_APOSTROPHES)
 
@@ -529,7 +532,10 @@ def classify_comment(comment: dict[str, Any]) -> str | None:
     """
     if not isinstance(comment, dict) or _is_bot(comment.get("user")):
         return None
-    body = _matchable(_flat(_unquoted(comment.get("body"))))
+    # Fenced code is pasted output, not prose: pyright's "cannot be assigned
+    # to parameter" read as a handover on py-shiny#2497. Mailman #207.
+    prose = _CODE_FENCE.sub(" ", _unquoted(comment.get("body")))
+    body = _matchable(_flat(prose))
     if not body:
         return None
     maintainer = comment.get("author_association") in MAINTAINER_ASSOCIATIONS
