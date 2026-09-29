@@ -38,6 +38,40 @@ DEFAULT_REVIEWER_COMMAND_BUDGET = None
 DEFAULT_MAX_CHANGED_FILES = 8
 DEFAULT_MAX_CHANGED_LINES = 500
 
+_TEST_DIRECTORIES = {"tests", "test", "testing"}
+_DOC_DIRECTORIES = {"docs", "doc", "changelog", "changelog.d", "changes", "news", "newsfragments"}
+_DOC_SUFFIXES = {".md", ".rst", ".txt", ".adoc"}
+
+
+def count_candidate_files(paths: list[str]) -> dict[str, int]:
+    """Split changed paths into source, tests and docs.
+
+    Only source files measure how large a fix is. A target that asks for a
+    test and a docs entry with every change would otherwise push a
+    three-file fix past the file limit. Mailman #233.
+    """
+    counts = {"source": 0, "tests": 0, "docs": 0}
+    for path in paths:
+        parts = path.replace("\\", "/").split("/")
+        name = parts[-1]
+        stem, dot, suffix = name.rpartition(".")
+        if (
+            any(part in _TEST_DIRECTORIES for part in parts[:-1])
+            or name.startswith("test_")
+            or name == "conftest.py"
+            or (dot and stem.endswith("_test"))
+        ):
+            counts["tests"] += 1
+        elif (
+            any(part.lower() in _DOC_DIRECTORIES for part in parts[:-1])
+            or (dot and "." + suffix.lower() in _DOC_SUFFIXES)
+        ):
+            counts["docs"] += 1
+        else:
+            counts["source"] += 1
+    return counts
+
+
 ORCHESTRATION_RECORD = "orchestration.json"
 ORCHESTRATION_INDEX = "orchestration-index.json"
 
@@ -799,7 +833,7 @@ class _Orchestration:
         )
         return changed
 
-    def _candidate_size(self) -> tuple[int, int]:
+    def _candidate_size(self) -> tuple[dict[str, int], int]:
         numstat = git_bytes(
             self.workspace, "diff", "--numstat", self.run.base_commit, "--"
         ).decode("utf-8", errors="replace")
@@ -824,19 +858,28 @@ class _Orchestration:
                 changed_lines += len((self.workspace / path).read_bytes().splitlines())
             except OSError:
                 changed_lines += self.max_changed_lines + 1
-        return len(paths), changed_lines
+        return count_candidate_files(sorted(paths)), changed_lines
 
     def _check_candidate_scope(self, stage: str) -> bool:
-        files, lines = self._candidate_size()
+        counts, lines = self._candidate_size()
+        files = counts["source"]
         ok = files <= self.max_changed_files and lines <= self.max_changed_lines
         self._step(
             f"candidate-scope:{stage}",
             ok=ok,
             detail=(
-                f"{files} changed file(s), {lines} changed line(s); limits are "
-                f"{self.max_changed_files} files and {self.max_changed_lines} lines"
+                f"{files} changed source file(s) (plus {counts['tests']} test, "
+                f"{counts['docs']} docs), {lines} changed line(s); limits are "
+                f"{self.max_changed_files} source files and "
+                f"{self.max_changed_lines} lines"
             ),
-            data={"changed_files": files, "changed_lines": lines},
+            data={
+                "changed_files": sum(counts.values()),
+                "changed_source_files": files,
+                "changed_test_files": counts["tests"],
+                "changed_doc_files": counts["docs"],
+                "changed_lines": lines,
+            },
         )
         if not ok:
             self._block(
