@@ -159,6 +159,10 @@ class ClassifyCommentTests(unittest.TestCase):
             # robotframework#5774's report, verbatim. Mailman #198.
             "I'm happy to implement this via a pull request, but wanted to "
             "check if this fits within the project's scope before writing the code.",
+            # biopython#4878's reporter, verbatim. Mailman #211.
+            "Thanks for the quick reply, yes I can try implementing a solution.",
+            "Ok, I'll try and implement (1).",
+            "I will try to fix this over the weekend.",
         ):
             with self.subTest(body=body):
                 self.assertEqual(classify_comment(_comment(body)), "claim")

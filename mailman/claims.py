@@ -331,6 +331,10 @@ _CLAIM = re.compile(
     # whichever option you recommend". Mailman #204.
     r"|before i (?:start|begin|get started|dive in)\b"
     r"|i(?:'ll|ll| will) (?:follow|go with|implement) (?:whichever|whatever)"
+    # biopython#4878's reporter: "yes I can try implementing a solution" and
+    # "Ok, I'll try and implement (1)." Mailman #211.
+    r"|\bi(?:'ll|ll| will| can| could)? try (?:and |to )?"
+    r"(?:implement|fix|work on|submit|open|make|tackle|put together|write)"
     r")",
     re.IGNORECASE,
 )
