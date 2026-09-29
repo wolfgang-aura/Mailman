@@ -353,6 +353,19 @@ class LocalMatchTests(unittest.TestCase):
         cited = dict(row, references_issue=True)
         self.assertEqual(duplicate_strength(cited), "strong")
 
+    def test_a_full_listing_match_with_no_term_in_the_title_is_weak(self) -> None:
+        # pydata/xarray#11633 moved the backend tests and blocked #10639. #219.
+        row = dict(
+            _weak_match(11633),
+            title="Split backend tests into xarray/tests/backends",
+            methods=["listing"],
+            matched_by=["zarr", "append", "time", "encoding"],
+            matched_terms=["zarr", "append", "time", "encoding"],
+            term_count=4,
+        )
+        self.assertEqual(duplicate_strength(row), "weak")
+        self.assertEqual(duplicate_strength(dict(row, title="Zarr append fix")), "strong")
+
     def test_partition_splits_index_hits_from_listing_noise(self) -> None:
         index_hit = dict(_weak_match(1), methods=["search"])
         strong, weak = partition_duplicates([index_hit, _weak_match(2)])

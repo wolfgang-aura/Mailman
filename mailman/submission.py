@@ -1137,7 +1137,13 @@ def duplicate_is_related(row: dict[str, Any]) -> bool:
         # for "arrayview dataframe" and blocked #2348 with no override. #196.
         partial = "listing" in methods and term_count and len(matched) < term_count
         return not partial
-    return bool(term_count and len(matched) >= term_count)
+    if not (term_count and len(matched) >= term_count):
+        return False
+    # The compact rule's anchor (#201): a full match needs one term in the
+    # title. xarray#11633 moved the backend tests, carried every term of a
+    # four-word query in its body and blocked #10639 with no override. #219.
+    title = str(row.get("title") or "").lower()
+    return not title or any(str(term).lower() in title for term in matched)
 
 
 def related_duplicates(
