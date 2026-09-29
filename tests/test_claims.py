@@ -61,10 +61,12 @@ class _FakeGh:
         issue: dict,
         comments: list[dict],
         timeline: list[dict] | None = None,
+        elsewhere: dict[str, list[dict]] | None = None,
     ) -> None:
         self.issue = issue
         self.comments = comments
         self.timeline = timeline or []
+        self.elsewhere = elsewhere or {}
         self.asked: list[str] = []
 
     def __call__(self, arguments, **keywords):
@@ -72,8 +74,10 @@ class _FakeGh:
         # never the last one.
         path = arguments[2]
         self.asked.append(path)
-        if "/comments" in path:
-            payload: object = self.comments
+        if path in self.elsewhere:
+            payload: object = self.elsewhere[path]
+        elif "/comments" in path:
+            payload = self.comments
         elif "/timeline" in path:
             payload = self.timeline
         else:
@@ -1006,4 +1010,63 @@ class MaintainerDisputeTests(unittest.TestCase):
 
         self.assertIsNotNone(
             maintainer_dispute([self._comment("This works as designed.")])
+        )
+
+
+class RemarksElsewhereTests(unittest.TestCase):
+    """Mailman #187: pyinstaller#9224 held the maintainers' view of #9121."""
+
+    def test_a_maintainer_remark_in_a_cross_referencing_issue_is_read(self) -> None:
+        def row(body, association, login):
+            return {
+                "body": body,
+                "author_association": association,
+                "user": {"login": login, "type": "User"},
+                "created_at": "2025-08-30T10:40:44Z",
+                "html_url": "https://github.com/pyinstaller/pyinstaller/issues/9224#c1",
+            }
+
+        timeline = [
+            {"event": "cross-referenced", "source": {"issue": {
+                "html_url": "https://github.com/pyinstaller/pyinstaller/issues/9224"}}},
+            {"event": "cross-referenced", "source": {"issue": {
+                "html_url": "https://github.com/other/project/issues/5"}}},
+            {"event": "cross-referenced", "source": {"issue": {
+                "html_url": "https://github.com/pyinstaller/pyinstaller/pull/9300",
+                "pull_request": {}}}},
+        ]
+        elsewhere = {
+            "repos/pyinstaller/pyinstaller/issues/9224/comments": [
+                row("But perhaps we should always use `--best` in our [fixed set "
+                    "of `upx` parameters](https://github.com/pyinstaller/"
+                    "pyinstaller/blob/4f2790a717b9cfe93af58a93c87f9ccb7c5534d1/"
+                    "PyInstaller/building/utils.py#L281-L292) - this way we "
+                    "could probably also side-step "
+                    "https://github.com/pyinstaller/pyinstaller/issues/9121 "
+                    "(without having explicit fallbacks).",
+                    "MEMBER", "rokm"),
+                row("Same with #9121 here.", "NONE", "someone"),
+                row("Unrelated to that issue.", "MEMBER", "bwoodsend"),
+            ]
+        }
+        gh = _FakeGh({}, [], timeline=timeline, elsewhere=elsewhere)
+
+        def api(path, **query):
+            return json.loads(gh(["gh", "api", path]).stdout)
+
+        from mailman.claims import remarks_elsewhere
+
+        found = remarks_elsewhere(
+            timeline, api, repository="pyinstaller/pyinstaller", number=9121
+        )
+
+        self.assertEqual([row["author"] for row in found], ["rokm"])
+        self.assertIn("without having explicit fallbacks", found[0]["quote"])
+        self.assertIn("always use `--best`", found[0]["quote"])
+        self.assertNotIn("utils.py", found[0]["quote"])
+        self.assertEqual(
+            found[0]["source"], "https://github.com/pyinstaller/pyinstaller/issues/9224"
+        )
+        self.assertEqual(
+            gh.asked, ["repos/pyinstaller/pyinstaller/issues/9224/comments"]
         )

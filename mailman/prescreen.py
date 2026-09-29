@@ -51,6 +51,7 @@ from mailman.targeting import (
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     ISSUE_ASSIGNED,
     MAINTAINER_CLOSED_ATTEMPT,
+    MAINTAINER_REMARK_ELSEWHERE,
     MERGED_BEFORE_ISSUE_DAYS,
     NO_DUPLICATE_SEARCH,
     NO_MAINTAINER_REPLY,
@@ -642,7 +643,10 @@ def prescreen_issue(
         "declined": claims.get("declined", []),
         "maintainer_replied": claims.get("maintainer_replied"),
         "maintainer_touched_at": claims.get("maintainer_touched_at"),
+        "remarks_elsewhere": claims.get("remarks_elsewhere", []),
     }
+    if claims.get("remarks_elsewhere"):
+        warnings.append(MAINTAINER_REMARK_ELSEWHERE)
     # The shortlist row already says whether a maintainer filed or answered
     # the issue. A True there is triage evidence even when this read of the
     # thread misses it; its absence changes nothing. Mailman #135.

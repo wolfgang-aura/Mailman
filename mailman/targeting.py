@@ -58,6 +58,11 @@ CITED_MERGED_IN_BODY = "cited-merged-in-body"
 #: at the base commit decides. holoviz/panel#8335 was refused as already
 #: fixed on "Possibly related to #1543", merged four years earlier. Mailman #147.
 CITED_MERGED_BEFORE_ISSUE = "cited-merged-before-issue"
+#: A maintainer wrote about this issue in another issue that cross-references
+#: it. Not a veto, but the fix shape they named there outranks the agent's:
+#: pyinstaller#9224 preferred `--best` over the fallback the #9121 run built.
+#: Mailman #187.
+MAINTAINER_REMARK_ELSEWHERE = "maintainer-remark-elsewhere"
 #: How long before the issue a merge must be to count as shipped. A fix merged
 #: a month before the report may be unreleased (PrefectHQ/prefect#22956).
 MERGED_BEFORE_ISSUE_DAYS = 90

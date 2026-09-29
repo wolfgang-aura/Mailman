@@ -49,6 +49,7 @@ from mailman.shortlist import (
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
     CITED_MERGED_BEFORE_ISSUE,
+    MAINTAINER_REMARK_ELSEWHERE,
     CITED_MERGED_IN_BODY,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     MAINTAINER_CLOSED_ATTEMPT,
@@ -1036,6 +1037,51 @@ class CitedPullRequestTests(PrescreenTests):
         self.assertNotIn(ALREADY_FIXED_UPSTREAM, record["blocking"])
         self.assertIn(CITED_MERGED_IN_BODY, record["warnings"])
         self.assertEqual(record["cited_pull_requests"]["merged_in_body"], [6294])
+
+    def test_a_maintainer_remark_in_a_cross_referencing_issue_warns(self) -> None:
+        # pyinstaller#9224 carried the maintainers' preferred fix for #9121,
+        # and nothing in the run read it. The stub answers every comments
+        # path with the same rows, so this one stands for #9224's. Mailman #187.
+        comment = {
+            "body": "We could side-step #9121 by always passing --best, "
+            "without having explicit fallbacks.",
+            "author_association": "MEMBER",
+            "created_at": "2025-08-30T10:40:44Z",
+            "user": {"login": "rokm", "type": "User"},
+        }
+        record = prescreen_issue(
+            self.root,
+            "pyinstaller/pyinstaller#9121",
+            executable=self.stub(
+                "[]",
+                self.issue(
+                    9121,
+                    "pyinstaller/pyinstaller",
+                    "UPX leaves small binaries uncompressed.",
+                    "upx NotCompressibleException",
+                ),
+                comments=[comment],
+                timeline=[
+                    {
+                        "event": "cross-referenced",
+                        "source": {
+                            "issue": {
+                                "html_url": (
+                                    "https://github.com/pyinstaller/"
+                                    "pyinstaller/issues/9224"
+                                )
+                            }
+                        },
+                    }
+                ],
+            ),
+        )
+
+        self.assertIn(MAINTAINER_REMARK_ELSEWHERE, record["warnings"])
+        self.assertIn(
+            "without having explicit fallbacks",
+            record["claims"]["remarks_elsewhere"][0]["quote"],
+        )
 
     def test_a_merge_shipped_long_before_the_issue_is_context_not_a_fix(
         self,

@@ -151,6 +151,30 @@ class TaskPromptTests(unittest.TestCase):
             self.assertIn("Do not edit any", reviewer)
             self.assertIn("Mailman appends the candidate diff", reviewer)
 
+    def test_prompts_quote_maintainer_remarks_from_other_threads(self) -> None:
+        # pyinstaller#9224 held the fix shape for #9121. Mailman #187.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, run_directory = make_run(Path(temporary_directory) / "runs")
+            (run_directory / "issue.md").write_text("# Issue\n\nCrash.\n", encoding="utf-8")
+            (run_directory / "prescreen.json").write_text(
+                json.dumps({"claims": {"remarks_elsewhere": [{
+                    "author": "rokm", "association": "MEMBER",
+                    "quote": "side-step #9121 (without having explicit fallbacks)",
+                    "url": "https://github.com/pyinstaller/pyinstaller/issues/9224",
+                }]}}),
+                encoding="utf-8",
+            )
+
+            paths = write_task_prompts(
+                run, run_directory, verification_command=["python", "-m", "pytest"]
+            )
+
+            for path in paths:
+                prompt = path.read_text(encoding="utf-8")
+                self.assertIn("Maintainer remarks on this issue in other threads", prompt)
+                self.assertIn("without having explicit fallbacks", prompt)
+                self.assertIn("issues/9224", prompt)
+
     def test_prompts_include_precomputed_scope_and_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             run, run_directory = make_run(Path(temporary_directory) / "runs")

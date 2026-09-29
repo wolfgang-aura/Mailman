@@ -823,6 +823,9 @@ def read_claims(
         comment.get("body") for comment in comments if isinstance(comment, dict)
     ]
     cross_referenced = _cross_referenced_urls(timeline)
+    record["remarks_elsewhere"] = remarks_elsewhere(
+        timeline, api, repository=slug, number=int(number)
+    )
     record["references"] = pull_request_references(
         [payload.get("body"), *comment_bodies, *cross_referenced],
         repository=slug,
@@ -954,3 +957,72 @@ def maintainer_dispute(thread: Iterable[dict[str, Any]]) -> str | None:
             _sentence_around(text, match.start(), match.end()),
         )
     return latest[1] if latest and latest[0] else None
+
+
+#: Cross-referencing issues read for maintainer remarks, at one API call each.
+_MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\([^)\s]*\)")
+_REMARK_SOURCES = 5
+
+
+def remarks_elsewhere(
+    timeline: Any, api: Any, *, repository: str, number: int
+) -> list[dict[str, Any]]:
+    """Maintainer comments about this issue written in another issue.
+
+    pyinstaller#9224 is cross-referenced to #9121, and there two maintainers
+    preferred always passing `--best`, "without having explicit fallbacks".
+    The run for #9121 built the fallback and was recommended for filing,
+    because nothing read that thread. Only issues in the same repository are
+    read, and only comments that name this issue. Mailman #187.
+    """
+    if not isinstance(timeline, list):
+        return []
+    mention = re.compile(
+        rf"(?:#{number}\b|github\.com/{re.escape(repository)}/issues/{number}\b)",
+        re.IGNORECASE,
+    )
+    sources: list[str] = []
+    found: list[dict[str, Any]] = []
+    for entry in timeline:
+        if not isinstance(entry, dict) or entry.get("event") != "cross-referenced":
+            continue
+        source = entry.get("source")
+        issue = source.get("issue") if isinstance(source, dict) else None
+        if not isinstance(issue, dict) or issue.get("pull_request"):
+            continue
+        url = str(issue.get("html_url") or "")
+        match = re.search(r"github\.com/([^/]+/[^/]+)/issues/(\d+)", url)
+        if not match or match.group(1).lower() != repository.lower():
+            continue
+        if url in sources:
+            continue
+        if len(sources) >= _REMARK_SOURCES:
+            break
+        sources.append(url)
+        comments = api(
+            f"repos/{repository}/issues/{match.group(2)}/comments", per_page=100
+        )
+        if not isinstance(comments, list):
+            continue
+        for comment in comments:
+            if not isinstance(comment, dict) or _is_bot(comment.get("user")):
+                continue
+            if comment.get("author_association") not in MAINTAINER_ASSOCIATIONS:
+                continue
+            # A markdown link's target is not prose: rokm's link to
+            # `utils.py#L281` spent the quote before its reason was reached.
+            text = _MARKDOWN_LINK.sub(r"\1", _flat(_unquoted(comment.get("body"))))
+            hit = mention.search(text)
+            if hit is None:
+                continue
+            found.append(
+                {
+                    **_row(comment),
+                    "quote": _sentence_around(
+                        text, hit.start(), hit.end(), limit=400
+                    ),
+                    "source": url,
+                    "url": comment.get("html_url") or url,
+                }
+            )
+    return found

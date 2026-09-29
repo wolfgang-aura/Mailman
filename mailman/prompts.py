@@ -124,6 +124,26 @@ def _known_scope_section(run_directory: Path) -> str:
     )
 
 
+def _remarks_elsewhere_section(run_directory: Path) -> str:
+    """Maintainer remarks about this issue from other threads. Mailman #187."""
+    claims = _read_json(run_directory / "prescreen.json").get("claims")
+    rows = claims.get("remarks_elsewhere") if isinstance(claims, dict) else None
+    rows = [row for row in rows or [] if isinstance(row, dict) and row.get("quote")]
+    if not rows:
+        return ""
+    quoted = "\n".join(
+        f"> {row['quote']}\n> -- {row.get('author')} ({row.get('association')}), "
+        f"{row.get('url') or row.get('source')}\n"
+        for row in rows
+    )
+    return (
+        "\n## Maintainer remarks on this issue in other threads\n\n"
+        f"{quoted}\n"
+        "A fix shape a maintainer prefers here outranks your own. Follow it, "
+        "or say in the report why it cannot work and what evidence shows that.\n"
+    )
+
+
 def issue_comparisons(issue_markdown: str) -> list[str]:
     """Paragraphs of the issue body that say how another tool handles the case.
 
@@ -603,7 +623,9 @@ def write_task_prompts(
         )
     prior_art = load_prior_art_markdown(run_directory)
     maintainer_review = load_review_markdown(run_directory)
-    scope = _known_scope_section(run_directory)
+    scope = _known_scope_section(run_directory) + _remarks_elsewhere_section(
+        run_directory
+    )
     reproduction = _reproduction_section(run_directory)
     work_order, work_order_section = _work_order(
         run_directory, issue_markdown, verification_command, start_files
