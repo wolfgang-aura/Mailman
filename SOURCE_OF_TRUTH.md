@@ -342,8 +342,11 @@ opening the local packet URL during this session; visual state is unverified.
     `test_backends.py -k "Zarr and append"` 76 passed; ruff clean; upstream CI pending at push.
     Reply draft in `.mailman/scratch/xarray-11637-reply.md`, not posted.
   - nicegui#6345: falkoschindler pushed `cdb0892` and `475a454` to our branch (weak-reference None
-    check, merged tests) and set the `review` label on 2026-09-29 19:28 UTC. Checks green,
-    `REVIEW_REQUIRED`, `BEHIND`. Waiting on a maintainer approval; nothing for us to do.
+    check, merged tests) and set the `review` label on 2026-09-29 19:28 UTC. Approved by
+    falkoschindler, who enabled auto-merge (merge commit) at 20:02 UTC. Re-read 2026-09-30:
+    still `OPEN` (`reviewDecision` APPROVED, `mergeStateStatus` BEHIND, head `475a454`); #6339
+    open. Not merged as far as GitHub shows, so the tally stays at 6 merged. Nothing for us to
+    do; if the merge is stuck on BEHIND, only a maintainer should update the branch.
   - anndata#2666, ipython#15408, pymc#8442 (other checks), tqdm#1837: red checks are inherited
     (fail only in `.github` files or on other open PRs), not ours.
   - PyPSA#1958 went `blocked` -> `clean`; py-shiny#2511 is `blocked` on required review only.
