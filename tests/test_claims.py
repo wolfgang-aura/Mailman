@@ -392,6 +392,10 @@ class MaintainerDeclinedTests(unittest.TestCase):
             "aware of their orientation.",
             # davidhalter/jedi#2058
             "This is the kind of bug that is unlikely to be fixed here.",
+            # huggingface/huggingface_hub#2742
+            "not something we want to do at this stage no",
+            "We don't want to raise an exception at this stage for the reason "
+            "explained above.",
         ):
             with self.subTest(body=body):
                 rows = maintainer_declines([_comment(body, association="MEMBER")])

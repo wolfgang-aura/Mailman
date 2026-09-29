@@ -179,6 +179,9 @@ _DECLINED = re.compile(
     r"|(?:this|that|it)(?: is|'s) not a problem"
     r"|(?:this|that|it)(?: is|'s) expected (?:because|since|as)\b"
     r"|unlikely to be fixed"
+    # huggingface_hub#2742
+    r"|not something (?:we|i) (?:want|plan|intend) to\b"
+    r"|we (?:don't|do not) want to (?:raise|add|implement|support|change|expose)\b"
     r")",
     re.IGNORECASE,
 )
