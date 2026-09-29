@@ -441,6 +441,28 @@ class AssessTargetTests(unittest.TestCase):
         self.assertTrue(assessment.may_start)
         self.assertIn(STALE_CLAIM, assessment.warnings)
         self.assertNotIn(UNACKNOWLEDGED_CLAIM, assessment.blocking)
+        # biopython#4878: the summary still told the operator to pass
+        # --acknowledge-claims for a claim the gate had already let through.
+        # Mailman #212.
+        self.assertNotIn("--acknowledge-claims", assessment.summary())
+        self.assertIn("stale", assessment.summary())
+
+    def test_an_acknowledged_claim_no_longer_asks_for_the_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(
+                _record(Path(temporary), attempts=[], claims=[_CLAIM]),
+                acknowledged_claims=True,
+            )
+
+        self.assertNotIn("pass --acknowledge-claims", assessment.summary())
+
+    def test_a_blocking_claim_still_asks_for_the_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(
+                _record(Path(temporary), attempts=[], claims=[_CLAIM])
+            )
+
+        self.assertIn("--acknowledge-claims", assessment.summary())
 
     def test_one_recent_claim_among_old_ones_still_blocks(self) -> None:
         old = {**_CLAIM, "created_at": "2024-03-05T00:00:00Z"}

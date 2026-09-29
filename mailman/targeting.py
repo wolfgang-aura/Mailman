@@ -572,11 +572,23 @@ class TargetAssessment:
                 "thread. That is an assignment written in prose rather than in "
                 "the assignee field, and it counts the same."
             )
-        elif self.claims.get("claims"):
+        # The advice follows the verdict, not the raw count: a stale or
+        # acknowledged claim no longer blocks. Mailman #212.
+        elif UNACKNOWLEDGED_CLAIM in self.blocking:
             lines.append(
                 "Somebody has said in the comments that they are taking this, "
                 "and nobody has answered them. Read the thread, then pass "
                 "--acknowledge-claims to start anyway."
+            )
+        elif STALE_CLAIM in self.warnings:
+            lines.append(
+                f"Every claim here is older than {STALE_ATTEMPT_DAYS} days with "
+                "no pull request, so it is stale and does not hold the issue. "
+                "Credit the claimant's plan in the pull request if you use it."
+            )
+        elif UNACKNOWLEDGED_CLAIM in self.warnings:
+            lines.append(
+                "The claim in the comments was acknowledged; starting anyway."
             )
         if self.merged_attempts:
             lines.append(
