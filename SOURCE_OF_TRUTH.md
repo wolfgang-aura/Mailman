@@ -314,6 +314,31 @@ opening the local packet URL during this session; visual state is unverified.
   Hunt `20260928T185953Z-92e95a` is FILED: runs `20260928T190015Z-6a59bf` (nox#302 ->
   https://github.com/wntrblm/nox/pull/1191) and `20260928T191349Z-27ec60` (ipython#9891 ->
   https://github.com/ipython/ipython/pull/15408), both from forks under `wolfgang-aura`.
+- Sixth upstream merge, 2026-09-29: nilearn/nilearn#6611 merged by Remi-Gau as `a01cefe` at
+  07:53 UTC, about 18 hours after filing, on top of a head we did not push (`a201c0a`, Remi-Gau's
+  commit). No run record written yet.
+- Upstream tally re-read 2026-09-30 (`mailman hunt watch`, ledger checked 2026-09-29 17:23 UTC):
+  28 PRs filed. Merged 6: ffn#330, openai-agents-python#4890, securo#875, edgartools#1329,
+  edgartools#1365, nilearn#6611. Closed unmerged 6 (unchanged). Open 16: biopython#5336,
+  ipython#15408, openalgo#2021, openalgo#2022, pdm#3883, py-shiny#2511, pretix#6564,
+  xarray#11637, pymc#8442, PyPSA#1958, anndata#2666, poetry#11052, securo#1039, tqdm#1837,
+  nox#1191, nicegui#6345. The five filed on 2026-09-29 (biopython, py-shiny, PyPSA from hunt
+  `20260929T020844Z-f0e56`; anndata from `20260929T011552Z-b6bc8`; xarray) were missing from the
+  2026-09-29 tally above.
+- State changes behind that tally, verified with `gh`:
+  - pymc#8442: ricardoV94 approved on 2026-09-28 07:59 UTC after our `60b0a46`. Merge state
+    `BLOCKED` with `reviewDecision` APPROVED; waiting on a maintainer merge. Codecov comment green.
+  - biopython#5336: peterjc commented on 2026-09-29 14:58 UTC: on hold pending agreement of the
+    AI policy, and `biopython#5241` (draft no-AI policy, open) "would reject this outright". Treat
+    as parked; no reply from us. Repos with an open no-AI policy proposal now fail the policy
+    gate (`ea9e6e0`), which postdates this filing.
+  - xarray#11637: dcherian left two review comments on 2026-09-29 16:54-16:56 UTC on the new
+    `dtype.kind == "M"` branch in `xarray/backends/zarr.py`: handle `timedelta` too, add a test,
+    and "I dont understand this comment" about our code comment. Merge state `DIRTY`
+    (conflicts with main) and `pre-commit.ci` fails. Needs a revision; unanswered.
+  - anndata#2666, ipython#15408, pymc#8442 (other checks), tqdm#1837: red checks are inherited
+    (fail only in `.github` files or on other open PRs), not ours.
+  - PyPSA#1958 went `blocked` -> `clean`; py-shiny#2511 is `blocked` on required review only.
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
   It still exists; deleting it is the operator's call.
 
