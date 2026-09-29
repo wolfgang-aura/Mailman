@@ -1261,6 +1261,9 @@ HOST_BLOCKED_PACKAGES: dict[str, str] = {
 #: test: a Frappe app is tested inside a bench, with MariaDB, Redis and a site.
 HOST_UNRUNNABLE_FRAMEWORKS: dict[str, str] = {
     "frappe": "a Frappe app is tested inside a bench (MariaDB, Redis, a site)",
+    # A universal wheel, so the wheel check passes it; ansible/ansible-lint
+    # built an environment and then could not import it. Mailman #228.
+    "ansible-core": "ansible-core imports fcntl and grp, which Windows does not have",
 }
 
 #: Packages that are a thin Python binding over a C library the host does not
@@ -1318,6 +1321,16 @@ def _pyproject_requirements(pyproject: str) -> tuple[set[str], set[str], bool]:
             }
     tool = table.get("tool") if isinstance(table.get("tool"), dict) else {}
     return required - {""}, optional - {""}, "bench" in tool
+
+
+def _project_name(pyproject: str) -> str:
+    """The normalized `[project] name`, or an empty string."""
+    try:
+        project = tomllib.loads(pyproject).get("project") if pyproject else None
+    except (tomllib.TOMLDecodeError, ValueError):
+        return ""
+    name = project.get("name") if isinstance(project, dict) else None
+    return _requirement_name(name) if isinstance(name, str) else ""
 
 
 def _requirement_lines(text: str) -> set[str]:
@@ -1421,6 +1434,10 @@ def _host_gate(
     """
     required, optional, bench = _pyproject_requirements(pyproject)
     required = required | set(requirements)
+    # The framework's own repository needs what it is, not what it lists.
+    own_name = _project_name(pyproject)
+    if own_name in HOST_UNRUNNABLE_FRAMEWORKS:
+        required.add(own_name)
     optional = optional - required
     shims = sorted(name for name in NATIVE_LIBRARY_SHIMS if name in required)
     no_wheel: list[dict[str, Any]] = []

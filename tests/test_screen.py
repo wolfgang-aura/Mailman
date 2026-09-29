@@ -905,6 +905,26 @@ class ScreenTests(unittest.TestCase):
         self.assertIn("bench", gate["detail"])
         self.assertEqual(gate["data"]["required_unrunnable"], ["frappe"])
 
+    def test_a_project_requiring_ansible_core_fails_the_host_gate(self) -> None:
+        # ansible/ansible-lint passed on 2026-09-28; ansible-core imports fcntl
+        # and grp, so nothing ran once the environment was built. Mailman #228.
+        for pyproject in (
+            '[project]\nname = "ansible-lint"\ndependencies = [\n'
+            '    "ansible-core>=2.16.19,!=2.17.*",\n]\n',
+            '[project]\nname = "ansible-core"\ndependencies = ["jinja2"]\n',
+        ):
+            with self.subTest(pyproject=pyproject.splitlines()[1]):
+                with tempfile.TemporaryDirectory() as temporary:
+                    record = _screen(
+                        Path(temporary),
+                        FakeGitHub(policies={"pyproject.toml": pyproject}),
+                    )
+                gate = _named(record, "host")
+
+                self.assertIn("host", record["failed_gates"])
+                self.assertIn("fcntl", gate["detail"])
+                self.assertEqual(gate["data"]["required_unrunnable"], ["ansible-core"])
+
     def test_a_required_package_application_control_blocks_fails_the_host_gate(
         self,
     ) -> None:
