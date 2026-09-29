@@ -93,6 +93,10 @@ def create_run(
     reviewer_model: str | None = None,
     data_root: Path | None = None,
 ) -> tuple[RunRecord, Path]:
+    # Every other stage takes OWNER/REPO; init-run refused it on PyPSA#1938.
+    # Mailman #197.
+    if re.fullmatch(r"[\w.-]+/[\w.-]+", repository):
+        repository = f"https://github.com/{repository.removesuffix('.git')}.git"
     if not repository.startswith(("https://", "ssh://", "git@")):
         raise ValueError("repository must be an HTTPS or SSH Git URL")
     if repository.startswith(("https://", "ssh://")):

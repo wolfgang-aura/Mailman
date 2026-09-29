@@ -136,10 +136,10 @@ dependencies = ["mkdocs"]
             with mock.patch("mailman.environment_plan.sys.platform", "win32"):
                 plan = draft_plan(root, root / "run" / "plan.json")
             constraint_file = (root / "run" / HOST_CONSTRAINTS_FILENAME).resolve()
-            self.assertIn(
-                "scikit-learn!=1.9.1",
-                constraint_file.read_text(encoding="utf-8").splitlines(),
-            )
+            constraints = constraint_file.read_text(encoding="utf-8").splitlines()
+            self.assertIn("scikit-learn!=1.9.1", constraints)
+            # PyPSA#1938: pyproj 3.8.0's `_network` DLL is blocked. #197.
+            self.assertIn("pyproj!=3.8.0", constraints)
             for step in plan["steps"][1:]:
                 command = step["command"]
                 self.assertEqual(

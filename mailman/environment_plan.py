@@ -37,10 +37,12 @@ BINARY_POLICY = "--prefer-binary"
 #: constraints, so pip picks the newest allowed release inside the target's own
 #: range and installs nothing a target does not ask for. scikit-learn 1.9.1
 #: blocked 12 `.pyd` modules on nilearn#6607 while 1.8.0 imported; pandas 3.0.6
-#: cp314 is blocked while 3.0.5 is not. Mailman #146.
+#: cp314 is blocked while 3.0.5 is not. Mailman #146. pyproj 3.8.0 cp314
+#: blocked `_network` on PyPSA#1938 while 3.7.2 imported. Mailman #197.
 HOST_BLOCKED_RELEASES = (
     "scikit-learn!=1.9.1",
     "pandas!=3.0.6",
+    "pyproj!=3.8.0",
 )
 HOST_CONSTRAINTS_FILENAME = "host-constraints.txt"
 

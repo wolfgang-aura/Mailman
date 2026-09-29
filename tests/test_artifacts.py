@@ -52,6 +52,19 @@ class ArtifactTests(unittest.TestCase):
                     data_root=Path(temporary_directory),
                 )
 
+    def test_create_run_accepts_owner_slash_repo(self) -> None:
+        # PyPSA#1938's init-run refused "PyPSA/PyPSA". Mailman #197.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, _ = create_run(
+                repository="PyPSA/PyPSA",
+                issue="https://github.com/PyPSA/PyPSA/issues/1938",
+                base_commit="a" * 40,
+                primary="claude",
+                reviewer="claude",
+                data_root=Path(temporary_directory),
+            )
+        self.assertEqual(run.repository, "https://github.com/PyPSA/PyPSA.git")
+
     def test_create_run_normalizes_agent_case_and_whitespace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             run, _ = create_run(
