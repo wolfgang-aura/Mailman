@@ -210,6 +210,8 @@ class FakeGitHub:
         self.policies = overrides.pop("policies", {})
         self.assignment_matches = overrides.pop("assignment_matches", 0)
         self.assignment_pulls = overrides.pop("assignment_pulls", [])
+        #: Open issues and pull requests with "policy" in the title. #220.
+        self.policy_proposals = overrides.pop("policy_proposals", [])
         self.meta = overrides.pop(
             "meta",
             {
@@ -241,6 +243,11 @@ class FakeGitHub:
             ]
             return {"data": {"repository": {"pullRequests": {"nodes": nodes}}}}
         base = path.split("?", 1)[0]
+        if base == "search/issues" and "policy" in path:
+            return {
+                "total_count": len(self.policy_proposals),
+                "items": self.policy_proposals,
+            }
         if base == "search/issues":
             return {
                 "total_count": self.assignment_matches,
@@ -2297,6 +2304,70 @@ class ResponsivenessTests(unittest.TestCase):
         self.assertEqual(gate["data"]["result"], "refused")
         self.assertIn("AI generated pull requests", gate["data"]["quote"])
         self.assertIn("/pull/302", gate["detail"])
+
+    def test_a_maintainers_open_no_ai_policy_proposal_fails_the_policy_gate(
+        self,
+    ) -> None:
+        # biopython/biopython#5241, open since 2026-06-22 by a MEMBER. No
+        # file said anything yet, the gate passed, and #5336 was put on hold
+        # the day it was filed: "#5241 would reject this outright". #220.
+        proposal = {
+            "number": 5241,
+            "title": "First draft of no-AI policy.",
+            "html_url": "https://github.com/example/project/pull/5241",
+            "author_association": "MEMBER",
+            "user": {"login": "peterjc"},
+            "pull_request": {},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary), FakeGitHub(policy_proposals=[proposal])
+            )
+        gate = _named(record, "policy")
+
+        self.assertFalse(gate["passed"])
+        self.assertIn("policy", record["failed_gates"])
+        self.assertEqual(gate["data"]["result"], "pending-refusal")
+        self.assertIn("/pull/5241", gate["detail"])
+        self.assertIn("First draft of no-AI policy.", gate["detail"])
+
+    def test_an_outsiders_or_neutral_policy_proposal_does_not_fail_the_gate(
+        self,
+    ) -> None:
+        outsider = {
+            "number": 7,
+            "title": "Proposal: no-AI policy",
+            "html_url": "https://github.com/example/project/issues/7",
+            "author_association": "NONE",
+            "user": {"login": "someone"},
+        }
+        neutral = {
+            "number": 8,
+            "title": "Add an AI contribution policy",
+            "html_url": "https://github.com/example/project/pull/8",
+            "author_association": "OWNER",
+            "user": {"login": "owner"},
+            "pull_request": {},
+        }
+        unrelated = {
+            "number": 9,
+            "title": "Document the security policy",
+            "html_url": "https://github.com/example/project/pull/9",
+            "author_association": "OWNER",
+            "user": {"login": "owner"},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(policy_proposals=[outsider, neutral, unrelated]),
+            )
+        gate = _named(record, "policy")
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(
+            [row["number"] for row in gate["data"]["pending_proposals"]], [8]
+        )
+        self.assertIn("/pull/8", gate["detail"])
 
     def test_an_ai_remark_on_a_merged_pull_request_is_not_a_refusal(self) -> None:
         pulls = [

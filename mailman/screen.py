@@ -2619,6 +2619,7 @@ def screen_repository(
             _responsiveness_gate(gh, slug, responsiveness_days, maintainers),
         ]
         _policy_from_comments(gates)
+        _policy_from_proposals(gates, gh, slug, maintainers)
     gates.append(stars)
     if gh.rate_limited:
         # A gate whose reads were refused reports a verdict it never saw:
@@ -2671,6 +2672,95 @@ def _policy_from_comments(gates: list[dict[str, Any]]) -> None:
                     "comment_refusals": refusals,
                 },
             )
+
+
+#: A title that proposes an AI policy, and one that proposes refusing AI work.
+_AI_POLICY_TITLE = re.compile(
+    r"\b(?:ai|a\.i\.|llms?|genai|generative|agents?|agentic|copilot)\b"
+    r"[^.]{0,40}\bpolic(?:y|ies)\b",
+    re.IGNORECASE,
+)
+_REFUSING_TITLE = re.compile(
+    r"\bno[- ](?:ai|llms?|genai)\b|\b(?:ban|bans|banning|prohibit\w*|"
+    r"forbid\w*|reject\w*|refus\w*|disallow\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def _policy_from_proposals(
+    gates: list[dict[str, Any]],
+    gh: _Gh,
+    slug: str,
+    maintainers: Collection[str] = (),
+) -> None:
+    """Read open issues and pull requests that propose an AI policy.
+
+    biopython/biopython#5241, "First draft of no-AI policy.", had been open
+    since June by a maintainer. No file said anything yet, so the gate passed,
+    and the pull request filed there was put on hold the day it arrived. A
+    maintainer's proposal to refuse AI work fails the gate; a neutral one is
+    named in the detail. Mailman #220.
+    """
+    index = next(
+        (
+            position
+            for position, gate in enumerate(gates)
+            if gate["name"] == "policy" and gate["passed"]
+        ),
+        None,
+    )
+    if index is None:
+        return
+    query = quote(f"repo:{slug} is:open in:title policy")
+    result = gh.json(f"search/issues?q={query}&per_page=30")
+    items = result.get("items") if isinstance(result, dict) else None
+    proposals = []
+    for row in items if isinstance(items, list) else []:
+        if not isinstance(row, dict):
+            continue
+        title = str(row.get("title") or "")
+        login = str((row.get("user") or {}).get("login") or "")
+        if not _AI_POLICY_TITLE.search(title):
+            continue
+        if not is_maintainer(row, maintainers):
+            continue
+        proposals.append(
+            {
+                "number": row.get("number"),
+                "title": title,
+                "url": row.get("html_url"),
+                "author": login,
+                "refusing": bool(_REFUSING_TITLE.search(title)),
+            }
+        )
+    if not proposals:
+        return
+    gate = gates[index]
+    refusing = next((row for row in proposals if row["refusing"]), None)
+    if refusing:
+        gates[index] = _gate(
+            "policy",
+            passed=False,
+            blocking=True,
+            detail=(
+                f"a maintainer's open proposal would refuse AI-assisted work: "
+                f"{refusing['url']} {refusing['title']!r}"
+            ),
+            data={
+                **gate.get("data", {}),
+                "source": refusing["url"],
+                "result": "pending-refusal",
+                "quote": refusing["title"],
+                "pending_proposals": proposals,
+            },
+        )
+        return
+    named = ", ".join(f"{row['url']} {row['title']!r}" for row in proposals)
+    gates[index] = {
+        **gate,
+        "detail": f"{gate['detail']}; an AI policy is proposed and still open: {named}",
+        "data": {**gate.get("data", {}), "pending_proposals": proposals},
+    }
 
 
 #: Gates skipped once a cheaper gate has already failed the repository.
