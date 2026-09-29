@@ -83,6 +83,45 @@ def commit_candidate(workspace: Path, *, base_commit: str, branch: str,
     return _git(workspace, "rev-parse", "HEAD").stdout.strip()
 
 
+_DCO_ACTION = re.compile(r"\buses:\s*\S*dco\S*@|\bdco[-_]check\b", re.IGNORECASE)
+_SIGNOFF_RULE = re.compile(r"\bDCO\b|certificate of origin|\bcommit -s\b|\bmust\b|\brequired?\b",
+                           re.IGNORECASE)
+_CONTRIBUTION_DOCS = ("CONTRIBUTING.md", "CONTRIBUTING.rst", ".github/CONTRIBUTING.md",
+                      "docs/CONTRIBUTING.md", "DCO", "DCO.md")
+
+
+def signoff_requirement(workspace: Path) -> str | None:
+    """The file that makes the target require a `Signed-off-by` line, if any.
+
+    A DCO check fails the pull request the moment it opens, and fixing it means
+    force-pushing over an open pull request. Mailman #221.
+    """
+    for workflow in sorted((workspace / ".github" / "workflows").glob("*.y*ml")):
+        if _DCO_ACTION.search(workflow.read_text(encoding="utf-8", errors="replace")):
+            return workflow.relative_to(workspace).as_posix()
+    if (workspace / ".github" / "dco.yml").is_file():
+        return ".github/dco.yml"
+    for name in _CONTRIBUTION_DOCS:
+        path = workspace / name
+        if path.is_file():
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if re.search(r"signed-off-by", text, re.IGNORECASE) and _SIGNOFF_RULE.search(text):
+                return name
+    return None
+
+
+def check_signoff(message: str, identity: Identity, requirement: str | None) -> None:
+    """Refuse a commit message that lacks the identity's sign-off where one is required."""
+    if requirement is None:
+        return
+    line = f"Signed-off-by: {identity.name} <{identity.email}>"
+    if line not in message.splitlines():
+        raise ValueError(
+            f"{requirement} requires a DCO sign-off: add `{line}` to the commit "
+            "message file. It certifies the contribution under the project's DCO."
+        )
+
+
 def run_stages(stages: Sequence[tuple[str, Callable[[], int]]],
                *, stream=None) -> tuple[int, list[dict]]:
     """Run stages in order and stop at the first non-zero exit."""

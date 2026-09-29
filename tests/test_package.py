@@ -13,7 +13,9 @@ from unittest.mock import patch
 
 from mailman.artifacts import create_run
 from mailman.identity import Identity
-from mailman.package import changed_paths, commit_candidate, run_stages
+from mailman.package import (
+    changed_paths, check_signoff, commit_candidate, run_stages, signoff_requirement,
+)
 
 IDENTITY = Identity("Fixture", "1+fixture@users.noreply.github.com")
 
@@ -83,6 +85,50 @@ class CommitCandidateTests(unittest.TestCase):
     def test_nothing_to_commit_is_refused(self) -> None:
         with self.assertRaisesRegex(ValueError, "no commit on top"):
             self.commit()
+
+
+class SignoffTests(unittest.TestCase):
+    """A target that enforces the DCO fails our pull request on its first check.
+    https://github.com/wolfgang-aura/Mailman/issues/221
+    """
+
+    def workspace(self, files: dict[str, str]) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, root, True)
+        for name, text in files.items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(text, encoding="utf-8")
+        return root
+
+    def test_a_dco_workflow_is_a_requirement(self) -> None:
+        root = self.workspace({".github/workflows/dco.yml":
+                               "steps:\n  - uses: tim-actions/dco@master\n"})
+
+        self.assertEqual(signoff_requirement(root), ".github/workflows/dco.yml")
+
+    def test_contribution_docs_that_require_a_signoff_are_a_requirement(self) -> None:
+        root = self.workspace({"CONTRIBUTING.md":
+                               "All commits must include a `Signed-off-by` line (DCO).\n"})
+
+        self.assertEqual(signoff_requirement(root), "CONTRIBUTING.md")
+
+    def test_a_repository_without_either_signal_has_none(self) -> None:
+        root = self.workspace({"CONTRIBUTING.md": "Run the tests before opening a PR.\n",
+                               ".github/workflows/ci.yml": "steps:\n  - run: pytest\n"})
+
+        self.assertIsNone(signoff_requirement(root))
+
+    def test_a_message_without_the_identitys_signoff_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, r"Signed-off-by: Fixture <1\+fixture"):
+            check_signoff("fix: a thing\n", IDENTITY, ".github/workflows/dco.yml")
+        with self.assertRaisesRegex(ValueError, "dco.yml"):
+            check_signoff("fix: a thing\n\nSigned-off-by: Someone <a@b.c>\n",
+                          IDENTITY, ".github/workflows/dco.yml")
+
+    def test_the_identitys_signoff_passes_and_no_requirement_passes(self) -> None:
+        check_signoff(f"fix\n\nSigned-off-by: {IDENTITY.name} <{IDENTITY.email}>\n",
+                      IDENTITY, ".github/workflows/dco.yml")
+        check_signoff("fix: a thing\n", IDENTITY, None)
 
 
 class RunStagesTests(unittest.TestCase):
@@ -181,3 +227,17 @@ class PackageCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PackageArgumentTests(unittest.TestCase):
+    def test_package_without_base_is_refused_before_any_stage(self) -> None:
+        # Mailman #222: package ran every stage and committed before handoff
+        # refused the missing --base.
+        from mailman import cli
+
+        with patch("sys.stderr", StringIO()), \
+                patch.object(cli, "_package", side_effect=AssertionError("ran")):
+            with self.assertRaises(SystemExit) as raised:
+                cli.main(["package", "RUN", "--policy", "p.json", "--title", "t",
+                          "--body", "b.md", "--repo", "o/r", "--head", "f:b"])
+        self.assertEqual(raised.exception.code, 2)

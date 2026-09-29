@@ -486,7 +486,8 @@ def _build_parser() -> argparse.ArgumentParser:
     package_parser.add_argument("--repo", required=True, help="upstream OWNER/REPO")
     package_parser.add_argument("--head", required=True,
                                 help="fork branch, for example OWNER:mailman/issue-N")
-    package_parser.add_argument("--base", help="upstream branch to target")
+    package_parser.add_argument(
+        "--base", required=True, help="upstream branch to target (Mailman #222)")
     package_parser.add_argument(
         "--commit-message", type=Path,
         help="file holding the commit message; defaults to the title",
@@ -1921,7 +1922,9 @@ def _export_patch(arguments: argparse.Namespace) -> int:
 
 
 def _package(arguments: argparse.Namespace) -> int:
-    from mailman.package import changed_paths, commit_candidate, run_stages
+    from mailman.package import (
+        changed_paths, check_signoff, commit_candidate, run_stages, signoff_requirement,
+    )
 
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
     data_root = (arguments.data_root or default_data_root()).resolve()
@@ -1946,7 +1949,9 @@ def _package(arguments: argparse.Namespace) -> int:
         identity = resolve_identity(data_root)
         if identity is None:
             raise ValueError("no commit identity is configured: run `mailman identity`")
-        diff = (run_directory / "export" / "changes.diff").read_text(encoding="utf-8")
+        workspace = run_directory / "workspace"
+        check_signoff(message, identity, signoff_requirement(workspace))
+        diff =(run_directory / "export" / "changes.diff").read_text(encoding="utf-8")
         head = commit_candidate(
             run_directory / "workspace", base_commit=run.base_commit, branch=branch,
             message=message, identity=identity, paths=changed_paths(diff),

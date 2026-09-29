@@ -339,12 +339,16 @@ a time; a screen costs about 200 GitHub core calls.
 Steps 13 to 15 are one command once the coordinator has written the target
 policy, the final body and decision.json (#167): `mailman package RUN_ID
 --policy target-policy.json --title TITLE --body body.md --repo OWNER/REPO
---head FORK_OWNER:BRANCH`. It runs export-patch, prepare-submission,
+--head FORK_OWNER:BRANCH --base DEFAULT_BRANCH`; `--base` is required and
+refused before any stage runs (#222). It runs export-patch, prepare-submission,
 decision, finalize-review, the local commit of the exported paths,
 check-authors, handoff, handoff-check and review, and stops at the first
 failure with the stage name. Fix that finding and rerun it; finished stages
 are safe to repeat. The individual commands below remain the reference for
-what each stage checks.
+what each stage checks. A target with a DCO check or contribution docs that
+require `Signed-off-by` makes the commit stage refuse a `--commit-message`
+file without the identity's sign-off line (#221); the operator states the
+sign-off in the filing approval request, because it certifies the DCO.
 
 13. After engineering completes, export the patch and prepare the submission.
     Fix hygiene, missing coverage and formatting findings yourself. Write the
