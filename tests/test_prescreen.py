@@ -1744,7 +1744,12 @@ class MaintainerDisputedTests(PrescreenTests):
 
     def test_an_upstream_or_needs_verification_label_rejects_the_issue(self) -> None:
         # plotnine#975 and celery#9901.
-        for label in ("upstream-bug", "Status: Needs Verification \u2718"):
+        # commitizen#1315 `issue-status: wait-for-response`. Mailman #231.
+        for label in (
+            "upstream-bug",
+            "Status: Needs Verification \u2718",
+            "issue-status: wait-for-response",
+        ):
             with self.subTest(label=label):
                 issue = {
                     "number": 7,
@@ -1763,6 +1768,14 @@ class MaintainerDisputedTests(PrescreenTests):
 
                 self.assertEqual(record["verdict"], "reject")
                 self.assertIn(ISSUE_NOT_TRIAGED_HERE, record["blocking"])
+
+    def test_wait_for_implementation_is_not_an_untriaged_label(self) -> None:
+        # commitizen: "maintainers agree on the bug / feature". Mailman #231.
+        from mailman.prescreen import _NOT_TRIAGED_LABEL
+
+        self.assertIsNone(
+            _NOT_TRIAGED_LABEL.search("issue-status: wait-for-implementation")
+        )
 
 
     def test_a_template_requiring_a_label_the_issue_lacks_rejects_it(self) -> None:

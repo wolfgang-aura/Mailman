@@ -148,6 +148,9 @@ _NOT_TRIAGED_LABEL = re.compile(
     r"|needs?[- :]*(?:verification|verify|info|more[- ]info|feedback|repro"
     r"|reproduction|reproducer|triage|response|confirmation)"
     r"|awaiting|waiting[- ]for|more[- ]info[- ]needed|cannot[- ]reproduce"
+    # commitizen `wait-for-response`; its `wait-for-implementation` means
+    # the maintainers agree, so only the reporter-facing ones. Mailman #231.
+    r"|wait[- ]for[- ](?:response|reply|feedback|info|author|reporter|op)\b"
     r"|can'?t[- ]reproduce|not[- ]reproducible|unconfirmed|wont[- ]?fix|invalid",
     re.IGNORECASE,
 )
