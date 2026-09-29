@@ -151,6 +151,27 @@ _NOT_TRIAGED_LABEL = re.compile(
     r"|can'?t[- ]reproduce|not[- ]reproducible|unconfirmed|wont[- ]?fix|invalid",
     re.IGNORECASE,
 )
+#: The issue body (usually the repository's template) says a pull request
+#: needs a maintainer-applied label, and the issue does not carry it. mlflow's
+#: template asks for `ready` and warns that other pull requests "may be
+#: automatically closed"; mlflow#26266 passed without it. Mailman #229.
+ISSUE_LACKS_REQUIRED_LABEL = "issue-lacks-required-label"
+_REQUIRED_LABEL_RE = re.compile(
+    r"appl(?:y|ied|ies)\s+(?:the\s+)?[`'\"]([^`'\"\n]{1,40})[`'\"]\s+label",
+    re.IGNORECASE,
+)
+
+
+def required_labels(body: str) -> list[str]:
+    """Labels the issue body says a maintainer must apply before a PR."""
+    found: list[str] = []
+    for match in _REQUIRED_LABEL_RE.finditer(body or ""):
+        label = match.group(1).strip()
+        if label and label.lower() not in (item.lower() for item in found):
+            found.append(label)
+    return found
+
+
 #: The repository's own screen refused it. An issue there is not a candidate
 #: however clean its thread: alembic#1390 and podman-compose#1549 both passed
 #: this prescreen in repositories that failed freshness and responsiveness, and
@@ -601,6 +622,17 @@ def prescreen_issue(
     estimate, reason = estimate_fix_size(
         captured.get("title"), _captured_body(directory), captured.get("labels") or []
     )
+    labels_present = {
+        str(label).strip().lower() for label in captured.get("labels") or []
+    }
+    missing = [
+        label
+        for label in required_labels(_captured_body(directory))
+        if label.lower() not in labels_present
+    ]
+    if missing:
+        issue_blocking.append(ISSUE_LACKS_REQUIRED_LABEL)
+        record["required_labels_missing"] = missing
     screen = load_screen(data_root, slug)
     record["maintainer_logins_known"] = len(maintainers)
     if screen and screen.get("success") and screen.get("verdict") != "pass":
@@ -641,6 +673,15 @@ def prescreen_issue(
                 + (
                     f". {record['fix_size']['detail']}"
                     if TRIVIAL_FIX_DIRECT_PUSH in issue_blocking
+                    else ""
+                )
+                + (
+                    ". The issue asks for a maintainer-applied label before a "
+                    "pull request and lacks "
+                    + ", ".join(
+                        f"`{label}`" for label in record["required_labels_missing"]
+                    )
+                    if ISSUE_LACKS_REQUIRED_LABEL in issue_blocking
                     else ""
                 )
                 + (

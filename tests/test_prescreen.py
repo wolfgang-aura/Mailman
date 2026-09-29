@@ -24,6 +24,7 @@ from mailman.prescreen import (
     MAINTAINER_DISPUTED,
     ISSUE_NOT_BOUNDED_FIX,
     ISSUE_NOT_TRIAGED_HERE,
+    ISSUE_LACKS_REQUIRED_LABEL,
     PRESCREEN_HOURS,
     REPOSITORY_SCREEN_FAILED,
     TRIVIAL,
@@ -1763,6 +1764,42 @@ class MaintainerDisputedTests(PrescreenTests):
                 self.assertEqual(record["verdict"], "reject")
                 self.assertIn(ISSUE_NOT_TRIAGED_HERE, record["blocking"])
 
+
+    def test_a_template_requiring_a_label_the_issue_lacks_rejects_it(self) -> None:
+        # mlflow#26266: the template says PRs need a maintainer-applied `ready`.
+        body = (
+            "> [!WARNING]\n> Before submitting a PR, please make sure that:\n"
+            "> - A maintainer has triaged this issue and applied the `ready` label\n"
+            "> - This issue has no assignee\n\n"
+            "PRs not meeting these requirements may be automatically closed.\n\n"
+            "The gateway ignores tool_choice."
+        )
+        for labels, blocked in (([{"name": "bug"}], True),
+                                ([{"name": "bug"}, {"name": "ready"}], False)):
+            with self.subTest(labels=[label["name"] for label in labels]):
+                issue = {
+                    "number": 8,
+                    "title": "tool_choice ignored",
+                    "body": body,
+                    "state": "OPEN",
+                    "url": "https://github.com/example/project/issues/8",
+                    "author": {"login": "reporter"},
+                    "labels": labels,
+                    "createdAt": "2026-09-01T00:00:00Z",
+                    "updatedAt": "2026-09-01T00:00:00Z",
+                }
+                record = prescreen_issue(
+                    self.root, "example/project#8", executable=self.stub("[]", issue)
+                )
+
+                if blocked:
+                    self.assertEqual(record["verdict"], "reject")
+                    self.assertIn(ISSUE_LACKS_REQUIRED_LABEL, record["blocking"])
+                    self.assertIn("ready", record["next"])
+                else:
+                    self.assertNotIn(
+                        ISSUE_LACKS_REQUIRED_LABEL, record.get("blocking", [])
+                    )
 
 class PriorDiscussionTests(PrescreenTests):
     """A repository that closes a pull request whose issue nobody answered.
