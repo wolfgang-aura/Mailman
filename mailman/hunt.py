@@ -618,7 +618,12 @@ SWEEP_SINCE_DAYS = 60
 SWEEP_REPOSITORIES_PER_QUERY = 8
 #: Seconds between search calls, under GitHub's burst limit for search.
 SWEEP_PAUSE_SECONDS = 3.0
-_SWEEP_FILTERS = "is:issue is:open label:bug -linked:pr no:assignee"
+#: Every bug label the passing screens' rows carried on 2026-09-30, OR'd;
+#: search matches labels exactly but ignores case, so `bug` covers `BUG`.
+_SWEEP_LABELS = ('bug', '"kind/bug"', '"kind: bug"', '"type: bug"', '"T: bug"',
+                 '"Issue Type: Bug Report"', "regression")
+_SWEEP_FILTERS = (f"is:issue is:open label:{','.join(_SWEEP_LABELS)} "
+                  "-linked:pr no:assignee")
 
 
 def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = None,

@@ -1272,9 +1272,14 @@ class SweepTests(OrchestratorHarness):
             self.assertIn(f"repo:{slug}", named)
         for slug in ("acme/old", "acme/failed", "acme/held"):
             self.assertNotIn(f"repo:{slug} ", named + " ")
-        for part in ("is:issue", "is:open", "label:bug", "-linked:pr",
+        for part in ("is:issue", "is:open", "-linked:pr",
                      "no:assignee", "created:>2026-08-01"):
             self.assertIn(part, queries[0])
+        # The labels the passing screens actually use, OR'd: celery's
+        # "Issue Type: Bug Report" and kind/bug were invisible to label:bug.
+        self.assertIn("label:bug,", queries[0])
+        for label in ('"kind/bug"', '"Issue Type: Bug Report"', "regression"):
+            self.assertIn(label, queries[0])
         self.assertEqual(len(gh.sleeps), 1)
         self.assertEqual(result["queries"], 2)
         self.assertEqual(result["repositories"], 4)
