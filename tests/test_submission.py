@@ -336,6 +336,21 @@ class LocalMatchTests(unittest.TestCase):
         stray = dict(_weak_match(1), state="merged")
         self.assertEqual(duplicate_strength(stray), "weak")
 
+    def test_an_index_hit_the_listing_read_as_partial_is_weak(self) -> None:
+        # scverse/anndata#2596 blocked #2348 as an open rival. Mailman #196.
+        row = dict(
+            _weak_match(2596),
+            title="fix: write through to correct parent element in ArrayView",
+            methods=["search", "listing"],
+            matched_terms=["arrayview"],
+            term_count=2,
+        )
+        self.assertEqual(duplicate_strength(row), "weak")
+        full = dict(row, matched_terms=["arrayview", "dataframe"])
+        self.assertEqual(duplicate_strength(full), "strong")
+        cited = dict(row, references_issue=True)
+        self.assertEqual(duplicate_strength(cited), "strong")
+
     def test_partition_splits_index_hits_from_listing_noise(self) -> None:
         index_hit = dict(_weak_match(1), methods=["search"])
         strong, weak = partition_duplicates([index_hit, _weak_match(2)])

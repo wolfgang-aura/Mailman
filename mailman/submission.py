@@ -1104,10 +1104,15 @@ def duplicate_is_related(row: dict[str, Any]) -> bool:
     # An older record has no `methods`, and its `matched_by` held the method
     # name for index hits. Read both so a run recorded before #31 still judges.
     methods = [str(method) for method in row.get("methods") or []] or reasons
-    if any(method in _INDEX_METHODS for method in methods):
-        return True
     matched = row.get("matched_terms") or []
     term_count = row.get("term_count") or 0
+    if any(method in _INDEX_METHODS for method in methods):
+        # The index matches text Mailman never sees. When our own listing read
+        # this row's title and body and found only part of the query, that is
+        # the better evidence: anndata#2596 shared "arrayview" with a query
+        # for "arrayview dataframe" and blocked #2348 with no override. #196.
+        partial = "listing" in methods and term_count and len(matched) < term_count
+        return not partial
     return bool(term_count and len(matched) >= term_count)
 
 
