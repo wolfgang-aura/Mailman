@@ -19,6 +19,7 @@ from mailman.reproduction import (
 )
 from mailman.toolchain import resolve_tool
 from mailman.touched_tests import (
+    BASELINE_NODE_LIMIT,
     TOUCHED_TESTS_CAP,
     deselects_for,
     load_touched_tests,
@@ -960,11 +961,21 @@ def prepare_submission(
         or _touched_selection_changed(touched_tests, touched_workspace, changed_paths)
         or _touched_deselects_changed(touched_tests, run_directory)
         # A failure recorded before failures were compared with the base
-        # commit (#180) is run again so it gets that comparison.
+        # commit (#180), or past the old 50-node limit that skipped the
+        # comparison (#202), is run again so it gets that comparison.
         or (
             touched_tests.get("exit_code") == 1
-            and "baseline" not in touched_tests
             and bool(run.base_commit)
+            and (
+                "baseline" not in touched_tests
+                or (
+                    touched_tests.get("baseline") is None
+                    and touched_tests.get("runner") == "pytest"
+                    and (touched_tests.get("failed") or 0)
+                    + (touched_tests.get("errors") or 0)
+                    > BASELINE_NODE_LIMIT
+                )
+            )
         )
     ):
         touched_tests = run_touched_tests(

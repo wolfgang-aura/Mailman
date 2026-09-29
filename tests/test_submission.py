@@ -1163,6 +1163,21 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertEqual(len(self.touched_tests_calls), 1)
         self.assertTrue(self.touched_tests_calls[0]["base_commit"])
 
+    def test_a_stored_failure_the_node_limit_left_uncompared_is_rerun(self) -> None:
+        # #202: anndata#2348's record held `"baseline": null` because 2249
+        # failing nodes were past the old limit.
+        stored = passing_touched_tests(SOURCE_DIFF, exit_code=1, failed=1281, errors=968)
+        stored["baseline"] = None
+        (self.run_directory / TOUCHED_TESTS_FILENAME).write_text(
+            json.dumps(stored), encoding="utf-8"
+        )
+        with (
+            patch("mailman.submission.resolve_workspace", return_value=self.run_directory),
+            patch("mailman.submission.select_test_files", return_value=stored),
+        ):
+            self._prepare()
+        self.assertEqual(len(self.touched_tests_calls), 1)
+
     def test_a_touched_tests_stage_that_could_not_run_blocks(self) -> None:
         self.touched_tests.side_effect = lambda run_directory, *, diff, **_: (
             passing_touched_tests(
