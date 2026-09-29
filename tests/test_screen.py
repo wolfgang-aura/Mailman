@@ -371,7 +371,9 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(len(queries), 1)
         self.assertIn('owner: "example", name: "project"', queries[0])
 
-    def test_a_refused_repository_reads_no_mergers(self) -> None:
+    def test_a_refused_repository_reads_mergers_once_for_freshness(self) -> None:
+        # Freshness needs the mergers to tell private-member staff from
+        # outsiders (#239), so the one GraphQL read happens before any gate.
         with tempfile.TemporaryDirectory() as temporary:
             gh = FakeGitHub(
                 languages={"TypeScript": 900000, "Python": 100000},
@@ -379,9 +381,10 @@ class ScreenTests(unittest.TestCase):
             )
             record = _screen(Path(temporary), gh)
 
-        self.assertEqual(record["maintainer_logins"], [])
-        self.assertFalse(record["maintainer_logins_read"])
-        self.assertFalse(any(path.startswith("query=") for path in gh.asked))
+        self.assertEqual(record["verdict"], "fail")
+        self.assertEqual(record["maintainer_logins"], ["mscolnick"])
+        queries = [path for path in gh.asked if path.startswith("query=")]
+        self.assertEqual(len(queries), 1)
 
     def test_repeated_assignment_bot_closures_reject_the_repository(self) -> None:
         marker = {
@@ -575,6 +578,51 @@ class ScreenTests(unittest.TestCase):
         )
         self.assertIn("alice, bob", freshness["detail"])
         self.assertIn("excluded dependabot[bot], freqtrade-bot", freshness["detail"])
+
+    def test_merges_by_people_who_merge_pull_requests_are_not_outside(self) -> None:
+        # biolab/orange3 on 2026-09-30: every "outside" merge in 45 days was by
+        # janezd or ales-erjavec, core developers whose membership is private,
+        # so GitHub calls them CONTRIBUTOR. Both merge other people's pull
+        # requests. #239.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    closed_pulls=[
+                        _pull(1, author="janezd", merged_days_ago=2),
+                        _pull(2, author="ales-erjavec", merged_days_ago=9),
+                        _pull(3, author="janezd", merged_days_ago=20),
+                    ],
+                    mergers=[("janezd", "User"), ("ales-erjavec", "User")],
+                ),
+            )
+        freshness = _named(record, "freshness")
+
+        self.assertIn("freshness", record["failed_gates"])
+        self.assertEqual(freshness["data"]["merges_in_window"], 0)
+        self.assertEqual(
+            freshness["data"]["excluded_staff_authors"], ["ales-erjavec", "janezd"]
+        )
+        self.assertIn("excluded staff ales-erjavec, janezd", freshness["detail"])
+
+    def test_a_branch_pushed_to_the_repository_itself_is_not_outside(self) -> None:
+        # streamlit/streamlit: sfc-gh-* staff push their branches to
+        # streamlit/streamlit, which needs write access. A stranger's branch
+        # lives in a fork. #239.
+        staff = _pull(1, author="sfc-gh-staff", merged_days_ago=2)
+        staff["head"]["repo"] = {"full_name": "example/project"}
+        visitor = _pull(2, author="visitor", merged_days_ago=3)
+        visitor["head"]["repo"] = {"full_name": "visitor/project"}
+        other = _pull(3, author="other", merged_days_ago=20)
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary), FakeGitHub(closed_pulls=[staff, visitor, other])
+            )
+        freshness = _named(record, "freshness")
+
+        self.assertNotIn("freshness", record["failed_gates"])
+        self.assertEqual(freshness["data"]["authors_in_window"], ["other", "visitor"])
+        self.assertEqual(freshness["data"]["excluded_staff_authors"], ["sfc-gh-staff"])
 
     def test_a_broadly_shared_repository_passes_despite_a_leading_author(self) -> None:
         # freqtrade sits near 0.44 with fourteen authors and is genuinely open.

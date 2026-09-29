@@ -818,7 +818,24 @@ def _provenance_gate(meta: dict[str, Any], freshness: dict[str, Any]) -> dict[st
     )
 
 
-def _freshness_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
+def _is_staff(row: dict[str, Any], slug: str, maintainers: Collection[str]) -> bool:
+    """Whether a CONTRIBUTOR-labelled author has write access after all.
+
+    GitHub says CONTRIBUTOR for staff whose org membership is private. Two
+    things give them away: they merge other people's pull requests, or they
+    push their branch to the repository itself rather than to a fork. #239.
+    """
+    login = str((row.get("user") or {}).get("login") or "").lower()
+    if login and login in {name.lower() for name in maintainers}:
+        return True
+    head = row.get("head") if isinstance(row.get("head"), dict) else {}
+    repo = head.get("repo") if isinstance(head.get("repo"), dict) else {}
+    return str(repo.get("full_name") or "").lower() == slug.lower()
+
+
+def _freshness_gate(
+    gh: _Gh, slug: str, window_days: int, maintainers: Collection[str] = ()
+) -> dict[str, Any]:
     """Gate 1. Does outside work actually merge here, and by more than one person?"""
     closed = gh.pages(
         f"repos/{slug}/pulls?state=closed&sort=updated&direction=desc", pages=6
@@ -827,10 +844,19 @@ def _freshness_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
     window = (now - timedelta(days=window_days)).date().isoformat()
     pattern = (now - timedelta(days=PATTERN_DAYS)).date().isoformat()
 
+    merged_human = [
+        row for row in closed if row.get("merged_at") and is_outside_human(row)
+    ]
+    excluded_staff = sorted(
+        {
+            str((row.get("user") or {}).get("login"))
+            for row in merged_human
+            if _is_staff(row, slug, maintainers)
+        },
+        key=str.lower,
+    )
     merged_outside = [
-        row
-        for row in closed
-        if row.get("merged_at") and is_outside_human(row)
+        row for row in merged_human if not _is_staff(row, slug, maintainers)
     ]
     recent = [row for row in merged_outside if row["merged_at"][:10] >= window]
     longer = [row for row in merged_outside if row["merged_at"][:10] >= pattern]
@@ -870,6 +896,7 @@ def _freshness_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
         "distinct_authors_in_window": len(window_authors),
         "authors_in_window": sorted(name for name in window_authors if name),
         "excluded_bot_authors": excluded_bots,
+        "excluded_staff_authors": excluded_staff,
         "top_author": authors.most_common(1)[0][0] if authors else None,
         "top_author_share": share,
         "latest_outside_merge": latest,
@@ -885,6 +912,11 @@ def _freshness_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
             detail=(
                 f"no outside human merge in {window_days} days; latest is "
                 f"{latest or 'none found'}"
+                + (
+                    f"; excluded staff {', '.join(excluded_staff)}"
+                    if excluded_staff
+                    else ""
+                )
             ),
             data=data,
         )
@@ -944,6 +976,11 @@ def _freshness_gate(gh: _Gh, slug: str, window_days: int) -> dict[str, Any]:
             f"{len(window_authors)} author(s) ({named}), {distinct} distinct "
             f"author(s) in {PATTERN_DAYS} days, top author {share:.0%}"
             + (f"; excluded {', '.join(excluded_bots)}" if excluded_bots else "")
+            + (
+                f"; excluded staff {', '.join(excluded_staff)}"
+                if excluded_staff
+                else ""
+            )
         ),
         data=data,
     )
@@ -2615,7 +2652,15 @@ def screen_repository(
         _write(data_root, record)
         return record
 
-    freshness = _freshness_gate(gh, slug, window_days)
+    # One GraphQL call, read first: freshness needs it to tell private-member
+    # staff from outsiders (#239), and every later "is this a maintainer?"
+    # reads it too.
+    owner, _, name = slug.partition("/")
+    answer = gh.graphql(MERGERS_QUERY % (owner, name))
+    maintainers = mergers(answer)
+    record["maintainer_logins"] = maintainers
+    record["maintainer_logins_read"] = answer is not None
+    freshness = _freshness_gate(gh, slug, window_days, maintainers)
     python = _python_gate(gh, slug)
     gates = [
         _provenance_gate(meta, freshness),
@@ -2645,12 +2690,6 @@ def screen_repository(
     if refused:
         gates += [_skipped_gate(name, refused) for name in EXPENSIVE_GATES]
     else:
-        # One GraphQL call. Every later "is this a maintainer?" reads it.
-        owner, _, name = slug.partition("/")
-        answer = gh.graphql(MERGERS_QUERY % (owner, name))
-        maintainers = mergers(answer)
-        record["maintainer_logins"] = maintainers
-        record["maintainer_logins_read"] = answer is not None
         gates += [
             _saturation_gate(
                 gh, slug, window_days, issue_window_days, maintainers
