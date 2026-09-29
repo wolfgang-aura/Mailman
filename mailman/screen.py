@@ -2286,6 +2286,7 @@ def _responsiveness_gate(
     waits: list[float] = []
     responded = 0
     responded_within = 0
+    still_in_window = 0
     merged = 0
     closed_unmerged = 0
     # Three reads per pull request, 150 in all, were two thirds of a screen's
@@ -2316,7 +2317,11 @@ def _responsiveness_gate(
             merge_wait = max((merged_at - opened).total_seconds() / 86400, 0.0)
             wait = merge_wait if wait is None else min(wait, merge_wait)
         if wait is None:
-            waits.append((now - opened).total_seconds() / 86400)
+            age = (now - opened).total_seconds() / 86400
+            waits.append(age)
+            if age < FIRST_RESPONSE_DAYS:
+                # Its window has not closed; silence so far is not a miss (#224).
+                still_in_window += 1
         else:
             responded += 1
             waits.append(wait)
@@ -2328,7 +2333,8 @@ def _responsiveness_gate(
             closed_unmerged += 1
     sampled = len(sample)
     median = round(statistics.median(waits), 1) if waits else None
-    share = round(responded_within / sampled, 2) if sampled else None
+    judged = sampled - still_in_window
+    share = round(responded_within / judged, 2) if judged else None
     decided = merged + closed_unmerged
     data = {
         "result": "unknown",
@@ -2339,6 +2345,7 @@ def _responsiveness_gate(
         "sample_cap": RESPONSIVENESS_SAMPLE,
         "responded": responded,
         "responded_within_days": responded_within,
+        "still_in_window": still_in_window,
         "response_share": share,
         "median_first_response_days": median,
         "merged": merged,
@@ -2367,8 +2374,9 @@ def _responsiveness_gate(
         )
     numbers = (
         f"median first maintainer response {median} day(s), "
-        f"{responded_within} of {sampled} answered within {FIRST_RESPONSE_DAYS} "
-        f"days ({share:.0%}), {merged} merged, {closed_unmerged} closed unmerged"
+        f"{responded_within} of {judged} answered within {FIRST_RESPONSE_DAYS} "
+        f"days ({'none judged yet' if share is None else format(share, '.0%')}), "
+        f"{merged} merged, {closed_unmerged} closed unmerged"
         + (f"; excluded {', '.join(sorted(excluded_bots))}" if excluded_bots else "")
     )
     reasons: list[str] = []

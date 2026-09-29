@@ -2401,6 +2401,33 @@ class ResponsivenessTests(unittest.TestCase):
         self.assertEqual(gate["data"]["responded_within_days"], 3)
         self.assertEqual(gate["data"]["median_first_response_days"], 3.0)
 
+    def test_a_pull_request_younger_than_the_response_window_is_not_a_miss(
+        self,
+    ) -> None:
+        # SQLMesh failed at 24 of 50 because unanswered two-day-old pull
+        # requests counted against the 14-day share. Mailman #224.
+        pulls = [
+            _outside_pull(401, opened_days_ago=40),
+            _outside_pull(402, opened_days_ago=35),
+            _outside_pull(403, opened_days_ago=30),
+            _outside_pull(404, opened_days_ago=25),
+            _outside_pull(405, opened_days_ago=2),
+            _outside_pull(406, opened_days_ago=2),
+            _outside_pull(407, opened_days_ago=1),
+        ]
+        reviews = {401: [_response(39)], 402: [_response(34)], 403: [_response(29)]}
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary), FakeGitHub(all_pulls=pulls, reviews=reviews)
+            )
+        gate = _named(record, "responsiveness")
+
+        self.assertTrue(gate["passed"], gate["data"])
+        self.assertEqual(gate["data"]["responded_within_days"], 3)
+        self.assertEqual(gate["data"]["still_in_window"], 3)
+        self.assertEqual(gate["data"]["response_share"], 0.75)
+        self.assertIn("3 of 4 answered within 14 days (75%)", gate["detail"])
+
     def test_a_slow_median_first_response_fails(self) -> None:
         # poetry and pdm are this shape: the pull request is read, eventually.
         pulls = [
@@ -2543,7 +2570,7 @@ class ResponsivenessTests(unittest.TestCase):
             ),
             _outside_pull(603, opened_days_ago=30, merged=True),
             _outside_pull(604, opened_days_ago=20, merged=True),
-            _outside_pull(605, opened_days_ago=10),
+            _outside_pull(605, opened_days_ago=20),
         ]
         # 605 is answered only by a bot and by its own author, which is no
         # answer at all, so it has waited its whole age.
