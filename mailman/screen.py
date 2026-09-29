@@ -43,6 +43,7 @@ from mailman.claims import (
     MAINTAINER_ASSOCIATIONS,
     classify_comment,
     classify_thread,
+    maintainer_dispute,
     maintainer_labels,
     maintainer_touched_at,
     pull_request_references,
@@ -1862,6 +1863,12 @@ def _shortlist_row(
                 and comment.get("author_association") in MAINTAINER_ASSOCIATIONS
                 for comment in thread.get("comments") or []
             )
+            if thread is not None
+            else None
+        ),
+        # A reply that says "cannot reproduce" is not triage. Mailman #150.
+        "maintainer_disputed": (
+            maintainer_dispute(thread.get("comments") or [])
             if thread is not None
             else None
         ),

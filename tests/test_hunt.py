@@ -1073,6 +1073,25 @@ class PrescreenRecordTests(OrchestratorHarness):
         self.assertEqual([row["target"] for row in rows], ["acme/labels#6"])
         self.assertTrue(rows[0]["maintainer_labelled"])
 
+    def test_workable_targets_rank_a_disputed_reply_last_and_out_of_engaged(self):
+        # copier#2436: the maintainer's reply was "could not reproduce", and
+        # --engaged-only offered it as triaged. Mailman #150.
+        self._screen("acme/disputes", [9, 10], flags={
+            9: {"maintainer_filed": False, "maintainer_replied": True,
+                "maintainer_disputed": "I could not reproduce this on main."},
+            10: {"maintainer_filed": False, "maintainer_replied": False},
+        })
+
+        every = workable_targets(self.data_root, held_repositories=set())
+        engaged = workable_targets(self.data_root, held_repositories=set(),
+                                   engaged_only=True)
+
+        self.assertEqual(
+            [(row["target"], row["engagement"]) for row in every],
+            [("acme/disputes#10", "not-engaged"), ("acme/disputes#9", "disputed")],
+        )
+        self.assertEqual(engaged, [])
+
     def test_stale_screen_warning_counts_rows_and_names_the_refresh(self):
         self._engagement_screens()
         rows = workable_targets(self.data_root, held_repositories=set())

@@ -959,3 +959,51 @@ class ReferenceRecordTests(unittest.TestCase):
             ("python-jsonschema/referencing", 367),
             [(row["repository"], row["number"]) for row in record["references"]],
         )
+
+
+class MaintainerDisputeTests(unittest.TestCase):
+    """Mailman #150: a maintainer reply is triage only when it does not dispute."""
+
+    @staticmethod
+    def _comment(body, association="MEMBER"):
+        return {
+            "body": body,
+            "author_association": association,
+            "user": {"login": "someone", "type": "User"},
+            "created_at": "2026-09-01T00:00:00Z",
+        }
+
+    def test_cannot_reproduce_is_a_dispute(self):
+        from mailman.claims import maintainer_dispute
+
+        quote = maintainer_dispute(
+            [self._comment("Thanks. I could not reproduce this on main.")]
+        )
+        self.assertEqual(quote, "I could not reproduce this on main.")
+
+    def test_a_later_confirmation_ends_the_dispute(self):
+        from mailman.claims import maintainer_dispute
+
+        self.assertIsNone(
+            maintainer_dispute(
+                [
+                    self._comment("I cannot reproduce this."),
+                    self._comment("Thanks for the script", association="NONE"),
+                    self._comment("Ok, with that script I can reproduce it."),
+                ]
+            )
+        )
+
+    def test_an_outsider_saying_works_for_me_is_not_a_dispute(self):
+        from mailman.claims import maintainer_dispute
+
+        self.assertIsNone(
+            maintainer_dispute([self._comment("Works for me", association="NONE")])
+        )
+
+    def test_works_as_designed_is_a_dispute(self):
+        from mailman.claims import maintainer_dispute
+
+        self.assertIsNotNone(
+            maintainer_dispute([self._comment("This works as designed.")])
+        )

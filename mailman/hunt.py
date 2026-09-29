@@ -481,7 +481,9 @@ def open_pull_request_repositories(root: Path) -> set[str]:
 ENGAGED = "engaged"
 NOT_ENGAGED = "not-engaged"
 ENGAGEMENT_UNKNOWN = "unknown"
-_ENGAGEMENT_RANK = {ENGAGED: 0, ENGAGEMENT_UNKNOWN: 1, NOT_ENGAGED: 2}
+#: A maintainer answered, and the latest answer disputes the bug. Mailman #150.
+DISPUTED = "disputed"
+_ENGAGEMENT_RANK = {ENGAGED: 0, ENGAGEMENT_UNKNOWN: 1, NOT_ENGAGED: 2, DISPUTED: 3}
 
 
 def row_engagement(row: dict) -> str:
@@ -491,6 +493,8 @@ def row_engagement(row: dict) -> str:
     thread: that row may be triaged, so it ranks above a known silence.
     https://github.com/wolfgang-aura/Mailman/issues/135
     """
+    if row.get("maintainer_disputed"):
+        return DISPUTED
     filed, replied = row.get("maintainer_filed"), row.get("maintainer_replied")
     # A label from somebody with triage access is triage too (#139).
     if filed or replied or row.get("maintainer_labelled"):
@@ -577,6 +581,7 @@ def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
                 "maintainer_filed": row.get("maintainer_filed"),
                 "maintainer_replied": row.get("maintainer_replied"),
                 "maintainer_labelled": row.get("maintainer_labelled"),
+                "maintainer_disputed": row.get("maintainer_disputed"),
                 # A screen written before f94d449 has no flags at all.
                 "stale_screen": "maintainer_filed" not in row,
                 "screened_at": screen.get("screened_at"),

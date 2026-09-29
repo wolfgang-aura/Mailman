@@ -894,3 +894,63 @@ def render_claims(record: dict[str, Any]) -> str:
     if not (record.get("claims") or record.get("assignments")):
         lines += ["", "No claim was made in this issue's comments."]
     return "\n".join(lines) + "\n"
+
+
+#: A project voice saying the report does not reproduce for them.
+_NOT_REPRODUCED = re.compile(
+    r"\b(?:"
+    r"(?:can(?:no|')?t|cannot|could(?:n't| not)|unable to|not able to|failed to)"
+    r" (?:reproduce|repro|replicate)\b"
+    r"|works (?:fine )?for me\b"
+    r"|no repro\b"
+    r")",
+    re.IGNORECASE,
+)
+
+#: A project voice confirming the report: the answer that ends a dispute.
+_CONFIRMED = re.compile(
+    r"\b(?:"
+    r"(?:i|we) (?:can|could|was able to|am able to|were able to) "
+    r"(?:reproduce|repro|replicate)\b"
+    r"|(?:confirmed|reproduced)\b"
+    r"|looks like a bug\b"
+    r"|you(?:'re| are) right\b"
+    r"|this is a bug\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def maintainer_dispute(thread: Iterable[dict[str, Any]]) -> str | None:
+    """The sentence of the project's latest word when that word disputes the bug.
+
+    `hunt targets --engaged-only` counted any maintainer reply as triage, so
+    it offered threads whose maintainer said "could not reproduce", "works as
+    designed" or left the design open: 21 of 28 hand rejections in hunt
+    20260928T094000Z-3b91d9. The latest project voice wins, so a later "I can
+    reproduce" or "PR welcome" ends the dispute. Mailman #150.
+    """
+    latest: tuple[bool, str] | None = None
+    for comment in thread:
+        if not isinstance(comment, dict) or _is_bot(comment.get("user")):
+            continue
+        if comment.get("author_association") not in _PROJECT_VOICES:
+            continue
+        text = _matchable(_flat(_unquoted(comment.get("body"))))
+        found = [
+            (match.start(), True, match)
+            for pattern in (_NOT_REPRODUCED, _DECLINED, _DESIGN_OPEN)
+            for match in pattern.finditer(text)
+        ] + [
+            (match.start(), False, match)
+            for pattern in (_CONFIRMED, _DESIGN_SETTLED, _INVITATION)
+            for match in pattern.finditer(text)
+        ]
+        if not found:
+            continue
+        _, disputes, match = max(found, key=lambda item: item[0])
+        latest = (
+            disputes,
+            _sentence_around(text, match.start(), match.end()),
+        )
+    return latest[1] if latest and latest[0] else None
