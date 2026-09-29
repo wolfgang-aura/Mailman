@@ -163,7 +163,9 @@ a time; a screen costs about 200 GitHub core calls.
    unless the issue's own body is where it is named: a reporter cites a
    merged pull request as the cause or the context of the report, not its
    fix, so that one is the `cited-merged-in-body` warning and the
-   reproduction at base decides. The
+   reproduction at base decides. One merged more than 90 days before the
+   issue was opened shipped in releases the reporter had, so it is the
+   `cited-merged-before-issue` warning for the same reason. The
    record names the reference that decided it under `cited_pull_requests`.
    A reference that turns out to be an issue is skipped without comment.
    An open pull request untouched for 60 days or more, and one closed without

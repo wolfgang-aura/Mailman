@@ -48,6 +48,7 @@ from mailman.shortlist import (
 )
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
+    CITED_MERGED_BEFORE_ISSUE,
     CITED_MERGED_IN_BODY,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     MAINTAINER_CLOSED_ATTEMPT,
@@ -1035,6 +1036,49 @@ class CitedPullRequestTests(PrescreenTests):
         self.assertNotIn(ALREADY_FIXED_UPSTREAM, record["blocking"])
         self.assertIn(CITED_MERGED_IN_BODY, record["warnings"])
         self.assertEqual(record["cited_pull_requests"]["merged_in_body"], [6294])
+
+    def test_a_merge_shipped_long_before_the_issue_is_context_not_a_fix(
+        self,
+    ) -> None:
+        # holoviz/panel#8335: a maintainer wrote "Possibly related to #1543",
+        # merged in 2020, four years before the issue. That pull request
+        # introduced the behaviour; it did not fix it. Mailman #147.
+        comment = {
+            "body": "Possibly related to https://github.com/holoviz/panel/pull/1543",
+            "author_association": "MEMBER",
+            "created_at": "2026-09-10T00:00:00Z",
+            "user": {"login": "maintainer", "type": "User"},
+        }
+        record = prescreen_issue(
+            self.root,
+            "holoviz/panel#8335",
+            executable=self.stub(
+                "[]",
+                self.issue(
+                    8335,
+                    "holoviz/panel",
+                    "Embedding links widgets that only share a name.",
+                    "embed merges widgets with the same name",
+                ),
+                comments=[comment],
+                pull_requests={
+                    "holoviz/panel#1543": {
+                        "number": 1543,
+                        "state": "MERGED",
+                        "title": "Link widgets with same name during embed",
+                        "url": "https://github.com/holoviz/panel/pull/1543",
+                        "mergedAt": "2020-08-01T00:00:00Z",
+                        "mergeCommit": {"oid": "c" * 40},
+                    }
+                },
+            ),
+        )
+
+        self.assertNotIn(ALREADY_FIXED_UPSTREAM, record["blocking"])
+        self.assertIn(CITED_MERGED_BEFORE_ISSUE, record["warnings"])
+        self.assertEqual(
+            record["cited_pull_requests"]["merged_before_issue"], [1543]
+        )
 
     def test_a_cross_repository_pull_request_rejects_the_issue(self) -> None:
         # python-jsonschema/jsonschema#1497: the fix is open in the sibling

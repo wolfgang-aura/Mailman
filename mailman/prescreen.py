@@ -46,10 +46,12 @@ from mailman.submission import (
 )
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
+    CITED_MERGED_BEFORE_ISSUE,
     CITED_MERGED_IN_BODY,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     ISSUE_ASSIGNED,
     MAINTAINER_CLOSED_ATTEMPT,
+    MERGED_BEFORE_ISSUE_DAYS,
     NO_DUPLICATE_SEARCH,
     NO_MAINTAINER_REPLY,
     OPEN_PULL_REQUEST,
@@ -742,11 +744,29 @@ def prescreen_issue(
     # A fix is announced later, in a comment, and those still block. The
     # reproduction at the base commit is the check behind this one.
     merged_here = [row for row in cited["merged"] if _here(row)]
-    merged_fixes = [row for row in merged_here if row.get("in") != "body"]
+    # One merged long before the issue was opened shipped in releases the
+    # reporter already had: cause or context again, not a fix. Mailman #147.
+    shipped = [
+        row
+        for row in merged_here
+        if _merged_before_issue(row, claims.get("issue_created_at"))
+    ]
+    record["cited_pull_requests"]["merged_before_issue"] = [
+        row["number"] for row in shipped
+    ]
+    merged_fixes = [
+        row
+        for row in merged_here
+        if row.get("in") != "body" and row not in shipped
+    ]
     if merged_fixes:
         thread_blocking.append(ALREADY_FIXED_UPSTREAM)
     elif merged_here:
-        warnings.append(CITED_MERGED_IN_BODY)
+        warnings.append(
+            CITED_MERGED_BEFORE_ISSUE
+            if len(shipped) == len(merged_here)
+            else CITED_MERGED_IN_BODY
+        )
     labels = captured.get("labels") or []
     record["ranking"] = _ranking(
         claims,
@@ -811,7 +831,11 @@ def prescreen_issue(
                 "it is labelled as a feature request and no maintainer in the "
                 "thread asked for a pull request"
             )
-        if cited["decided_by"]:
+        # The cited pull request is the reason only when it is what blocked.
+        if cited["decided_by"] and (
+            OPEN_PULL_REQUEST in thread_blocking
+            or ALREADY_FIXED_UPSTREAM in thread_blocking
+        ):
             details.append(cited["detail"])
         record.update(
             {
@@ -1011,3 +1035,13 @@ def check(data_root: Path, issue: str) -> tuple[dict[str, Any] | None, str | Non
             f"{PRESCREEN_HOURS} hours; run `mailman prescreen {slug}#{number}` again"
         )
     return record, None
+
+
+def _merged_before_issue(row: dict[str, Any], issue_created_at: Any) -> bool:
+    """Whether a merge shipped well before the issue was opened. Mailman #147."""
+    try:
+        merged = datetime.fromisoformat(str(row.get("merged_at")).replace("Z", "+00:00"))
+        opened = datetime.fromisoformat(str(issue_created_at).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return opened - merged > timedelta(days=MERGED_BEFORE_ISSUE_DAYS)

@@ -52,6 +52,15 @@ ALREADY_FIXED_UPSTREAM = "already-fixed-upstream"
 #: A merged pull request the issue's own body names. Context or cause, not a
 #: fix, so a warning: the reproduction at the base commit decides.
 CITED_MERGED_IN_BODY = "cited-merged-in-body"
+#: A merged pull request cited in the thread that was merged long before the
+#: issue was opened. It shipped in releases the reporter already had, so it
+#: is the cause or the context of the report, not its fix; the reproduction
+#: at the base commit decides. holoviz/panel#8335 was refused as already
+#: fixed on "Possibly related to #1543", merged four years earlier. Mailman #147.
+CITED_MERGED_BEFORE_ISSUE = "cited-merged-before-issue"
+#: How long before the issue a merge must be to count as shipped. A fix merged
+#: a month before the report may be unreleased (PrefectHQ/prefect#22956).
+MERGED_BEFORE_ISSUE_DAYS = 90
 # A merged pull request that is already an ancestor of the base commit the
 # reproduction failed at. Upstream shipped something to the same code and the
 # defect survived it, so this is a warning to read rather than a refusal.
