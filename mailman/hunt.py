@@ -567,30 +567,19 @@ def stale_screen_warning(targets: list[dict]) -> str | None:
     )
 
 
-def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
-                     max_age_days: int = TARGET_SCREEN_MAX_AGE_DAYS,
-                     now: datetime | None = None,
-                     engaged_only: bool = False) -> list[dict]:
-    """Shortlisted issues from fresh passing screens that nobody has taken yet.
+def _passing_screens(root: Path, held_repositories: set[str] | None,
+                     max_age_days: int, now: datetime | None) -> list[tuple]:
+    """(screened_at, slug, screen) for current passing screens, newest first.
 
-    An issue is left out when it was prescreened, when a live hunt holds it,
-    when its repository holds our open pull request, or when an open or merged
-    pull request is cross-referenced to it. Rows a maintainer filed, replied
-    on or labelled come first, then rows whose engagement is unknown,
-    then the rest; within each group, newest screen first in each screen's
-    own shortlist order. An untriaged run never counts ready, so a hunt that
-    starts on silent issues comes back empty (#135). `engaged_only` keeps
-    only the first group.
+    A repository holding our open pull request is left out.
     """
-    from mailman.prescreen import prescreen_path
-    from mailman.screen import SCREENS_DIRECTORY, is_request_row, screen_shortlist
+    from mailman.screen import SCREENS_DIRECTORY
 
     moment = now or datetime.now(UTC)
     held = {slug.lower() for slug in (
         open_pull_request_repositories(root) if held_repositories is None
         else held_repositories
     )}
-    claimed = {claim["target"] for claim in target_claims(root) if claim["live"]}
     screens = []
     for path in sorted((root / SCREENS_DIRECTORY).glob("*.json")):
         screen = read_object(path)
@@ -610,6 +599,102 @@ def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
         if slug.lower() in held:
             continue
         screens.append((screened, slug, screen))
+    return sorted(screens, key=lambda item: item[0], reverse=True)
+
+
+# --- Fresh-issue sweep ------------------------------------------------------
+#
+# A screen freezes its shortlist when it is written. Hunt
+# 20260929T150205Z-08d690 had 83 passing screens and four workable rows, while
+# a hand search over the same repositories found eleven fresh bugs in five
+# calls; an unpaced second pass hit the secondary rate limit after two.
+# See https://github.com/wolfgang-aura/Mailman/issues/226.
+
+#: A repository's health changes slower than its issue list, so the sweep
+#: reads screens up to this old; the prescreen re-reads the issue itself.
+SWEEP_SCREEN_MAX_AGE_DAYS = 30
+SWEEP_SINCE_DAYS = 60
+#: Repositories per search query; GitHub caps a query at 256 characters.
+SWEEP_REPOSITORIES_PER_QUERY = 8
+#: Seconds between search calls, under GitHub's burst limit for search.
+SWEEP_PAUSE_SECONDS = 3.0
+_SWEEP_FILTERS = "is:issue is:open label:bug -linked:pr no:assignee"
+
+
+def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = None,
+                       since_days: int = SWEEP_SINCE_DAYS,
+                       per_query: int = SWEEP_REPOSITORIES_PER_QUERY,
+                       pause_seconds: float = SWEEP_PAUSE_SECONDS,
+                       now: datetime | None = None) -> dict:
+    """Open bug issues opened lately in passing repositories, not yet screened.
+
+    Rows with comments come first, newest first within each group. A query
+    GitHub refused is listed under `failed`; the rows from the others stand.
+    """
+    from urllib.parse import quote
+
+    from mailman.prescreen import prescreen_path
+
+    moment = now or datetime.now(UTC)
+    slugs = [slug for _, slug, _ in _passing_screens(
+        root, held_repositories, SWEEP_SCREEN_MAX_AGE_DAYS, moment)]
+    since = (moment - timedelta(days=since_days)).date().isoformat()
+    claimed = {claim["target"] for claim in target_claims(root) if claim["live"]}
+    rows: dict[str, dict] = {}
+    failed: list[str] = []
+    groups = [slugs[start:start + per_query] for start in range(0, len(slugs), per_query)]
+    for index, group in enumerate(groups):
+        if index:
+            gh.sleep(pause_seconds)
+        repositories = " ".join(f"repo:{slug}" for slug in group)
+        query = f"{_SWEEP_FILTERS} created:>{since} {repositories}"
+        result = gh.json(f"search/issues?q={quote(query)}&per_page=100")
+        items = result.get("items") if isinstance(result, dict) else None
+        if not isinstance(items, list):
+            failed.append(repositories)
+            continue
+        for item in items:
+            if not isinstance(item, dict) or not isinstance(item.get("number"), int):
+                continue
+            slug = str(item.get("repository_url") or "").split("/repos/", 1)[-1]
+            target = f"{slug}#{item['number']}"
+            if target in claimed or prescreen_path(root, slug, item["number"]).is_file():
+                continue
+            rows[target] = {
+                "target": target,
+                "title": item.get("title"),
+                "comments": item.get("comments") or 0,
+                "created_at": item.get("created_at"),
+                "author_association": item.get("author_association"),
+                "url": item.get("html_url"),
+            }
+    ordered = sorted(rows.values(), key=lambda row: str(row["created_at"] or ""),
+                     reverse=True)
+    ordered.sort(key=lambda row: row["comments"] == 0)
+    return {"queries": len(groups), "repositories": len(slugs),
+            "since": since, "failed": failed, "rows": ordered}
+
+
+def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
+                     max_age_days: int = TARGET_SCREEN_MAX_AGE_DAYS,
+                     now: datetime | None = None,
+                     engaged_only: bool = False) -> list[dict]:
+    """Shortlisted issues from fresh passing screens that nobody has taken yet.
+
+    An issue is left out when it was prescreened, when a live hunt holds it,
+    when its repository holds our open pull request, or when an open or merged
+    pull request is cross-referenced to it. Rows a maintainer filed, replied
+    on or labelled come first, then rows whose engagement is unknown,
+    then the rest; within each group, newest screen first in each screen's
+    own shortlist order. An untriaged run never counts ready, so a hunt that
+    starts on silent issues comes back empty (#135). `engaged_only` keeps
+    only the first group.
+    """
+    from mailman.prescreen import prescreen_path
+    from mailman.screen import is_request_row, screen_shortlist
+
+    claimed = {claim["target"] for claim in target_claims(root) if claim["live"]}
+    screens = _passing_screens(root, held_repositories, max_age_days, now)
     targets = []
     for screened, slug, screen in sorted(screens, key=lambda item: item[0], reverse=True):
         for row in screen_shortlist(screen):

@@ -1211,3 +1211,116 @@ class PrescreenRecordTests(OrchestratorHarness):
             {"repository": "acme/held", "pull_request": 12, "state": "closed"}
         ]}), encoding="utf-8")
         self.assertEqual(open_pull_request_repositories(self.data_root), set())
+
+
+class _SearchGh:
+    """Answers `search/issues` with canned items, one list per query."""
+
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.paths = []
+        self.sleeps = []
+        self.failures = []
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+
+    def json(self, path):
+        self.paths.append(path)
+        answer = self.answers.pop(0) if self.answers else {"items": []}
+        if answer is None:
+            self.failures.append(path)
+        return answer
+
+
+def _item(slug, number, *, comments=0, created="2026-09-20T00:00:00Z"):
+    return {"repository_url": f"https://api.github.com/repos/{slug}",
+            "number": number, "title": f"bug {number}", "comments": comments,
+            "created_at": created, "author_association": "NONE",
+            "html_url": f"https://github.com/{slug}/issues/{number}"}
+
+
+class SweepTests(OrchestratorHarness):
+    """Fresh issues in passing repositories, read with the search API.
+
+    Hunt 20260929T150205Z-08d690 had 83 passing screens and four workable
+    rows, because a shortlist is frozen when its screen is written. Mailman #226.
+    """
+
+    new_hunt = HuntTests.new_hunt
+    _screen = PrescreenRecordTests._screen
+
+    def test_one_paced_query_per_group_of_passing_repositories(self):
+        from urllib.parse import unquote
+        from mailman.hunt import sweep_fresh_issues
+        for slug in ("acme/a", "acme/b", "acme/c"):
+            self._screen(slug, [])
+        self._screen("acme/month", [], days_old=20)
+        self._screen("acme/old", [], days_old=40)
+        self._screen("acme/failed", [], verdict="fail")
+        self._screen("acme/held", [])
+        gh = _SearchGh([{"items": []}, {"items": []}])
+
+        result = sweep_fresh_issues(
+            self.data_root, gh, held_repositories={"acme/held"}, per_query=2,
+            since_days=60, now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        queries = [unquote(path) for path in gh.paths]
+        self.assertEqual(len(queries), 2)
+        named = " ".join(queries)
+        for slug in ("acme/a", "acme/b", "acme/c", "acme/month"):
+            self.assertIn(f"repo:{slug}", named)
+        for slug in ("acme/old", "acme/failed", "acme/held"):
+            self.assertNotIn(f"repo:{slug} ", named + " ")
+        for part in ("is:issue", "is:open", "label:bug", "-linked:pr",
+                     "no:assignee", "created:>2026-08-01"):
+            self.assertIn(part, queries[0])
+        self.assertEqual(len(gh.sleeps), 1)
+        self.assertEqual(result["queries"], 2)
+        self.assertEqual(result["repositories"], 4)
+
+    def test_rows_skip_prescreened_and_rank_commented_issues_first(self):
+        from mailman.hunt import sweep_fresh_issues
+        from mailman.prescreen import prescreen_path
+        self._screen("acme/a", [])
+        done = prescreen_path(self.data_root, "acme/a", 2)
+        done.parent.mkdir(parents=True, exist_ok=True)
+        done.write_text("{}", encoding="utf-8")
+        gh = _SearchGh([{"items": [
+            _item("acme/a", 1, created="2026-09-28T00:00:00Z"),
+            _item("acme/a", 2, comments=4),
+            _item("acme/a", 3, comments=2, created="2026-09-10T00:00:00Z"),
+        ]}])
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual([row["target"] for row in result["rows"]],
+                         ["acme/a#3", "acme/a#1"])
+        self.assertEqual(result["rows"][0]["comments"], 2)
+        self.assertEqual(result["rows"][0]["title"], "bug 3")
+        self.assertEqual(result["failed"], [])
+
+    def test_a_refused_query_is_reported_not_skipped(self):
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        self._screen("acme/b", [])
+        gh = _SearchGh([None, {"items": [_item("acme/b", 5)]}])
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    per_query=1, now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(len(result["failed"]), 1)
+        self.assertEqual([row["target"] for row in result["rows"]], ["acme/b#5"])
+
+    def test_hunt_sweep_exits_non_zero_when_a_query_failed(self):
+        record = self.new_hunt()
+        answer = {"queries": 2, "repositories": 9, "failed": ["repo:acme/a"],
+                  "rows": []}
+        with mock.patch("mailman.hunt.sweep_fresh_issues", return_value=answer), \
+                redirect_stdout(StringIO()) as out:
+            code = main(["hunt", "sweep", record["hunt_id"],
+                         "--data-root", str(self.data_root)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(out.getvalue())["failed"], ["repo:acme/a"])

@@ -53,6 +53,13 @@ Without the flag those rows still come first, and rows from screens written
 before the flags existed show `engagement: unknown`; refresh those screens with
 the command the warning prints.
 
+A shortlist is frozen when its screen is written, so issues opened since then
+never reach `hunt targets`. When it runs dry, run `mailman hunt sweep HUNT_ID
+[--since-days 60]` before screening new repositories: one paced search per
+eight passing screens, returning open, unassigned, bug-labelled issues with no
+linked pull request that nobody has prescreened, commented ones first. It exits
+non-zero when GitHub refused a query. Pre-screen its rows as usual (#226).
+
 Keep what you print small. A coordinator is a conversation, so every command's
 output stays in context and is re-sent on every later turn. `hunt status` omits
 the reasons and evidence for replaced candidates by default; the record keeps

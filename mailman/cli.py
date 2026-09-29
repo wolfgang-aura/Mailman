@@ -171,6 +171,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "refresh",
             "file",
             "targets",
+            "sweep",
             "watch",
         ),
     )
@@ -180,6 +181,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "is what stops a later session offering a filed candidate again",
     )
     hunt.add_argument("--commit", help="the filed head commit, for hunt file")
+    hunt.add_argument(
+        "--since-days",
+        type=int,
+        default=60,
+        help="for hunt sweep: how far back an issue may have been opened",
+    )
     hunt.add_argument(
         "--no-refresh",
         action="store_true",
@@ -1060,6 +1067,19 @@ def _hunt(arguments: argparse.Namespace) -> int:
         if warning:
             print(warning, file=sys.stderr)
         return 0
+    if arguments.action == "sweep":
+        # Issues opened after a repository's screen never reach its frozen
+        # shortlist; one paced search per group of passing screens finds
+        # them. Non-zero when GitHub refused a query.
+        # https://github.com/wolfgang-aura/Mailman/issues/226
+        from mailman.target_intel import _Gh
+        from mailman.toolchain import resolve_tool
+
+        home = root.parent
+        gh = _Gh(resolve_tool(home, "gh"), home, 60.0)
+        result = hunt.sweep_fresh_issues(root, gh, since_days=arguments.since_days)
+        print(json.dumps(result, indent=2))
+        return 1 if result["failed"] else 0
     if arguments.action == "watch":
         # Every filed pull request, re-read from GitHub. Non-zero when one is
         # red, behind, dirty, unanswered or unreadable: the row a cron job
