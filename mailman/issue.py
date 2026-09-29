@@ -213,6 +213,7 @@ def capture_issue_from_github(
             "title": payload.get("title"),
             "state": payload.get("state"),
             "labels": _label_names(payload.get("labels")),
+            "created_at": payload.get("createdAt"),
             "body_characters": len(payload.get("body") or ""),
             "issue_markdown": str((run_directory / "issue.md").resolve()),
         }
@@ -321,6 +322,52 @@ def capture_defect_report(
     }
     _write_record(run_directory, record)
     return record
+
+
+def issue_opened_at(run_directory: Path) -> datetime | None:
+    """When the run's issue was opened, from its record or its captured text.
+
+    A record written before `created_at` was kept still has the date in the
+    rendered issue.md, so an older run is read from there (#178).
+    """
+    stamp = (load_issue_record(run_directory) or {}).get("created_at")
+    if not isinstance(stamp, str):
+        markdown = run_directory / "issue.md"
+        stamp = None
+        if markdown.is_file():
+            for line in markdown.read_text(encoding="utf-8").splitlines()[:20]:
+                if line.startswith("- Created at: "):
+                    stamp = line.removeprefix("- Created at: ").strip()
+                    break
+    if not stamp:
+        return None
+    try:
+        opened = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return opened if opened.tzinfo else opened.replace(tzinfo=UTC)
+
+
+def predates_issue(row: dict[str, Any], opened: datetime | None) -> bool:
+    """Whether a pull request was opened before the issue was.
+
+    Such a pull request cannot be an attempt at the issue. xarray#9513 and
+    #4461 matched a text search for #10639, predated it by one and five
+    years, and were reported as stale attempts the body had to supersede
+    (#178). A row that cites the issue is kept whatever its date.
+    """
+    if opened is None or row.get("references_issue"):
+        return False
+    stamp = row.get("created_at") or row.get("createdAt")
+    if not isinstance(stamp, str):
+        return False
+    try:
+        created = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    return created < opened
 
 
 def load_issue_record(run_directory: Path) -> dict[str, Any] | None:

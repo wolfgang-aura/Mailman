@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from mailman.executor import CommandResult, execute
-from mailman.issue import load_issue_record
+from mailman.issue import issue_opened_at, load_issue_record, predates_issue
 from mailman.models import RunRecord, RunStatus
 from mailman.reproduction import (
     REPRODUCTION_FILENAME,
@@ -298,6 +298,7 @@ def _policy_findings(
     duplicate_search: dict[str, Any] | None,
     acknowledgement: dict[str, Any] | None = None,
     superseded_numbers: frozenset[int] = frozenset(),
+    issue_opened: datetime | None = None,
 ) -> list[Finding]:
     findings: list[Finding] = []
     if policy.stance == "unknown":
@@ -456,6 +457,7 @@ def _policy_findings(
         (duplicate_search or {}).get("matches"),
         issue_number=issue_number,
         superseded_numbers=superseded_numbers,
+        issue_opened=issue_opened,
     )
     open_rivals = [row for row in rivals if row not in stale]
     if stale:
@@ -939,6 +941,7 @@ def prepare_submission(
             duplicate_search=duplicate_search,
             acknowledgement=acknowledgement,
             superseded_numbers=superseded_numbers,
+            issue_opened=issue_opened_at(run_directory),
         )
     )
     findings.extend(_evidence_findings(run, verifications))
@@ -993,6 +996,7 @@ def prepare_submission(
             (duplicate_search or {}).get("matches"),
             issue_number=issue_number,
             superseded_numbers=superseded_numbers,
+            issue_opened=issue_opened_at(run_directory),
         )
     ]
     from mailman.completion import check_authorship
@@ -1180,6 +1184,7 @@ def stale_prior_attempts(
     *,
     issue_number: int | None = None,
     superseded_numbers: frozenset[int] = frozenset(),
+    issue_opened: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Every dormant prior attempt on this issue, open or closed unmerged.
 
@@ -1198,6 +1203,7 @@ def stale_prior_attempts(
         if row.get("pull_request")
         and row.get("number") not in superseded_numbers
         and duplicate_is_related(row)
+        and not predates_issue(row, issue_opened)
         and is_stale_attempt(row)
     ]
 

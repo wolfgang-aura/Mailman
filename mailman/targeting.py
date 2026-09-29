@@ -17,7 +17,7 @@ from typing import Any
 from mailman.base_snippets import BASE_SNIPPET_CHECK_FILENAME
 from mailman.version_gap import VERSION_GAP_FILENAME
 from mailman.claims import CLAIMS_FILENAME
-from mailman.issue import load_issue_record
+from mailman.issue import issue_opened_at, load_issue_record, predates_issue
 from mailman.provenance import load_provenance
 from mailman.reproduction import REPRODUCTION_FILENAME, merge_is_in_base
 from mailman.submission import (
@@ -690,7 +690,12 @@ def assess_target(
         if not isinstance(number, int) or number in attempts_by_number:
             continue
         attempts_by_number[number] = {**match, "outcome": "closed unmerged"}
-    attempts = list(attempts_by_number.values())
+    opened = issue_opened_at(run_directory)
+    attempts = [
+        attempt
+        for attempt in attempts_by_number.values()
+        if not (isinstance(attempt, dict) and predates_issue(attempt, opened))
+    ]
     # A dormant attempt is sorted out before anything else reads these lists,
     # so every stage that asks whether the issue is claimed gets one answer.
     # A closure by somebody who speaks for the project is read first, because

@@ -1282,3 +1282,66 @@ class NoTestAcknowledgementRecordTests(unittest.TestCase):
     def test_an_empty_diff_is_refused(self) -> None:
         with self.assertRaises(ValueError):
             record_no_test_acknowledgement(self.run_directory, note="why", diff="")
+
+
+class PredatingAttemptTests(unittest.TestCase):
+    """xarray#9513 and #4461 predated xarray#10639 and were called stale (#178)."""
+
+    def row(self, number: int, created: str, **extra: object) -> dict[str, object]:
+        return {
+            "number": number,
+            "pull_request": True,
+            "state": "closed",
+            "created_at": created,
+            "updated_at": created,
+            "closed_at": created,
+            "references_issue": False,
+            "matched_by": ["search"],
+            "methods": ["search", "list"],
+            **extra,
+        }
+
+    def test_a_pull_request_older_than_the_issue_is_not_an_attempt_at_it(self) -> None:
+        from mailman.submission import stale_prior_attempts
+
+        opened = datetime(2025, 8, 13, tzinfo=UTC)
+        rows = [
+            self.row(9513, "2024-09-18T12:22:47Z"),
+            self.row(4461, "2020-09-25T18:14:38Z"),
+            self.row(10700, "2025-09-01T00:00:00Z"),
+        ]
+
+        without = [row["number"] for row in stale_prior_attempts(rows, issue_number=10639)]
+        with_date = [
+            row["number"]
+            for row in stale_prior_attempts(
+                rows, issue_number=10639, issue_opened=opened
+            )
+        ]
+
+        self.assertEqual(without, [9513, 4461, 10700])
+        self.assertEqual(with_date, [10700])
+
+    def test_a_row_that_cites_the_issue_is_kept_whatever_its_date(self) -> None:
+        from mailman.issue import predates_issue
+
+        opened = datetime(2025, 8, 13, tzinfo=UTC)
+        cited = self.row(9513, "2024-09-18T12:22:47Z", references_issue=True)
+
+        self.assertFalse(predates_issue(cited, opened))
+        self.assertFalse(predates_issue(self.row(1, "2024-01-01T00:00:00Z"), None))
+
+    def test_the_opened_date_is_read_from_an_older_runs_issue_text(self) -> None:
+        from mailman.issue import issue_opened_at
+
+        with TemporaryDirectory() as directory:
+            run_directory = Path(directory)
+            (run_directory / "issue.md").write_text(
+                "# Title\n\n- Number: 10639\n- Created at: 2025-08-13T09:00:00Z\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                issue_opened_at(run_directory),
+                datetime(2025, 8, 13, 9, tzinfo=UTC),
+            )
