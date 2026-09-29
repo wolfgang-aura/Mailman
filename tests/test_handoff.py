@@ -256,7 +256,9 @@ class CheckHandoffTests(unittest.TestCase):
         authors.start()
         self.addCleanup(authors.stop)
 
-    def _prepared(self, root: Path, body: str) -> tuple[Path, Path]:
+    def _prepared(
+        self, root: Path, body: str, affirmed: list[int] | None = None
+    ) -> tuple[Path, Path]:
         run, directory = _run_directory(root)
         body_path = root / "body.md"
         body_path.write_text(body, encoding="utf-8", newline="\n")
@@ -269,6 +271,7 @@ class CheckHandoffTests(unittest.TestCase):
             title="Cache the rolling window",
             head="Mailman-Fork:mailman/run-1",
             base="master",
+            affirmed_lines=affirmed or [],
         )
         _prior_art(directory)
         return directory, body_path
@@ -277,6 +280,30 @@ class CheckHandoffTests(unittest.TestCase):
         with TemporaryDirectory() as name:
             directory, _ = self._prepared(Path(name), BODY)
             self.assertTrue(check_handoff(directory)["ok"])
+
+    def test_an_unaffirmed_first_person_line_blocks(self) -> None:
+        with TemporaryDirectory() as name:
+            directory, _ = self._prepared(Path(name), CLAIMING_BODY)
+            self.assertEqual(check_handoff(directory)["reason"], "first-person-claims")
+
+    def test_a_line_the_operator_affirmed_passes(self) -> None:
+        # #217: biopython's PR template requires "I have read the
+        # CONTRIBUTING.rst file, have run pre-commit"; the operator did both
+        # and approved the box in chat.
+        line = next(claim["line"] for claim in first_person_claims(CLAIMING_BODY))
+        with TemporaryDirectory() as name:
+            directory, _ = self._prepared(Path(name), CLAIMING_BODY, affirmed=[line])
+            result = check_handoff(directory)
+            self.assertTrue(result["ok"], result)
+            record = json.loads((directory / HANDOFF_FILENAME).read_text(encoding="utf-8"))
+            self.assertEqual(record["first_person_claims"], [])
+            self.assertEqual(
+                [claim["line"] for claim in record["affirmed_claims"]], [line]
+            )
+
+    def test_affirming_a_line_that_is_not_a_claim_is_refused(self) -> None:
+        with TemporaryDirectory() as name, self.assertRaises(ValueError):
+            self._prepared(Path(name), CLAIMING_BODY, affirmed=[1])
 
     def test_an_edit_after_the_preview_blocks(self) -> None:
         with TemporaryDirectory() as name:

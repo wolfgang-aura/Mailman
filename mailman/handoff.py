@@ -258,6 +258,30 @@ def first_person_claims(text: str) -> list[dict[str, Any]]:
     return found
 
 
+def _split_affirmed(
+    claims: list[dict[str, Any]], lines: list[int]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Separate the claims the operator affirmed from the rest.
+
+    A PR template can require a first-person line (biopython: "I have read the
+    CONTRIBUTING.rst file, have run pre-commit"). Once the operator has made it
+    true and said so, `--affirm LINE` records its exact text; any edit to the
+    line voids that. Mailman #217.
+    """
+    by_line = {claim["line"]: claim for claim in claims}
+    unknown = sorted(line for line in lines if line not in by_line)
+    if unknown:
+        raise ValueError(
+            f"--affirm names line(s) {unknown}, which carry no first-person claim; "
+            f"the claims are on line(s) {sorted(by_line)}"
+        )
+    wanted = set(lines)
+    return (
+        [claim for claim in claims if claim["line"] not in wanted],
+        [claim for claim in claims if claim["line"] in wanted],
+    )
+
+
 def publish_command(
     *,
     kind: str,
@@ -605,6 +629,7 @@ def build_handoff(
     offer: bool = False,
     owner_type_lookup: Callable[[str], str | None] = github_owner_type,
     pull_request_lookup: Callable[[str, int], str | None] | None = None,
+    affirmed_lines: list[int] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Record the body's digest and render the block that hands it over.
 
@@ -656,6 +681,7 @@ def build_handoff(
         ) from error
     if not body.strip():
         raise ValueError(f"the body at {resolved} is empty")
+    claims, affirmed = _split_affirmed(first_person_claims(body), affirmed_lines or [])
     authorship = (
         check_authorship(run_directory, head=head) if kind == "pull-request" else None
     )
@@ -685,7 +711,8 @@ def build_handoff(
         "issue_number": issue_number,
         "body_path": str(resolved),
         "digest": body_digest(body),
-        "first_person_claims": first_person_claims(body),
+        "first_person_claims": claims,
+        "affirmed_claims": affirmed,
         "preservation_claims": preservation_claims(body),
         "word_count": len(body.split()),
         "triage_warning": triage_warning(run_directory) if kind == "pull-request" else None,
@@ -1040,7 +1067,11 @@ def check_handoff(
             "expected_digest": record.get("digest"),
             "actual_digest": current,
         }
-    if first_person_claims(body_path.read_text(encoding="utf-8")):
+    affirmed_texts = {claim["text"] for claim in record.get("affirmed_claims") or []}
+    if any(
+        claim["text"] not in affirmed_texts
+        for claim in first_person_claims(body_path.read_text(encoding="utf-8"))
+    ):
         return {
             "ok": False,
             "reason": "first-person-claims",

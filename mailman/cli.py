@@ -446,6 +446,17 @@ def _build_parser() -> argparse.ArgumentParser:
     handoff.add_argument("--base", help="upstream branch to target")
     handoff.add_argument("--issue", type=int, help="issue number, for an issue comment")
     handoff.add_argument(
+        "--affirm",
+        type=int,
+        action="append",
+        default=[],
+        metavar="LINE",
+        help=(
+            "a first-person line the operator has made true and approved, by "
+            "line number; its exact text is recorded (#217)"
+        ),
+    )
+    handoff.add_argument(
         "--closing-reply",
         action="store_true",
         help="the one courtesy reply a closed or superseded run may still send",
@@ -1867,6 +1878,7 @@ def _handoff(arguments: argparse.Namespace) -> int:
         data_root=arguments.data_root,
         closing_reply=arguments.closing_reply,
         offer=arguments.offer,
+        affirmed_lines=arguments.affirm,
     )
     print(block)
     # A body claiming the human read it is not ready until the human says so.
