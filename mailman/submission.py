@@ -99,7 +99,8 @@ class TargetPolicy:
 
     @classmethod
     def load(cls, path: Path) -> TargetPolicy:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig: PowerShell 5.1 writes a BOM when the operator edits it. #218
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
         if not isinstance(payload, dict):
             raise ValueError("a target policy file must contain a JSON object")
         return cls.from_dict(payload)

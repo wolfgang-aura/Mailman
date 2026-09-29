@@ -1458,3 +1458,12 @@ class PredatingAttemptTests(unittest.TestCase):
                 issue_opened_at(run_directory),
                 datetime(2025, 8, 13, 9, tzinfo=UTC),
             )
+
+
+class TargetPolicyEncodingTests(unittest.TestCase):
+    def test_a_policy_saved_with_a_byte_order_mark_loads(self) -> None:
+        # Windows PowerShell 5.1 `Set-Content -Encoding utf8` writes a BOM.
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "target-policy.json"
+            path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"name": "o/r", "stance": "permitted", "policy_url": "https://example.test"}).encode())
+            self.assertEqual(TargetPolicy.load(path).name, "o/r")
