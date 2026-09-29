@@ -3,7 +3,9 @@ import unittest
 from pathlib import Path
 
 from mailman.environment import load_plan
-from mailman.environment_plan import draft_plan
+from unittest import mock
+
+from mailman.environment_plan import HOST_CONSTRAINTS_FILENAME, draft_plan
 
 
 class DraftEnvironmentTests(unittest.TestCase):
@@ -121,3 +123,27 @@ dependencies = ["mkdocs"]
             for step in plan["steps"][1:]:
                 self.assertIn("--prefer-binary", step["command"])
                 self.assertNotIn("--only-binary=:all:", step["command"])
+
+
+    def test_windows_plans_steer_pip_off_releases_application_control_blocks(self):
+        """nilearn#6607 installed scikit-learn 1.9.1, whose DLLs are blocked (#146)."""
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "pyproject.toml").write_text(
+                '[project]\nname = "fixture"\n[dependency-groups]\ntest = ["pytest"]\n',
+                encoding="utf-8",
+            )
+            with mock.patch("mailman.environment_plan.sys.platform", "win32"):
+                plan = draft_plan(root, root / "run" / "plan.json")
+            constraint_file = (root / "run" / HOST_CONSTRAINTS_FILENAME).resolve()
+            self.assertIn(
+                "scikit-learn!=1.9.1",
+                constraint_file.read_text(encoding="utf-8").splitlines(),
+            )
+            for step in plan["steps"][1:]:
+                command = step["command"]
+                self.assertEqual(
+                    command[command.index("-c") + 1], str(constraint_file)
+                )
+            # A constraint installs nothing the target did not ask for.
+            self.assertNotIn("scikit-learn!=1.9.1", plan["steps"][1]["command"])

@@ -32,6 +32,18 @@ HATCH_TEST_ENVIRONMENTS = ("default", "test", "tests", "hatch-test")
 #: without a compiler. A package that needs one fails either way.
 BINARY_POLICY = "--prefer-binary"
 
+#: Releases whose compiled modules Windows Application Control blocks on this
+#: host at import time, after pip installs them cleanly. Written as pip
+#: constraints, so pip picks the newest allowed release inside the target's own
+#: range and installs nothing a target does not ask for. scikit-learn 1.9.1
+#: blocked 12 `.pyd` modules on nilearn#6607 while 1.8.0 imported; pandas 3.0.6
+#: cp314 is blocked while 3.0.5 is not. Mailman #146.
+HOST_BLOCKED_RELEASES = (
+    "scikit-learn!=1.9.1",
+    "pandas!=3.0.6",
+)
+HOST_CONSTRAINTS_FILENAME = "host-constraints.txt"
+
 
 def _hatch_test_dependencies(project: dict) -> tuple[list[str], list[str]]:
     """Requirements declared in the hatch environments tests run in.
@@ -87,10 +99,14 @@ def draft_plan(workspace: Path, destination: Path, *, python: str = sys.executab
         return dependencies
 
     interpreter = "{environment}/Scripts/python.exe" if sys.platform == "win32" else "{environment}/bin/python"
+    constraints: list[str] = []
+    if sys.platform == "win32":
+        constraint_file = destination.parent / HOST_CONSTRAINTS_FILENAME
+        constraints = ["-c", str(constraint_file.resolve())]
     build = project.get("build-system", {}).get("requires", ["setuptools"])
     hatch, hatch_environments = _hatch_test_dependencies(project)
     dependencies = list(dict.fromkeys([*build, *(expand(group) if group else []), *hatch]))
-    install = [interpreter, "-m", "pip", "install", BINARY_POLICY, "--no-build-isolation", "-e", f".[{extra}]" if extra else "."]
+    install = [interpreter, "-m", "pip", "install", BINARY_POLICY, *constraints, "--no-build-isolation", "-e", f".[{extra}]" if extra else "."]
     # Without build isolation a dependency that ships only an sdist builds with
     # whatever the environment holds, and a fresh venv holds no setuptools.
     dependencies = list(dict.fromkeys([*dependencies, "setuptools"]))
@@ -100,7 +116,7 @@ def draft_plan(workspace: Path, destination: Path, *, python: str = sys.executab
         "schema_version": 1,
         "steps": [
             {"name": "create-environment", "command": [python, "-m", "venv", "{environment}"], "working_directory": "run"},
-            {"name": "install-build-and-test-dependencies", "command": [interpreter, "-m", "pip", "install", BINARY_POLICY, *dependencies]},
+            {"name": "install-build-and-test-dependencies", "command": [interpreter, "-m", "pip", "install", BINARY_POLICY, *constraints, *dependencies]},
             {"name": "install-target", "command": install},
         ],
         "register": [{"name": "python", "executable": interpreter}],
@@ -111,5 +127,9 @@ def draft_plan(workspace: Path, destination: Path, *, python: str = sys.executab
         },
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if constraints:
+        (destination.parent / HOST_CONSTRAINTS_FILENAME).write_text(
+            "\n".join(HOST_BLOCKED_RELEASES) + "\n", encoding="utf-8"
+        )
     destination.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
     return plan
