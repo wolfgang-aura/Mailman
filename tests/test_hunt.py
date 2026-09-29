@@ -799,6 +799,33 @@ class TargetClaimTests(HuntTests):
         self.assertEqual(effective_status(record), "ABANDONED")
         self.assertIsNone(holding_hunt(self.data_root, "example/project#1"))
 
+    def test_a_ready_candidate_keeps_its_claim_while_it_waits_for_filing(self):
+        """https://github.com/wolfgang-aura/Mailman/issues/209
+
+        py-shiny#2497 was READY at 10:05 and waited for the operator to file
+        it. The lease lapsed at 11:36, the hunt read ABANDONED, and its target
+        went back to the pool while the pull request was being opened.
+        """
+        record = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        self.assertEqual(status(self.data_root, record)["ready"], 1)
+        acquire_lease(self.data_root, record, owner=record["lease"]["owner"], minutes=-1)
+        stored = load_hunt(self.data_root, record["hunt_id"])
+        self.assertEqual(effective_status(stored), "AWAITING_FILING")
+        claim = holding_hunt(self.data_root, "example/project#1")
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim["hunt_id"], record["hunt_id"])
+        # Waiting on a person is not a coordinator: nothing may restart its runs.
+        self.assertNotEqual(effective_status(stored), "RUNNING")
+        # Once it is filed, the owner records it without renewing the lease.
+        record_filing(self.data_root, stored, directory.name,
+                      pr_url="https://github.com/example/project/pull/9",
+                      provenance_recorder=lambda **_: None)
+        self.assertEqual(
+            load_hunt(self.data_root, record["hunt_id"])["runs"][0]["filed"]["pr_number"], 9
+        )
+
     def test_an_expired_lease_is_not_free_to_adopt(self):
         """https://github.com/wolfgang-aura/Mailman/issues/76
 

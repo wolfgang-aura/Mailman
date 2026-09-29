@@ -378,15 +378,35 @@ def effective_status(record: dict) -> str:
         return status_name
     lease = record.get("lease")
     if not lease or _expired(lease):
+        # A candidate that was ready at the last check waits on a person, not
+        # on a coordinator. Calling that hunt abandoned released py-shiny#2497
+        # to the pool while its pull request was being opened. #209.
+        if _awaiting_filing(record):
+            return AWAITING_FILING
         return "ABANDONED"
     return "RUNNING"
+
+
+#: A hunt with no live coordinator whose last check had a ready, unfiled
+#: candidate. It keeps its targets but nothing may restart its runs.
+AWAITING_FILING = "AWAITING_FILING"
+
+
+def _awaiting_filing(record: dict) -> bool:
+    filed = {row["run_id"] for row in record.get("runs", []) if row.get("filed")}
+    dropped = {row["run_id"] for row in record.get("runs", []) if row.get("dropped")}
+    last = record.get("last_check") or {}
+    return any(
+        row.get("ready") and row.get("run_id") not in filed | dropped
+        for row in last.get("runs", [])
+    )
 
 
 def target_claims(root: Path) -> list[dict]:
     """Every `owner/repo#issue` a live hunt in this data root is working on."""
     claims: list[dict] = []
     for record in iter_hunts(root):
-        live = effective_status(record) == "RUNNING"
+        live = effective_status(record) in ("RUNNING", AWAITING_FILING)
         lease = record.get("lease") or {}
         for row in record["runs"]:
             if row.get("dropped"):
