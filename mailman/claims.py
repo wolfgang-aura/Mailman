@@ -159,6 +159,10 @@ _DESIGN_SETTLED = re.compile(
     r"\b(?:"
     r"let(?:'s| us) go with|we(?:'ll| will) go with|decided to go with"
     r"|go ahead\b|i(?:'d| would) accept|sounds good|that works for (?:me|us)"
+    # fonttools#4086 "yeah, I like this proposal. We'd use STAT ...". #240.
+    r"|i (?:really |do )?like (?:this|that|the|your) "
+    r"(?:proposal|idea|approach|plan|suggestion)"
+    r"|\+1 (?:to|for|on) (?:this|that|the|your) (?:proposal|idea|approach|plan)"
     r")",
     re.IGNORECASE,
 )
@@ -250,10 +254,18 @@ def _unsettled(
         if not is_maintainer(comment, maintainers, associations=_PROJECT_VOICES):
             continue
         text = _matchable(_flat(_unquoted(comment.get("body"))))
-        opens = list(pattern.finditer(text))
         settles = list(_DESIGN_SETTLED.finditer(text)) + list(
             _INVITATION.finditer(text)
         )
+        # "I like this proposal" settles; its "proposal" does not reopen.
+        opens = [
+            match
+            for match in pattern.finditer(text)
+            if not any(
+                settle.start() <= match.start() and match.end() <= settle.end()
+                for settle in settles
+            )
+        ]
         last_settle = max((match.start() for match in settles), default=-1)
         if last_settle != -1 and (not opens or last_settle > opens[-1].start()):
             unsettled = []
@@ -1170,17 +1182,23 @@ def maintainer_dispute(
         if not is_maintainer(comment, maintainers, associations=_PROJECT_VOICES):
             continue
         text = _matchable(_flat(_unquoted(comment.get("body"))))
+        settles = [
+            match
+            for pattern in (_CONFIRMED, _DESIGN_SETTLED, _INVITATION)
+            for match in pattern.finditer(text)
+        ]
+        # The "proposal" in "I like this proposal" is not a later dispute. #240.
         found = [
             (match.start(), True, match)
             for pattern in (
                 _NOT_REPRODUCED, _DECLINED, _DESIGN_OPEN, _NEEDS_INFO, _ELSEWHERE
             )
             for match in pattern.finditer(text)
-        ] + [
-            (match.start(), False, match)
-            for pattern in (_CONFIRMED, _DESIGN_SETTLED, _INVITATION)
-            for match in pattern.finditer(text)
-        ]
+            if not any(
+                settle.start() <= match.start() and match.end() <= settle.end()
+                for settle in settles
+            )
+        ] + [(match.start(), False, match) for match in settles]
         if not found:
             continue
         _, disputes, match = max(found, key=lambda item: item[0])

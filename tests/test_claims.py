@@ -440,6 +440,18 @@ class DesignUndecidedTests(unittest.TestCase):
         ]
         self.assertEqual(design_open_questions(thread), [])
 
+    def test_a_maintainer_liking_the_proposal_settles_it(self) -> None:
+        # fonttools#4086: the approval itself names the proposal. Mailman #240.
+        thread = [
+            _comment(
+                "yeah, I like this proposal. We'd use STAT if available as we "
+                "currently do, and try to fall back to the fvar instance "
+                "matching the target coordinates.",
+                association="MEMBER",
+            )
+        ]
+        self.assertEqual(design_open_questions(thread), [])
+
     def test_a_question_reopened_after_settling_blocks(self) -> None:
         thread = [
             _comment("PRs welcome.", association="MEMBER"),
@@ -1218,6 +1230,22 @@ class MaintainerDisputeTests(unittest.TestCase):
         self.assertIsNone(
             maintainer_dispute(
                 [self._comment("I tried to reproduce this but it only fails on Windows, confirmed.")]
+            )
+        )
+
+    def test_liking_the_proposal_is_not_a_dispute(self):
+        # fonttools#4086. Mailman #240.
+        from mailman.claims import maintainer_dispute
+
+        self.assertIsNone(
+            maintainer_dispute(
+                [
+                    self._comment(
+                        "yeah, I like this proposal. We'd use STAT if available "
+                        "and fall back to the fvar instance. @simoncozens do you "
+                        "plan to work on a PR?"
+                    )
+                ]
             )
         )
 
