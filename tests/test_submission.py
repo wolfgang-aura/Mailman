@@ -389,9 +389,10 @@ class PrepareSubmissionTests(unittest.TestCase):
         # seam, answering with a passing record for whatever diff it is given.
         self.touched_tests_calls: list[dict[str, object]] = []
 
-        def fake_stage(run_directory, *, diff, changed_paths, workspace, **_):
+        def fake_stage(run_directory, *, diff, changed_paths, workspace, **rest):
             self.touched_tests_calls.append(
-                {"diff": diff, "changed_paths": changed_paths, "workspace": workspace}
+                {"diff": diff, "changed_paths": changed_paths, "workspace": workspace,
+                 "base_commit": rest.get("base_commit")}
             )
             record = passing_touched_tests(diff)
             (run_directory / TOUCHED_TESTS_FILENAME).write_text(
@@ -1119,7 +1120,7 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertNotIn("touched-tests-failed", record["blocking_codes"])
 
     def test_a_stored_failure_with_the_same_selection_is_not_rerun(self) -> None:
-        stored = passing_touched_tests(SOURCE_DIFF, exit_code=1, failed=1)
+        stored = passing_touched_tests(SOURCE_DIFF, exit_code=1, failed=1, baseline=None)
         (self.run_directory / TOUCHED_TESTS_FILENAME).write_text(
             json.dumps(stored), encoding="utf-8"
         )
@@ -1130,6 +1131,22 @@ class PrepareSubmissionTests(unittest.TestCase):
             record = self._prepare()
         self.assertEqual(self.touched_tests_calls, [])
         self.assertIn("touched-tests-failed", record["blocking_codes"])
+
+    def test_a_stored_failure_from_before_the_base_comparison_is_rerun(self) -> None:
+        # #180: a record without the `baseline` field never compared its
+        # failures with the base commit.
+        stored = passing_touched_tests(SOURCE_DIFF, exit_code=1, failed=1)
+        stored.pop("baseline", None)
+        (self.run_directory / TOUCHED_TESTS_FILENAME).write_text(
+            json.dumps(stored), encoding="utf-8"
+        )
+        with (
+            patch("mailman.submission.resolve_workspace", return_value=self.run_directory),
+            patch("mailman.submission.select_test_files", return_value=stored),
+        ):
+            self._prepare()
+        self.assertEqual(len(self.touched_tests_calls), 1)
+        self.assertTrue(self.touched_tests_calls[0]["base_commit"])
 
     def test_a_touched_tests_stage_that_could_not_run_blocks(self) -> None:
         self.touched_tests.side_effect = lambda run_directory, *, diff, **_: (

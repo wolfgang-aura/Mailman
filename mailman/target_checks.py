@@ -524,10 +524,17 @@ class _Baseline:
     produce it.
     """
 
-    def __init__(self, run_directory: Path, workspace: Path, base_commit: str) -> None:
+    def __init__(
+        self,
+        run_directory: Path,
+        workspace: Path,
+        base_commit: str,
+        *,
+        directory: str = BASELINE_DIRECTORY,
+    ) -> None:
         self.workspace = workspace
         self.base_commit = base_commit
-        self.path = run_directory / "scratch" / BASELINE_DIRECTORY
+        self.path = run_directory / "scratch" / directory
         self.ready: bool | None = None
         self.detail = ""
 

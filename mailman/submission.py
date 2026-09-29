@@ -959,12 +959,20 @@ def prepare_submission(
         or not touched_tests.get("ran")
         or _touched_selection_changed(touched_tests, touched_workspace, changed_paths)
         or _touched_deselects_changed(touched_tests, run_directory)
+        # A failure recorded before failures were compared with the base
+        # commit (#180) is run again so it gets that comparison.
+        or (
+            touched_tests.get("exit_code") == 1
+            and "baseline" not in touched_tests
+            and bool(run.base_commit)
+        )
     ):
         touched_tests = run_touched_tests(
             run_directory,
             diff=diff,
             changed_paths=changed_paths,
             workspace=touched_workspace,
+            base_commit=run.base_commit,
         )
     findings.extend(_touched_tests_findings(touched_tests))
     # The target's own CI checks on changed files, so CI is not the first to

@@ -548,6 +548,64 @@ def load_touched_tests(run_directory: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+_FAILING_NODE = re.compile(r"^(?:FAILED|ERROR) (\S+?)(?: - .*)?$", re.MULTILINE)
+BASELINE_NODE_LIMIT = 50
+TOUCHED_BASELINE_DIRECTORY = "touched-base"
+
+
+def failing_nodes(output: str) -> list[str]:
+    """The node ids pytest's short summary names as failed or errored."""
+    return sorted({match.group(1) for match in _FAILING_NODE.finditer(output)})
+
+
+def _baseline_failures(
+    run_directory: Path,
+    *,
+    workspace: Path,
+    base_commit: str,
+    python: str,
+    nodes: list[str],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """Run the failing nodes on the base commit and say which fail there too.
+
+    pydata/xarray#10639 (#180): three netCDF datatree tests failed for want of
+    a netCDF4 build the host cannot load, at the base commit as well as with
+    the patch, and blocked a zarr-only change.
+    """
+    from mailman.target_checks import _Baseline
+
+    record: dict[str, Any] = {
+        "base_commit": base_commit,
+        "failing": nodes,
+        "failing_at_base": [],
+        "new": nodes,
+        "detail": "",
+    }
+    baseline = _Baseline(
+        run_directory, workspace, base_commit, directory=TOUCHED_BASELINE_DIRECTORY
+    )
+    try:
+        if not baseline.prepare(timeout_seconds):
+            record["detail"] = f"the base worktree could not be made: {baseline.detail}"
+            return record
+        ran = execute(
+            [python, "-m", "pytest", *nodes, "-q", "-p", "no:cacheprovider", "-rfE"],
+            working_directory=baseline.path,
+            timeout_seconds=timeout_seconds,
+        )
+        if ran.timed_out:
+            record["detail"] = "the base run timed out"
+            return record
+        at_base = set(failing_nodes(ran.stdout + "\n" + ran.stderr))
+        record["failing_at_base"] = [node for node in nodes if node in at_base]
+        record["new"] = [node for node in nodes if node not in at_base]
+        record["detail"] = f"the base run exited {ran.exit_code}"
+        return record
+    finally:
+        baseline.close()
+
+
 def run_touched_tests(
     run_directory: Path,
     *,
@@ -556,6 +614,7 @@ def run_touched_tests(
     workspace: Path | None,
     timeout_seconds: float = TOUCHED_TESTS_TIMEOUT_SECONDS,
     cap: int = TOUCHED_TESTS_CAP,
+    base_commit: str | None = None,
 ) -> dict[str, Any]:
     """Select, run and record. Every outcome is written, including not running."""
     started = datetime.now(UTC)
@@ -588,6 +647,8 @@ def run_touched_tests(
         "errors": None,
         "skipped": None,
         "output_tail": "",
+        # Failures compared with the base commit; None when not compared.
+        "baseline": None,
     }
     if workspace is None or not workspace.is_dir():
         record["reason"] = "no-workspace"
@@ -675,6 +736,22 @@ def run_touched_tests(
     record["duration_seconds"] = result.duration_seconds
     record.update(parse_counts(runner, result.stdout, result.stderr))
     record["output_tail"] = _tail(result.stdout + "\n" + result.stderr)
+    nodes = failing_nodes(result.stdout)
+    if (
+        runner == "pytest"
+        and base_commit
+        and result.exit_code == 1
+        and not result.timed_out
+        and 0 < len(nodes) <= BASELINE_NODE_LIMIT
+    ):
+        record["baseline"] = _baseline_failures(
+            run_directory,
+            workspace=workspace,
+            base_commit=base_commit,
+            python=python,
+            nodes=nodes,
+            timeout_seconds=timeout_seconds,
+        )
     return _write(run_directory, record)
 
 
@@ -726,13 +803,27 @@ def touched_tests_verdict(
             f"the touched tests timed out after {record.get('duration_seconds')} s: "
             f"{' '.join(record.get('command') or [])}",
         )
+    baseline = record.get("baseline") or {}
+    if (
+        record.get("exit_code") == 1
+        and baseline.get("failing")
+        and baseline.get("failing_at_base") == baseline.get("failing")
+    ):
+        return (
+            None,
+            f"passed {record.get('passed')}; every failure also fails at the base "
+            f"commit, so the patch adds none: "
+            + ", ".join(baseline["failing_at_base"]),
+        )
     if record.get("exit_code") != 0:
+        new = baseline.get("new") if baseline.get("failing_at_base") else None
         return (
             "touched-tests-failed",
             "the tests that exercise the changed modules failed "
             f"(exit {record.get('exit_code')}, passed {record.get('passed')}, "
             f"failed {record.get('failed')}, errors {record.get('errors')}): "
-            f"{' '.join(record.get('command') or [])}",
+            f"{' '.join(record.get('command') or [])}"
+            + (f". New since the base commit: {', '.join(new)}" if new else ""),
         )
     indirect = record.get("indirect") or []
     return (

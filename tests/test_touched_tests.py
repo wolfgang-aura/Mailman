@@ -549,3 +549,71 @@ class CollectionErrorTests(_RunFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BaselineExecutor(FakeExecutor):
+    """The candidate run fails two nodes; the base run fails `at_base`."""
+
+    def __init__(self, *, at_base: list[str]) -> None:
+        super().__init__(
+            exit_code=1,
+            stdout=(
+                "FAILED tests/test_xbrl.py::test_engine - ValueError: no netCDF\n"
+                "ERROR tests/test_xbrl.py::test_groups - ImportError\n"
+                "1 failed, 5 passed, 1 error in 0.7s\n"
+            ),
+        )
+        self.at_base = at_base
+
+    def __call__(self, command, *, working_directory, timeout_seconds, **_):
+        if command[:3] == ["git", "worktree", "add"]:
+            Path(command[4]).mkdir(parents=True, exist_ok=True)
+            self.calls.append({"command": list(command), "cwd": working_directory})
+            return _result(list(command))
+        if command[0] == "git":
+            return _result(list(command))
+        if "-rfE" in command:
+            self.calls.append({"command": list(command), "cwd": working_directory})
+            return _result(
+                list(command),
+                exit_code=1 if self.at_base else 0,
+                stdout="".join(f"FAILED {node} - boom\n" for node in self.at_base),
+            )
+        return super().__call__(
+            command, working_directory=working_directory, timeout_seconds=timeout_seconds
+        )
+
+
+class BaselineFailureTests(_RunFixture):
+    """pydata/xarray#10639 (#180): failures the base commit shares do not block."""
+
+    nodes = ["tests/test_xbrl.py::test_engine", "tests/test_xbrl.py::test_groups"]
+
+    def _run_with_base(self, executor: BaselineExecutor):
+        with patch("mailman.target_checks.execute", executor):
+            return self._run(executor, base_commit="abc123")
+
+    def test_failures_that_also_fail_at_base_pass_the_stage(self) -> None:
+        executor = BaselineExecutor(at_base=self.nodes)
+        record = self._run_with_base(executor)
+        self.assertEqual(record["baseline"]["failing_at_base"], self.nodes)
+        self.assertEqual(record["baseline"]["new"], [])
+        base_run = [c for c in executor.calls if "-rfE" in c["command"]][0]
+        self.assertEqual(base_run["command"][3:5], self.nodes)
+        self.assertTrue(str(base_run["cwd"]).endswith("touched-base"))
+        code, detail = touched_tests_verdict(record)
+        self.assertIsNone(code)
+        self.assertIn("also fails at the base", detail)
+
+    def test_a_failure_new_in_the_patch_still_blocks(self) -> None:
+        executor = BaselineExecutor(at_base=self.nodes[1:])
+        record = self._run_with_base(executor)
+        code, detail = touched_tests_verdict(record)
+        self.assertEqual(code, "touched-tests-failed")
+        self.assertIn("New since the base commit: tests/test_xbrl.py::test_engine", detail)
+
+    def test_without_a_base_commit_nothing_is_compared(self) -> None:
+        executor = BaselineExecutor(at_base=self.nodes)
+        record = self._run(executor)
+        self.assertIsNone(record["baseline"])
+        self.assertEqual(touched_tests_verdict(record)[0], "touched-tests-failed")
