@@ -303,6 +303,15 @@ _POLICY_BANS = re.compile(
     r"generated\s+by\s+(?:fully[- ])?automated\s+tools?"
     r"|not\s+suitable\s+for\s+automat(?:ic|ed)\s+processing\s+by\s+"
     r"(?:ai|llms?|agents?|bots?)"
+    # twisted's pull request template makes the contributor certify "I have
+    # not directly included the output of any generative AI system in this
+    # pull request", and its policy "does not allow the inclusion of the
+    # outputs of generative AI tools". The gate passed both. Mailman #191.
+    r"|have\s+not\s+(?:directly\s+)?(?:included|used|submitted)\s+"
+    r"(?:the\s+)?outputs?\s+(?:of|from)\s+(?:any\s+)?"
+    r"(?:generative\s+ai|ai|llms?|large\s+language\s+models?)"
+    r"|(?:does|do)\s+not\s+allow\s+the\s+inclusion\s+of\s+(?:the\s+)?"
+    r"outputs?\s+(?:of|from)\s+(?:any\s+)?(?:generative\s+ai|ai|llms?)"
     r")",
     re.IGNORECASE,
 )

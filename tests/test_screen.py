@@ -1085,6 +1085,28 @@ class ScreenTests(unittest.TestCase):
                 self.assertIn("policy", record["failed_gates"])
                 self.assertIn("PULL_REQUEST_TEMPLATE.md refuses", gate["detail"])
 
+    def test_an_ai_free_certification_in_the_template_fails_the_gate(self) -> None:
+        # twisted/twisted's .github/pull_request_template.md checkbox,
+        # verbatim; the gate passed twisted and a run started. Mailman #191.
+        template = (
+            "* [ ] I have not directly included the output of any generative "
+            "AI system in this pull request, as per our [policy on generative "
+            "AI](https://docs.twisted.org/en/latest/development/ai-policy.html).\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        ".github/pull_request_template.md": template,
+                        "CONTRIBUTING.md": "## Rules\n\nRun the tests.\n",
+                    }
+                ),
+            )
+
+        self.assertIn("policy", record["failed_gates"])
+        self.assertIn("refuses", _named(record, "policy")["detail"])
+
     def test_a_template_without_a_ban_leaves_the_guide_to_decide(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(
