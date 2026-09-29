@@ -473,7 +473,7 @@ class SequenceExecutor(FakeExecutor):
             return super().__call__(
                 command, working_directory=working_directory, timeout_seconds=timeout_seconds
             )
-        self.calls.append({"command": list(command)})
+        self.calls.append({"command": list(command), "cwd": working_directory})
         exit_code, stdout = self.runs.pop(0)
         return _result(list(command), exit_code=exit_code, stdout=stdout)
 
@@ -566,6 +566,37 @@ class CollectionErrorTests(_RunFixture):
         code, detail = touched_tests_verdict(record)
         self.assertEqual(code, "touched-tests-not-run")
         self.assertIn("pyarrow", detail)
+
+
+class TestDirectoryTests(_RunFixture):
+    """#215: suites that load data relative to their own directory run from it."""
+
+    def test_a_root_run_that_fails_wholesale_is_rerun_from_the_test_directory(self) -> None:
+        # biopython: CI runs `cd Tests && python run_tests.py`; from the root,
+        # test_GenBank.py failed about 80 of 95 tests on missing data files.
+        executor = SequenceExecutor([
+            (1, "FAILED tests/test_xbrl.py::test_a - FileNotFoundError\n"
+                "80 failed, 15 passed in 1.0s\n"),
+            (0, "95 passed in 1.0s\n"),
+        ])
+        record = self._run(executor)
+        self.assertEqual(record["exit_code"], 0)
+        self.assertEqual(record["working_directory"], "tests")
+        self.assertEqual(record["command"][3], "test_xbrl.py")
+        self.assertEqual(Path(executor.calls[-1]["cwd"]), self.workspace / "tests")
+        self.assertEqual(record["directory_retry"]["root"]["failed"], 80)
+        self.assertIsNone(touched_tests_verdict(record)[0])
+
+    def test_the_root_run_stands_when_the_test_directory_does_no_better(self) -> None:
+        executor = SequenceExecutor([
+            (1, "FAILED tests/test_xbrl.py::test_a - boom\n1 failed, 2 passed in 1.0s\n"),
+            (1, "FAILED test_xbrl.py::test_a - boom\n1 failed, 2 passed in 1.0s\n"),
+        ])
+        record = self._run(executor)
+        self.assertEqual(record["exit_code"], 1)
+        self.assertEqual(record["working_directory"], ".")
+        self.assertEqual(record["command"][3], "tests/test_xbrl.py")
+        self.assertEqual(touched_tests_verdict(record)[0], "touched-tests-failed")
 
 
 if __name__ == "__main__":

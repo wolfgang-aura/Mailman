@@ -17,7 +17,7 @@ import json
 import os
 import re
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from mailman.environment import ENVIRONMENT_DIRECTORY
@@ -461,6 +461,21 @@ _HOST_BLOCKED_DLL = re.compile(
 )
 
 
+def _shared_directory(files: list[str]) -> str | None:
+    """The one directory below the root that holds every file, if there is one."""
+    parents = {PurePosixPath(path.replace("\\", "/")).parent.as_posix() for path in files}
+    if len(parents) != 1:
+        return None
+    parent = parents.pop()
+    return None if parent in (".", "") else parent
+
+
+def _unsuccessful(counts: dict[str, int | None]) -> float:
+    if counts.get("failed") is None and counts.get("errors") is None:
+        return float("inf")
+    return (counts.get("failed") or 0) + (counts.get("errors") or 0)
+
+
 def _is_local_module(workspace: Path, name: str) -> bool:
     top = name.split(".", 1)[0]
     for prefix in ("", *_LAYOUT_PREFIXES):
@@ -586,6 +601,7 @@ def _baseline_failures(
     timeout_seconds: float,
     files: list[str] | None = None,
     extra: list[str] | None = None,
+    directory: str = ".",
 ) -> dict[str, Any]:
     """Run the failing nodes on the base commit and say which fail there too.
 
@@ -622,7 +638,7 @@ def _baseline_failures(
             return record
         ran = execute(
             _pytest_targets(python, nodes, files, extra),
-            working_directory=baseline.path,
+            working_directory=baseline.path / directory,
             timeout_seconds=timeout_seconds,
         )
         if ran.timed_out:
@@ -637,7 +653,7 @@ def _baseline_failures(
     if record["new"]:
         again = execute(
             _pytest_targets(python, record["new"], files, extra),
-            working_directory=workspace,
+            working_directory=workspace / directory,
             timeout_seconds=timeout_seconds,
         )
         if not again.timed_out and again.exit_code in (0, 1):
@@ -786,6 +802,33 @@ def run_touched_tests(
             record["output_tail"] = _tail(result.stdout + "\n" + result.stderr)
             record["reason"] = "all-selected-omitted"
             return _write(run_directory, record)
+    # Suites that open data relative to their own directory fail wholesale from
+    # the root: biopython's CI runs `cd Tests`. Rerun from the one directory
+    # the files share and keep that run only if it fails strictly fewer (#215).
+    directory = _shared_directory(files)
+    record["working_directory"] = "."
+    if runner == "pytest" and directory and result.exit_code == 1 and not result.timed_out:
+        local = [PurePosixPath(path).relative_to(directory).as_posix() for path in files]
+        local_command = command_for(local)
+        moved = execute(
+            local_command, working_directory=workspace / directory,
+            timeout_seconds=timeout_seconds,
+        )
+        root_counts = parse_counts(runner, result.stdout, result.stderr)
+        moved_counts = parse_counts(runner, moved.stdout, moved.stderr)
+        if (
+            not moved.timed_out
+            and moved.exit_code in (0, 1)
+            and _unsuccessful(moved_counts) < _unsuccessful(root_counts)
+        ):
+            record["directory_retry"] = {
+                "directory": directory, "root": root_counts, "moved": moved_counts,
+            }
+            record["working_directory"] = directory
+            result, command, files = moved, local_command, local
+            record["command"] = command
+        else:
+            command = command_for(files)
     record["ran"] = True
     record["exit_code"] = result.exit_code
     record["timed_out"] = result.timed_out
@@ -810,6 +853,7 @@ def run_touched_tests(
             files=files,
             # The marker filter and deselects: what follows `-q -p no:cacheprovider`.
             extra=command[3 + len(files) + 3:],
+            directory=record["working_directory"],
         )
     return _write(run_directory, record)
 
