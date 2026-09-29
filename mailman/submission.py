@@ -21,6 +21,7 @@ from mailman.toolchain import resolve_tool
 from mailman.touched_tests import (
     BASELINE_NODE_LIMIT,
     TOUCHED_TESTS_CAP,
+    TOUCHED_TESTS_CODE_VERSION,
     deselects_for,
     load_touched_tests,
     resolve_workspace,
@@ -958,6 +959,11 @@ def prepare_submission(
         touched_tests is None
         or touched_tests.get("diff_sha256") != diff_digest
         or not touched_tests.get("ran")
+        # A failure recorded by other touched-tests code (#216).
+        or (
+            touched_tests.get("exit_code") not in (0, None)
+            and touched_tests.get("code_version") != TOUCHED_TESTS_CODE_VERSION
+        )
         or _touched_selection_changed(touched_tests, touched_workspace, changed_paths)
         or _touched_deselects_changed(touched_tests, run_directory)
         # A failure recorded before failures were compared with the base

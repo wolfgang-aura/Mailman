@@ -25,7 +25,7 @@ from mailman.submission import (
     record_duplicate_acknowledgement,
     record_no_test_acknowledgement,
 )
-from mailman.touched_tests import TOUCHED_TESTS_FILENAME, diff_sha256
+from mailman.touched_tests import TOUCHED_TESTS_CODE_VERSION, TOUCHED_TESTS_FILENAME, diff_sha256
 
 
 def _weak_match(number: int) -> dict[str, object]:
@@ -373,6 +373,7 @@ def passing_touched_tests(diff: str, **overrides: object) -> dict[str, object]:
     """A touched-tests record that ran one file and passed, for this diff."""
     record: dict[str, object] = {
         "schema_version": 1,
+        "code_version": TOUCHED_TESTS_CODE_VERSION,
         "diff_sha256": diff_sha256(diff),
         "ran": True,
         "reason": None,
@@ -1194,6 +1195,23 @@ class PrepareSubmissionTests(unittest.TestCase):
             record = self._prepare()
         self.assertEqual(self.touched_tests_calls, [])
         self.assertIn("touched-tests-failed", record["blocking_codes"])
+
+    def test_a_stored_failure_from_other_touched_tests_code_is_rerun(self) -> None:
+        # #216: biopython's exit-2 record predated #214 by two minutes and
+        # kept blocking the same diff after #214 would have omitted the file.
+        stored = passing_touched_tests(
+            SOURCE_DIFF, exit_code=2, failed=0, baseline=None, code_version="older"
+        )
+        (self.run_directory / TOUCHED_TESTS_FILENAME).write_text(
+            json.dumps(stored), encoding="utf-8"
+        )
+        with (
+            patch("mailman.submission.resolve_workspace", return_value=self.run_directory),
+            patch("mailman.submission.select_test_files", return_value=stored),
+        ):
+            record = self._prepare()
+        self.assertEqual(len(self.touched_tests_calls), 1)
+        self.assertNotIn("touched-tests-failed", record["blocking_codes"])
 
     def test_a_stored_failure_from_before_the_base_comparison_is_rerun(self) -> None:
         # #180: a record without the `baseline` field never compared its

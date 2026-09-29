@@ -26,6 +26,10 @@ from mailman.toolchain import toolchain_executable
 
 TOUCHED_TESTS_FILENAME = "touched-tests.json"
 TOUCHED_TESTS_SCHEMA_VERSION = 1
+#: Digest of this module. A failure recorded by other code is run again, so
+#: a fix here reaches a run that already holds a record for the same diff.
+#: Mailman #216.
+TOUCHED_TESTS_CODE_VERSION = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
 #: More than this and the stage is no longer a focused check; the record says
 #: which files were left out so the reader can widen it by hand.
 TOUCHED_TESTS_CAP = 25
@@ -694,6 +698,7 @@ def run_touched_tests(
     started = datetime.now(UTC)
     record: dict[str, Any] = {
         "schema_version": TOUCHED_TESTS_SCHEMA_VERSION,
+        "code_version": TOUCHED_TESTS_CODE_VERSION,
         "diff_sha256": diff_sha256(diff),
         "started_at": started.isoformat(),
         "ran": False,
