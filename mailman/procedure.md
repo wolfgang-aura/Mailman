@@ -60,6 +60,12 @@ eight passing screens, returning open, unassigned, bug-labelled issues with no
 linked pull request that nobody has prescreened, commented ones first. It exits
 non-zero when GitHub refused a query. Pre-screen its rows as usual (#226).
 
+A failed screen is not re-read on its own. When the gate's rules change, the
+`hunt targets` warning names the screens that failed only on responsiveness
+under older rules and whose stored numbers could pass now, most stars first.
+Refresh a few of them before screening new repositories; each refresh costs
+about 200 core API calls (#227).
+
 Keep what you print small. A coordinator is a conversation, so every command's
 output stays in context and is re-sent on every later turn. `hunt status` omits
 the reasons and evidence for replaced candidates by default; the record keeps

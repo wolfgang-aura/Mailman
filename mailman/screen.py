@@ -191,6 +191,13 @@ REJECTION_MERGE_SHARE = 0.3
 #: is not read, because two closes against one merge is a week, not a habit.
 REJECTION_DECIDED_MINIMUM = 5
 
+#: Which responsiveness rules judged a screen. 1: more closed than merged
+#: failed (a screen without the stamp). 2: under 30% merged fails (685200d).
+#: 3: an unanswered pull request younger than FIRST_RESPONSE_DAYS is left out
+#: of the share (#224). Bump it whenever the gate's arithmetic changes, so
+#: `hunt targets` can offer the failures an older rule produced. Mailman #227.
+RESPONSIVENESS_RULES_VERSION = 3
+
 #: Python has to be the language the repository is actually written in. On
 #: `ccxt/ccxt` the Python is generated from TypeScript, and a patch to it is
 #: thrown away by the next build.
@@ -2555,6 +2562,7 @@ def screen_repository(
         "window_days": window_days,
         "issue_window_days": issue_window_days,
         "responsiveness_days": responsiveness_days,
+        "responsiveness_rules": RESPONSIVENESS_RULES_VERSION,
         "gates": [],
         "success": False,
         # Who merged recent pull requests: maintainers GitHub may report as

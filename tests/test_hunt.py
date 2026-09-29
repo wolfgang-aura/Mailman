@@ -1377,3 +1377,75 @@ class SweepTests(OrchestratorHarness):
             [(row["target"], row["engaged"]) for row in result["rows"]],
             [("acme/a#3", True), ("acme/a#2", True), ("acme/a#1", False)],
         )
+
+
+class RescreenTests(OrchestratorHarness):
+    """Failing screens judged under older responsiveness rules. Mailman #227."""
+
+    def _failed(self, slug, *, stars=1000, rules=None, failed=("responsiveness",),
+                **numbers):
+        data = {"sampled": 50, "responded": 40, "responded_within_days": 30,
+                "median_first_response_days": 2.0, "merged": 10,
+                "closed_unmerged": 12, **numbers}
+        record = {
+            "repository": slug, "success": True, "verdict": "fail",
+            "screened_at": datetime.now(UTC).isoformat(),
+            "failed_gates": list(failed),
+            "gates": [
+                {"name": "provenance", "passed": True, "data": {"stars": stars}},
+                {"name": "responsiveness", "passed": False, "detail": "old", "data": data},
+            ],
+        }
+        if rules is not None:
+            record["responsiveness_rules"] = rules
+        path = screen_path(self.data_root, slug)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+    def test_old_rules_failures_that_could_pass_now_are_offered_by_stars(self):
+        from mailman.hunt import rescreen_candidates
+        from mailman.screen import RESPONSIVENESS_RULES_VERSION
+        self._failed("acme/small", stars=10)
+        self._failed("acme/big", stars=9000, rules=RESPONSIVENESS_RULES_VERSION - 1)
+        # Judged under today's rules: its verdict stands.
+        self._failed("acme/current", rules=RESPONSIVENESS_RULES_VERSION)
+        # Also failed another gate: a re-screen cannot rescue it.
+        self._failed("acme/also", failed=("freshness", "responsiveness"))
+        # Merges 1 in 11 decided: fails today's merge-share rule regardless.
+        self._failed("acme/closer", merged=1, closed_unmerged=10)
+        # Median wait over 14 days fails whatever the denominator.
+        self._failed("acme/slow", median_first_response_days=20.0)
+        # Even with every unanswered pull request left out, under half on time.
+        self._failed("acme/late", responded=40, responded_within_days=15)
+
+        rows = rescreen_candidates(self.data_root)
+
+        self.assertEqual([row["repository"] for row in rows], ["acme/big", "acme/small"])
+        self.assertEqual(rows[0]["stars"], 9000)
+
+    def test_hunt_targets_warns_with_the_refresh_commands(self):
+        self._failed("acme/big", stars=9000)
+        out, err = StringIO(), StringIO()
+        with redirect_stdout(out), mock.patch("sys.stderr", err):
+            code = main(["hunt", "targets", "--data-root", str(self.data_root)])
+        self.assertEqual(code, 0)
+        warnings = json.loads(out.getvalue())["warnings"]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("mailman screen-target acme/big --refresh", warnings[0])
+        self.assertIn("older responsiveness rules", err.getvalue())
+
+    def test_a_new_screen_records_the_rules_it_was_judged_under(self):
+        from mailman.executor import CommandResult
+        from mailman.screen import RESPONSIVENESS_RULES_VERSION, screen_repository
+
+        def refused(command, *args, **kwargs):
+            return CommandResult(command=list(command), working_directory=".",
+                                 started_at="", duration_seconds=0.0, exit_code=1,
+                                 stdout="", stderr="Not Found", timed_out=False,
+                                 timeout_seconds=1.0, environment={})
+
+        record = screen_repository("acme/gone", data_root=self.data_root,
+                                   executable="gh", _execute=refused)
+
+        self.assertEqual(record["responsiveness_rules"], RESPONSIVENESS_RULES_VERSION)
+        self.assertGreaterEqual(RESPONSIVENESS_RULES_VERSION, 3)

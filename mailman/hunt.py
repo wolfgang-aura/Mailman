@@ -567,6 +567,73 @@ def stale_screen_warning(targets: list[dict]) -> str | None:
     )
 
 
+def _could_pass_responsiveness(data: dict) -> bool:
+    """Whether stored responsiveness numbers could pass today's rules.
+
+    Every unanswered pull request is assumed young, the most a re-screen can
+    leave out of the share; the median and the merge share do not move.
+    """
+    from mailman.screen import (FIRST_RESPONSE_DAYS, FIRST_RESPONSE_SHARE,
+                                REJECTION_DECIDED_MINIMUM, REJECTION_MERGE_SHARE,
+                                RESPONSIVENESS_SAMPLE_MINIMUM)
+
+    if int(data.get("sampled") or 0) < RESPONSIVENESS_SAMPLE_MINIMUM:
+        return False
+    median = data.get("median_first_response_days")
+    if median is not None and median > FIRST_RESPONSE_DAYS:
+        return False
+    merged = int(data.get("merged") or 0)
+    decided = merged + int(data.get("closed_unmerged") or 0)
+    if decided >= REJECTION_DECIDED_MINIMUM and merged / decided < REJECTION_MERGE_SHARE:
+        return False
+    responded = int(data.get("responded") or 0)
+    within = int(data.get("responded_within_days") or 0)
+    return not responded or within / responded >= FIRST_RESPONSE_SHARE
+
+
+def rescreen_candidates(root: Path) -> list[dict]:
+    """Screens that failed responsiveness alone under older rules and might pass now.
+
+    Most stars first. Mailman #227: 51 such screens sat unread while a hunt
+    ran dry, and a refresh flipped pylint, napari and streamlit.
+    """
+    from mailman.screen import RESPONSIVENESS_RULES_VERSION, SCREENS_DIRECTORY
+
+    rows = []
+    for path in sorted((root / SCREENS_DIRECTORY).glob("*.json")):
+        screen = read_object(path)
+        if not screen or not screen.get("success") or screen.get("verdict") != "fail":
+            continue
+        if list(screen.get("failed_gates") or []) != ["responsiveness"]:
+            continue
+        if int(screen.get("responsiveness_rules") or 1) >= RESPONSIVENESS_RULES_VERSION:
+            continue
+        gates = {gate.get("name"): gate for gate in screen.get("gates") or []
+                 if isinstance(gate, dict)}
+        if not _could_pass_responsiveness(
+                (gates.get("responsiveness") or {}).get("data") or {}):
+            continue
+        rows.append({
+            "repository": repository_slug(str(screen.get("repository") or "")),
+            "stars": int(((gates.get("provenance") or {}).get("data") or {}).get("stars") or 0),
+            "screened_at": screen.get("screened_at"),
+        })
+    return sorted(rows, key=lambda row: (-row["stars"], row["repository"]))
+
+
+def rescreen_warning(rows: list[dict], limit: int = 10) -> str | None:
+    """One line naming the refreshes `rescreen_candidates` found, or None."""
+    if not rows:
+        return None
+    commands = "; ".join(f"mailman screen-target {row['repository']} --refresh"
+                         for row in rows[:limit])
+    more = f" (and {len(rows) - limit} more)" if len(rows) > limit else ""
+    return (
+        f"warning: {len(rows)} screen(s) failed only under older responsiveness "
+        f"rules and could pass now; refresh, most stars first{more}: {commands}"
+    )
+
+
 def _passing_screens(root: Path, held_repositories: set[str] | None,
                      max_age_days: int, now: datetime | None) -> list[tuple]:
     """(screened_at, slug, screen) for current passing screens, newest first.

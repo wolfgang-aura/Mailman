@@ -1044,7 +1044,10 @@ def _hunt(arguments: argparse.Namespace) -> int:
         # warning covers every workable row, so filtering cannot hide it.
         # https://github.com/wolfgang-aura/Mailman/issues/135
         every = hunt.workable_targets(root)
-        warning = hunt.stale_screen_warning(every)
+        warnings = [line for line in (
+            hunt.stale_screen_warning(every),
+            hunt.rescreen_warning(hunt.rescreen_candidates(root)),
+        ) if line]
         workable = (
             [row for row in every if row["engagement"] == hunt.ENGAGED]
             if arguments.engaged_only
@@ -1059,12 +1062,12 @@ def _hunt(arguments: argparse.Namespace) -> int:
                     "filed": sorted({c["target"] for c in claims if c["filed"]}),
                     "engaged_only": bool(arguments.engaged_only),
                     "workable": workable,
-                    "warnings": [warning] if warning else [],
+                    "warnings": warnings,
                 },
                 indent=2,
             )
         )
-        if warning:
+        for warning in warnings:
             print(warning, file=sys.stderr)
         return 0
     if arguments.action == "sweep":
