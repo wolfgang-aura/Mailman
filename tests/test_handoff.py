@@ -140,6 +140,15 @@ class FirstPersonTests(unittest.TestCase):
     def test_a_body_that_claims_nothing_is_clean(self) -> None:
         self.assertEqual(first_person_claims(BODY), [])
 
+    def test_an_unticked_template_box_claims_nothing(self) -> None:
+        # Mailman #223: "- [ ] I have run make style" left unticked blocked handoff.
+        body = "- [ ] I have run `make style` and fixed any issues\n* [ ] I have tested it\n"
+        self.assertEqual(first_person_claims(body), [])
+
+    def test_a_ticked_template_box_is_still_a_claim(self) -> None:
+        claims = first_person_claims("- [x] I have run `make style` and fixed any issues\n")
+        self.assertEqual([claim["line"] for claim in claims], [1])
+
     def test_the_harness_reporting_its_own_run_is_not_a_first_person_claim(
         self,
     ) -> None:

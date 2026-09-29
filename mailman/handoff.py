@@ -69,6 +69,8 @@ COMMENT_WORD_LIMIT = 120
 # on the human's behalf, cannot take responsibility, and cannot vouch for the
 # change; a body that says otherwise in the first person is false the moment
 # it is posted by someone who has not read it.
+_UNTICKED_BOX = re.compile(r"^[-*+]\s*\[ \]\s")
+
 _FIRST_PERSON_CLAIMS = (
     re.compile(r"\bI\s+(?:have\s+)?read\b", re.IGNORECASE),
     re.compile(
@@ -249,7 +251,8 @@ def first_person_claims(text: str) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     for number, line in enumerate(text.replace("\r\n", "\n").split("\n"), start=1):
         stripped = line.strip()
-        if not stripped:
+        if not stripped or _UNTICKED_BOX.match(stripped):
+            # An unticked template box asserts nothing (Mailman #223).
             continue
         for pattern in _FIRST_PERSON_CLAIMS:
             if pattern.search(stripped):
