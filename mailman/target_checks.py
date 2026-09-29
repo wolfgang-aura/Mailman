@@ -506,6 +506,9 @@ def _signatures(output: str, roots: tuple[Path, ...]) -> Counter[str]:
         line = line.replace("\\", "/")
         for root in roots:
             line = line.replace(str(root).replace("\\", "/") + "/", "")
+        # ty names the bare root in its module-resolution notes (#177).
+        for root in roots:
+            line = line.replace(str(root).replace("\\", "/"), "<root>")
         line = _DIGITS.sub("#", line).rstrip()
         if line:
             lines[line] += 1

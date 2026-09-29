@@ -488,6 +488,17 @@ class LintBaselineTests(_Fixture):
         _, findings = self._run(BaselineExecutor(patched, base))
         self.assertEqual([f["code"] for f in findings], ["lint-preexisting"])
 
+    def test_a_note_naming_the_bare_root_is_not_a_new_finding(self) -> None:
+        # pydata/xarray#10639 (#177): ty prints the searched root with no
+        # trailing separator, and the base worktree's root differs.
+        base_root = self.run_directory / "scratch" / "lint-base"
+        note = "info:   1. {} (first-party code)\n"
+        error = "error[unresolved-import]: Cannot resolve imported module `pydap`\n"
+        executor = BaselineExecutor(error + note.format(self.workspace),
+                                    error + note.format(base_root))
+        _, findings = self._run(executor)
+        self.assertEqual([f["code"] for f in findings], ["lint-preexisting"])
+
     def test_without_a_base_commit_no_worktree_is_made(self) -> None:
         executor = BaselineExecutor("pkg/mod.py:1:1: F401\n", "pkg/mod.py:1:1: F401\n")
         _, findings = self._run(executor, base_commit=None)
