@@ -123,6 +123,9 @@ _DESIGN_OPEN = re.compile(
     r"|rfc\b(?![\s-]*\d)"
     r"|proposals?\b"
     r"|(?:haven't|have not|not yet) decided"
+    # A project voice declining for now and polling for demand. plotly/dash#3968.
+    r"|inclined (?:not )?to (?:leave|keep) (?:it|this|that|them|the [\w ]{1,30}?) as[- ]is"
+    r"|see if any\s?one else (?:would like|wants|needs)"
     # A maintainer floating a new knob has not accepted any fix yet.
     r"|(?:(?:we|you) (?:could|can|might|may) (?:just |also )?"
     r"(?:add|introduce|expose|provide)"
@@ -157,6 +160,30 @@ def _sentence_around(text: str, start: int, end: int, limit: int = 240) -> str:
     return sentence if len(sentence) <= limit else sentence[: limit - 3] + "..."
 
 
+#: A project voice turning the report down: the behaviour is intended, or the
+#: change is not wanted. hgrecco/pint#2060 ("I don't think we want to
+#: implement this") and fsspec/filesystem_spec#1741 ("This is functioning
+#: correctly") both passed prescreen. https://github.com/wolfgang-aura/Mailman/issues/174
+_DECLINED = re.compile(
+    r"\b(?:"
+    r"(?:this|that|it)(?: is|'s| was) (?:functioning|working|behaving) "
+    r"(?:correctly|as (?:intended|expected|designed))"
+    r"|works? as (?:intended|designed)"
+    r"|(?:this|that|it)(?: is|'s| was) (?:the |an? )?(?:intended|expected|correct|documented) behaviou?r"
+    r"|(?:this|that|it)(?: is|'s) not a bug"
+    r"|i (?:don't|do not) think we (?:want|should|need) to (?:implement|support|add|change|do)"
+    r"|we (?:won't|will not|don't|do not) (?:want to )?(?:fix|implement|support|change)\b"
+    r"|won't ?fix\b"
+    r"|handle (?:the changes|this|it) internally"
+    # conan#17492, plotnine#917 and jedi#2058, the same afternoon.
+    r"|(?:this|that|it)(?: is|'s) not a problem"
+    r"|(?:this|that|it)(?: is|'s) expected (?:because|since|as)\b"
+    r"|unlikely to be fixed"
+    r")",
+    re.IGNORECASE,
+)
+
+
 def design_open_questions(thread: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """The project-voice comments that leave a design choice open, still unsettled.
 
@@ -166,14 +193,29 @@ def design_open_questions(thread: Iterable[dict[str, Any]]) -> list[dict[str, An
     everything before it; a later open phrase reopens the question. Outsiders
     neither open nor settle anything.
     """
+    return _unsettled(thread, _DESIGN_OPEN)
+
+
+def maintainer_declines(thread: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The project-voice comments turning the report down, not since reversed.
+
+    The same walk as `design_open_questions`: a later invitation or explicit
+    choice from the project undoes the refusal.
+    """
+    return _unsettled(thread, _DECLINED)
+
+
+def _unsettled(
+    thread: Iterable[dict[str, Any]], pattern: re.Pattern[str]
+) -> list[dict[str, Any]]:
     unsettled: list[dict[str, Any]] = []
     for comment in thread:
         if not isinstance(comment, dict) or _is_bot(comment.get("user")):
             continue
         if comment.get("author_association") not in _PROJECT_VOICES:
             continue
-        text = _matchable(_flat(comment.get("body")))
-        opens = list(_DESIGN_OPEN.finditer(text))
+        text = _matchable(_flat(_unquoted(comment.get("body"))))
+        opens = list(pattern.finditer(text))
         settles = list(_DESIGN_SETTLED.finditer(text)) + list(
             _INVITATION.finditer(text)
         )
@@ -276,6 +318,17 @@ _APOSTROPHES = str.maketrans({"‘": "'", "’": "'", "ʼ": "'", "＇": "'"})
 
 def _flat(text: str | None) -> str:
     return " ".join((text or "").split())
+
+
+def _unquoted(text: str | None) -> str:
+    """The comment without its `>` quoted lines: those are somebody else's words.
+
+    ansible/ansible-lint#4857 quoted "if someone else sees this comment" above
+    "I'll work on this", and the quoted "someone" read the claim as a question.
+    """
+    return "\n".join(
+        line for line in (text or "").splitlines() if not line.lstrip().startswith(">")
+    )
 
 
 def _matchable(text: str) -> str:
@@ -445,7 +498,7 @@ def classify_comment(comment: dict[str, Any]) -> str | None:
     """
     if not isinstance(comment, dict) or _is_bot(comment.get("user")):
         return None
-    body = _matchable(_flat(comment.get("body")))
+    body = _matchable(_flat(_unquoted(comment.get("body"))))
     if not body:
         return None
     maintainer = comment.get("author_association") in MAINTAINER_ASSOCIATIONS
@@ -754,6 +807,7 @@ def read_claims(
         if excludes_agents(comment):
             record["agent_exclusions"].append(_row(comment))
     record["design_undecided"] = design_open_questions(thread)
+    record["declined"] = maintainer_declines(thread)
     record["comments_read"] = len(comments)
     record["issue_created_at"] = payload.get("created_at")
     record["maintainer_touched_at"] = maintainer_touched_at(thread)

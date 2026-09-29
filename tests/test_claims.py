@@ -21,6 +21,7 @@ from mailman.claims import (
     excludes_agents,
     is_maintainer_invitation,
     load_claims,
+    maintainer_declines,
     pull_request_references,
     read_claims,
     render_claims,
@@ -152,6 +153,25 @@ class ClassifyCommentTests(unittest.TestCase):
                     classify_comment(_comment(body, association="NONE")), "claim"
                 )
 
+    def test_a_claim_under_a_quoted_question_is_still_a_claim(self) -> None:
+        # ansible/ansible-lint#4857, 2026-09-29: "I'll work on this" sat under
+        # a quote reading "if someone else sees this comment", and the quoted
+        # "someone" read the whole comment as a question. Prescreen passed an
+        # issue with an open claim.
+        body = (
+            "> Thanks @Jkhall81! I'm not sure when I'll have time, but in the "
+            "meantime, if someone else sees this comment, they would also have "
+            "a good starting point.\n\n"
+            "@nre-ableton, @Jkhall81; I'll work on this. Thanks for the roadmap."
+        )
+        self.assertEqual(
+            classify_comment(_comment(body, association="NONE")), "claim"
+        )
+
+    def test_a_quoted_claim_is_not_a_claim(self) -> None:
+        body = "> I'll work on this\n\nAny update on this?"
+        self.assertIsNone(classify_comment(_comment(body, association="NONE")))
+
     def test_a_question_about_the_bug_is_not_a_claim(self) -> None:
         for body in (
             "Is anyone working on this?",
@@ -282,6 +302,10 @@ class DesignUndecidedTests(unittest.TestCase):
             "This probably needs an RFC.",
             "Thanks for the proposal.",
             "Perhaps add a flag for strict mode.",
+            # plotly/dash#3968, 2026-09-29: a contributor declining the change
+            # for now and polling for demand. Prescreen passed it.
+            "I'm inclined to leave the types as is, but I'll leave this open "
+            "for now to see if anyone else would like to see a change.",
         ):
             with self.subTest(body=body):
                 self.assertEqual(
@@ -342,6 +366,56 @@ class DesignUndecidedTests(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertEqual(
                     design_open_questions([_comment(body, association="MEMBER")]), []
+                )
+
+
+class MaintainerDeclinedTests(unittest.TestCase):
+    """Mailman #174: a project voice saying no, with no later invitation."""
+
+    def test_a_project_voice_turning_the_report_down_blocks(self) -> None:
+        # Both passed prescreen on 2026-09-29.
+        for body in (
+            # hgrecco/pint#2060
+            "I don't think we want to implement this, this complicates things "
+            "unecesseraly IMO. Maybe a warning in the docs ?",
+            # fsspec/filesystem_spec#1741
+            "This is functioning correctly, with behaviour copied from "
+            "command-line `cp`.",
+            "Works as intended.",
+            "That is the expected behavior.",
+            "This is not a bug.",
+            "We won't fix this in the 1.x line.",
+            # conan-io/conan#17492
+            "It is not a problem that Conan is raising a NotFoundException.",
+            # has2k1/plotnine#917
+            "This is expected because at moment plotnine geoms are not yet "
+            "aware of their orientation.",
+            # davidhalter/jedi#2058
+            "This is the kind of bug that is unlikely to be fixed here.",
+        ):
+            with self.subTest(body=body):
+                rows = maintainer_declines([_comment(body, association="MEMBER")])
+                self.assertEqual(len(rows), 1)
+                self.assertTrue(rows[0]["quote"])
+
+    def test_an_outsider_saying_no_is_an_opinion(self) -> None:
+        self.assertEqual(maintainer_declines([_comment("This is not a bug.")]), [])
+
+    def test_a_later_invitation_overrides_the_decline(self) -> None:
+        thread = [
+            _comment("Works as intended.", association="MEMBER"),
+            _comment("Fair point, you're right. PR welcome!", association="OWNER"),
+        ]
+        self.assertEqual(maintainer_declines(thread), [])
+
+    def test_a_confirmed_bug_is_not_a_decline(self) -> None:
+        for body in (
+            "Thanks, I agree that this is a bug.",
+            "This is a bug, the expected behavior is to keep the order.",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(
+                    maintainer_declines([_comment(body, association="MEMBER")]), []
                 )
 
 

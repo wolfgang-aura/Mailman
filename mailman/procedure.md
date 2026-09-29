@@ -203,7 +203,10 @@ a time; a screen costs about 200 GitHub core calls.
    `issue-reserved-for-humans`. A maintainer comment that leaves the design
    open ("not sure how we should", "one option is... another", "we could add
    a config option") with no later maintainer comment settling it blocks it
-   under `design-undecided`. When you turn an issue down yourself after
+   under `design-undecided`. A project voice turning the report down ("works
+   as intended", "I don't think we want to implement this") with no later
+   invitation blocks it under `maintainer-declined`. A pull request cited from
+   a repository under another owner is neither a rival nor a fix. When you turn an issue down yourself after
    reading its thread, record it: `mailman prescreen OWNER/REPO#N --reject
    REASON --evidence LINK --hunt HUNT_ID --owner TOKEN`. An unrecorded
    rejection is offered again by `hunt targets` to the next session.

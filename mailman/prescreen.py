@@ -119,6 +119,10 @@ ISSUE_RESERVED_FOR_HUMANS = "issue-reserved-for-humans"
 #: nobody labelled them: zarr-python#2706, responses#744 and marimo#6250 were
 #: each turned down by hand after passing. Mailman #124.
 DESIGN_UNDECIDED = "design-undecided"
+#: A project voice turned the report down ("works as intended", "I don't think
+#: we want to implement this") and no later one invited the change. pint#2060
+#: and filesystem_spec#1741 each passed and were turned down by hand. Mailman #174.
+MAINTAINER_DECLINED = "maintainer-declined"
 #: The repository's own screen refused it. An issue there is not a candidate
 #: however clean its thread: alembic#1390 and podman-compose#1549 both passed
 #: this prescreen in repositories that failed freshness and responsiveness, and
@@ -633,6 +637,7 @@ def prescreen_issue(
         "invitations": len(claims.get("invitations", [])),
         "agent_exclusions": claims.get("agent_exclusions", []),
         "design_undecided": claims.get("design_undecided", []),
+        "declined": claims.get("declined", []),
         "maintainer_replied": claims.get("maintainer_replied"),
         "maintainer_touched_at": claims.get("maintainer_touched_at"),
     }
@@ -711,13 +716,24 @@ def prescreen_issue(
         thread_blocking.append(ISSUE_RESERVED_FOR_HUMANS)
     if claims.get("design_undecided"):
         thread_blocking.append(DESIGN_UNDECIDED)
+    if claims.get("declined"):
+        thread_blocking.append(MAINTAINER_DECLINED)
     if required and claims.get("maintainer_replied") is False and not shortlist_engaged:
         thread_blocking.append(NO_MAINTAINER_REPLY)
     if record["maintainer_closed_attempts"]:
         thread_blocking.append(MAINTAINER_CLOSED_ATTEMPT)
     if blocked_cited:
         thread_blocking.append(DUPLICATE_FORBIDDEN_OPEN_ATTEMPT)
-    if cited["open"]:
+    # A pull request under another owner neither answers this issue nor
+    # competes with a fix to it: pydata/xarray#10269 was refused as already
+    # fixed because a downstream project merged its own workaround. Mailman
+    # #172. A sibling under the same owner still counts: jsonschema#1497's fix
+    # is open in python-jsonschema/referencing.
+    def _here(row: dict[str, Any]) -> bool:
+        owner = str(row.get("repository") or slug).split("/")[0]
+        return owner.lower() == slug.split("/")[0].lower()
+
+    if any(_here(row) for row in cited["open"]):
         thread_blocking.append(OPEN_PULL_REQUEST)
     # A merged pull request the reporter names in the body is the cause or
     # the context of the report, not its fix: zauberzeug/nicegui#6339 was
@@ -725,10 +741,11 @@ def prescreen_issue(
     # #6329 "does not cover these paths". Both were refused as already fixed.
     # A fix is announced later, in a comment, and those still block. The
     # reproduction at the base commit is the check behind this one.
-    merged_fixes = [row for row in cited["merged"] if row.get("in") != "body"]
+    merged_here = [row for row in cited["merged"] if _here(row)]
+    merged_fixes = [row for row in merged_here if row.get("in") != "body"]
     if merged_fixes:
         thread_blocking.append(ALREADY_FIXED_UPSTREAM)
-    elif cited["merged"]:
+    elif merged_here:
         warnings.append(CITED_MERGED_IN_BODY)
     labels = captured.get("labels") or []
     record["ranking"] = _ranking(
@@ -755,6 +772,13 @@ def prescreen_issue(
                 f"design open with {last.get('phrase')!r} ({last.get('quote')!r}) "
                 "and no later maintainer comment settled it. Comment with "
                 "evidence, or wait for a decision; do not open a run"
+            )
+        if MAINTAINER_DECLINED in thread_blocking:
+            last = claims["declined"][-1]
+            details.append(
+                f"{last.get('author')} ({last.get('association')}) turned the "
+                f"report down: {last.get('quote')!r}. Nobody who speaks for the "
+                "project has invited the change since; do not open a run"
             )
         if NO_MAINTAINER_REPLY in thread_blocking:
             details.append(

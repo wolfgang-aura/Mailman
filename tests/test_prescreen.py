@@ -20,6 +20,7 @@ from mailman.prescreen import (
     DECIDABLE,
     DESIGN_UNDECIDED,
     INVITED_ENHANCEMENT,
+    MAINTAINER_DECLINED,
     ISSUE_NOT_BOUNDED_FIX,
     PRESCREEN_HOURS,
     REPOSITORY_SCREEN_FAILED,
@@ -954,6 +955,49 @@ class CitedPullRequestTests(PrescreenTests):
         )
         self.assertIn("no clone", record["cited_pull_requests"]["detail"])
 
+    def test_a_merged_pull_request_in_another_repository_is_not_a_fix(
+        self,
+    ) -> None:
+        # pydata/xarray#10269 and #10247, 2026-09-29: a downstream project's
+        # merged workaround, linked in a comment, refused both as already
+        # fixed upstream. A merge elsewhere changes nothing in this tree.
+        comment = {
+            "body": (
+                "We worked around this in "
+                "https://github.com/TGSAI/mdio-python/pull/630 for now."
+            ),
+            "author_association": "NONE",
+            "created_at": "2026-09-10T00:00:00Z",
+            "user": {"login": "someone", "type": "User"},
+        }
+        record = prescreen_issue(
+            self.root,
+            "pydata/xarray#10269",
+            executable=self.stub(
+                "[]",
+                self.issue(
+                    10269,
+                    "pydata/xarray",
+                    "`use_zarr_fill_value_as_mask=True` is ignored in `open_zarr`.",
+                    "use_zarr_fill_value_as_mask=True is ignored in open_zarr",
+                ),
+                comments=[comment],
+                pull_requests={
+                    "TGSAI/mdio-python#630": {
+                        "number": 630,
+                        "state": "MERGED",
+                        "title": "Work around xarray fill value masking",
+                        "url": "https://github.com/TGSAI/mdio-python/pull/630",
+                        "mergedAt": "2026-08-05T00:00:00Z",
+                        "mergeCommit": {"oid": "b" * 40},
+                    }
+                },
+            ),
+        )
+
+        self.assertNotIn(ALREADY_FIXED_UPSTREAM, record["blocking"])
+        self.assertEqual(record["verdict"], "pass")
+
     def test_a_merged_pull_request_named_in_the_body_is_context_not_a_fix(
         self,
     ) -> None:
@@ -1319,6 +1363,33 @@ class DesignUndecidedTests(PrescreenTests):
 
         self.assertNotIn(DESIGN_UNDECIDED, record.get("blocking", []))
         self.assertEqual(record["claims"]["design_undecided"], [])
+
+
+class MaintainerDeclinedTests(PrescreenTests):
+    """Mailman #174: fsspec#1741 passed after a member called it correct."""
+
+    maintainer = DesignUndecidedTests.maintainer
+
+    def test_a_maintainer_turning_the_report_down_rejects_the_issue(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                comments=[
+                    self.maintainer(
+                        "This is functioning correctly, with behaviour copied "
+                        "from command-line `cp`.",
+                        "2026-09-03T00:00:00Z",
+                    )
+                ],
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [MAINTAINER_DECLINED])
+        self.assertIn("turned the report down", record["next"])
+        self.assertEqual(len(record["claims"]["declined"]), 1)
 
 
 class PriorDiscussionTests(PrescreenTests):
