@@ -566,8 +566,15 @@ def _baseline_failures(
     python: str,
     nodes: list[str],
     timeout_seconds: float,
+    files: list[str] | None = None,
+    extra: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run the failing nodes on the base commit and say which fail there too.
+
+    Past BASELINE_NODE_LIMIT nodes the same `files` run instead, with the
+    candidate run's `extra` arguments, because thousands of node ids overflow
+    a Windows command line. scverse/anndata#2348 (#202): 2249 nodes failed
+    for want of awkward, at the base commit as well.
 
     pydata/xarray#10639 (#180): three netCDF datatree tests failed for want of
     a netCDF4 build the host cannot load, at the base commit as well as with
@@ -596,7 +603,7 @@ def _baseline_failures(
             record["detail"] = f"the base worktree could not be made: {baseline.detail}"
             return record
         ran = execute(
-            [python, "-m", "pytest", *nodes, "-q", "-p", "no:cacheprovider", "-rfE"],
+            _pytest_targets(python, nodes, files, extra),
             working_directory=baseline.path,
             timeout_seconds=timeout_seconds,
         )
@@ -611,7 +618,7 @@ def _baseline_failures(
         baseline.close()
     if record["new"]:
         again = execute(
-            [python, "-m", "pytest", *record["new"], "-q", "-p", "no:cacheprovider", "-rfE"],
+            _pytest_targets(python, record["new"], files, extra),
             working_directory=workspace,
             timeout_seconds=timeout_seconds,
         )
@@ -621,6 +628,22 @@ def _baseline_failures(
             record["new"] = [node for node in record["new"] if node in still]
             record["detail"] += f"; the candidate rerun exited {again.exit_code}"
     return record
+
+
+def _pytest_targets(
+    python: str, nodes: list[str], files: list[str] | None, extra: list[str] | None
+) -> list[str]:
+    if len(nodes) <= BASELINE_NODE_LIMIT or not files:
+        return [python, "-m", "pytest", *nodes, "-q", "-p", "no:cacheprovider", "-rfE"]
+    return [
+        python, "-m", "pytest", *files, "-q", "-p", "no:cacheprovider", *(extra or []),
+        "-rfE",
+    ]
+
+
+def _listed(nodes: list[str], limit: int = 10) -> str:
+    shown = ", ".join(nodes[:limit])
+    return shown + (f" and {len(nodes) - limit} more" if len(nodes) > limit else "")
 
 
 def run_touched_tests(
@@ -759,7 +782,7 @@ def run_touched_tests(
         and base_commit
         and result.exit_code == 1
         and not result.timed_out
-        and 0 < len(nodes) <= BASELINE_NODE_LIMIT
+        and nodes
     ):
         record["baseline"] = _baseline_failures(
             run_directory,
@@ -768,6 +791,9 @@ def run_touched_tests(
             python=python,
             nodes=nodes,
             timeout_seconds=timeout_seconds,
+            files=files,
+            # The marker filter and deselects: what follows `-q -p no:cacheprovider`.
+            extra=command[3 + len(files) + 3:],
         )
     return _write(run_directory, record)
 
@@ -831,12 +857,12 @@ def touched_tests_verdict(
         if baseline.get("failing_at_base"):
             parts.append(
                 "these also fail at the base commit: "
-                + ", ".join(baseline["failing_at_base"])
+                + _listed(baseline["failing_at_base"])
             )
         if baseline.get("flaky"):
             parts.append(
                 "these pass at the base commit and on a second run of the "
-                "candidate, so they are flaky: " + ", ".join(baseline["flaky"])
+                "candidate, so they are flaky: " + _listed(baseline["flaky"])
             )
         return (
             None,
@@ -855,7 +881,7 @@ def touched_tests_verdict(
             f"(exit {record.get('exit_code')}, passed {record.get('passed')}, "
             f"failed {record.get('failed')}, errors {record.get('errors')}): "
             f"{' '.join(record.get('command') or [])}"
-            + (f". New since the base commit: {', '.join(new)}" if new else ""),
+            + (f". New since the base commit: {_listed(new)}" if new else ""),
         )
     indirect = record.get("indirect") or []
     return (

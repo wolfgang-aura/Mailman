@@ -633,6 +633,26 @@ class BaselineFailureTests(_RunFixture):
         self.assertIn("flaky: tests/test_xbrl.py::test_engine", detail)
         self.assertIn("also fail at the base commit: tests/test_xbrl.py::test_groups", detail)
 
+    def test_past_the_node_limit_the_same_files_run_at_base(self) -> None:
+        # scverse/anndata#2348 (#202): 2249 nodes failed for want of awkward,
+        # at the base commit too. Past the limit the files run, not the ids.
+        many = [f"tests/test_xbrl.py::test_case_{index}" for index in range(60)]
+        executor = BaselineExecutor(at_base=many)
+        FakeExecutor.__init__(
+            executor,
+            exit_code=1,
+            stdout="".join(f"FAILED {node} - no awkward\n" for node in many)
+            + "60 failed, 5 passed in 0.7s\n",
+        )
+        record = self._run_with_base(executor)
+        self.assertEqual(record["baseline"]["new"], [])
+        base_run = [c for c in executor.calls if "-rfE" in c["command"]][0]
+        self.assertNotIn(many[0], base_run["command"])
+        self.assertIn("tests/test_xbrl.py", base_run["command"])
+        code, detail = touched_tests_verdict(record)
+        self.assertIsNone(code)
+        self.assertIn("and 50 more", detail)
+
     def test_without_a_base_commit_nothing_is_compared(self) -> None:
         executor = BaselineExecutor(at_base=self.nodes)
         record = self._run(executor)
