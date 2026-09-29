@@ -534,7 +534,7 @@ def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
     only the first group.
     """
     from mailman.prescreen import prescreen_path
-    from mailman.screen import SCREENS_DIRECTORY, screen_shortlist
+    from mailman.screen import SCREENS_DIRECTORY, is_request_row, screen_shortlist
 
     moment = now or datetime.now(UTC)
     held = {slug.lower() for slug in (
@@ -570,6 +570,10 @@ def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
             # An open or merged pull request already answers it; racing one
             # is how 24 of 55 confirmed bugs were lost on 2026-09-28.
             if row.get("rival_pull_requests"):
+                continue
+            # Screens recorded before the not-a-bug filter still hold
+            # requests and RFCs. Mailman #188.
+            if is_request_row(row):
                 continue
             engagement = row_engagement(row)
             if engaged_only and engagement != ENGAGED:

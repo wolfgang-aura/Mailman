@@ -1073,6 +1073,22 @@ class PrescreenRecordTests(OrchestratorHarness):
         self.assertEqual([row["target"] for row in rows], ["acme/labels#6"])
         self.assertTrue(rows[0]["maintainer_labelled"])
 
+    def test_workable_targets_skip_requests_a_stored_screen_still_holds(self):
+        # Shortlists recorded before eb317af kept RFCs, feature requests and
+        # release trackers, and `hunt targets` served them. Mailman #188.
+        self._screen("acme/requests", [1, 2, 3, 4, 5, 6], flags={
+            1: {"title": "RFC: Retrieval Diagnostics API"},
+            2: {"title": "[RFC, I can do a PR] Make lora_alpha a float"},
+            3: {"title": "Track ty readiness as the primary type checker"},
+            4: {"title": "2.8.0 release"},
+            5: {"title": "Crash on empty input", "labels": ["type:feature"]},
+            6: {"title": "Feature flags crash on empty input"},
+        })
+
+        rows = workable_targets(self.data_root, held_repositories=set())
+
+        self.assertEqual([row["target"] for row in rows], ["acme/requests#6"])
+
     def test_workable_targets_rank_a_disputed_reply_last_and_out_of_engaged(self):
         # copier#2436: the maintainer's reply was "could not reproduce", and
         # --engaged-only offered it as triaged. Mailman #150.

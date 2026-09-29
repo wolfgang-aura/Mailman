@@ -1772,6 +1772,35 @@ _NOT_A_BUG_WORDS = frozenset(
 _COMMENT_THREAD_LIMIT = 40
 
 
+#: A title that tags itself as something other than a defect. Only the tag
+#: forms count, so "Feature X crashes" stays a bug: haystack's "RFC: Retrieval
+#: Diagnostics API", peft's "[RFC, I can do a PR] Make lora_alpha a float",
+#: marimo's "Track ty readiness" and scapy's "2.8.0 release" carried no such
+#: label and led `hunt targets` on 2026-09-29. Mailman #188.
+_REQUEST_TITLE = re.compile(
+    r"^\s*(?:"
+    r"\[\s*(?:rfc|proposal|feature(?:[ -]request)?|question|discussion|psa|epic"
+    r"|enhancement|idea)\b[^\]]*\]"
+    r"|(?:rfc|proposal|feature(?:[ -]request)?|question|discussion|psa|epic"
+    r"|enhancement|idea)\s*:"
+    r"|track(?:ing)?\s"
+    r"|.*\bv?\d+\.\d+(?:\.\d+)*\b.*\breleases?\s*$"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_request_row(row: dict[str, Any]) -> bool:
+    """Whether a shortlist row is a request, question, tracker or docs item.
+
+    Stored screens are read with it too, so a screen recorded before a word
+    was added here still stops offering the row. Mailman #188.
+    """
+    return _is_enhancement(row) or bool(
+        _REQUEST_TITLE.match(str(row.get("title") or ""))
+    )
+
+
 def _is_enhancement(row: dict[str, Any]) -> bool:
     """Whether a label says the issue is a request, question or docs item."""
     labels = row.get("labels")
@@ -1974,7 +2003,7 @@ def _saturation_gate(
     enhancement_labelled = 0
     stale_beyond_window = 0
     for row in unclaimed:
-        if _is_enhancement(row):
+        if is_request_row(row):
             enhancement_labelled += 1
             continue
         age = _age_in_days(row, now)
