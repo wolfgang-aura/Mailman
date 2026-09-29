@@ -1749,8 +1749,44 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(gate["data"]["unclaimed"], 3)
         self.assertEqual(gate["data"]["workable"], 0)
         self.assertIn("none is workable", gate["detail"])
-        self.assertIn("enhancement-labelled", gate["detail"])
+        self.assertIn("labelled as a request", gate["detail"])
         self.assertIn("older than the 730-day issue window", gate["detail"])
+
+    def test_requests_questions_and_docs_under_any_prefix_are_not_workable(
+        self) -> None:
+        # Shortlist rows read by hand on 2026-09-29: celery's feature
+        # requests, moto's announcements and questions, haystack's docs and
+        # epics. None was a bug run.
+        # https://github.com/wolfgang-aura/Mailman/issues/184
+        labels = [
+            ["Issue Type: Feature Request"],
+            ["question", "debugging"],
+            ["announcement", "request-parsing"],
+            ["type:documentation", "P2"],
+            ["epic"],
+            ["kind/feature"],
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    issues=[
+                        *(
+                            _issue(20 + index, days_old=3, labels=names)
+                            for index, names in enumerate(labels)
+                        ),
+                        _issue(40, days_old=3, labels=["Issue Type: Bug Report"]),
+                    ],
+                    issue_comments={40: []},
+                ),
+            )
+        gate = _named(record, "saturation")
+
+        self.assertEqual(gate["data"]["enhancement_labelled"], len(labels))
+        self.assertEqual(gate["data"]["workable"], 1)
+        self.assertEqual(
+            [row["number"] for row in gate["data"]["shortlist"]], [40]
+        )
 
     def test_a_three_week_old_backlog_is_workable_under_a_fresh_window(self) -> None:
         # The eighteen repositories that failed nothing but saturation, among

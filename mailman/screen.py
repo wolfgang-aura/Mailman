@@ -1727,10 +1727,27 @@ def _assignment_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     )
 
 
-#: Label spellings that mark an issue as a request rather than a defect. A
-#: tracker can carry forty unclaimed enhancement requests and still have no
-#: work a bug run could take.
-_ENHANCEMENT_LABELS = ("enhancement", "feature", "feature-request")
+#: Words that mark an issue as something other than a defect, wherever they
+#: sit in a label: `enhancement`, `Issue Type: Feature Request`, `kind/feature`,
+#: `type:documentation`. A tracker can carry forty unclaimed requests,
+#: questions and announcements and still have no work a bug run could take;
+#: celery, moto and haystack shortlists led with them (#184).
+_NOT_A_BUG_WORDS = frozenset(
+    {
+        "enhancement",
+        "enhancements",
+        "feature",
+        "features",
+        "question",
+        "questions",
+        "announcement",
+        "documentation",
+        "docs",
+        "epic",
+        "discussion",
+        "proposal",
+    }
+)
 
 #: Reading one issue's comments costs one API call, so the reads stop after
 #: this many unclaimed candidates. A tracker with more unclaimed issues than
@@ -1740,18 +1757,16 @@ _COMMENT_THREAD_LIMIT = 40
 
 
 def _is_enhancement(row: dict[str, Any]) -> bool:
+    """Whether a label says the issue is a request, question or docs item."""
     labels = row.get("labels")
     if not isinstance(labels, list):
         return False
-    names = []
     for entry in labels:
-        if isinstance(entry, dict):
-            names.append(str(entry.get("name") or "").lower())
-        elif isinstance(entry, str):
-            names.append(entry.lower())
-    return any(
-        "enhancement" in name or name in _ENHANCEMENT_LABELS for name in names
-    )
+        name = str(entry.get("name") or "") if isinstance(entry, dict) else str(entry)
+        words = re.split(r"[^a-z]+", name.lower())
+        if "enhancement" in name.lower() or _NOT_A_BUG_WORDS.intersection(words):
+            return True
+    return False
 
 
 def _age_in_days(row: dict[str, Any], now: datetime) -> int | None:
@@ -2006,7 +2021,8 @@ def _saturation_gate(
             blocking=True,
             detail=(
                 f"{len(unclaimed)} issue(s) carry no claim of any kind, but "
-                f"none is workable: {enhancement_labelled} enhancement-labelled, "
+                f"none is workable: {enhancement_labelled} labelled as a request, "
+                f"question or docs item, "
                 f"{stale_beyond_window} older than the {issue_window_days}-day "
                 f"issue window (outside merges are counted over "
                 f"{window_days} days)"
