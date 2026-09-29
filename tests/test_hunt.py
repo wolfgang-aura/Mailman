@@ -1073,6 +1073,25 @@ class PrescreenRecordTests(OrchestratorHarness):
         self.assertEqual([row["target"] for row in rows], ["acme/labels#6"])
         self.assertTrue(rows[0]["maintainer_labelled"])
 
+    def test_workable_targets_rank_a_young_bug_label_first_within_a_group(self):
+        # certbot's 581-day-old chore led the engaged list on 2026-09-29 while
+        # two-day-old bug-labelled issues sat far below. Mailman #189.
+        engaged = {"maintainer_filed": False, "maintainer_replied": True,
+                   "maintainer_labelled": True, "rival_pull_requests": []}
+        self._screen("acme/rank", [1, 2, 3, 4], flags={
+            1: {**engaged, "age_days": 581},
+            2: {**engaged, "age_days": 40, "labels": ["bug"]},
+            3: {**engaged, "age_days": 2, "labels": [{"name": "type: regression"}]},
+            4: {**engaged, "age_days": 9},
+        })
+
+        rows = workable_targets(self.data_root, held_repositories=set())
+
+        self.assertEqual([row["target"] for row in rows],
+                         ["acme/rank#3", "acme/rank#2", "acme/rank#4", "acme/rank#1"])
+        self.assertTrue(rows[0]["bug_labelled"])
+        self.assertFalse(rows[2]["bug_labelled"])
+
     def test_workable_targets_skip_requests_a_stored_screen_still_holds(self):
         # Shortlists recorded before eb317af kept RFCs, feature requests and
         # release trackers, and `hunt targets` served them. Mailman #188.

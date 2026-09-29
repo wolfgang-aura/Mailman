@@ -486,6 +486,30 @@ DISPUTED = "disputed"
 _ENGAGEMENT_RANK = {ENGAGED: 0, ENGAGEMENT_UNKNOWN: 1, NOT_ENGAGED: 2, DISPUTED: 3}
 
 
+_BUG_LABEL = re.compile(r"bug|regression|crash", re.IGNORECASE)
+
+
+def row_bug_labelled(row: dict) -> bool:
+    """Whether a label on the row calls the issue a bug. Mailman #189."""
+    for entry in row.get("labels") or []:
+        name = entry.get("name") if isinstance(entry, dict) else entry
+        if isinstance(name, str) and _BUG_LABEL.search(name):
+            return True
+    return False
+
+
+def _target_rank(target: dict) -> tuple:
+    # Within an engagement group, a maintainer's bug label and then youth:
+    # screen order put certbot's 581-day-old test-data chore first on
+    # 2026-09-29 while two-day-old labelled bugs sat 200 rows down. #189.
+    age = target.get("age_days")
+    return (
+        _ENGAGEMENT_RANK[target["engagement"]],
+        not target["bug_labelled"],
+        age if isinstance(age, int) else 10**6,
+    )
+
+
 def row_engagement(row: dict) -> str:
     """Whether a maintainer filed or answered the issue, as far as the screen knows.
 
@@ -582,6 +606,7 @@ def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
                 "target": target, "title": row.get("title"),
                 "age_days": row.get("age_days"), "reasons": row.get("reasons") or [],
                 "engagement": engagement,
+                "bug_labelled": row_bug_labelled(row),
                 "maintainer_filed": row.get("maintainer_filed"),
                 "maintainer_replied": row.get("maintainer_replied"),
                 "maintainer_labelled": row.get("maintainer_labelled"),
@@ -590,7 +615,7 @@ def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
                 "stale_screen": "maintainer_filed" not in row,
                 "screened_at": screen.get("screened_at"),
             })
-    targets.sort(key=lambda target: _ENGAGEMENT_RANK[target["engagement"]])
+    targets.sort(key=_target_rank)
     return targets
 
 
