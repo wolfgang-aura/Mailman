@@ -81,6 +81,11 @@ _AGENT_EXCLUSION = re.compile(
     r"|(?:fully |purely )?(?:automated|ai[- ]generated|llm[- ]generated|agent[- ]generated|agentic)"
     r" (?:prs?|pull requests?|patch(?:es)?|contributions?)"
     r"(?: from (?:agents?|bots?|ai|llms?))? (?:may|will|would) be (?:rejected|closed|declined)"
+    # An issue set aside for a mentoring programme is held for its people:
+    # django-debug-toolbar#2481 "this may be a good djangonaut space
+    # ticket". Mailman #194.
+    r"|(?:djangonaut(?: space)?|outreachy|gsoc|google summer of code"
+    r"|mentee|mentorship)(?: program(?:me)?)? (?:ticket|issue|task|candidate)"
     r")",
     re.IGNORECASE,
 )
@@ -951,6 +956,9 @@ _ELSEWHERE = re.compile(
     r" (?:in|with|upstream)\b"
     r"|this is (?:a |an )?known \S+ (?:issue|bug)"
     r"|upstream (?:issue|bug)\b"
+    # Translations live on a platform, not in the repository's .po files:
+    # django-debug-toolbar#2329 "adjust this in Transifex". Mailman #194.
+    r"|(?:in|on|via|through|using) (?:transifex|weblate|crowdin|pontoon)\b"
     r")",
     re.IGNORECASE,
 )

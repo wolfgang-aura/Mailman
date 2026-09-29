@@ -238,6 +238,16 @@ class AgentExclusionTests(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertTrue(excludes_agents(_comment(body, association="OWNER")))
 
+    def test_a_mentoring_programme_earmark_reserves_the_issue(self) -> None:
+        # django-debug-toolbar#2481 and #2482, verbatim. Mailman #194.
+        for body in (
+            "@VeldaKiara This may be a reasonable djangonaut space ticket.",
+            "@VeldaKiara this may be a good djangonaut space ticket",
+            "Keeping this one as an Outreachy task.",
+        ):
+            with self.subTest(body=body):
+                self.assertTrue(excludes_agents(_comment(body, association="MEMBER")))
+
     def test_an_outsider_saying_it_is_not_the_project_speaking(self) -> None:
         self.assertFalse(excludes_agents(_comment(BEETS_6984)))
 
@@ -1004,6 +1014,15 @@ class MaintainerDisputeTests(unittest.TestCase):
         self.assertIsNone(
             maintainer_dispute([self._comment("Works for me", association="NONE")])
         )
+
+    def test_a_translation_platform_redirect_is_a_dispute(self):
+        # django-debug-toolbar#2329, verbatim. Mailman #194.
+        from mailman.claims import maintainer_dispute
+
+        self.assertIsNotNone(maintainer_dispute([self._comment(
+            "@domingues would you be willing to adjust this in Transifex? It's "
+            "a bit of work, but that's where we manage translations."
+        )]))
 
     def test_a_request_to_retry_on_the_latest_release_is_not_triage(self):
         # kombu#2291, unanswered for 518 days, ranked engaged. Mailman #190.
