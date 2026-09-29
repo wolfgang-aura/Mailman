@@ -58,6 +58,11 @@ CITED_MERGED_IN_BODY = "cited-merged-in-body"
 #: at the base commit decides. holoviz/panel#8335 was refused as already
 #: fixed on "Possibly related to #1543", merged four years earlier. Mailman #147.
 CITED_MERGED_BEFORE_ISSUE = "cited-merged-before-issue"
+#: A merged pull request in a sibling repository cross-references the issue
+#: but GitHub does not record it as closing it. posit-dev/shinyreact#306 was
+#: a downstream workaround for py-shiny#2497, which it names; it changed
+#: only its own files. The reproduction at the base commit decides. Mailman #206.
+CITED_MERGED_ELSEWHERE = "cited-merged-elsewhere"
 #: A maintainer wrote about this issue in another issue that cross-references
 #: it. Not a veto, but the fix shape they named there outranks the agent's:
 #: pyinstaller#9224 preferred `--best` over the fallback the #9121 run built.

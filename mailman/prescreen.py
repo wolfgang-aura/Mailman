@@ -47,6 +47,7 @@ from mailman.submission import (
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
     CITED_MERGED_BEFORE_ISSUE,
+    CITED_MERGED_ELSEWHERE,
     CITED_MERGED_IN_BODY,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     ISSUE_ASSIGNED,
@@ -771,7 +772,23 @@ def prescreen_issue(
     # #6329 "does not cover these paths". Both were refused as already fixed.
     # A fix is announced later, in a comment, and those still block. The
     # reproduction at the base commit is the check behind this one.
-    merged_here = [row for row in cited["merged"] if _here(row)]
+    # A sibling repository's merge that GitHub does not record as closing this
+    # issue is a workaround there, not a fix here: shinyreact#306 for
+    # py-shiny#2497. Mailman #206.
+    this_issue = f"{slug}#{number}".lower()
+
+    def _elsewhere(row: dict[str, Any]) -> bool:
+        repository = str(row.get("repository") or slug).lower()
+        return repository != slug.lower() and this_issue not in (row.get("closes") or [])
+
+    merged_elsewhere = [
+        row for row in cited["merged"] if _here(row) and _elsewhere(row)
+    ]
+    if merged_elsewhere:
+        warnings.append(CITED_MERGED_ELSEWHERE)
+    merged_here = [
+        row for row in cited["merged"] if _here(row) and not _elsewhere(row)
+    ]
     # One merged long before the issue was opened shipped in releases the
     # reporter already had: cause or context again, not a fix. Mailman #147.
     shipped = [

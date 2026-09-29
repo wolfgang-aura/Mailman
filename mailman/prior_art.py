@@ -33,7 +33,7 @@ CITED_PULL_REQUESTS_FILENAME = "cited-pull-requests.json"
 #: rather than abandoned; see `awaits_maintainer`.
 _CITED_FIELDS = (
     "number,state,mergedAt,mergeCommit,title,url,createdAt,updatedAt,isDraft,author,"
-    "comments,reviews"
+    "comments,reviews,closingIssuesReferences"
 )
 
 _PULL_REQUEST_FIELDS = (
@@ -386,6 +386,21 @@ def collect_prior_art(
     return record
 
 
+def _closing_references(value: object) -> list[str]:
+    """`closingIssuesReferences` as `owner/repo#N` strings."""
+    closes: list[str] = []
+    for entry in value if isinstance(value, list) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("number"), int):
+            continue
+        repository = entry.get("repository")
+        owner = repository.get("owner") if isinstance(repository, dict) else None
+        name = repository.get("name") if isinstance(repository, dict) else None
+        login = owner.get("login") if isinstance(owner, dict) else None
+        if login and name:
+            closes.append(f"{login}/{name}#{entry['number']}".lower())
+    return closes
+
+
 def resolve_cited_pull_requests(
     run_directory: Path,
     *,
@@ -486,6 +501,10 @@ def resolve_cited_pull_requests(
             "merge_commit": (
                 merge_commit.get("oid") if isinstance(merge_commit, dict) else None
             ),
+            # The issues GitHub will close when this merges, as OWNER/REPO#N.
+            # A sibling repository's merge fixes the issue only if it is one.
+            # Mailman #206.
+            "closes": _closing_references(payload.get("closingIssuesReferences")),
         }
         if attempt_is_dormant(row, now=now):
             # Only now, and only for an attempt that has already stopped

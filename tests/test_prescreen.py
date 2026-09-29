@@ -51,6 +51,7 @@ from mailman.shortlist import (
 from mailman.targeting import (
     ALREADY_FIXED_UPSTREAM,
     CITED_MERGED_BEFORE_ISSUE,
+    CITED_MERGED_ELSEWHERE,
     MAINTAINER_REMARK_ELSEWHERE,
     CITED_MERGED_IN_BODY,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
@@ -1348,6 +1349,65 @@ class CitedPullRequestTests(PrescreenTests):
         decided = record["cited_pull_requests"]["decided_by"]
         self.assertEqual(decided["repository"], "python-jsonschema/referencing")
         self.assertEqual(decided["number"], 367)
+
+    def _sibling_merge(self, closes: list[dict]) -> dict:
+        # posit-dev/py-shiny#2497: shinyreact#306 merged a local workaround
+        # and cross-referenced the issue; it changed only shinyreact's files.
+        return prescreen_issue(
+            self.root,
+            "posit-dev/py-shiny#2497",
+            executable=self.stub(
+                "[]",
+                self.issue(
+                    2497,
+                    "posit-dev/py-shiny",
+                    "Returning `dict[str, int]` from a renderer fails pyright.",
+                    "`Jsonifiable`'s `dict`/`list` arms are invariant",
+                ),
+                timeline=[
+                    {
+                        "event": "cross-referenced",
+                        "source": {
+                            "issue": {
+                                "html_url": (
+                                    "https://github.com/posit-dev/shinyreact/pull/306"
+                                )
+                            }
+                        },
+                    }
+                ],
+                pull_requests={
+                    "posit-dev/shinyreact#306": {
+                        "number": 306,
+                        "state": "MERGED",
+                        "title": "fix(py): type-check tests and examples",
+                        "url": "https://github.com/posit-dev/shinyreact/pull/306",
+                        "createdAt": "2026-09-12T00:00:00Z",
+                        "mergedAt": "2026-09-12T22:50:24Z",
+                        "mergeCommit": {"oid": "d" * 40},
+                        "closingIssuesReferences": closes,
+                    }
+                },
+            ),
+        )
+
+    def test_a_sibling_workaround_that_closes_nothing_here_only_warns(self) -> None:
+        # Mailman #206.
+        record = self._sibling_merge([])
+        self.assertNotIn(ALREADY_FIXED_UPSTREAM, record["blocking"])
+        self.assertIn(CITED_MERGED_ELSEWHERE, record["warnings"])
+
+    def test_a_sibling_merge_that_closes_this_issue_still_blocks(self) -> None:
+        record = self._sibling_merge(
+            [
+                {
+                    "number": 2497,
+                    "repository": {"name": "py-shiny", "owner": {"login": "posit-dev"}},
+                    "url": "https://github.com/posit-dev/py-shiny/issues/2497",
+                }
+            ]
+        )
+        self.assertIn(ALREADY_FIXED_UPSTREAM, record["blocking"])
 
     def test_the_pull_request_this_run_filed_is_not_a_rival(self) -> None:
         # 495b9e8 taught the duplicate search that a filed run's own pull
