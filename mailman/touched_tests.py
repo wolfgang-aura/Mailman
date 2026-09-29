@@ -572,6 +572,11 @@ def _baseline_failures(
     pydata/xarray#10639 (#180): three netCDF datatree tests failed for want of
     a netCDF4 build the host cannot load, at the base commit as well as with
     the patch, and blocked a zarr-only change.
+
+    A node that passes at the base commit is run once more on the candidate;
+    one that passes then is recorded as flaky, not new. pyinstaller#9121
+    (#183): a onefile build test failed once with an OSError, passed at base
+    and passed twice more with the patch, which never reached its code.
     """
     from mailman.target_checks import _Baseline
 
@@ -580,6 +585,7 @@ def _baseline_failures(
         "failing": nodes,
         "failing_at_base": [],
         "new": nodes,
+        "flaky": [],
         "detail": "",
     }
     baseline = _Baseline(
@@ -601,9 +607,20 @@ def _baseline_failures(
         record["failing_at_base"] = [node for node in nodes if node in at_base]
         record["new"] = [node for node in nodes if node not in at_base]
         record["detail"] = f"the base run exited {ran.exit_code}"
-        return record
     finally:
         baseline.close()
+    if record["new"]:
+        again = execute(
+            [python, "-m", "pytest", *record["new"], "-q", "-p", "no:cacheprovider", "-rfE"],
+            working_directory=workspace,
+            timeout_seconds=timeout_seconds,
+        )
+        if not again.timed_out and again.exit_code in (0, 1):
+            still = set(failing_nodes(again.stdout + "\n" + again.stderr))
+            record["flaky"] = [node for node in record["new"] if node not in still]
+            record["new"] = [node for node in record["new"] if node in still]
+            record["detail"] += f"; the candidate rerun exited {again.exit_code}"
+    return record
 
 
 def run_touched_tests(
@@ -807,16 +824,31 @@ def touched_tests_verdict(
     if (
         record.get("exit_code") == 1
         and baseline.get("failing")
-        and baseline.get("failing_at_base") == baseline.get("failing")
+        and not baseline.get("new")
+        and "new" in baseline
     ):
+        parts = []
+        if baseline.get("failing_at_base"):
+            parts.append(
+                "these also fail at the base commit: "
+                + ", ".join(baseline["failing_at_base"])
+            )
+        if baseline.get("flaky"):
+            parts.append(
+                "these pass at the base commit and on a second run of the "
+                "candidate, so they are flaky: " + ", ".join(baseline["flaky"])
+            )
         return (
             None,
-            f"passed {record.get('passed')}; every failure also fails at the base "
-            f"commit, so the patch adds none: "
-            + ", ".join(baseline["failing_at_base"]),
+            f"passed {record.get('passed')}; the patch adds no failure. "
+            + "; ".join(parts),
         )
     if record.get("exit_code") != 0:
-        new = baseline.get("new") if baseline.get("failing_at_base") else None
+        new = (
+            baseline.get("new")
+            if baseline.get("failing_at_base") or baseline.get("flaky")
+            else None
+        )
         return (
             "touched-tests-failed",
             "the tests that exercise the changed modules failed "

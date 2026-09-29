@@ -554,7 +554,7 @@ if __name__ == "__main__":
 class BaselineExecutor(FakeExecutor):
     """The candidate run fails two nodes; the base run fails `at_base`."""
 
-    def __init__(self, *, at_base: list[str]) -> None:
+    def __init__(self, *, at_base: list[str], again: list[str] | None = None) -> None:
         super().__init__(
             exit_code=1,
             stdout=(
@@ -564,6 +564,8 @@ class BaselineExecutor(FakeExecutor):
             ),
         )
         self.at_base = at_base
+        # Nodes that fail again when rerun on the candidate; all by default.
+        self.again = again
 
     def __call__(self, command, *, working_directory, timeout_seconds, **_):
         if command[:3] == ["git", "worktree", "add"]:
@@ -574,10 +576,14 @@ class BaselineExecutor(FakeExecutor):
             return _result(list(command))
         if "-rfE" in command:
             self.calls.append({"command": list(command), "cwd": working_directory})
+            on_base = str(working_directory).endswith("touched-base")
+            failing = self.at_base if on_base else (
+                command[3:-4] if self.again is None else self.again
+            )
             return _result(
                 list(command),
-                exit_code=1 if self.at_base else 0,
-                stdout="".join(f"FAILED {node} - boom\n" for node in self.at_base),
+                exit_code=1 if failing else 0,
+                stdout="".join(f"FAILED {node} - boom\n" for node in failing),
             )
         return super().__call__(
             command, working_directory=working_directory, timeout_seconds=timeout_seconds
@@ -603,7 +609,7 @@ class BaselineFailureTests(_RunFixture):
         self.assertTrue(str(base_run["cwd"]).endswith("touched-base"))
         code, detail = touched_tests_verdict(record)
         self.assertIsNone(code)
-        self.assertIn("also fails at the base", detail)
+        self.assertIn("also fail at the base", detail)
 
     def test_a_failure_new_in_the_patch_still_blocks(self) -> None:
         executor = BaselineExecutor(at_base=self.nodes[1:])
@@ -611,6 +617,21 @@ class BaselineFailureTests(_RunFixture):
         code, detail = touched_tests_verdict(record)
         self.assertEqual(code, "touched-tests-failed")
         self.assertIn("New since the base commit: tests/test_xbrl.py::test_engine", detail)
+
+    def test_a_failure_that_passes_at_base_and_on_rerun_is_flaky(self) -> None:
+        # #183: pyinstaller#9121's onefile test failed once, passed at base
+        # and passed on rerun with the patch.
+        executor = BaselineExecutor(at_base=self.nodes[1:], again=[])
+        record = self._run_with_base(executor)
+        self.assertEqual(record["baseline"]["flaky"], self.nodes[:1])
+        self.assertEqual(record["baseline"]["new"], [])
+        rerun = [c for c in executor.calls if "-rfE" in c["command"]][-1]
+        self.assertEqual(rerun["command"][3:4], self.nodes[:1])
+        self.assertFalse(str(rerun["cwd"]).endswith("touched-base"))
+        code, detail = touched_tests_verdict(record)
+        self.assertIsNone(code)
+        self.assertIn("flaky: tests/test_xbrl.py::test_engine", detail)
+        self.assertIn("also fail at the base commit: tests/test_xbrl.py::test_groups", detail)
 
     def test_without_a_base_commit_nothing_is_compared(self) -> None:
         executor = BaselineExecutor(at_base=self.nodes)
