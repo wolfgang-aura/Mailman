@@ -230,6 +230,12 @@ def prepare_workspace(
             "-c",
             f"init.templateDir={empty_hooks}",
             "clone",
+            # The controlled environment hides a global core.longpaths, and
+            # without it Git on Windows skips any path past 260 characters
+            # and still exits 0. Set in the clone's own config so checkout,
+            # status and the agent's diffs all see it. Mailman #232.
+            "--config",
+            "core.longpaths=true",
             "--no-checkout",
             "--origin",
             "origin",

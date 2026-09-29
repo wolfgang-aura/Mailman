@@ -102,6 +102,34 @@ class WorkspacePreparationTests(unittest.TestCase):
             self.assertEqual(record["head"], base_commit)
             self.assertEqual(record["reuse_count"], 1)
 
+    def test_checks_out_a_file_past_the_windows_path_limit(self) -> None:
+        # commitizen's changelog fixtures reach ~274 characters. Mailman #232.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "source"
+            source.mkdir()
+            git(source, "init", "--initial-branch=main")
+            git(source, "config", "user.name", "Fixture")
+            git(source, "config", "user.email", "fixture@example.invalid")
+            git(source, "config", "core.longpaths", "true")
+            name = "f" * max(40, 270 - len(str(root / "run" / "workspace")))
+            (source / name).write_text("long\n", encoding="utf-8")
+            git(source, "add", "--", name)
+            git(source, "commit", "-m", "base")
+            base_commit = git(source, "rev-parse", "HEAD")
+            run_directory = root / "run"
+            run_directory.mkdir()
+
+            record = prepare_workspace(
+                repository=str(source),
+                base_commit=base_commit,
+                run_directory=run_directory,
+                timeout_seconds=30,
+            )
+
+            self.assertTrue(record["success"], record.get("detail"))
+            self.assertTrue((run_directory / "workspace" / name).is_file())
+
     def test_refuses_existing_dirty_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
