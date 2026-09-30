@@ -74,16 +74,64 @@ def _is_test_path(path: str) -> bool:
     return is_test_path(path)
 
 
-def module_names(path: str) -> list[str]:
+def pytest_import_roots(workspace: Path) -> tuple[str, ...]:
+    """The directories pytest's `pythonpath` option puts on `sys.path`.
+
+    spack sets `pythonpath = lib/spack`, so `lib/spack/spack/package_base.py`
+    is imported as `spack.package_base`. Mailman #293.
+    """
+    import configparser
+    import tomllib
+
+    roots: list[str] = []
+    for name, section in (
+        ("pytest.ini", "pytest"),
+        ("tox.ini", "pytest"),
+        ("setup.cfg", "tool:pytest"),
+    ):
+        path = workspace / name
+        if not path.is_file():
+            continue
+        parser = configparser.ConfigParser(interpolation=None)
+        try:
+            parser.read_string(path.read_text(encoding="utf-8", errors="replace"))
+        except configparser.Error:
+            continue
+        roots.extend(parser.get(section, "pythonpath", fallback="").split())
+    pyproject = workspace / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            options = (
+                tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
+                .get("tool", {}).get("pytest", {}).get("ini_options", {})
+            )
+        except tomllib.TOMLDecodeError:
+            options = {}
+        value = options.get("pythonpath") if isinstance(options, dict) else None
+        roots.extend(value.split() if isinstance(value, str) else value or [])
+    cleaned = {
+        str(root).replace("\\", "/").strip("/").removeprefix("./")
+        for root in roots
+        if isinstance(root, str)
+    }
+    return tuple(sorted((root for root in cleaned if root and root != "."), key=len, reverse=True))
+
+
+def module_names(path: str, roots: tuple[str, ...] = ()) -> list[str]:
     """The names a test could import or mention to reach this file.
 
     `edgar/xbrl/xbrl.py` gives `edgar.xbrl.xbrl`, its package `edgar.xbrl`,
     and the bare stem `xbrl`. The top-level package alone is left out: every
     test in the repository imports it, which is a full run, not a focused one.
+    A pytest `pythonpath` root in `roots` is not part of the import path.
     """
     normalized = path.replace("\\", "/")
     if not normalized.endswith(".py"):
         return []
+    for root in roots:
+        if normalized.startswith(root + "/"):
+            normalized = normalized[len(root) + 1:]
+            break
     segments = normalized[: -len(".py")].split("/")
     while len(segments) > 1 and segments[0] in _LAYOUT_PREFIXES:
         segments = segments[1:]
@@ -259,7 +307,8 @@ def select_test_files(
         for path in changed_paths
         if not _is_test_path(path) and path.replace("\\", "/").endswith(".py")
     ]
-    modules = {path: module_names(path) for path in source_files}
+    roots = pytest_import_roots(workspace)
+    modules = {path: module_names(path, roots) for path in source_files}
     patterns = {
         name: _reference_pattern(name)
         for names in modules.values()

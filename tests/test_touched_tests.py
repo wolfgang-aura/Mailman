@@ -94,6 +94,14 @@ class ModuleNameTests(unittest.TestCase):
             ["prefect._internal.plugins.collections", "prefect._internal.plugins"],
         )
 
+    def test_a_pytest_pythonpath_root_is_not_part_of_the_import_path(self) -> None:
+        # spack sets `pythonpath = lib/spack`; stripping only `lib` gave
+        # `spack.spack.package_base` and selected nothing. Mailman #293.
+        self.assertEqual(
+            module_names("lib/spack/spack/package_base.py", roots=("lib/spack",)),
+            ["spack.package_base", "package_base"],
+        )
+
     def test_a_non_python_file_has_no_module(self) -> None:
         self.assertEqual(module_names("docs/notes.md"), [])
 
@@ -132,6 +140,24 @@ class SelectionTests(unittest.TestCase):
         self.assertIn("edgar.xbrl.xbrl", selection["selected"][0]["matched"])
         self.assertIn("edgar.xbrl.xbrl", selection["selected"][0]["reason"])
         self.assertFalse(selection["capped"])
+
+    def test_the_pytest_pythonpath_decides_the_import_path(self) -> None:
+        (self.workspace / "pytest.ini").write_text(
+            "[pytest]\ntestpaths = lib/spack/spack/test\npythonpath = lib/spack\n",
+            encoding="utf-8",
+        )
+        self._test_file("lib/spack/spack/package_base.py", "x = 1\n")
+        self._test_file(
+            "lib/spack/spack/test/test_hash.py",
+            "import spack.package_base\n\ndef test_it():\n    pass\n",
+        )
+        selection = select_test_files(
+            self.workspace, ["lib/spack/spack/package_base.py"]
+        )
+        self.assertEqual(
+            [entry["path"] for entry in selection["selected"]],
+            ["lib/spack/spack/test/test_hash.py"],
+        )
 
     def test_a_dotted_path_inside_a_string_counts_as_a_reference(self) -> None:
         self._test_file(
