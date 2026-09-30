@@ -1312,6 +1312,49 @@ class ScreenTests(unittest.TestCase):
         self.assertIn("policy", record["failed_gates"])
         self.assertIn("refuses", _named(record, "policy")["detail"])
 
+    def test_an_own_words_rule_in_the_template_is_a_constraint(self) -> None:
+        # zarr-developers/zarr-python's PULL_REQUEST_TEMPLATE.md, verbatim. Its
+        # guide is a one-line stub, the gate recorded requires_own_words false,
+        # and a finished run stopped at prepare-submission. Mailman #271.
+        template = (
+            "<!-- AI coding assistance is welcome, but a human must be the "
+            "author and is responsible for the contents of the PR. The "
+            "description and any review responses must be in your own words. -->\n"
+        )
+        stub = "Contributing\n============\n\nPlease see the project documentation.\n"
+        for guide in ({}, {".github/CONTRIBUTING.md": stub}):
+            with self.subTest(guide=bool(guide)):
+                with tempfile.TemporaryDirectory() as temporary:
+                    record = _screen(
+                        Path(temporary),
+                        FakeGitHub(
+                            policies={
+                                ".github/PULL_REQUEST_TEMPLATE.md": template,
+                                **guide,
+                            }
+                        ),
+                    )
+                gate = _named(record, "policy")
+
+                self.assertNotIn("policy", record["failed_gates"])
+                self.assertTrue(gate["data"]["requires_own_words"])
+
+    def test_docs_contributing_md_is_read_as_the_guide(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "docs/contributing.md": (
+                            "PR descriptions, issue comments, and review "
+                            "responses must be in your own words.\n"
+                        )
+                    }
+                ),
+            )
+
+        self.assertTrue(_named(record, "policy")["data"]["requires_own_words"])
+
     def test_a_template_without_a_ban_leaves_the_guide_to_decide(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(

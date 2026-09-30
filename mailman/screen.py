@@ -516,6 +516,8 @@ _POLICY_PATHS = (
     "CONTRIBUTING.rst",
     # urllib3 keeps its guide here, lower case, and the gate read none of it.
     "docs/contributing.rst",
+    # zarr keeps its "must be in your own words" rule here. Mailman #271.
+    "docs/contributing.md",
     "AGENTS.md",
 )
 
@@ -1640,11 +1642,13 @@ def _pull_request_base(texts: Sequence[str]) -> dict[str, Any] | None:
 def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     """Gate 4. Does the guide, the policy it links, or the pull request template close an AI-assisted pull request?"""
     template = ""
+    template_source = ""
     for relative in _TEMPLATE_PATHS:
         body = _decoded(gh.json(f"repos/{slug}/contents/{relative}"))
         if not body:
             continue
         template = body
+        template_source = relative
         ban = _POLICY_BANS.search(" ".join(body.split()))
         if ban:
             return _gate(
@@ -1723,6 +1727,10 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         for document in documents:
             flat = " ".join(document["body"].split())
             _constraints(document["source"], flat, constraints)
+        # The template binds every pull request as the guide does: zarr says
+        # "must be in your own words" there behind a one-line guide. #271.
+        if template:
+            _constraints(template_source, " ".join(template.split()), constraints)
         kinds = {entry["kind"] for entry in constraints}
         read = ", ".join(entry["source"] for entry in documents)
         if constraints:
@@ -1779,14 +1787,30 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
                 **trail,
             },
         )
+    constraints = []
+    if template:
+        _constraints(template_source, " ".join(template.split()), constraints)
+    kinds = {entry["kind"] for entry in constraints}
+    detail = "no contributing guide found, so nothing forbids the work in writing"
+    if constraints:
+        detail += "; the pull request template constrains the submission - " + "; ".join(
+            f"{entry['kind']}: {entry['quote']!r}" for entry in constraints
+        )
     return _gate(
         "policy",
         passed=True,
         blocking=False,
-        detail="no contributing guide found, so nothing forbids the work in writing",
+        detail=detail,
         data={
             "source": None,
             "result": "no-guide",
+            "requires_disclosure": "disclosure" in kinds,
+            "requires_own_words": "own-words" in kinds,
+            "requires_human_account": "human-account" in kinds,
+            "requires_prior_discussion": PRIOR_DISCUSSION in kinds,
+            "forbids_duplicate_pull_requests": NO_DUPLICATE_PULL_REQUESTS in kinds,
+            "requires_cla": REQUIRES_CLA in kinds,
+            "constraints": constraints,
             "pull_request_base": _pull_request_base([template]),
         },
     )
