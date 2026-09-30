@@ -904,7 +904,12 @@ def _superseded_merges(run_directory: Path) -> frozenset[int]:
 
 
 def _squash_commit(run_directory: Path, number: int) -> str | None:
-    """The base-history commit whose subject ends with `(#number)`, if any."""
+    """The base-history commit that landed pull request `number`, if any.
+
+    A squash subject ends with `(#N)`; a merge commit starts with `Merge pull
+    request #N from `. spack pr#208 was merged the second way in 2015, and
+    GitHub's recorded sha is not in the rewritten history. Mailman #291.
+    """
     workspace = run_directory / WORKSPACE_DIRECTORY
     if not (workspace / ".git").exists():
         return None
@@ -912,7 +917,8 @@ def _squash_commit(run_directory: Path, number: int) -> str | None:
         completed = subprocess.run(
             [
                 "git", "-C", str(workspace), "log", "--format=%H %s",
-                "--fixed-strings", f"--grep=(#{number})", "HEAD",
+                "--fixed-strings", f"--grep=(#{number})",
+                f"--grep=Merge pull request #{number} from ", "HEAD",
             ],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=60, check=False, shell=False,
@@ -923,7 +929,9 @@ def _squash_commit(run_directory: Path, number: int) -> str | None:
         return None
     for line in completed.stdout.splitlines():
         sha, _, subject = line.partition(" ")
-        if subject.rstrip().endswith(f"(#{number})"):
+        if subject.rstrip().endswith(f"(#{number})") or subject.startswith(
+            f"Merge pull request #{number} from "
+        ):
             return sha
     return None
 
@@ -1646,6 +1654,72 @@ def _mark_listing_read(
             row["term_count"] = max(row.get("term_count") or 0, term_count)
 
 
+# Each read is one core API call; screen batches already strain that limit.
+UNLISTED_ROW_READS = 10
+
+
+def _read_unlisted_rows(
+    record: dict[str, Any],
+    run_directory: Path,
+    *,
+    slug: str,
+    executable: str,
+    query: str,
+    issue_number: int | None,
+    timeout_seconds: float,
+) -> None:
+    """Read the own text of open index hits the listing never reached (#292).
+
+    spack pr#48947, "Override package directives", matched "resource
+    directive package hash" somewhere GitHub indexes, and spack has more open
+    pull requests than the listing reads. It stood as a rival nothing could
+    clear. Its title and body are read and judged as the listing would have.
+    A failed read leaves the row standing.
+    """
+    term_count = len(_query_terms(query))
+    if not term_count:
+        return
+    candidates = [
+        row
+        for row in record.get("matches") or []
+        if row.get("pull_request")
+        and str(row.get("state") or "").lower() == "open"
+        and not row.get("listing_read")
+        and not row.get("references_issue")
+        and not row.get("compact_match")
+        and set(row.get("methods") or []) <= _INDEX_METHODS
+    ]
+    for row in candidates[:UNLISTED_ROW_READS]:
+        result = execute(
+            [
+                executable, "pr", "view", str(row.get("number")), "--repo", slug,
+                "--json", "number,title,body,headRefName",
+            ],
+            working_directory=run_directory,
+            timeout_seconds=timeout_seconds,
+        )
+        record.setdefault("commands", []).append(
+            {"method": "unlisted-read", **result.to_dict()}
+        )
+        if result.timed_out or result.exit_code != 0:
+            continue
+        try:
+            entry = json.loads(result.stdout or "null")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        listing = [entry]
+        rows = _local_matches(
+            listing, pull_request=True, query=query, issue_number=issue_number
+        )
+        for matched in rows:
+            _add_match(record, matched, issue_number=issue_number)
+        _mark_listing_read(
+            record, listing, rows=rows, pull_request=True, term_count=term_count
+        )
+
+
 def _add_match(
     record: dict[str, Any], row: dict[str, Any], *, issue_number: int | None
 ) -> None:
@@ -2058,6 +2132,15 @@ def record_duplicate_search(
             listing_limit=listing_limit,
         )
 
+    _read_unlisted_rows(
+        record,
+        run_directory,
+        slug=slug,
+        executable=command_executable,
+        query=query,
+        issue_number=issue_number,
+        timeout_seconds=timeout_seconds,
+    )
     record["success"] = True
     # The unfiltered listing reads every open pull request and issue and matches
     # locally, so it is the method that decides whether the search is worth

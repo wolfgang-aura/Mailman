@@ -936,7 +936,11 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertNotIn("possible-duplicate", record["blocking_codes"])
 
     def _merged_match_already_in_base(
-        self, *, reproduced: bool, prior_art: bool = True
+        self,
+        *,
+        reproduced: bool,
+        prior_art: bool = True,
+        subject: str = "the merged fix (#1)",
     ) -> None:
         """Record a merged match whose merge commit precedes the base commit."""
         (self.run_directory / "duplicate-search.json").write_text(
@@ -968,7 +972,7 @@ class PrepareSubmissionTests(unittest.TestCase):
         git("config", "user.name", "Test")
         (workspace / "core.py").write_text("first\n", encoding="utf-8")
         git("add", "core.py")
-        git("commit", "--quiet", "-m", "the merged fix (#1)")
+        git("commit", "--quiet", "-m", subject)
         merged = git("rev-parse", "HEAD")
         (workspace / "core.py").write_text("second\n", encoding="utf-8")
         git("add", "core.py")
@@ -1034,6 +1038,31 @@ class PrepareSubmissionTests(unittest.TestCase):
             "merged-fix-already-in-base",
             [finding["code"] for finding in record["findings"]],
         )
+
+    def test_a_merge_commit_found_only_by_the_search_and_in_base_does_not_block(
+        self,
+    ) -> None:
+        # spack pr#208 (2015) was merged as "Merge pull request #208 from
+        # ...", and GitHub's recorded merge sha is not in the rewritten
+        # history. It blocked a reproduced 2026 bug. Mailman #291.
+        self._merged_match_already_in_base(
+            reproduced=True,
+            prior_art=False,
+            subject="Merge pull request #1 from someone/feature",
+        )
+        record = self._prepare()
+        self.assertNotIn("already-fixed-upstream", record["blocking_codes"])
+
+    def test_a_later_pull_request_number_is_not_mistaken_for_the_merge(
+        self,
+    ) -> None:
+        self._merged_match_already_in_base(
+            reproduced=True,
+            prior_art=False,
+            subject="Merge pull request #12 from someone/feature",
+        )
+        record = self._prepare()
+        self.assertIn("already-fixed-upstream", record["blocking_codes"])
 
     def test_a_squash_merge_in_base_still_blocks_without_a_reproduction(
         self,
