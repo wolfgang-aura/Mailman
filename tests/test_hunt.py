@@ -1343,6 +1343,24 @@ class SweepTests(OrchestratorHarness):
         self.assertEqual(sorted(row["target"] for row in result["rows"]),
                          ["acme/a#1", "acme/a#2", "acme/a#9"])
 
+    def test_an_issue_missing_the_label_its_template_requires_is_dropped(self):
+        # mlflow's template asks contributors to wait for `ready`; three
+        # prescreens were spent learning that one row at a time. Mailman #269.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        template = "Wait until a maintainer has applied the `ready` label before opening a PR."
+        gh = _SearchGh([[
+            {**_item("acme/a", 1), "body": template},
+            {**_item("acme/a", 2, labels=("bug", "ready")), "body": template},
+            {**_item("acme/a", 3), "body": None},
+        ]])
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(sorted(row["target"] for row in result["rows"]),
+                         ["acme/a#2", "acme/a#3"])
+
     def test_a_full_page_is_followed_and_the_cap_is_reported(self):
         # One page of 100 is a few weeks of streamlit; a 180-day sweep kept
         # three more rows than a 60-day one. Mailman #262.

@@ -739,7 +739,7 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
     each group. A repository GitHub refused is listed under `failed`; the rows
     from the others stand.
     """
-    from mailman.prescreen import prescreen_path
+    from mailman.prescreen import prescreen_path, required_labels
 
     moment = now or datetime.now(UTC)
     slugs = [slug for _, slug, _ in _passing_screens(
@@ -781,6 +781,12 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
             labels = [str((label or {}).get("name") or "") for label in item.get("labels") or []
                       if isinstance(label, dict)]
             if not sweep_labels_admit(labels):
+                continue
+            # The template names a label a maintainer must apply first, and
+            # prescreen refuses the issue without it. Mailman #269.
+            have = {label.lower() for label in labels}
+            if any(label.lower() not in have
+                   for label in required_labels(str(item.get("body") or ""))):
                 continue
             target = f"{slug}#{item['number']}"
             if target in claimed or prescreen_path(root, slug, item["number"]).is_file():
