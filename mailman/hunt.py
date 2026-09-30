@@ -701,7 +701,10 @@ SWEEP_PAGES = 5
 _DEFECT_LABEL = re.compile(r"(?i)\bbug\b|regression|false (?:positive|negative)|crash")
 #: A label a maintainer puts on a report they want fixed: pylint's "Needs PR".
 _INVITATION_LABEL = re.compile(
-    r"(?i)\bconfirmed\b|needs[ -]pr\b|help[ -]wanted|good first issue|\baccepted\b")
+    r"(?i)\bconfirmed\b|needs[ -]pr\b|help[ -]wanted|good first issue|\baccepted\b"
+    # bleachbit's "status:ready-for-dev" and kin. Mailman #285.
+    r"|ready[ -]for[ -](?:dev|development|pr|work)|\btriaged\b|\bapproved\b"
+    r"|(?:prs?|pull requests?|contributions?)[ -]welcome")
 #: A label that says nobody has decided the report is a defect to fix.
 _UNDECIDED_LABEL = re.compile(
     r"(?i)needs[ -](?:decision|discussion|specification|triage|info|more info|reproduction|repro)"

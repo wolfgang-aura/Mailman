@@ -1344,6 +1344,19 @@ class SweepTests(OrchestratorHarness):
         self.assertEqual(sorted(row["target"] for row in result["rows"]),
                          ["acme/a#1", "acme/a#2", "acme/a#9"])
 
+    def test_other_invitation_labels_are_admitted(self):
+        # bleachbit's maintainer filed #2307 as `status:ready-for-dev`; only a
+        # hand-run label pool found it. Mailman #285.
+        from mailman.hunt import sweep_labels_admit
+        for labels in (("new", "status:ready-for-dev"), ("triaged",),
+                       ("PR welcome",), ("contributions welcome",), ("approved",)):
+            with self.subTest(labels=labels):
+                self.assertTrue(sweep_labels_admit(list(labels)))
+        for labels in (("enhancement", "status:ready-for-dev"), ("needs triage",),
+                       ("feature", "PR welcome")):
+            with self.subTest(labels=labels):
+                self.assertFalse(sweep_labels_admit(list(labels)))
+
     def test_an_issue_missing_the_label_its_template_requires_is_dropped(self):
         # mlflow's template asks contributors to wait for `ready`; three
         # prescreens were spent learning that one row at a time. Mailman #269.
