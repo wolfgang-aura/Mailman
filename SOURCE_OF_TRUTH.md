@@ -378,7 +378,9 @@ opening the local packet URL during this session; visual state is unverified.
     Merge state `DIRTY` because main released v2026.09.0 (`2f3339b`): our `whats-new.rst`
     entry merges cleanly but lands under the released section, and main has no unreleased
     section yet. While `DIRTY`, GitHub starts no test workflow for the new head, so the fix
-    has no CI result yet. dcherian has not answered since 2026-09-29.
+    has no CI result yet. Reply posted by the operator 2026-09-30,
+    https://github.com/pydata/xarray/pull/11637#issuecomment-5912666435, asking whether to add
+    the unreleased section in the PR.
   - prefect#23237: the red checks are not ours. Every failing job shows
     `test_block_standards.py::test_has_a_valid_image` with `HTTP Error 402: Payment
     Required` from the block image host, in modules the PR does not touch.
