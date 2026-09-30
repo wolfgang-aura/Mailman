@@ -1153,6 +1153,49 @@ class ScreenTests(unittest.TestCase):
         self.assertTrue(gate["passed"])
         self.assertEqual(gate["data"]["no_wheel"], [])
 
+    def test_every_test_workflow_needing_postgres_fails_the_host_gate(self) -> None:
+        # netbox-community/netbox: the only test workflow starts postgres and
+        # redis, and this host runs neither. Mailman #255.
+        workflow = (
+            "jobs:\n  build:\n    services:\n"
+            "      redis:\n        image: redis\n"
+            "      postgres:\n        image: postgres:16\n"
+            "    steps:\n"
+            "    - run: coverage run netbox/manage.py test netbox\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary), FakeGitHub(workflows={"ci.yml": workflow})
+            )
+        gate = _named(record, "host")
+
+        self.assertFalse(gate["passed"])
+        self.assertTrue(gate["blocking"])
+        self.assertIn("postgres", gate["detail"])
+        self.assertEqual(
+            _named(record, "ci")["data"]["service_images"],
+            {"ci.yml": ["postgres", "redis"]},
+        )
+
+    def test_one_service_free_test_workflow_passes_the_host_gate(self) -> None:
+        # celery/celery: integration tests start redis, the unit tests do not.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    workflows={
+                        "integration.yml": (
+                            "jobs:\n  it:\n    services:\n"
+                            "      redis:\n        image: 'redis:7'\n"
+                            "    steps:\n    - run: pytest t/integration\n"
+                        ),
+                        "unit.yml": "jobs:\n  unit:\n    steps:\n    - run: pytest t/unit\n",
+                    }
+                ),
+            )
+
+        self.assertTrue(_named(record, "host")["passed"])
+
     def test_a_plain_pyproject_passes_the_host_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(Path(temporary), FakeGitHub())

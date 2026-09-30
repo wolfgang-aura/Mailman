@@ -233,6 +233,20 @@ _TEST_RUNNER = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+#: Service containers this host does not run: no Postgres, MySQL, Redis or
+#: broker listens here, and a screen does not start Docker. A test workflow
+#: that starts one needs it. netbox-community/netbox. Mailman #255.
+HOST_MISSING_SERVICES = (
+    "postgres", "postgis", "mysql", "mariadb", "redis", "valkey", "mongo",
+    "rabbitmq", "elasticsearch", "opensearch", "memcached", "kafka",
+)
+_SERVICE_IMAGE = re.compile(
+    r"^\s*image:\s*['\"]?(?:[\w.-]+/)*("
+    + "|".join(HOST_MISSING_SERVICES)
+    + r")[\w-]*(?=[:'\"\s@]|$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 #: Files whose presence means a compiler may be in the build. The operator has
 #: no Rust or MSVC toolchain, so `Cargo.toml` is fatal on its own; the others
 #: only decide whether a few compiled bytes are fixtures or an extension. A
@@ -1020,13 +1034,22 @@ def _ci_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         if isinstance(entry, dict) and str(entry.get("name", "")).endswith((".yml", ".yaml"))
     ]
     running: list[str] = []
+    services: dict[str, list[str]] = {}
     for name in names:
         body = _decoded(gh.json(f"repos/{slug}/contents/.github/workflows/{name}"))
         if _TEST_RUNNER.search(body):
             running.append(name)
+            if re.search(r"^\s*services:", body, re.MULTILINE):
+                images = sorted(
+                    {image.lower() for image in _SERVICE_IMAGE.findall(body)}
+                )
+                if images:
+                    services[name] = images
     data = {
         "workflows_read": len(names),
         "workflows_running_tests": running,
+        # The databases and brokers each test workflow starts. Mailman #255.
+        "service_images": services,
     }
     if not running:
         return _gate(
@@ -1480,6 +1503,7 @@ def _host_gate(
     *,
     requirements: set[str] | frozenset[str] = frozenset(),
     wheel_files: Callable[[str], list[str] | None] | None = None,
+    ci: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Gate 3b. Can the target's tests run on this host at all?
 
@@ -1492,6 +1516,10 @@ def _host_gate(
     `wheel_files` looks a package up on PyPI. A required package with no
     wheel this host can install fails, because the environment step installs
     binaries only; a package PyPI did not answer for is recorded as unchecked.
+
+    `ci` is the CI gate's data. When every workflow that runs tests starts a
+    database or broker service, the suite needs a server this host does not
+    run. Mailman #255.
     """
     required, optional, bench = _pyproject_requirements(pyproject)
     required = required | set(requirements)
@@ -1532,6 +1560,16 @@ def _host_gate(
         f"{row['package']} has no wheel for this platform and Python on PyPI"
         for row in no_wheel
     ]
+    running = (ci or {}).get("workflows_running_tests") or []
+    services = (ci or {}).get("service_images") or {}
+    if running and all(name in services for name in running):
+        needed = sorted({image for name in running for image in services[name]})
+        data["services_needed"] = needed
+        reasons.append(
+            "every test workflow starts a "
+            + ", ".join(needed)
+            + " service, and this host runs none"
+        )
     if reasons:
         return _gate(
             "host",
@@ -2679,10 +2717,11 @@ def screen_repository(
     record["maintainer_logins_read"] = answer is not None
     freshness = _freshness_gate(gh, slug, window_days, maintainers)
     python = _python_gate(gh, slug)
+    ci = _ci_gate(gh, slug)
     gates = [
         _provenance_gate(meta, freshness),
         freshness,
-        _ci_gate(gh, slug),
+        ci,
         python,
         _host_gate(
             python["data"].pop("pyproject", ""),
@@ -2690,6 +2729,7 @@ def screen_repository(
                 gh, slug, set(python["data"].pop("root_names", []))
             ),
             wheel_files=lambda name: _wheel_files(gh, name),
+            ci=ci["data"],
         ),
         _policy_gate(gh, slug),
         _assignment_gate(gh, slug),
