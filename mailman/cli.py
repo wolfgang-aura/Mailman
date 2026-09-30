@@ -1083,7 +1083,7 @@ def _hunt(arguments: argparse.Namespace) -> int:
         gh = _Gh(resolve_tool(home, "gh"), home, 60.0)
         result = hunt.sweep_fresh_issues(root, gh, since_days=arguments.since_days)
         print(json.dumps(result, indent=2))
-        return 1 if result["failed"] else 0
+        return 1 if result["failed"] or result.get("unverified") else 0
     if arguments.action == "watch":
         # Every filed pull request, re-read from GitHub. Non-zero when one is
         # red, behind, dirty, unanswered or unreadable: the row a cron job

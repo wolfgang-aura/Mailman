@@ -1447,6 +1447,32 @@ class SweepTests(OrchestratorHarness):
         self.assertEqual([row["target"] for row in result["rows"]], ["acme/a#2"])
         self.assertEqual(result["claimed"], [{"target": "acme/a#1", "pull_requests": [12]}])
 
+    def test_a_row_whose_timeline_could_not_be_read_is_unverified(self):
+        # 13 rows kept after a rate-limited timeline read all had an open
+        # pull request at prescreen. Mailman #283.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        gh = _SearchGh(
+            [[_item("acme/a", 1), _item("acme/a", 2)]],
+            timelines={"repos/acme/a/issues/1/timeline": None})
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual([row["target"] for row in result["rows"]], ["acme/a#2"])
+        self.assertEqual(result["unverified"], ["acme/a#1"])
+
+    def test_hunt_sweep_exits_non_zero_when_a_row_is_unverified(self):
+        record = self.new_hunt()
+        answer = {"queries": 1, "repositories": 1, "failed": [],
+                  "unverified": ["acme/a#1"], "rows": []}
+        with mock.patch("mailman.hunt.sweep_fresh_issues", return_value=answer), \
+                redirect_stdout(StringIO()):
+            code = main(["hunt", "sweep", record["hunt_id"],
+                         "--data-root", str(self.data_root)])
+
+        self.assertEqual(code, 1)
+
     def test_a_closed_earlier_pull_request_ranks_the_row_after_clean_ones(self):
         # airflow#73311, huggingface_hub#4893 and two marimo rows came back
         # maintainer-closed-attempt at prescreen on 2026-09-30. Mailman #266.

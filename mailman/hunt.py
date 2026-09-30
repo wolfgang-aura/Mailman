@@ -738,6 +738,8 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
     `sweep_labels_admit`. Rows with comments come first, newest first within
     each group. A repository GitHub refused is listed under `failed`; the rows
     from the others stand.
+    A row whose timeline could not be read is listed under `unverified`, not
+    ranked, because nobody checked it for a rival pull request.
     """
     from mailman.prescreen import prescreen_path, required_labels
 
@@ -806,13 +808,15 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
     # says whether a maintainer labelled or answered the report.
     claimed_rows: list[dict] = []
     kept: list[dict] = []
+    unverified: list[str] = []
     for row in rows.values():
         slug, number = row["target"].rsplit("#", 1)
         author = row.pop("_author")
         events = gh.json(f"repos/{slug}/issues/{number}/timeline?per_page=100")
         if not isinstance(events, list):
-            row["engaged"] = None
-            kept.append(row)
+            # Unread, a rival pull request goes unseen: 13 such rows all had
+            # one at prescreen. Sweep again once the limit resets. Mailman #283.
+            unverified.append(row["target"])
             continue
         rivals = sorted({
             source["number"] for source in (
@@ -857,7 +861,7 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
                                   row["engaged"] is not True, row["comments"] == 0))
     return {"queries": len(slugs), "repositories": len(slugs), "since": since,
             "failed": failed, "truncated": truncated, "claimed": claimed_rows,
-            "rows": ordered}
+            "unverified": unverified, "rows": ordered}
 
 
 def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
