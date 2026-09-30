@@ -77,6 +77,24 @@ def _label_names(raw_labels: object) -> list[str]:
     return names
 
 
+def _label_descriptions(raw_labels: object) -> dict[str, str]:
+    """Each label's project-written description, where it has one.
+
+    Projects name a state such as "waiting on the team" in their own words,
+    so the description is the portable signal. Mailman #280.
+    """
+    if not isinstance(raw_labels, list):
+        return {}
+    return {
+        label["name"]: label["description"]
+        for label in raw_labels
+        if isinstance(label, dict)
+        and isinstance(label.get("name"), str)
+        and isinstance(label.get("description"), str)
+        and label["description"].strip()
+    }
+
+
 def render_issue(
     reference: IssueReference,
     payload: dict[str, Any],
@@ -237,6 +255,7 @@ def capture_issue_from_github(
             "title": payload.get("title"),
             "state": payload.get("state"),
             "labels": _label_names(payload.get("labels")),
+            "label_descriptions": _label_descriptions(payload.get("labels")),
             "created_at": payload.get("createdAt"),
             "body_characters": len(payload.get("body") or ""),
             "issue_markdown": str((run_directory / "issue.md").resolve()),

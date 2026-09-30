@@ -511,6 +511,50 @@ class PrescreenTests(unittest.TestCase):
         self.assertIn("issue-under-discussion", record["blocking"])
         self.assertNotIn("duplicate_search", record)
 
+    def test_a_label_described_as_awaiting_input_is_under_discussion(self) -> None:
+        # zauberzeug/nicegui#6331 carried `analysis`, which nicegui describes
+        # as "Status: Requires team/community input". The name matched
+        # nothing, so it passed and reached filing with "PR or offer?" still
+        # open. Mailman #280.
+        issue = {
+            "number": 7,
+            "title": "Shutdown handler runs outside the client context",
+            "body": "It raises on shutdown.",
+            "state": "OPEN",
+            "url": "https://github.com/example/project/issues/7",
+            "author": {"login": "reporter"},
+            "labels": [
+                {"name": "bug", "description": "Type/scope: Incorrect behavior"},
+                {"name": "analysis", "description": "Status: Requires team/community input"},
+            ],
+            "createdAt": "2026-09-01T00:00:00Z",
+            "updatedAt": "2026-09-01T00:00:00Z",
+        }
+        record = prescreen_issue(
+            self.root, "example/project#7", executable=self.stub("[]", issue)
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertIn("issue-under-discussion", record["blocking"])
+
+    def test_a_plain_bug_label_description_does_not_block(self) -> None:
+        issue = {
+            "number": 7,
+            "title": "Crash",
+            "body": "It raises.",
+            "state": "OPEN",
+            "url": "https://github.com/example/project/issues/7",
+            "author": {"login": "reporter"},
+            "labels": [{"name": "bug", "description": "Something isn't working"}],
+            "createdAt": "2026-09-01T00:00:00Z",
+            "updatedAt": "2026-09-01T00:00:00Z",
+        }
+        record = prescreen_issue(
+            self.root, "example/project#7", executable=self.stub("[]", issue)
+        )
+
+        self.assertNotIn("issue-under-discussion", record.get("blocking", []))
+
     def record_direct_push_share(self, share: float, verdict: str = "pass") -> None:
         """Write the screen record the pre-screen reads the habit out of."""
         path = screen_path(self.root, "example/project")

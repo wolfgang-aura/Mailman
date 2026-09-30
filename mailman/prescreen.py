@@ -266,6 +266,13 @@ _DISCUSSION_LABELS = frozenset(
         "undecided",
     }
 )
+#: A label description saying the project has not decided yet. nicegui's
+#: `analysis` reads "Status: Requires team/community input". Mailman #280.
+_DISCUSSION_DESCRIPTION = re.compile(
+    r"\b(?:requires?|needs?|awaiting|waiting (?:for|on))\b[^.;]{0,40}"
+    r"\b(?:input|discussion|decision|consensus|feedback from (?:the )?(?:team|maintainers))\b",
+    re.IGNORECASE,
+)
 #: What this stage can decide with public GitHub state and a few API calls.
 #: Reproduction needs a clone, and target intel comes from `screen-target`.
 DECIDABLE = (
@@ -352,7 +359,10 @@ def _issue_blocking(captured: dict[str, Any]) -> list[str]:
     labels = {str(label).strip().lower() for label in captured.get("labels") or []}
     if labels & _NON_FIX_LABELS:
         blocking.append(ISSUE_NOT_BOUNDED_FIX)
-    if labels & _DISCUSSION_LABELS:
+    descriptions = (captured.get("label_descriptions") or {}).values()
+    if labels & _DISCUSSION_LABELS or any(
+        _DISCUSSION_DESCRIPTION.search(str(text)) for text in descriptions
+    ):
         blocking.append(ISSUE_UNDER_DISCUSSION)
     if any(_NOT_TRIAGED_LABEL.search(label) for label in labels):
         blocking.append(ISSUE_NOT_TRIAGED_HERE)
