@@ -1800,3 +1800,61 @@ class OrchestrationIndexTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CandidateReproductionTests(OrchestratorHarness):
+    """The reproducer must stop reproducing on the candidate. beeware/toga#3628
+    reached ENGINEERING_COMPLETE on a core test module that passes at base
+    while nothing re-ran the hang reproducer. #244."""
+
+    def _orchestrate_with_reproducer(self, source: str):
+        run, directory = self.make_run()
+        (directory / "reproduction.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "method": "command",
+                    "machine_checked": True,
+                    "reproduced": True,
+                    "command": [sys.executable, "-c", source],
+                    "expectation": {
+                        "exit_code": 1,
+                        "required_output": ["HANG"],
+                        "forbidden_output": [],
+                    },
+                    "checks": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        primary = ScriptedAgent("codex", [{"report": "fixed", "touch": ("fix.txt", "x")}])
+        reviewer = ScriptedAgent("claude", [{"report": APPROVED}])
+        agents = {"codex": primary, "claude": reviewer}
+        return orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: agents[name],
+        )
+
+    def test_a_candidate_that_still_reproduces_is_blocked(self) -> None:
+        outcome = self._orchestrate_with_reproducer(
+            "import sys; print('HANG'); sys.exit(1)"
+        )
+        self.assertEqual(outcome.status, RunStatus.BLOCKED)
+        step = next(s for s in outcome.steps if s.name == "reproduction:candidate")
+        self.assertFalse(step.ok)
+
+    def test_a_candidate_that_stops_reproducing_completes(self) -> None:
+        outcome = self._orchestrate_with_reproducer(
+            "import pathlib, sys\n"
+            "if not pathlib.Path('fix.txt').exists():\n"
+            "    print('HANG'); sys.exit(1)\n"
+            "print('OK')"
+        )
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
+        step = next(s for s in outcome.steps if s.name == "reproduction:candidate")
+        self.assertTrue(step.ok)

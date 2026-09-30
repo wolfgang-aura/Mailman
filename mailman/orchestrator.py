@@ -19,6 +19,7 @@ from mailman.limits import offload
 from mailman.models import RunRecord, RunStatus, utc_now
 from mailman.prompts import load_recorded_verification
 from mailman.redaction import redact
+from mailman.reproduction import Expectation, evaluate, load_reproduction
 from mailman.targeting import assess_target
 from mailman.toolchain import prepare_agent_prompt, resolve_command
 from mailman.transcript import (
@@ -803,6 +804,64 @@ class _Orchestration:
         )
         return ok, result
 
+    def _candidate_stops_reproducing(self) -> bool:
+        """Run the recorded reproducer on the candidate; it must not reproduce.
+
+        The verification command has to pass at base, so it is usually an
+        existing test module that cannot tell a fix from no fix. beeware/toga
+        #3628 reached ENGINEERING_COMPLETE with nothing re-running its hang
+        reproducer. A timeout is not a fix. #244.
+        """
+        record = load_reproduction(self.run_directory) or {}
+        command = record.get("command")
+        if record.get("method") != "command" or not command:
+            self._step(
+                "reproduction:candidate",
+                ok=True,
+                detail="no recorded reproduction command to re-run",
+            )
+            return True
+        expected = record.get("expectation") or {}
+        expectation = Expectation(
+            exit_code=expected.get("exit_code"),
+            required_output=tuple(expected.get("required_output") or ()),
+            forbidden_output=tuple(expected.get("forbidden_output") or ()),
+        )
+        before = candidate_digest(self.workspace, self.run.base_commit)
+        self.announce(f"run  reproduction (candidate): {' '.join(map(str, command))}")
+        result = execute(
+            [str(part) for part in command],
+            working_directory=self.workspace,
+            timeout_seconds=self._remaining_timeout(
+                self.verification_timeout_seconds, "reproduction:candidate"
+            ),
+        )
+        command_number = append_verification(self.run_directory, result.to_dict())
+        outcome = evaluate(result, expectation)
+        unchanged = before == candidate_digest(self.workspace, self.run.base_commit)
+        fixed = not result.timed_out and not outcome.reproduced and unchanged
+        if result.timed_out:
+            detail = "the reproducer timed out on the candidate"
+        elif outcome.reproduced:
+            detail = f"still reproduces: {expectation.describe()}"
+        elif not unchanged:
+            detail = "the reproducer changed the candidate"
+        else:
+            failed = "; ".join(check.detail for check in outcome.failures())
+            detail = f"no longer reproduces: {failed}"
+        self._step(
+            "reproduction:candidate",
+            ok=fixed,
+            detail=detail,
+            data={
+                "record": command_number,
+                "exit_code": result.exit_code,
+                "timed_out": result.timed_out,
+                "checks": [check.to_dict() for check in outcome.checks],
+            },
+        )
+        return fixed
+
     def _record_workspace_change(self, stage: str) -> bool:
         """Record whether the primary stage actually changed anything.
 
@@ -1342,6 +1401,11 @@ class _Orchestration:
         final_ok, _ = self._verify("final")
         if not final_ok:
             self._block("final independent verification failed")
+            return self._outcome()
+        if not self._candidate_stops_reproducing():
+            self._block(
+                "the recorded reproducer still reproduces the bug on the candidate"
+            )
             return self._outcome()
         self._transition(
             RunStatus.ENGINEERING_COMPLETE,
