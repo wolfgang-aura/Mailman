@@ -571,6 +571,20 @@ def _yaml_scalar(
         end = value.rfind(quote)
         text = value[1:end] if end > 0 else value[1:]
         text = text.replace("''", "'") if quote == "'" else text.replace(chr(92) * 2, chr(92))
+    elif not value:
+        # A plain scalar that starts on the next line and folds its lines
+        # into one. agentscope's `exclude:` read as '', which matched every
+        # path and skipped mypy. An empty value is no pattern. Mailman #288.
+        body = []
+        while index < len(lines) and (
+            not lines[index].strip()
+            or len(lines[index]) - len(lines[index].lstrip()) > indent
+        ):
+            if lines[index].lstrip().startswith("- "):
+                break
+            body.append(lines[index].strip())
+            index += 1
+        text = " ".join(part for part in body if part) or None
     else:
         text = re.sub(r"\s+#.*$", "", value)
     if anchor:

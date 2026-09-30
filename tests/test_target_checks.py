@@ -509,6 +509,33 @@ class OtherLinterTests(_Fixture):
         )
         self.assertEqual(self._linted(executor, "black"), ["doc/data/messages/a/good.py"])
 
+    def test_a_plain_multi_line_exclude_is_read_as_its_pattern(self) -> None:
+        # agentscope: `exclude:` with the pattern on the lines below read as
+        # '', which matches every path, so mypy never ran. Mailman #288.
+        self.write(
+            ".pre-commit-config.yaml",
+            "repos:\n"
+            "  - repo: https://github.com/pre-commit/mirrors-mypy\n"
+            "    rev: v1.10.0\n"
+            "    hooks:\n"
+            "      - id: mypy\n"
+            "        exclude:\n"
+            "            (?x)(\n"
+            "                pb2\\.py$\n"
+            "                | ^docs\n"
+            "            )\n"
+            "  - repo: https://github.com/pre-commit/pre-commit-hooks\n"
+            "    hooks:\n"
+            "      - id: check-yaml\n",
+        )
+        changed = ["pkg/mod.py", "docs/conf.py"]
+        for path in changed:
+            self.write(path, "x = 1\n")
+        executor = Executor({"mypy pkg": 1})
+        with patch("mailman.target_checks.execute", executor):
+            run_lint(self.run_directory, workspace=self.workspace, changed_paths=changed)
+        self.assertEqual(self._linted(executor, "mypy"), ["pkg/mod.py"])
+
     def test_a_ty_that_installs_but_cannot_start_blocks_as_not_run(self) -> None:
         # securo#1039: CI ran ty, which Application Control blocks on this
         # host; the first CI run on the pull request failed.
