@@ -372,12 +372,13 @@ opening the local packet URL during this session; visual state is unverified.
     `test_append_native_time_dtype_encoding` raises `KeyError: '<M8[ms]'` / `'<m8[s]'` for
     `zarr_format=3` under zarr-python 3.0, which cannot store native time dtypes in format 3
     metadata. Reproduced locally with zarr 3.0.10 (4 failed). Fix committed locally as
-    `905bc308` in the run workspace, not pushed: `skip_if_zarr_format_3(...,
+    `905bc308` and pushed 2026-09-30 by operator approval: `skip_if_zarr_format_3(...,
     condition=not has_zarr_v3_dtypes)`, the pattern the neighbouring string-append test uses.
     With zarr 3.0.10: 4 passed, 4 skipped by the gate; with zarr 3.4.0: unchanged (8 passed).
     Merge state `DIRTY` because main released v2026.09.0 (`2f3339b`): our `whats-new.rst`
     entry merges cleanly but lands under the released section, and main has no unreleased
-    section yet. dcherian has not answered since 2026-09-29.
+    section yet. While `DIRTY`, GitHub starts no test workflow for the new head, so the fix
+    has no CI result yet. dcherian has not answered since 2026-09-29.
   - prefect#23237: the red checks are not ours. Every failing job shows
     `test_block_standards.py::test_has_a_valid_image` with `HTTP Error 402: Payment
     Required` from the block image host, in modules the PR does not touch.
