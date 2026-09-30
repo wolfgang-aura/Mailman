@@ -541,6 +541,14 @@ class PriorArtFreshnessTests(unittest.TestCase):
             self.assertFalse(result["ok"])
             self.assertEqual(result["reason"], "duplicate-search-stale")
             self.assertIn("duplicate-search", result["detail"])
+            # The hint is the command, query included: `duplicate-search`
+            # refuses to run without --query. Pylint run
+            # 20260930T090344Z-25c317 spent a round trip finding it.
+            self.assertIn(
+                f"mailman duplicate-search {directory.name} "
+                "--query 'rolling window cache'",
+                result["detail"],
+            )
 
     def test_a_run_that_never_searched_refuses(self) -> None:
         with TemporaryDirectory() as name:

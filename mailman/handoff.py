@@ -805,6 +805,13 @@ def offer_handoff_problems(run_directory: Path, record: dict[str, Any]) -> list[
     return problems + found
 
 
+def _quoted_argument(value: str) -> str:
+    """One shell word, single-quoted the way PowerShell and POSIX both read."""
+    if value and all(ch.isalnum() or ch in "._-/:" for ch in value):
+        return value
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _age_minutes(timestamp: object, now: datetime) -> float | None:
     """Minutes between an ISO 8601 record timestamp and now."""
     if not isinstance(timestamp, str) or not timestamp.strip():
@@ -849,8 +856,17 @@ def check_prior_art_freshness(
         ),
         "self_reported": bool(claims.get("self_reported")),
     }
+    # The command itself, with the recorded query: `duplicate-search` refuses
+    # to run without --query, and the bare name cost a round trip.
+    run_id = run_directory.name
+    search_command = f"mailman duplicate-search {run_id}"
+    if isinstance(search.get("query"), str) and search["query"].strip():
+        search_command += " --query " + _quoted_argument(search["query"])
+    for symbol in search.get("symbols") or []:
+        if isinstance(symbol, str) and symbol.strip():
+            search_command += " --symbol " + _quoted_argument(symbol)
     refresh = (
-        "Re-run `mailman duplicate-search` and `mailman claims` for this run, "
+        f"Re-run `{search_command}` and `mailman claims {run_id}`, "
         "then `mailman handoff` again."
     )
     if search_age is None:
