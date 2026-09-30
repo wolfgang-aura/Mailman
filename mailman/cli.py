@@ -2008,7 +2008,26 @@ def _package(arguments: argparse.Namespace) -> int:
                 return 0
         return code
 
+    def refresh_evidence() -> int:
+        # handoff-check refuses a duplicate search or claims check older than
+        # an hour, and engineering plus packaging outlasts that: pylint, zarr
+        # and nicegui all stopped at handoff-check on 2026-09-30. Both are
+        # read-only, so repeat the recorded search before anything reads it.
+        # Mailman #279.
+        search_path = run_directory / "duplicate-search.json"
+        if search_path.is_file():
+            search = json.loads(search_path.read_text(encoding="utf-8"))
+            if search.get("query"):
+                symbols = [part for symbol in search.get("symbols") or []
+                           for part in ("--symbol", symbol)]
+                code = main(["duplicate-search", run_id, "--query", search["query"],
+                             *symbols, *root])
+                if code:
+                    return code
+        return main(["claims", run_id, *root])
+
     stages = [
+        ("refresh-evidence", refresh_evidence),
         ("export-patch", lambda: main(["export-patch", run_id, *root])),
         ("prepare-submission", prepare_submission),
         ("decision", lambda: main(["decision", run_id, *root])),

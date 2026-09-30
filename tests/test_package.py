@@ -191,11 +191,53 @@ class PackageCommandTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(calls, [
-            "export-patch", "prepare-submission", "decision", "finalize-review",
+            "claims", "export-patch", "prepare-submission", "decision", "finalize-review",
             "check-authors", "handoff", "handoff-check", "review",
         ])
         self.assertEqual(committed.call_args.kwargs["branch"], "mailman/issue-7")
         self.assertEqual(committed.call_args.kwargs["paths"], ["m.py"])
+
+    def test_the_recorded_duplicate_search_is_repeated_first(self) -> None:
+        # pylint, zarr and nicegui each reached handoff-check on 2026-09-30
+        # with a search or claims check over an hour old. Mailman #279.
+        import json
+
+        from mailman import cli
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, _ = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40, primary="codex", reviewer="claude",
+                data_root=data_root,
+            )
+            arguments = argparse.Namespace(
+                run_id=run.run_id, data_root=data_root, policy=Path("policy.json"),
+                title="Fix it", body=Path("body.md"), repo="example/project",
+                head="fork:mailman/issue-7", base="main", commit_message=None,
+            )
+            directory = data_root / run.run_id
+            (directory / "decision.json").write_text("{}", encoding="utf-8")
+            (directory / "duplicate-search.json").write_text(json.dumps(
+                {"query": "rolling window", "symbols": ["roll", "Window"]}), encoding="utf-8")
+            calls = []
+
+            def stage(argv):
+                calls.append(argv)
+                return 1 if argv[0] == "duplicate-search" else 0
+
+            with (
+                patch.object(cli, "main", side_effect=stage),
+                patch("sys.stdout", StringIO()), patch("sys.stderr", StringIO()),
+            ):
+                code = cli._package(arguments)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:8], ["duplicate-search", run.run_id, "--query",
+                                        "rolling window", "--symbol", "roll",
+                                        "--symbol", "Window"])
 
     def test_an_own_words_refusal_alone_does_not_stop_packaging(self) -> None:
         # zarr run 20260930T111012Z-fcf02a stopped at prepare-submission, so
