@@ -149,6 +149,10 @@ _DESIGN_OPEN = re.compile(
     r"|(?:is|are|be|means?) deciding (?:how|where|whether|what|which)"
     r"|alternatives?:\s*(?:1[.)]|-|\*|a[.)])"
     r"|(?:do|does) (?:you|any\s?one) have (?:any )?(?:opinions?|thoughts|views)"
+    # sentence-transformers#3996 "perhaps it would be better if ... It's
+    # something to think about". Mailman #252.
+    r"|(?:it's|it is|that's|that is) something to (?:think|consider)"
+    r"|(?:perhaps|maybe) it would be better if"
     # A maintainer floating a new knob has not accepted any fix yet.
     r"|(?:(?:we|you) (?:could|can|might|may) (?:just |also )?"
     r"(?:add|introduce|expose|provide)"

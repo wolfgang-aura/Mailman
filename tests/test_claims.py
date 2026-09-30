@@ -380,6 +380,21 @@ class DesignUndecidedTests(unittest.TestCase):
         ]
         self.assertEqual(len(design_open_questions(thread)), 1)
 
+    def test_a_maintainer_still_thinking_about_it_blocks(self) -> None:
+        # huggingface/sentence-transformers#3996, Mailman #252
+        thread = [
+            _comment("No constructor-based way to set query_length."),
+            _comment(
+                "My general view is that the outer class should only expose "
+                "model-level parameters. For that reason, perhaps it would be "
+                "better if it was easier to override the query_length. It's "
+                "something to think about well, as it would be 'breaking'.",
+                association="MEMBER",
+                login="tomaarsen",
+            ),
+        ]
+        self.assertEqual(len(design_open_questions(thread)), 1)
+
     def test_a_proposed_config_option_without_acceptance_blocks(self) -> None:
         # marimo-team/marimo#6250
         thread = [
