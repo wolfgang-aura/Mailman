@@ -106,6 +106,11 @@ MINIMUM_OUTSIDE_AUTHORS = 2
 #: where a second name appears once and the same person writes everything else.
 DOMINANT_AUTHOR_SHARE = 0.8
 
+#: Enough other merged authors that the dominant one is a prolific contributor
+#: beside an open door, not the whole door. pypa/pipx had 22 around an 82%
+#: share and failed. https://github.com/wolfgang-aura/Mailman/issues/270
+DOMINANT_EXCEPTION_AUTHORS = 5
+
 #: When every merge inside the freshness window is by one person, that person's
 #: share of the longer window decides whether the window is evidence of an open
 #: door or of one recurring collaborator. `freqtrade/freqtrade` on 2026-09-04
@@ -963,7 +968,11 @@ def _freshness_gate(
             ),
             data=data,
         )
-    if share is not None and share >= DOMINANT_AUTHOR_SHARE:
+    if (
+        share is not None
+        and share >= DOMINANT_AUTHOR_SHARE
+        and distinct - 1 < DOMINANT_EXCEPTION_AUTHORS
+    ):
         return _gate(
             "freshness",
             passed=False,

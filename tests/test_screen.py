@@ -515,6 +515,29 @@ class ScreenTests(unittest.TestCase):
         self.assertGreaterEqual(freshness["data"]["top_author_share"], 0.8)
         self.assertIn("trickle", freshness["detail"])
 
+    def test_one_prolific_author_among_many_merged_strangers_passes(self) -> None:
+        # pypa/pipx on 2026-09-29: one account wrote 82% of 137 outside merges
+        # in ninety days, and 22 other authors were merged too. That is not a
+        # trickle. https://github.com/wolfgang-aura/Mailman/issues/270
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    closed_pulls=[
+                        _pull(n, author="prolific", merged_days_ago=1 + n % 80)
+                        for n in range(1, 46)
+                    ]
+                    + [
+                        _pull(100 + n, author=f"visitor{n}", merged_days_ago=2 + n)
+                        for n in range(6)
+                    ]
+                ),
+            )
+        freshness = _named(record, "freshness")
+
+        self.assertGreaterEqual(freshness["data"]["top_author_share"], 0.8)
+        self.assertNotIn("freshness", record["failed_gates"])
+
     def test_a_window_carried_by_one_frequent_author_fails(self) -> None:
         # freqtrade/freqtrade on 2026-09-04: three merges inside fourteen days,
         # all by stash86, who wrote 48% of the twenty-five outside merges in
