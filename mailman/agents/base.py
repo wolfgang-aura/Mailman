@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from mailman.hostpaths import find_executable
-from mailman.executor import CommandResult, StopExecution
+from mailman.executor import CommandResult, StopExecution, venv_activation
 from mailman.transcript import TranscriptEvent, parse_line
 
 
@@ -79,6 +80,17 @@ class AgentRequest:
     def __post_init__(self) -> None:
         if self.command_budget is not None and self.command_budget <= 0:
             raise ValueError("command_budget must be positive")
+
+    def venv_environment(self) -> dict[str, str]:
+        """PATH and VIRTUAL_ENV for the venv the run verifies with, if any.
+
+        The agent calls the venv interpreter by path, but a fixture that
+        spawns bare `python` finds the host one: prefect's tests all errored
+        with No module named 'prefect'. Mailman #249.
+        """
+        if not self.verification_command:
+            return {}
+        return venv_activation(self.verification_command[0], os.environ)
 
     def observe(self, agent: str) -> Callable[[str], None] | None:
         """Turn one line of agent output into events for whoever is watching."""

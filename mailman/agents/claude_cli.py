@@ -155,6 +155,7 @@ class ClaudeCliAgent(EngineeringAgent):
             command,
             working_directory=request.workspace,
             timeout_seconds=request.timeout_seconds,
+            environment=request.venv_environment() or None,
             stdin_text=prompt,
             on_stdout_line=request.observe(self.name),
         )

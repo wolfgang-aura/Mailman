@@ -141,6 +141,9 @@ class CodexCliAgent(EngineeringAgent):
                 "TMPDIR": scratch,
                 "PYTEST_ADDOPTS": "-p no:cacheprovider",
             }
+        venv = request.venv_environment()
+        if venv:
+            environment = {**(environment or {}), **venv}
         report_before = (
             (
                 request.report_path.stat().st_mtime_ns,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -476,6 +477,85 @@ class TurnBudgetTests(unittest.TestCase):
     def test_claude_reports_its_budget_and_codex_reports_none(self) -> None:
         self.assertEqual(ClaudeCliAgent(max_turns=42).turn_budget, 42)
         self.assertIsNone(CodexCliAgent().turn_budget)
+
+
+class AgentVenvTests(unittest.TestCase):
+    """An agent verifying with a venv interpreter gets that venv on PATH.
+
+    prefect's hosted-API fixture spawned bare `python`, found the host one,
+    and every test errored with No module named 'prefect'. Mailman #249.
+    """
+
+    def _process(self, root: Path) -> CommandResult:
+        return CommandResult(
+            command=["agent"],
+            working_directory=str(root),
+            started_at="2026-09-30T00:00:00+00:00",
+            duration_seconds=0.1,
+            exit_code=0,
+            stdout=json.dumps({"type": "thread.started", "thread_id": "t-1"}),
+            stderr="",
+            timed_out=False,
+            timeout_seconds=60,
+            environment={},
+        )
+
+    def _request(self, root: Path, python: Path) -> AgentRequest:
+        prompt = root / "prompt.md"
+        prompt.write_text("fix it", encoding="utf-8")
+        return AgentRequest(
+            run_id="run-1",
+            role="primary",
+            prompt_path=prompt,
+            workspace=root / "workspace",
+            report_path=root / "primary-report.md",
+            verification_command=(str(python), "-m", "pytest"),
+        )
+
+    def _venv(self, root: Path) -> Path:
+        scripts = root / "environment" / "Scripts"
+        scripts.mkdir(parents=True)
+        (root / "environment" / "pyvenv.cfg").write_text("home = x\n", encoding="utf-8")
+        return scripts / "python.exe"
+
+    def test_the_claude_agent_gets_the_venv_on_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            python = self._venv(root)
+            with patch(
+                "mailman.agents.claude_cli.execute", return_value=self._process(root)
+            ) as run:
+                ClaudeCliAgent(executable=sys.executable).run(self._request(root, python))
+
+        environment = run.call_args.kwargs["environment"]
+        self.assertEqual(environment["PATH"].split(os.pathsep)[0], str(python.parent))
+        self.assertEqual(environment["VIRTUAL_ENV"], str(python.parent.parent))
+
+    def test_the_codex_agent_gets_the_venv_on_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            python = self._venv(root)
+            with patch(
+                "mailman.agents.codex_cli.execute", return_value=self._process(root)
+            ) as run:
+                CodexCliAgent(windows_sandbox=None, executable=sys.executable).run(
+                    self._request(root, python)
+                )
+
+        environment = run.call_args.kwargs["environment"]
+        self.assertEqual(environment["PATH"].split(os.pathsep)[0], str(python.parent))
+
+    def test_a_host_interpreter_leaves_the_agent_environment_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with patch(
+                "mailman.agents.claude_cli.execute", return_value=self._process(root)
+            ) as run:
+                ClaudeCliAgent(executable=sys.executable).run(
+                    self._request(root, Path("python"))
+                )
+
+        self.assertFalse(run.call_args.kwargs.get("environment"))
 
 
 class ClaudeResultTests(unittest.TestCase):
