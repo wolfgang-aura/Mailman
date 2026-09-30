@@ -184,6 +184,34 @@ class DecisionFileTests(unittest.TestCase):
         self.assertEqual(decision.recommendation, "SEND")
 
 
+class BodyClaimGateTests(unittest.TestCase):
+    """spack run 20260930T180712Z-3af3d7: SEND passed, then handoff refused the body. #294."""
+
+    def _decide(self, directory: Path, body: str) -> None:
+        (directory / "body.md").write_text(body, encoding="utf-8")
+        (directory / DECISION_FILENAME).write_text(json.dumps(VALID), encoding="utf-8")
+        load_decision(directory)
+
+    def test_send_refuses_a_body_that_claims_the_human_tested_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaises(DecisionError) as caught:
+                self._decide(
+                    Path(temporary_directory),
+                    "Fixes the hash.\n\nI have read and tested every line and take "
+                    "responsibility for it.\n",
+                )
+
+        problems = " ".join(caught.exception.problems)
+        self.assertIn("body.md line 3", problems)
+
+    def test_send_accepts_a_body_without_personal_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            self._decide(
+                Path(temporary_directory),
+                "Fixes the hash.\n\nWritten with Claude through the Mailman harness.\n",
+            )
+
+
 def _write_untriaged_claims(directory: Path) -> None:
     (directory / CLAIMS_FILENAME).write_text(
         json.dumps({"reporter_association": "NONE", "maintainer_replied": False}),

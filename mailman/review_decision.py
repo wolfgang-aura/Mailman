@@ -463,7 +463,9 @@ def load_decision(run_directory: Path) -> Decision:
         decision = parse_decision(data)
     except DecisionError as error:
         raise DecisionError(error.problems, path) from None
-    problem = untriaged_problem(Path(run_directory), decision)
+    problem = untriaged_problem(Path(run_directory), decision) or body_claim_problem(
+        Path(run_directory), decision
+    )
     if problem:
         raise DecisionError([problem], path)
     if decision.offer is not None:
@@ -472,6 +474,36 @@ def load_decision(run_directory: Path) -> Decision:
             raise DecisionError(problems, path)
         decision = replace(decision, offer=replace(decision.offer, text=text))
     return decision
+
+
+def body_claim_problem(run_directory: Path, decision: Decision) -> str | None:
+    """Why SEND cannot stand: body.md says something only the human can make true.
+
+    The spack run passed with SEND, the operator packaged it, and only then did
+    handoff refuse "I have read and tested every line". Mailman #294.
+    """
+    body = run_directory / "body.md"
+    if decision.recommendation != "SEND" or not body.is_file():
+        return None
+    from mailman.handoff import first_person_claims  # handoff imports this module
+
+    handoff = run_directory / "handoff.json"
+    affirmed: set[str] = set()
+    if handoff.is_file():
+        record = json.loads(handoff.read_text(encoding="utf-8"))
+        affirmed = {claim["text"] for claim in record.get("affirmed_claims") or []}
+    claims = [
+        claim
+        for claim in first_person_claims(body.read_text(encoding="utf-8"))
+        if claim["text"] not in affirmed
+    ]
+    if not claims:
+        return None
+    where = ", ".join(f"body.md line {claim['line']}" for claim in claims)
+    return (
+        f"{where} makes a claim only the human filing it can make true; "
+        "handoff will refuse it. Remove it, or recommend something other than SEND."
+    )
 
 
 def untriaged_problem(run_directory: Path, decision: Decision) -> str | None:
