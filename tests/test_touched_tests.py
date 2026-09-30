@@ -198,6 +198,25 @@ class SelectionTests(unittest.TestCase):
         selection = select_test_files(self.workspace, ["edgar/xbrl/xbrl.py"])
         self.assertEqual([e["path"] for e in selection["selected"]], ["tests/test_xbrl.py"])
 
+    def test_the_targets_python_files_globs_decide_what_is_collected(self) -> None:
+        # pylint sets python_files = ["*test_*.py"]; its checker tests are
+        # `unittest_typecheck.py` and were never selected (#303).
+        self._test_file(
+            "pyproject.toml", '[tool.pytest.ini_options]\npython_files = ["*test_*.py"]\n'
+        )
+        self._test_file("tests/checkers/unittest_xbrl.py", "from edgar.xbrl import xbrl\n")
+        self._test_file("tests/helpers.py", "from edgar.xbrl import xbrl\n")
+        selection = select_test_files(self.workspace, ["edgar/xbrl/xbrl.py"])
+        self.assertEqual(
+            [e["path"] for e in selection["selected"]], ["tests/checkers/unittest_xbrl.py"]
+        )
+
+    def test_python_files_in_an_ini_file_is_honoured(self) -> None:
+        self._test_file("pytest.ini", "[pytest]\npython_files = check_*.py\n")
+        self._test_file("tests/check_xbrl.py", "from edgar.xbrl import xbrl\n")
+        selection = select_test_files(self.workspace, ["edgar/xbrl/xbrl.py"])
+        self.assertEqual([e["path"] for e in selection["selected"]], ["tests/check_xbrl.py"])
+
     def test_testpaths_limits_the_search_to_the_collected_tree(self) -> None:
         # nilearn#6607 (#145): testpaths = ["nilearn"], yet
         # examples/.../plot_second_level_association_test.py was selected and

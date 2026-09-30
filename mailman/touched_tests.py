@@ -173,7 +173,7 @@ def _reference_pattern(name: str) -> re.Pattern[str]:
     )
 
 
-def _is_test_module(relative: str) -> bool:
+def _is_test_module(relative: str, python_files: list[str] | None = None) -> bool:
     """A file pytest would collect on its own, not a helper beside the tests.
 
     `src/tests/testdummy/signals.py` lives under `tests/` and is a helper
@@ -181,15 +181,15 @@ def _is_test_module(relative: str) -> bool:
     nothing and the stage exited 5 and called the candidate unverified.
     """
     name = relative.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if python_files:
+        from fnmatch import fnmatch
+
+        return any(fnmatch(name, pattern.lower()) for pattern in python_files)
     return name.startswith("test_") or name.endswith(("_test.py", "_tests.py"))
 
 
-def pytest_testpaths(workspace: Path) -> list[str]:
-    """The target's pytest `testpaths`, from the first file that sets it, or `[]`.
-
-    nilearn sets `testpaths = ["nilearn"]`; without it, a gallery script
-    `examples/.../plot_second_level_association_test.py` was run as a test (#145).
-    """
+def _pytest_option(workspace: Path, option: str) -> list[str]:
+    """A list-valued pytest option from the first config file that sets it, or `[]`."""
     import configparser
     import tomllib
 
@@ -208,22 +208,43 @@ def pytest_testpaths(workspace: Path) -> list[str]:
             except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
                 continue
             options = data.get("tool", {}).get("pytest", {}).get("ini_options", {})
-            declared = options.get("testpaths") if isinstance(options, dict) else None
+            declared = options.get(option) if isinstance(options, dict) else None
             if isinstance(declared, str):
                 declared = declared.split()
             if isinstance(declared, list) and declared:
-                return [str(entry).replace("\\", "/").strip("/") for entry in declared]
+                return [str(entry) for entry in declared]
             continue
         parser = configparser.ConfigParser(interpolation=None)
         try:
             parser.read(path, encoding="utf-8")
         except (OSError, configparser.Error, UnicodeDecodeError):
             continue
-        if parser.has_option(section, "testpaths"):
-            entries = parser.get(section, "testpaths").split()
+        if parser.has_option(section, option):
+            entries = parser.get(section, option).split()
             if entries:
-                return [entry.replace("\\", "/").strip("/") for entry in entries]
+                return entries
     return []
+
+
+def pytest_testpaths(workspace: Path) -> list[str]:
+    """The target's pytest `testpaths`, from the first file that sets it, or `[]`.
+
+    nilearn sets `testpaths = ["nilearn"]`; without it, a gallery script
+    `examples/.../plot_second_level_association_test.py` was run as a test (#145).
+    """
+    return [
+        entry.replace("\\", "/").strip("/")
+        for entry in _pytest_option(workspace, "testpaths")
+    ]
+
+
+def pytest_python_files(workspace: Path) -> list[str]:
+    """The target's pytest `python_files` globs, or `[]` for pytest's defaults.
+
+    pylint sets `python_files = ["*test_*.py"]` and names its checker tests
+    `unittest_typecheck.py`; the default patterns never selected them (#303).
+    """
+    return _pytest_option(workspace, "python_files")
 
 
 def _under(relative: str, roots: list[str]) -> bool:
@@ -239,6 +260,7 @@ def _test_files(workspace: Path) -> list[str]:
     Limited to the target's pytest `testpaths` when it sets them.
     """
     roots = pytest_testpaths(workspace)
+    python_files = pytest_python_files(workspace)
     found: list[str] = []
     for root, directories, files in os.walk(workspace):
         # A `testing` directory inside a package is library code, not a test
@@ -259,7 +281,7 @@ def _test_files(workspace: Path) -> list[str]:
                 relative = relative[2:]
             if roots and not _under(relative, roots):
                 continue
-            if _is_test_path(relative) and _is_test_module(relative):
+            if _is_test_path(relative) and _is_test_module(relative, python_files):
                 found.append(relative)
     return found
 
@@ -308,6 +330,7 @@ def select_test_files(
         if not _is_test_path(path) and path.replace("\\", "/").endswith(".py")
     ]
     roots = pytest_import_roots(workspace)
+    python_files = pytest_python_files(workspace)
     modules = {path: module_names(path, roots) for path in source_files}
     patterns = {
         name: _reference_pattern(name)
@@ -325,7 +348,7 @@ def select_test_files(
         changed_tests = [
             path.replace("\\", "/")
             for path in changed_paths
-            if _is_test_path(path) and _is_test_module(path)
+            if _is_test_path(path) and _is_test_module(path, python_files)
             and (workspace / path).is_file()
         ]
         for relative in changed_tests:
