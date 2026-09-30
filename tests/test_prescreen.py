@@ -28,6 +28,7 @@ from mailman.prescreen import (
     PRESCREEN_HOURS,
     REPOSITORY_SCREEN_FAILED,
     TRIVIAL,
+    identifier_terms,
     TRIVIAL_FIX,
     TRIVIAL_FIX_DIRECT_PUSH,
     REPORTED_FIXED_ON_MAIN,
@@ -185,7 +186,12 @@ def emit_first(*names):
 
 
 if ARGUMENTS[:2] == ["issue", "view"]:
-    emit("issue-payload.json")
+    emit_first("issue-view-" + ARGUMENTS[2] + ".json", "issue-payload.json")
+if ARGUMENTS[:2] == ["search", "prs"] and "--merged" in ARGUMENTS:
+    if (HERE / "merged-prs.json").is_file():
+        emit("merged-prs.json")
+    sys.stdout.write("[]")
+    raise SystemExit(0)
 if ARGUMENTS[:2] == ["pr", "view"]:
     slug = ARGUMENTS[ARGUMENTS.index("--repo") + 1] if "--repo" in ARGUMENTS else ""
     emit("pr-" + slug.replace("/", "__") + "-" + ARGUMENTS[2] + ".json")
@@ -253,6 +259,8 @@ class PrescreenTests(unittest.TestCase):
         pull_requests: dict[str, dict] | None = None,
         issue_api: dict | None = None,
         open_pull_requests: list[dict] | None = None,
+        merged_pull_requests: list[dict] | None = None,
+        issues: dict[int, dict] | None = None,
     ) -> str:
         """A `gh` that answers from fixture files, one per question asked.
 
@@ -299,6 +307,12 @@ class PrescreenTests(unittest.TestCase):
         # GitHub would, instead of every search returning `payload`.
         if open_pull_requests is not None:
             fixtures["corpus-pr.json"] = json.dumps(open_pull_requests)
+        # `gh search prs --merged` answers from these, and nothing else does.
+        if merged_pull_requests is not None:
+            fixtures["merged-prs.json"] = json.dumps(merged_pull_requests)
+        # `gh issue view N` for an issue the thread cites, not the one screened.
+        for number, cited_issue in (issues or {}).items():
+            fixtures[f"issue-view-{number}.json"] = json.dumps(cited_issue)
         for number, events in (timelines or {}).items():
             fixtures[f"timeline-{number}.json"] = json.dumps(events)
         for reference, pull in (pull_requests or {}).items():
@@ -1075,6 +1089,141 @@ class CitedPullRequestTests(PrescreenTests):
         self.assertNotIn("duplicate_search", record)
         self.assertEqual(record["stages_skipped"], ["duplicate-search", "prior-art"])
         self.assertIn("12775", record["next"])
+
+    def test_a_merged_fix_that_never_cites_the_issue_rejects_it(self) -> None:
+        # aws/sagemaker-python-sdk#5495. #6294 fixed the stale `hmac_key`
+        # call two weeks before the run and never named the issue; the title
+        # search ANDed every word and found nothing. Mailman #257.
+        title = (
+            "TypeError: StoredFunction.__init__() got an unexpected keyword "
+            "argument 'hmac_key'"
+        )
+        self.assertEqual(identifier_terms(title), ["storedfunction", "hmac_key"])
+        record = prescreen_issue(
+            self.root,
+            "aws/sagemaker-python-sdk#5495",
+            executable=self.stub(
+                "[]",
+                self.issue(
+                    5495,
+                    "aws/sagemaker-python-sdk",
+                    "Calling a remote function fails with the traceback below.",
+                    title,
+                ),
+                merged_pull_requests=[
+                    {
+                        "number": 6294,
+                        "title": "fix: remote function serialization",
+                        "body": (
+                            "StoredFunction no longer takes hmac_key; drop it "
+                            "from the caller."
+                        ),
+                        "url": "https://github.com/aws/sagemaker-python-sdk/pull/6294",
+                        "closedAt": "2026-09-23T00:00:00Z",
+                    },
+                    {
+                        "number": 6100,
+                        "title": "docs: StoredFunction",
+                        "body": "Explains the stored function layout.",
+                        "url": "https://github.com/aws/sagemaker-python-sdk/pull/6100",
+                        "closedAt": "2026-09-10T00:00:00Z",
+                    },
+                ],
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [ALREADY_FIXED_UPSTREAM])
+        self.assertEqual(
+            [row["number"] for row in record["uncited_merged_fixes"]["matches"]],
+            [6294],
+        )
+        self.assertIn("#6294", record["next"])
+
+    def test_one_identifier_in_the_title_is_too_thin_to_search(self) -> None:
+        self.assertEqual(identifier_terms("Crash in read_csv on empty input"), ["read_csv"])
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                self.issue(7, "example/project", "It crashes.", "Crash in read_csv"),
+                merged_pull_requests=[
+                    {
+                        "number": 9,
+                        "title": "read_csv tweak",
+                        "body": "",
+                        "url": "https://github.com/example/project/pull/9",
+                        "closedAt": "2026-09-05T00:00:00Z",
+                    }
+                ],
+            ),
+        )
+        self.assertFalse(record["uncited_merged_fixes"]["searched"])
+        self.assertNotIn(ALREADY_FIXED_UPSTREAM, record.get("blocking") or [])
+
+    def test_an_issue_the_body_defers_to_closed_as_done_rejects_it(self) -> None:
+        # huggingface/lerobot#2302 says "see #2283"; #2283 was closed
+        # COMPLETED after its fix merged. The resolver skipped it because it
+        # is an issue, not a pull request. Mailman #257.
+        def cited(number: int, reason: str, closed: str | None) -> dict:
+            return {
+                "number": number,
+                "state": "CLOSED" if closed else "OPEN",
+                "stateReason": reason,
+                "closedAt": closed,
+                "title": f"issue {number}",
+                "url": f"https://github.com/huggingface/lerobot/issues/{number}",
+            }
+
+        record = prescreen_issue(
+            self.root,
+            "huggingface/lerobot#2302",
+            executable=self.stub(
+                "[]",
+                self.issue(
+                    2302,
+                    "huggingface/lerobot",
+                    "Same failure as #2283, and unlike #2200 it happens on CPU.",
+                    "Policy crashes on reset",
+                ),
+                issues={
+                    2283: cited(2283, "COMPLETED", "2026-09-05T00:00:00Z"),
+                    2200: cited(2200, "NOT_PLANNED", "2026-09-06T00:00:00Z"),
+                },
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [ALREADY_FIXED_UPSTREAM])
+        self.assertEqual(
+            [row["number"] for row in record["completed_cited_issues"]], [2283]
+        )
+        self.assertIn("#2283", record["next"])
+
+    def test_an_issue_closed_before_this_one_opened_is_context(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "huggingface/lerobot#2302",
+            executable=self.stub(
+                "[]",
+                self.issue(
+                    2302, "huggingface/lerobot", "Regressed since #2283.", "Crash"
+                ),
+                issues={
+                    2283: {
+                        "number": 2283,
+                        "state": "CLOSED",
+                        "stateReason": "COMPLETED",
+                        "closedAt": "2026-06-01T00:00:00Z",
+                        "title": "old",
+                        "url": "https://github.com/huggingface/lerobot/issues/2283",
+                    }
+                },
+            ),
+        )
+        self.assertEqual(record["completed_cited_issues"], [])
+        self.assertNotIn(ALREADY_FIXED_UPSTREAM, record.get("blocking") or [])
 
     def test_a_merged_pull_request_named_in_a_comment_rejects_the_issue(self) -> None:
         # PrefectHQ/prefect#22956: both comments say the fix is on main as

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from mailman.claims import read_claims
+from mailman.executor import execute
 from mailman.issue import capture_issue_from_github
 from mailman.maintainers import maintainer_logins
 from mailman.prior_art import collect_prior_art, resolve_cited_pull_requests
@@ -68,6 +69,7 @@ from mailman.targeting import (
     own_pull_request,
     partition_duplicate_blocked,
 )
+from mailman.toolchain import resolve_tool
 
 #: 4 reads the pull requests the issue's own thread names; 5 asks whether the
 #: repository requires a maintainer reply before a pull request exists; 6 asks
@@ -880,7 +882,28 @@ def prescreen_issue(
         for row in merged_here
         if row.get("in") != "body" and row not in shipped
     ]
-    if merged_fixes:
+    # A fix that never cites the issue, and one behind an issue the body
+    # defers to. Both runs of hunt 20260930T083934Z-941a77 died on these
+    # after passing this stage. Mailman #257.
+    uncited = uncited_merged_fixes(
+        directory,
+        slug=slug,
+        title=str(captured.get("title") or ""),
+        issue_created_at=claims.get("issue_created_at"),
+        executable=executable,
+        timeout_seconds=timeout_seconds,
+    )
+    record["uncited_merged_fixes"] = uncited
+    completed = completed_cited_issues(
+        directory,
+        slug=slug,
+        skipped=cited["skipped"],
+        issue_created_at=claims.get("issue_created_at"),
+        executable=executable,
+        timeout_seconds=timeout_seconds,
+    )
+    record["completed_cited_issues"] = completed
+    if merged_fixes or uncited["matches"] or completed:
         thread_blocking.append(ALREADY_FIXED_UPSTREAM)
     elif merged_here:
         warnings.append(
@@ -978,6 +1001,19 @@ def prescreen_issue(
             or ALREADY_FIXED_UPSTREAM in thread_blocking
         ):
             details.append(cited["detail"])
+        if uncited["matches"]:
+            named = ", ".join(f"#{row['number']}" for row in uncited["matches"])
+            details.append(
+                f"merged since the issue opened, and naming every identifier "
+                f"in its title ({', '.join(uncited['terms'])}): {named}. Read "
+                "it; if it fixed this, the issue is done"
+            )
+        if completed:
+            named = ", ".join(f"#{row['number']}" for row in completed)
+            details.append(
+                f"the body defers to {named}, closed as completed after this "
+                "issue opened"
+            )
         record.update(
             {
                 "blocking": thread_blocking,
@@ -1196,3 +1232,172 @@ def _merged_before_issue(row: dict[str, Any], issue_created_at: Any) -> bool:
     except ValueError:
         return False
     return opened - merged > timedelta(days=MERGED_BEFORE_ISSUE_DAYS)
+
+
+#: Exception class names read as camelCase identifiers but name the symptom,
+#: not the code; every traceback title carries one.
+_SYMPTOM_NAME = re.compile(r"(?:Error|Exception|Warning)$")
+_TITLE_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_CAMEL = re.compile(r"[a-z0-9][A-Z]")
+#: How many same-repository issues cited from the body one prescreen reads.
+CITED_ISSUE_LIMIT = 3
+
+
+def identifier_terms(title: str) -> list[str]:
+    """The code identifiers a title names, lowercased, in order.
+
+    A word counts when it has an inner underscore or an inner capital:
+    `hmac_key`, `StoredFunction`. Dunders and exception class names do not;
+    `__init__` and `TypeError` are in every traceback title. Mailman #257.
+    """
+    terms: list[str] = []
+    for word in _TITLE_WORD.findall(title or ""):
+        if word.startswith("__") and word.endswith("__"):
+            continue
+        if _SYMPTOM_NAME.search(word):
+            continue
+        inner = word.strip("_")
+        if "_" not in inner and not _CAMEL.search(inner):
+            continue
+        term = word.lower()
+        if term not in terms:
+            terms.append(term)
+    return terms
+
+
+def uncited_merged_fixes(
+    directory: Path,
+    *,
+    slug: str,
+    title: str,
+    issue_created_at: Any,
+    executable: str | None,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """Merged pull requests since the issue opened that name its identifiers.
+
+    aws/sagemaker-python-sdk#6294 fixed #5495's stale `hmac_key` call without
+    citing the issue; the title search ANDed every word and found nothing,
+    and the run found it with `storedfunction hmac_key`. Mailman #257.
+    """
+    terms = identifier_terms(title)
+    record: dict[str, Any] = {"terms": terms, "matches": [], "searched": False}
+    if len(terms) < 2:
+        return record
+    command = [
+        executable or resolve_tool(directory, "gh"),
+        "search",
+        "prs",
+        *terms,
+        "--repo",
+        slug,
+        "--merged",
+        "--limit",
+        "10",
+        "--json",
+        "number,title,body,url,closedAt",
+    ]
+    opened = str(issue_created_at or "")[:10]
+    if opened:
+        command[command.index("--merged") + 1 : command.index("--merged") + 1] = [
+            # A range, not `>=DATE`: a `.cmd` shim reads `>` as a redirect.
+            "--merged-at",
+            f"{opened}..*",
+        ]
+    result = execute(
+        command, working_directory=directory, timeout_seconds=timeout_seconds
+    )
+    record["searched"] = True
+    if result.timed_out or result.exit_code != 0:
+        record["error"] = (result.stderr or "").strip()[:300] or "gh search failed"
+        return record
+    try:
+        rows = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        record["error"] = "the GitHub CLI returned unreadable JSON"
+        return record
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        text = f"{row.get('title') or ''}\n{row.get('body') or ''}".lower()
+        if all(term in text for term in terms):
+            record["matches"].append(
+                {
+                    "number": row.get("number"),
+                    "title": row.get("title"),
+                    "url": row.get("url"),
+                    "merged_at": row.get("closedAt"),
+                }
+            )
+    return record
+
+
+def completed_cited_issues(
+    directory: Path,
+    *,
+    slug: str,
+    skipped: Sequence[dict[str, Any]],
+    issue_created_at: Any,
+    executable: str | None,
+    timeout_seconds: float,
+) -> list[dict[str, Any]]:
+    """Same-repository issues the body defers to, closed as done since.
+
+    huggingface/lerobot#2302 defers to #2283, closed COMPLETED after its fix
+    merged; the resolver skipped #2283 because it is an issue. Mailman #257.
+    """
+    try:
+        opened = datetime.fromisoformat(
+            str(issue_created_at).replace("Z", "+00:00")
+        )
+    except ValueError:
+        return []
+    numbers: list[int] = []
+    for reference in skipped:
+        number = reference.get("number")
+        if (
+            reference.get("in") == "body"
+            and str(reference.get("repository") or "").lower() == slug.lower()
+            and isinstance(number, int)
+            and number not in numbers
+        ):
+            numbers.append(number)
+    found: list[dict[str, Any]] = []
+    for number in numbers[:CITED_ISSUE_LIMIT]:
+        result = execute(
+            [
+                executable or resolve_tool(directory, "gh"),
+                "issue",
+                "view",
+                str(number),
+                "--repo",
+                slug,
+                "--json",
+                "number,state,stateReason,closedAt,title,url",
+            ],
+            working_directory=directory,
+            timeout_seconds=timeout_seconds,
+        )
+        if result.timed_out or result.exit_code != 0:
+            continue
+        try:
+            payload = json.loads(result.stdout or "{}")
+            closed = datetime.fromisoformat(
+                str(payload.get("closedAt")).replace("Z", "+00:00")
+            )
+        except (json.JSONDecodeError, ValueError, AttributeError):
+            continue
+        if (
+            str(payload.get("state") or "").upper() == "CLOSED"
+            and str(payload.get("stateReason") or "").upper() == "COMPLETED"
+            and closed > opened
+        ):
+            found.append(
+                {
+                    "number": payload.get("number", number),
+                    "title": payload.get("title"),
+                    "url": payload.get("url"),
+                    "closed_at": payload.get("closedAt"),
+                }
+            )
+    return found
