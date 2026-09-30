@@ -1,6 +1,6 @@
 # Source of truth
 
-Last verified: 2026-09-29 in `Asia/Singapore`.
+Last verified: 2026-09-30 in `Asia/Singapore`.
 
 ## Luna work-order checkpoint
 
@@ -350,6 +350,39 @@ opening the local packet URL during this session; visual state is unverified.
   - anndata#2666, ipython#15408, pymc#8442 (other checks), tqdm#1837: red checks are inherited
     (fail only in `.github` files or on other open PRs), not ours.
   - PyPSA#1958 went `blocked` -> `clean`; py-shiny#2511 is `blocked` on required review only.
+- Upstream tally re-read 2026-09-30 13:28 UTC (`mailman hunt watch`, `mailman contributions
+  --refresh`, each change checked with `gh`): 31 PRs filed. Merged 8: ffn#330,
+  openai-agents-python#4890, securo#875, edgartools#1329, edgartools#1365, nilearn#6611,
+  nicegui#6345, securo#1039. Closed unmerged 6 (unchanged). Open 17: biopython#5336,
+  fonttools#4212, ipython#15408, openalgo#2021, openalgo#2022, pdm#3883, py-shiny#2511,
+  prefect#23237, pretix#6564, xarray#11637, pymc#8442, PyPSA#1958, poetry#11052, anndata#2666,
+  sqlmesh#6105, tqdm#1837, nox#1191. New since the morning tally: sqlmesh#6105 (filed 2026-09-29),
+  prefect#23237 and fonttools#4212 (filed 2026-09-30), all from hunt `20260929T150205Z-08d690`.
+  - Seventh merge: nicegui#6345 merged by falkoschindler at 2026-09-29 20:54 UTC as `d0323a3`,
+    through the auto-merge he enabled at 20:02, on his head `475a454`. Run record 0018.
+  - Eighth merge: securo#1039 merged by tassionoronha at 2026-09-30 12:19 UTC as `210e1ce`
+    ("LGTM"), head `350fb8c`. Our second merge in securo. Run record 0019. Nilearn#6611, the
+    sixth, is record 0017.
+  - `mailman provenance` refuses to re-record nilearn#6611 and nicegui#6345: the fork branch
+    tip is the maintainer's commit, not the last commit in our workspace. `contributions
+    --refresh` still reads both as `MERGED` with merge commits.
+    The refusal overwrote each run's `submission/contribution.patch` before refusing; fixed in
+    `4fcaea1` (#274). Refusing a maintainer fast-forward at all is #275, open.
+  - xarray#11637: `test-py311-min-versions` fails on `02958fa`. Our new
+    `test_append_native_time_dtype_encoding` raises `KeyError: '<M8[ms]'` / `'<m8[s]'` for
+    `zarr_format=3` under zarr-python 3.0, which cannot store native time dtypes in format 3
+    metadata. Reproduced locally with zarr 3.0.10 (4 failed). Fix committed locally as
+    `905bc308` in the run workspace, not pushed: `skip_if_zarr_format_3(...,
+    condition=not has_zarr_v3_dtypes)`, the pattern the neighbouring string-append test uses.
+    With zarr 3.0.10: 4 passed, 4 skipped by the gate; with zarr 3.4.0: unchanged (8 passed).
+    Merge state `DIRTY` because main released v2026.09.0 (`2f3339b`): our `whats-new.rst`
+    entry merges cleanly but lands under the released section, and main has no unreleased
+    section yet. dcherian has not answered since 2026-09-29.
+  - prefect#23237: the red checks are not ours. Every failing job shows
+    `test_block_standards.py::test_has_a_valid_image` with `HTTP Error 402: Payment
+    Required` from the block image host, in modules the PR does not touch.
+  - biopython#5336: still on hold for the AI policy, no new comment. edgartools#1370: no reply
+    to the 2026-09-27 offer. pymc#8442 approved, not merged.
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
   It still exists; deleting it is the operator's call.
 
