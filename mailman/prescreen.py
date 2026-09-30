@@ -318,7 +318,10 @@ def prescreen_directory(data_root: Path, slug: str, number: int) -> Path:
 
 
 def prescreen_path(data_root: Path, slug: str, number: int) -> Path:
-    return prescreen_directory(data_root, slug, number).with_suffix(".json")
+    # Not `with_suffix`: `plotly.py` would read as the extension, and every
+    # issue in that repository shared one file. Mailman #282.
+    directory = prescreen_directory(data_root, slug, number)
+    return directory.with_name(f"{directory.name}.json")
 
 
 def load_prescreen(data_root: Path, slug: str, number: int) -> dict[str, Any] | None:

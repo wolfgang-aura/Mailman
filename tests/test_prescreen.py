@@ -85,6 +85,16 @@ class IssueReferenceTests(unittest.TestCase):
             issue_reference("pdm-project/pdm")
 
 
+class PrescreenPathTests(unittest.TestCase):
+    def test_a_dotted_repository_keeps_one_verdict_per_issue(self) -> None:
+        # plotly.py's issues all wrote plotly__plotly.json. Mailman #282.
+        root = Path("data")
+        first = prescreen_path(root, "plotly/plotly.py", 5632)
+        second = prescreen_path(root, "plotly/plotly.py", 5613)
+        self.assertNotEqual(first, second)
+        self.assertEqual(first.name, "plotly__plotly.py__5632.json")
+
+
 class FixSizeTests(unittest.TestCase):
     """What the issue says it wants, read for how long the change would take.
 
