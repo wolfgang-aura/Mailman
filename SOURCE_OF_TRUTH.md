@@ -393,8 +393,11 @@ opening the local packet URL during this session; visual state is unverified.
     PR", endorsed the approach, and will run the section network regressions before merging.
     Run `20260927T071330Z-0be859` is `SEND`; no competing PR or claim; upstream `main` is 6
     commits past our base `b022ad29` and none touch our files. The 2026-09-27 handoff predates
-    the reply and must be regenerated; the auto-mode classifier refused `mailman handoff`, so
-    the operator runs it. Branch `mailman/issue-1370` (`aaf4e75d`) is not on the fork yet.
+    the reply; the auto-mode classifier refused `mailman handoff`, so the operator regenerated
+    it, passed `handoff-check`, pushed and filed https://github.com/dgunning/edgartools/pull/1386
+    at 16:23 UTC (head `aaf4e75d`). Provenance recorded `OPEN`. Tally now 32 filed, 18 open.
+    CodeFactor flags `_get_element_text` complexity 18; advisory there (7 of the last 30 merged
+    PRs merged with it red), so no revision.
   - Mailman CI went red on `9128ca7`: `28734a8` (#276) left `_stream`'s pipes open, and two
     orchestrator CLI tests saw a `ResourceWarning` on stderr. Fixed in `c819de6` (#281).
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
