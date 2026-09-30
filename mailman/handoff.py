@@ -142,7 +142,13 @@ def preservation_claims(text: str) -> list[dict[str, Any]]:
 # all. The sentence, ISO 32000-1 9.10.3, was found by hand afterwards.
 # See https://github.com/wolfgang-aura/Mailman/issues/124.
 _SPECIFICATION = re.compile(
-    r"\b(?:the\s+spec(?:ification)?s?\b|ISO(?:/IEC)?\s*\d{3,5}|RFC\b)",
+    # A bare "the spec" is a domain noun in spack and friends (#295); it
+    # counts only where it is cited as an authority.
+    r"\b(?:the\s+specifications?\b"
+    r"|(?:per|according\s+to|under)\s+the\s+specs?\b"
+    r"|the\s+specs?\s+(?:says?|states?|requires?|defines?|mandates?|allows?"
+    r"|forbids?|permits?)\b"
+    r"|ISO(?:/IEC)?\s*\d{3,5}|RFC\b)",
     re.IGNORECASE,
 )
 _CLAUSE = re.compile(

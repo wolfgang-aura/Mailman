@@ -637,6 +637,18 @@ class SpecificationCitationTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(len(unsourced_specification_claims(text)), 1)
 
+    def test_a_short_spec_counts_only_where_it_is_cited(self) -> None:
+        # spack calls its build object a spec; the run's body said "applies to
+        # the spec" and handoff-check refused it. Mailman #295.
+        for text, expected in (
+            ("For every resource that applies to the spec (`x()`), it adds one.", 0),
+            ("The DAG hash of the spec is unchanged.", 0),
+            ("According to the spec, the field is optional.", 1),
+            ("The spec requires an empty authority.", 1),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(len(unsourced_specification_claims(text)), expected)
+
     def test_a_clause_and_a_quoted_sentence_satisfy_it(self) -> None:
         self.assertEqual(
             unsourced_specification_claims(
