@@ -37,6 +37,9 @@ MINIMUM_SHARED_WORDS = 2
 _VERSION = re.compile(
     r"(?i)(?:\bversion\b[^\n\d]{0,30}|\bv)(\d+\.\d+(?:\.\d+)?(?:[-.]?(?:post|rc|a|b)\d*)?)\b"
 )
+#: A pinned requirement, as `pip freeze` or pypdf's `_debug_versions` prints it:
+#: "pypdf==5.1.0". https://github.com/wolfgang-aura/Mailman/issues/296
+_PINNED = re.compile(r"(?<![\w.-])[A-Za-z][\w.-]*==v?(\d+\.\d+(?:\.\d+)?(?:[-.]?(?:post|rc|a|b)\d*)?)\b")
 _WORD = re.compile(r"[a-z][a-z0-9_]{3,}")
 _STOPWORDS = frozenset(
     "when with from that this than then into instead using uses used does doesn "
@@ -76,7 +79,7 @@ def reported_versions(markdown: str) -> list[str]:
     release the reporter ran. https://github.com/wolfgang-aura/Mailman/issues/261
     """
     body = _issue_body(markdown)
-    return list(dict.fromkeys([*_heading_versions(body), *_VERSION.findall(body)]))
+    return list(dict.fromkeys([*_heading_versions(body), *_PINNED.findall(body), *_VERSION.findall(body)]))
 
 
 def _title(markdown: str) -> str:
@@ -121,6 +124,25 @@ def _git(workspace: Path, *arguments: str, timeout_seconds: float) -> str | None
     return result.stdout
 
 
+def _tracked_paths(tree: Path, named: list[str], *, timeout_seconds: float) -> list[str]:
+    """The files the issue names, as paths in the tree.
+
+    A Windows traceback path (`site-packages\\pypdf\\_cmap.py`) reaches the
+    reference pattern as its last segment. A name that is not a file at the
+    root counts when exactly one tracked file ends with it.
+    https://github.com/wolfgang-aura/Mailman/issues/296
+    """
+    paths = [p for p in named if (tree / p).is_file()]
+    missing = [p for p in named if p not in paths]
+    if missing:
+        tracked = (_git(tree, "ls-files", timeout_seconds=timeout_seconds) or "").splitlines()
+        for name in missing:
+            matches = [t for t in tracked if t.endswith("/" + name)]
+            if len(matches) == 1:
+                paths.append(matches[0])
+    return list(dict.fromkeys(paths))
+
+
 def check_version_gap(
     run_directory: Path, *, workspace: Path | None = None, timeout_seconds: float = 60
 ) -> dict[str, Any]:
@@ -157,7 +179,8 @@ def check_version_gap(
         record["detail"] = f"reported on {tag}, which is base"
         return _write(run_directory, record)
     words = title_words(_title(markdown))
-    paths = [p for p in dict.fromkeys(m.group(1) for m in _PATH_REFERENCE.finditer(_issue_body(markdown))) if (tree / p).is_file()]
+    named = list(dict.fromkeys(m.group(1) for m in _PATH_REFERENCE.finditer(_issue_body(markdown))))
+    paths = _tracked_paths(tree, named, timeout_seconds=timeout_seconds)
     touching: set[str] = set()
     if paths:
         touched = _git(tree, "log", "--format=%H", f"{tag}..HEAD", "--", *paths, timeout_seconds=timeout_seconds)

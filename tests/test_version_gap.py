@@ -59,6 +59,17 @@ class VersionGapTests(unittest.TestCase):
         )
         self.assertEqual(reported_versions(issue)[:2], ["4.0.3", "4.0.2"])
 
+    def test_reported_versions_reads_a_pinned_requirement(self):
+        # py-pdf/pypdf#2997 printed its version the way the issue template
+        # asks: `_debug_versions`. https://github.com/wolfgang-aura/Mailman/issues/296
+        issue = (
+            "# py-pdf/pypdf#2997: binascii.Error\n\n## Issue body\n\n"
+            "```bash\n$ python -c \"import pypdf;print(pypdf._debug_versions)\"\n"
+            "pypdf==5.1.0, crypt_provider=('local_crypt_fallback', '0.0.0'), PIL=11.0.0\n```\n\n"
+            "## Capture boundary\n"
+        )
+        self.assertEqual(reported_versions(issue)[0], "5.1.0")
+
     def test_matching_tag_accepts_common_tag_shapes(self):
         self.assertEqual(matching_tag("2.13.1", ["v2.13.0", "v2.13.1"]), "v2.13.1")
         self.assertEqual(matching_tag("2.13.1", ["beets-2.13.1"]), "beets-2.13.1")
@@ -95,6 +106,30 @@ class VersionGapTests(unittest.TestCase):
             self.assertEqual(len(listed), 2)
             self.assertIn("modify: fix selecting objects", record["detail"])
             self.assertEqual(json.loads((run / VERSION_GAP_FILENAME).read_text(encoding="utf-8"))["tag"], "v1.0.0")
+
+    def test_a_file_named_only_by_a_traceback_basename_is_resolved(self):
+        """pypdf#2997's traceback path was `site-packages\\pypdf\\_cmap.py` (#296)."""
+        issue = (
+            "# py-pdf/pypdf#2997: binascii.Error extracting CMap\n\n## Issue body\n\n"
+            "pypdf==1.0.0\n\n"
+            '  File "venv\\Lib\\site-packages\\pypdf\\_cmap.py", line 56, in build_char_map\n\n'
+            "## Capture boundary\n"
+        )
+        with tempfile.TemporaryDirectory() as name:
+            run = Path(name)
+            tree = run / "workspace"
+            tree.mkdir()
+            git(tree, "init", "-q")
+            commit(tree, "pypdf/_cmap.py", "initial")
+            git(tree, "tag", "1.0.0")
+            fix = commit(tree, "pypdf/_cmap.py", "ROB: Gracefully handle odd-length strings in parse_bfchar")
+            commit(tree, "docs/index.rst", "docs: index")
+            (run / "issue.md").write_text(issue, encoding="utf-8")
+
+            record = check_version_gap(run)
+
+            self.assertEqual(record["tag"], "1.0.0")
+            self.assertEqual([row["commit"] for row in record["related"]], [fix])
 
     def test_an_issue_reported_on_base_lists_nothing(self):
         with tempfile.TemporaryDirectory() as name:
