@@ -449,6 +449,27 @@ class RunTouchedTestsTests(_RunFixture):
         )
         self.assertEqual(record["deselected"], ["tests/test_xbrl.py::test_host_blocked"])
 
+    def test_a_frozen_verification_marker_filter_carries_over(self) -> None:
+        # nicegui run 20260930T113729Z-2bd5a4 verified with `-m 'not screen'`
+        # (no Chrome on this host); touched tests ran the browser tests and
+        # hung on chromedriver. Mailman #278.
+        (self.run_directory / "prompts.json").write_text(
+            json.dumps({"verification_command": [
+                str(self.python), "-m", "pytest", "tests/test_xbrl.py",
+                "-m", "not screen", "-q",
+            ]}),
+            encoding="utf-8",
+        )
+        record = self._run(FakeExecutor())
+        self.assertEqual(record["command"][-2:], ["-m", "not screen"])
+        self.assertEqual(record["marker_filter"], "not screen")
+
+        (self.workspace / "pytest.ini").write_text(
+            "[pytest]\nmarkers =\n    network: hits the network\n", encoding="utf-8"
+        )
+        record = self._run(FakeExecutor())
+        self.assertEqual(record["command"][-2:], ["-m", "(not network) and (not screen)"])
+
     def test_no_prompts_record_means_nothing_deselected(self) -> None:
         record = self._run(FakeExecutor())
         self.assertNotIn("--deselect", record["command"])

@@ -562,6 +562,29 @@ def verification_deselects(run_directory: Path) -> list[str]:
 
 
 
+def verification_marker(run_directory: Path) -> str | None:
+    """The `-m` expression the run's recorded pytest verification passes.
+
+    Same reasoning as `verification_deselects`: the baseline ran that command
+    on the clean base tree. nicegui verified with `-m 'not screen'` because
+    this host has no Chrome, and touched tests without it hung on
+    chromedriver. See Mailman #278.
+    """
+    try:
+        payload = json.loads((run_directory / "prompts.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    argv = payload.get("verification_command") if isinstance(payload, dict) else None
+    if not isinstance(argv, list) or "pytest" not in argv:
+        return None
+    arguments = argv[argv.index("pytest") + 1:]
+    for index, argument in enumerate(arguments):
+        if argument == "-m" and index + 1 < len(arguments):
+            value = arguments[index + 1]
+            return value if isinstance(value, str) and value else None
+    return None
+
+
 def deselects_for(run_directory: Path, paths: list[str]) -> list[str]:
     """The verification deselects whose test file is among `paths`."""
     wanted = {path.replace("\\", "/") for path in paths}
@@ -757,11 +780,19 @@ def run_touched_tests(
     )
     runner = "pytest" if probe.exit_code == 0 and not probe.timed_out else "unittest"
     files = [entry["path"] for entry in selection["selected"]]
-    marker = ["-m", "not network"] if runner == "pytest" and network_marker_registered(
-        workspace
-    ) else []
-    if marker:
-        record["marker_filter"] = "not network"
+    expressions = []
+    if runner == "pytest" and network_marker_registered(workspace):
+        expressions.append("not network")
+    frozen = verification_marker(run_directory) if runner == "pytest" else None
+    if frozen:
+        expressions.append(frozen)
+    marker_filter = (
+        " and ".join(f"({expression})" for expression in expressions)
+        if len(expressions) > 1 else (expressions[0] if expressions else None)
+    )
+    marker = ["-m", marker_filter] if marker_filter else []
+    if marker_filter:
+        record["marker_filter"] = marker_filter
 
     def deselect_for(paths: list[str]) -> list[str]:
         kept = deselects_for(run_directory, paths)
