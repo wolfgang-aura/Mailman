@@ -398,6 +398,15 @@ opening the local packet URL during this session; visual state is unverified.
     at 16:23 UTC (head `aaf4e75d`). Provenance recorded `OPEN`. Tally now 32 filed, 18 open.
     CodeFactor flags `_get_element_text` complexity 18; advisory there (7 of the last 30 merged
     PRs merged with it red), so no revision.
+- Re-read 2026-10-01 (`mailman hunt watch`, `mailman contributions --refresh`): 32 filed.
+  Merged 9, closed unmerged 6, open 17. The only change is the ninth merge: edgartools#1386,
+  merged by dgunning 2026-09-30 19:10 UTC as `da38745`; #1370 closed. Our `aaf4e75d` failed
+  18 tests in `test-fast` and `regression`, six of them real losses (plain-text filings,
+  block children of inline wrappers, 424B cover agents). dgunning pushed `2fda300` on top and
+  merged. Provenance re-recorded `MERGED` with `maintainer_commits` = `2fda300`. Run record
+  0020. The failures reproduce offline here (19 failed at `aaf4e75d`); touched-tests selected
+  only direct importers of the changed module, filed as #302. Delete `wolfgang-aura/edgartools`
+  now that it carries no open PR.
   - Mailman CI went red on `9128ca7`: `28734a8` (#276) left `_stream`'s pipes open, and two
     orchestrator CLI tests saw a `ResourceWarning` on stderr. Fixed in `c819de6` (#281).
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
