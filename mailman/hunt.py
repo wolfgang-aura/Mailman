@@ -317,7 +317,14 @@ def record_filing(root: Path, record: dict, run_id: str, *, pr_url: str,
     if row.get("dropped"):
         raise ValueError("a dropped candidate was not filed; restore it first")
     if row.get("filed"):
-        raise ValueError(f"already recorded as {row['filed']['pr_url']}")
+        filed = row["filed"]
+        # A filing recorded without --commit can gain it once, for the same
+        # pull request; nothing else about a filing is rewritten. Mailman #250.
+        if commit and not filed.get("commit") and filed["pr_url"] == pr_url.strip():
+            filed["commit"] = commit
+            save(hunt_path(root, record["hunt_id"]), record)
+            return filed
+        raise ValueError(f"already recorded as {filed['pr_url']}")
     run, _ = load_run(run_id, root)
     if repository_slug(match["repository"]) != repository_slug(run.repository):
         raise ValueError(

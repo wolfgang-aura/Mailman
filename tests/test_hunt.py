@@ -651,6 +651,23 @@ class FilingRecordTests(HuntTests):
                       pr_url="https://github.com/example/project/pull/7")
         self.assertEqual(record["status"], "RUNNING")
 
+    def test_a_filing_recorded_without_its_commit_can_add_it(self):
+        # prefect's PR was recorded without --commit, then "already recorded"
+        # refused the commit for good. Mailman #250.
+        record = self.new_hunt(2)
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        url = "https://github.com/example/project/pull/7"
+        record_filing(self.data_root, record, directory.name, pr_url=url)
+        filed = record_filing(self.data_root, record, directory.name,
+                              pr_url=url, commit="b09c315")
+        self.assertEqual(filed["commit"], "b09c315")
+        stored = load_hunt(self.data_root, record["hunt_id"])
+        self.assertEqual(stored["runs"][0]["filed"]["commit"], "b09c315")
+        with self.assertRaises(ValueError):
+            record_filing(self.data_root, record, directory.name,
+                          pr_url=url, commit="another")
+
     def test_a_pull_request_on_another_repository_is_refused(self):
         record = self.new_hunt()
         directory = self.ready_run()
