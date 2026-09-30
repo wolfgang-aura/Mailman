@@ -43,6 +43,7 @@ from mailman.shortlist import (
     ranking,
 )
 from mailman.submission import (
+    duplicate_is_related,
     partition_duplicates,
     record_duplicate_search,
     related_duplicates,
@@ -1095,10 +1096,19 @@ def prescreen_issue(
     }
     related = related_duplicates(search.get("matches"), issue_number=number)
     strong, _ = partition_duplicates(related, issue_number=number)
+    # A closed attempt is only weak as a rival, but who closed it decides
+    # whether it was rejected. stanza#1677 passed over two maintainer-closed
+    # pull requests the search found, because nothing read their closer. #268.
+    closed = [
+        row
+        for row in related
+        if str(row.get("state") or "").lower() == "closed"
+        and duplicate_is_related(row)
+    ]
     numbers = sorted(
         {
             row["number"]
-            for row in strong
+            for row in [*strong, *closed]
             if isinstance(row.get("number"), int) and row.get("pull_request")
         }
     )

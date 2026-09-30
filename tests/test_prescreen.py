@@ -2239,6 +2239,51 @@ class MaintainerClosedAttemptTests(StalePriorAttemptTests):
         self.assertTrue(rejected["closed_by"]["maintainer"])
         self.assertIn("said no", record["next"])
 
+    def test_a_closed_attempt_only_the_search_found_is_read_for_its_closer(
+        self,
+    ) -> None:
+        # stanza#1677: #1678 and #1681 were closed by the maintainer, found
+        # only by the duplicate search, and recorded with `closed_by: null`.
+        # https://github.com/wolfgang-aura/Mailman/issues/268
+        issue = {**self.issue(), "body": "The command crashes on empty input."}
+        found = json.dumps(
+            [
+                {
+                    "number": 8,
+                    "title": "Guard the empty-input path",
+                    "body": "Fixes #7",
+                    "state": "CLOSED",
+                    "url": "https://github.com/example/project/pull/8",
+                    "createdAt": "2026-09-10T00:00:00Z",
+                    "updatedAt": "2026-09-11T00:00:00Z",
+                    "isDraft": False,
+                }
+            ]
+        )
+        attempt = {
+            **self.closed(),
+            "createdAt": "2026-09-10T00:00:00Z",
+            "updatedAt": "2026-09-11T00:00:00Z",
+            "closedAt": "2026-09-11T00:00:00Z",
+        }
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                found,
+                issue,
+                pull_requests={"example/project#8": attempt},
+                timelines={
+                    8: self.closing_event(actor="maintainer", association="MEMBER")
+                },
+            ),
+        )
+
+        self.assertEqual(record["prior_art"]["requested"], [8])
+        self.assertEqual(record["verdict"], "reject")
+        self.assertIn(MAINTAINER_CLOSED_ATTEMPT, record["blocking"])
+        self.assertNotIn(STALE_PRIOR_ATTEMPT, record["warnings"])
+
     def test_an_author_closing_their_own_attempt_is_still_stale(self) -> None:
         # tqdm#1816 and #1818. Nobody judged the change.
         record = prescreen_issue(
