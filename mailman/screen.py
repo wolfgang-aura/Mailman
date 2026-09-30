@@ -2793,6 +2793,12 @@ def screen_repository(
     meta = gh.json(f"repos/{slug}")
     if not isinstance(meta, dict) or "full_name" not in meta:
         return _unread(data_root, slug, record, gh, f"{slug} could not be read")
+    # `repos/OLD/NAME` follows a rename; issue search answers 422 for the old
+    # name, which the assignment gate read as "unavailable". Mailman #301.
+    current = repository_slug(str(meta["full_name"]))
+    if current.lower() != slug.lower():
+        record["renamed_from"] = slug
+        record["repository"] = slug = current
     record["archived"] = bool(meta.get("archived"))
     if record["archived"]:
         record["gates"] = [

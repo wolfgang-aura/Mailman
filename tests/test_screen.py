@@ -329,6 +329,24 @@ class ScreenTests(unittest.TestCase):
             self.assertEqual(load_screen(root, "example/project"), record)
         self.assertIn("worth a run", render_screen(record))
 
+    def test_a_renamed_repository_is_screened_under_its_current_name(self) -> None:
+        # pandera-dev/pandera redirects to unionai-oss/pandera, and issue
+        # search answered 422 for the old name. Mailman #301.
+        meta = {"full_name": "renamed/project", "stargazers_count": 4200,
+                "default_branch": "main", "archived": False,
+                "created_at": _days_ago(1500), "fork": False}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            gh = FakeGitHub(meta=meta)
+            record = _screen(root, gh)
+            stored = load_screen(root, "renamed/project")
+
+        self.assertEqual(record["repository"], "renamed/project")
+        self.assertEqual(record["renamed_from"], "example/project")
+        self.assertIsNotNone(stored)
+        self.assertEqual(gh.asked[0], "repos/example/project")
+        self.assertFalse([path for path in gh.asked[1:] if "example" in path])
+
     def test_a_repository_already_refused_skips_the_costly_gates(self) -> None:
         # 2026-09-29: 11 of 23 screens failed pure-python, policy or host and
         # still paid ~150 reads each for saturation and responsiveness.
