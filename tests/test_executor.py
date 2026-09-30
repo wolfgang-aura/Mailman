@@ -163,6 +163,27 @@ class VenvActivationTests(unittest.TestCase):
         self.assertEqual(Path(first), scripts)
         self.assertEqual(Path(virtual_env), root / "env")
 
+    def test_a_venv_command_records_the_venv_python_version(self) -> None:
+        # agentscope's verification ran in a 3.12.14 venv and recorded
+        # Mailman's own 3.14.3, which the draft PR body then quoted. #288.
+        from mailman.executor import _environment_metadata
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "env" / "Scripts").mkdir(parents=True)
+            (root / "env" / "pyvenv.cfg").write_text(
+                "home = /py\nversion = 3.9.99\n", encoding="utf-8"
+            )
+            program = root / "env" / "Scripts" / "python.exe"
+
+            self.assertEqual(
+                _environment_metadata(str(program))["python_version"], "3.9.99"
+            )
+            self.assertEqual(
+                _environment_metadata("python")["python_version"],
+                __import__("platform").python_version(),
+            )
+
     def test_a_host_interpreter_leaves_path_alone(self) -> None:
         import os
 

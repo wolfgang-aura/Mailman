@@ -468,8 +468,9 @@ def _run_tool(
                 + _tail(probed.stdout + "\n" + probed.stderr, 3).strip()
             )
             return entry
+    hook_arguments = _pre_commit_arguments(workspace, tool)
     for arguments in tool.commands:
-        commands = [list(arguments)]
+        commands = [[*arguments, *hook_arguments]]
         if tool.name == "ruff" and configuration.get("format") and arguments[0] == "check":
             commands.append(["format", "--check", *_RUFF_OPTIONS])
         for command_arguments in commands:
@@ -592,6 +593,34 @@ def _yaml_scalar(
     return text, index
 
 
+def _yaml_list(
+    value: str, lines: list[str], index: int, indent: int
+) -> tuple[list[str], int]:
+    """A hook's `args`: a flow list on its line, or `- item` lines below it."""
+    def unquote(item: str) -> str:
+        item = item.strip()
+        if len(item) > 1 and item[0] == item[-1] and item[0] in ("'", '"'):
+            return item[1:-1]
+        return item
+
+    value = re.sub(r"\s+#.*$", "", value).strip()
+    if value.startswith("["):
+        inner = value[1:value.rfind("]")] if "]" in value else value[1:]
+        return [unquote(item) for item in inner.split(",") if item.strip()], index
+    items: list[str] = []
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if stripped and len(line) - len(line.lstrip()) < indent:
+            break
+        if stripped.startswith("- "):
+            items.append(unquote(re.sub(r"\s+#.*$", "", stripped[2:])))
+        elif stripped and not stripped.startswith("#"):
+            break
+        index += 1
+    return items, index
+
+
 def _pre_commit_scopes(workspace: Path) -> tuple[dict, list[dict]] | None:
     """The top-level `files`/`exclude`, and each hook's repo, id, files and exclude."""
     path = workspace / ".pre-commit-config.yaml"
@@ -618,9 +647,12 @@ def _pre_commit_scopes(workspace: Path) -> tuple[dict, list[dict]] | None:
             repo, hook = value, None
             continue
         if dash and repo:
-            hook = {"repo": repo, "id": None, "files": None, "exclude": None}
+            hook = {"repo": repo, "id": None, "files": None, "exclude": None, "args": []}
             hooks.append(hook)
             key_indent = indent
+        if key == "args" and hook is not None and indent == key_indent:
+            hook["args"], index = _yaml_list(value, lines, index, indent)
+            continue
         if key not in ("files", "exclude", "id") and not value.startswith("&"):
             continue
         text, index = _yaml_scalar(value, lines, index, indent, anchors)
@@ -630,6 +662,37 @@ def _pre_commit_scopes(workspace: Path) -> tuple[dict, list[dict]] | None:
         elif hook is not None and indent == key_indent and key in hook:
             hook[key] = text
     return top, hooks
+
+
+# Hook args that only set how a tool judges code. A `--fix` or `--write`
+# would rewrite the candidate, so ruff's and mypy's hook args are not taken.
+_HOOK_ARGUMENT_TOOLS = ("black", "isort", "flake8")
+
+
+def _own_hooks(hooks: list[dict], tool: LintTool) -> list[dict]:
+    return [
+        hook for hook in hooks
+        if hook["id"] == tool.name
+        or (re.search(tool.pre_commit_repo, str(hook["repo"]), re.IGNORECASE)
+            and not str(hook["id"]).endswith("-format"))
+    ]
+
+
+def _pre_commit_arguments(workspace: Path, tool: LintTool) -> list[str]:
+    """The options the target's own pre-commit hook passes `tool` (#288).
+
+    agentscope's black hook sets `--line-length=79`; black ran at its
+    default 88 and passed lines CI rejects.
+    """
+    if tool.name not in _HOOK_ARGUMENT_TOOLS:
+        return []
+    scopes = _pre_commit_scopes(workspace)
+    if scopes is None:
+        return []
+    for hook in _own_hooks(scopes[1], tool):
+        if hook.get("args"):
+            return [argument for argument in hook["args"] if argument.startswith("-")]
+    return []
 
 
 def _pre_commit_skips(workspace: Path, tool: LintTool, path: str) -> bool:
@@ -643,12 +706,7 @@ def _pre_commit_skips(workspace: Path, tool: LintTool, path: str) -> bool:
     if scopes is None:
         return False
     top, hooks = scopes
-    own = [
-        hook for hook in hooks
-        if hook["id"] == tool.name
-        or (re.search(tool.pre_commit_repo, str(hook["repo"]), re.IGNORECASE)
-            and not str(hook["id"]).endswith("-format"))
-    ]
+    own = _own_hooks(hooks, tool)
     if not own:
         return False
     posix = path.replace(chr(92), "/")

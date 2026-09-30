@@ -83,12 +83,26 @@ class CommandResult:
         return record
 
 
-def _environment_metadata() -> dict[str, str]:
+def _environment_metadata(program: str | None = None) -> dict[str, str]:
+    """The host, and the Python a venv program runs under rather than Mailman's.
+
+    agentscope's verification ran in a 3.12.14 venv and recorded Mailman's
+    own 3.14.3, which the draft pull request body then quoted. Mailman #288.
+    """
+    python_version = platform.python_version()
+    if program:
+        configuration = Path(program).parent.parent / "pyvenv.cfg"
+        if Path(program).is_absolute() and configuration.is_file():
+            for line in configuration.read_text(encoding="utf-8", errors="replace").splitlines():
+                key, _, value = line.partition("=")
+                if key.strip() in ("version", "version_info") and value.strip():
+                    python_version = value.strip()
+                    break
     return {
         "operating_system": platform.system(),
         "operating_system_release": platform.release(),
         "machine": platform.machine(),
-        "python_version": platform.python_version(),
+        "python_version": python_version,
     }
 
 
@@ -297,6 +311,6 @@ def execute(
         stderr=redact(stderr),
         timed_out=timed_out,
         timeout_seconds=timeout_seconds,
-        environment=_environment_metadata(),
+        environment=_environment_metadata(command[0]),
         stopped_reason=stopped_reason,
     )

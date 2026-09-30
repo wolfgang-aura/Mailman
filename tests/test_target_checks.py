@@ -406,6 +406,34 @@ class OtherLinterTests(_Fixture):
         self.assertIn([python, "-m", "isort", "--check-only", "--diff", "pkg/mod.py"],
                       executor.calls)
 
+    def test_a_hook_s_args_reach_the_tool(self) -> None:
+        # agentscope's black hook sets `args: [--line-length=79]`; black ran
+        # at its default 88 and passed lines CI rejects. Mailman #288.
+        self.write(
+            ".pre-commit-config.yaml",
+            "repos:\n"
+            "  - repo: https://github.com/psf/black\n"
+            "    hooks:\n"
+            "      - id: black\n"
+            "        args: [--line-length=79, '--skip-string-normalization']\n"
+            "  - repo: https://github.com/pycqa/flake8\n"
+            "    hooks:\n"
+            "      - id: flake8\n"
+            "        args:\n"
+            "          - --max-line-length=79\n"
+            "        exclude: ^docs\n",
+        )
+        executor = Executor()
+        self._run(executor)
+        python = str(self.python)
+        self.assertIn(
+            [python, "-m", "black", "--check", "--diff", "--line-length=79",
+             "--skip-string-normalization", "pkg/mod.py"],
+            executor.calls,
+        )
+        self.assertIn([python, "-m", "flake8", "--max-line-length=79", "pkg/mod.py"],
+                      executor.calls)
+
     def test_a_mypy_error_blocks_as_lint_failed(self) -> None:
         self.write("mypy.ini", "[mypy]\nstrict = True\n")
         record, findings = self._run(Executor({"mypy pkg/mod.py": 1}))
