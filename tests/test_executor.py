@@ -93,6 +93,27 @@ class ExecutorTests(unittest.TestCase):
         self.assertIsNone(result.exit_code)
         self.assertTrue(result.timed_out)
 
+    def test_a_timeout_stops_a_grandchild_holding_the_output_pipe(self) -> None:
+        # nicegui run 20260930T113729Z-2bd5a4: the venv launcher's pytest
+        # child held stdout open through a stuck chromedriver. subprocess.run
+        # killed only the launcher and waited on the pipe for two hours.
+        # Mailman #276.
+        script = (
+            "import subprocess, sys, time; "
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], "
+            "stdout=sys.stdout, stderr=sys.stderr); time.sleep(30)"
+        )
+        started = time.monotonic()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            result = execute(
+                [sys.executable, "-c", script],
+                working_directory=Path(temporary_directory),
+                timeout_seconds=1,
+            )
+
+        self.assertTrue(result.timed_out)
+        self.assertLess(time.monotonic() - started, 15)
+
 
 class VenvActivationTests(unittest.TestCase):
     def test_a_venv_interpreter_gets_its_scripts_folder_on_path(self) -> None:

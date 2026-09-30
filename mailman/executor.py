@@ -267,57 +267,18 @@ def execute(
     if environment:
         process_environment.update(environment)
 
-    if on_stdout_line is not None:
-        exit_code, stdout, stderr, timed_out, stopped_reason = _stream(
-            command,
-            cwd=cwd,
-            process_environment=process_environment,
-            stdin_text=stdin_text,
-            timeout_seconds=timeout_seconds,
-            on_stdout_line=on_stdout_line,
-        )
-        return CommandResult(
-            command=[redact(part) for part in command],
-            working_directory=str(cwd),
-            started_at=started,
-            duration_seconds=round(time.monotonic() - start_clock, 6),
-            exit_code=exit_code,
-            stdout=redact(stdout),
-            stderr=redact(stderr),
-            timed_out=timed_out,
-            timeout_seconds=timeout_seconds,
-            environment=_environment_metadata(),
-            stopped_reason=stopped_reason,
-        )
-
-    try:
-        completed = subprocess.run(
-            list(command),
-            cwd=cwd,
-            env=process_environment,
-            input=stdin_text,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_seconds,
-            check=False,
-            shell=False,
-        )
-        exit_code = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-        timed_out = False
-    except subprocess.TimeoutExpired as error:
-        exit_code = None
-        stdout = error.stdout or ""
-        stderr = error.stderr or ""
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode("utf-8", errors="replace")
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode("utf-8", errors="replace")
-        timed_out = True
-
+    # Every command goes through the tree-killing path. subprocess.run on a
+    # timeout kills only the process it started, then waits on pipes that a
+    # grandchild still holds: a venv launcher's pytest and its chromedriver
+    # kept prepare-submission waiting for two hours. Mailman #276.
+    exit_code, stdout, stderr, timed_out, stopped_reason = _stream(
+        command,
+        cwd=cwd,
+        process_environment=process_environment,
+        stdin_text=stdin_text,
+        timeout_seconds=timeout_seconds,
+        on_stdout_line=on_stdout_line or (lambda _line: None),
+    )
     return CommandResult(
         command=[redact(part) for part in command],
         working_directory=str(cwd),
@@ -329,4 +290,5 @@ def execute(
         timed_out=timed_out,
         timeout_seconds=timeout_seconds,
         environment=_environment_metadata(),
+        stopped_reason=stopped_reason,
     )
