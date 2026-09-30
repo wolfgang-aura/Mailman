@@ -1934,6 +1934,12 @@ _NOT_A_BUG_WORDS = frozenset(
     }
 )
 
+#: Words that reserve an issue for the project's own staff: zenml labels its
+#: roadmap `core-team`, or `planned` with `gtm-team`, and an outside pull
+#: request against one is not taken (#264). Whole words only, so `teamwork`
+#: stays a bug.
+_STAFF_WORDS = frozenset({"team", "planned", "roadmap", "internal"})
+
 #: Reading one issue's comments costs one API call, so the reads stop after
 #: this many unclaimed candidates. A tracker with more unclaimed issues than
 #: this is not saturated in any sense this gate needs to measure precisely;
@@ -1971,7 +1977,7 @@ def is_request_row(row: dict[str, Any]) -> bool:
 
 
 def _is_enhancement(row: dict[str, Any]) -> bool:
-    """Whether a label says the issue is a request, question or docs item."""
+    """Whether a label says the issue is a request, question, docs or staff item."""
     labels = row.get("labels")
     if not isinstance(labels, list):
         return False
@@ -1979,6 +1985,8 @@ def _is_enhancement(row: dict[str, Any]) -> bool:
         name = str(entry.get("name") or "") if isinstance(entry, dict) else str(entry)
         words = re.split(r"[^a-z]+", name.lower())
         if "enhancement" in name.lower() or _NOT_A_BUG_WORDS.intersection(words):
+            return True
+        if _STAFF_WORDS.intersection(words):
             return True
     return False
 

@@ -1153,6 +1153,22 @@ class PrescreenRecordTests(OrchestratorHarness):
 
         self.assertEqual([row["target"] for row in rows], ["acme/requests#6"])
 
+    def test_workable_targets_skip_issues_a_staff_team_reserves(self):
+        # zenml's shortlist was sixteen `core-team` and `planned`/`gtm-team`
+        # roadmap items that outside PRs do not take. Mailman #264.
+        self._screen("acme/staff", [1, 2, 3, 4, 5, 6], flags={
+            1: {"title": "Improve stopping behavior", "labels": ["core-team"]},
+            2: {"title": "Decrease CLI warnings", "labels": ["planned", "gtm-team"]},
+            3: {"title": "Crash on stop", "labels": [{"name": "team: platform"}]},
+            4: {"title": "Crash on start", "labels": ["roadmap"]},
+            5: {"title": "Crash on resume", "labels": ["internal"]},
+            6: {"title": "Crash on empty input", "labels": ["bug", "teamwork"]},
+        })
+
+        rows = workable_targets(self.data_root, held_repositories=set())
+
+        self.assertEqual([row["target"] for row in rows], ["acme/staff#6"])
+
     def test_workable_targets_rank_a_disputed_reply_last_and_out_of_engaged(self):
         # copier#2436: the maintainer's reply was "could not reproduce", and
         # --engaged-only offered it as triaged. Mailman #150.
