@@ -182,6 +182,75 @@ class HeadTipTests(unittest.TestCase):
                     head="wolfgang-aura:mailman/issue-1",
                     state_lookup=_merged,
                     head_lookup=lambda repository, head: "f" * 40,
+                    commits_lookup=lambda repository, number: ["f" * 40],
+                )
+            self.assertIsNone(load_provenance(root))
+
+    def test_a_maintainer_commit_on_top_is_recorded_not_refused(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/275"""
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            workspace, base = _repository(root)
+            ours = _git(workspace, "rev-parse", "HEAD")
+            theirs = "a" * 40
+
+            record = record_provenance(
+                run_id="20260930T000000Z-ffffff",
+                run_directory=root,
+                repository="nilearn/nilearn",
+                base_commit=base,
+                workspace=workspace,
+                pull_request=6611,
+                head="wolfgang-aura:mailman/issue-6607",
+                state_lookup=_merged,
+                head_lookup=lambda repository, head: theirs,
+                commits_lookup=lambda repository, number: [ours, theirs],
+            )
+
+            self.assertEqual(record["commits"], [ours])
+            self.assertEqual(record["maintainer_commits"], [theirs])
+            self.assertTrue((root / "submission" / "contribution.patch").is_file())
+
+    def test_a_deleted_fork_is_read_through_the_pull_request(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/275"""
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            workspace, base = _repository(root)
+            ours = _git(workspace, "rev-parse", "HEAD")
+
+            record = record_provenance(
+                run_id="20260930T000000Z-gggggg",
+                run_directory=root,
+                repository="nilearn/nilearn",
+                base_commit=base,
+                workspace=workspace,
+                pull_request=6611,
+                head="wolfgang-aura:mailman/issue-6607",
+                state_lookup=_merged,
+                head_lookup=lambda repository, head: None,
+                commits_lookup=lambda repository, number: [ours],
+            )
+
+            self.assertEqual(record["commits"], [ours])
+            self.assertEqual(record["maintainer_commits"], [])
+
+    def test_a_pull_request_that_dropped_our_commits_is_refused(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            workspace, base = _repository(root)
+
+            with self.assertRaisesRegex(ProvenanceError, "force-pushed"):
+                record_provenance(
+                    run_id="20260930T000000Z-hhhhhh",
+                    run_directory=root,
+                    repository="nilearn/nilearn",
+                    base_commit=base,
+                    workspace=workspace,
+                    pull_request=6611,
+                    head="wolfgang-aura:mailman/issue-6607",
+                    state_lookup=_merged,
+                    head_lookup=lambda repository, head: None,
+                    commits_lookup=lambda repository, number: ["c" * 40],
                 )
             self.assertIsNone(load_provenance(root))
 

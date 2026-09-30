@@ -165,6 +165,42 @@ def head_branch_tip(repository: str, head: str, *, timeout: float = 60) -> str |
     return None
 
 
+def pull_request_commits(repository: str, number: int) -> list[str] | None:
+    """The commits GitHub lists on the pull request, oldest first.
+
+    Read from the upstream repository, so it still answers after the fork is
+    deleted, and it includes commits a maintainer pushed on top of ours.
+    Returns None when the list cannot be read.
+    See https://github.com/wolfgang-aura/Mailman/issues/275.
+    """
+    slug = repository_slug(repository)
+    if shutil.which("gh") is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                "gh",
+                "api",
+                "--paginate",
+                f"repos/{slug}/pulls/{number}/commits?per_page=100",
+                "--jq",
+                ".[].sha",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=clamp_timeout_seconds(60),
+            check=False,
+            shell=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+
+
 def pull_request_state(repository: str, number: int) -> dict[str, Any]:
     """What GitHub says became of the pull request, or why it could not say."""
     slug = repository_slug(repository)
@@ -360,12 +396,15 @@ def record_provenance(
     superseded_by: int | None = None,
     state_lookup: Any = pull_request_state,
     head_lookup: Any = head_branch_tip,
+    commits_lookup: Any = pull_request_commits,
 ) -> dict[str, Any]:
     """Write the patch and everything known about where the work ended up."""
     slug = repository_slug(repository)
     directory = submission_directory(run_directory)
     directory.mkdir(parents=True, exist_ok=True)
     existing = load_provenance(run_directory) or {}
+    number = pull_request or existing.get("pull_request")
+    maintainer_commits: list[str] = list(existing.get("maintainer_commits") or [])
 
     clone = workspace if workspace is not None else run_directory / "workspace"
     commits: list[str] = list(existing.get("commits") or [])
@@ -385,19 +424,31 @@ def record_provenance(
         # recording it: the permalinks would name commits the branch no longer
         # has. See https://github.com/wolfgang-aura/Mailman/issues/84.
         tip = head_lookup(slug, branch)
-        if tip is None:
-            raise ProvenanceError(
-                f"could not read the tip of {branch} on github.com, so the "
-                "commits in this workspace cannot be shown to be what was "
-                "filed. Check the fork exists and the branch name is right."
-            )
-        if tip != commits[-1]:
-            raise ProvenanceError(
-                f"{branch} points at {tip}, but this workspace ends at "
-                f"{commits[-1]}. The branch was force-pushed, or the workspace "
-                "moved on. Reset the workspace to the pushed head and re-run, "
-                "so the permalinks name commits the branch actually has."
-            )
+        if tip == commits[-1]:
+            maintainer_commits = []
+        else:
+            # A maintainer pushing on top of our branch, or the fork being
+            # deleted after the merge, leaves the branch unreadable or ahead.
+            # The pull request's own commit list still names what was filed.
+            # See https://github.com/wolfgang-aura/Mailman/issues/275.
+            listed = commits_lookup(slug, int(number)) if number else None
+            if listed and listed[: len(commits)] == commits:
+                maintainer_commits = listed[len(commits) :]
+            elif tip is None and not listed:
+                raise ProvenanceError(
+                    f"could not read the tip of {branch} on github.com, so the "
+                    "commits in this workspace cannot be shown to be what was "
+                    "filed. Check the fork exists and the branch name is right."
+                )
+            else:
+                raise ProvenanceError(
+                    f"{branch} points at {tip}, but this workspace ends at "
+                    f"{commits[-1]} and the pull request does not start with "
+                    "this workspace's commits. The branch was force-pushed, or "
+                    "the workspace moved on. Reset the workspace to the pushed "
+                    "head and re-run, so the permalinks name commits the branch "
+                    "actually has."
+                )
 
     # Only after the tip check: a refused call must leave the recorded patch
     # alone, or the next reader gets the workspace's diff, not what was filed.
@@ -412,8 +463,9 @@ def record_provenance(
         "head": head or existing.get("head"),
         "commits": commits,
         "permalinks": [f"https://github.com/{slug}/commit/{sha}" for sha in commits],
+        "maintainer_commits": maintainer_commits,
         "patch_path": patch_path,
-        "pull_request": pull_request or existing.get("pull_request"),
+        "pull_request": number,
         "state": existing.get("state"),
         "merge_commit": existing.get("merge_commit"),
         "superseded_by": superseded_by or existing.get("superseded_by"),

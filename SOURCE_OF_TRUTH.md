@@ -367,7 +367,9 @@ opening the local packet URL during this session; visual state is unverified.
     tip is the maintainer's commit, not the last commit in our workspace. `contributions
     --refresh` still reads both as `MERGED` with merge commits.
     The refusal overwrote each run's `submission/contribution.patch` before refusing; fixed in
-    `4fcaea1` (#274). Refusing a maintainer fast-forward at all is #275, open.
+    `4fcaea1` (#274). Since #275, provenance checks our commits against the pull request's own
+    commit list when the fork tip differs or the fork is gone, and records commits a maintainer
+    pushed on top as `maintainer_commits`. Both runs re-recorded `MERGED` on 2026-09-30.
   - xarray#11637: `test-py311-min-versions` fails on `02958fa`. Our new
     `test_append_native_time_dtype_encoding` raises `KeyError: '<M8[ms]'` / `'<m8[s]'` for
     `zarr_format=3` under zarr-python 3.0, which cannot store native time dtypes in format 3
