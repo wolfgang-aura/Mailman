@@ -663,6 +663,9 @@ def load_touched_tests(run_directory: Path) -> dict[str, Any] | None:
 _FAILING_NODE = re.compile(r"^(?:FAILED|ERROR) (\S+?)(?: - .*)?$", re.MULTILINE)
 BASELINE_NODE_LIMIT = 50
 TOUCHED_BASELINE_DIRECTORY = "touched-base"
+#: Two tokens either way, so the slice after them stays the same length.
+NO_CACHE = ("-p", "no:cacheprovider")
+_UNKNOWN_CACHE_DIR = "Unknown config option: cache_dir"
 
 
 def failing_nodes(output: str) -> list[str]:
@@ -681,6 +684,7 @@ def _baseline_failures(
     files: list[str] | None = None,
     extra: list[str] | None = None,
     directory: str = ".",
+    cache: tuple[str, str] = NO_CACHE,
 ) -> dict[str, Any]:
     """Run the failing nodes on the base commit and say which fail there too.
 
@@ -716,7 +720,7 @@ def _baseline_failures(
             record["detail"] = f"the base worktree could not be made: {baseline.detail}"
             return record
         ran = execute(
-            _pytest_targets(python, nodes, files, extra),
+            _pytest_targets(python, nodes, files, extra, cache),
             working_directory=baseline.path / directory,
             timeout_seconds=timeout_seconds,
         )
@@ -731,7 +735,7 @@ def _baseline_failures(
         baseline.close()
     if record["new"]:
         again = execute(
-            _pytest_targets(python, record["new"], files, extra),
+            _pytest_targets(python, record["new"], files, extra, cache),
             working_directory=workspace / directory,
             timeout_seconds=timeout_seconds,
         )
@@ -743,15 +747,25 @@ def _baseline_failures(
     return record
 
 
+def _scratch_cache(run_directory: Path) -> tuple[str, str]:
+    """The cache plugin kept on, writing under the run's scratch directory.
+
+    A project that sets `cache_dir` under --strict-config exits 4 once the
+    plugin that registers the option is disabled: beets' setup.cfg. Mailman #297.
+    """
+    return ("-o", f"cache_dir={run_directory / 'scratch' / 'pytest-cache'}")
+
+
 def _pytest_targets(
-    python: str, nodes: list[str], files: list[str] | None, extra: list[str] | None
+    python: str,
+    nodes: list[str],
+    files: list[str] | None,
+    extra: list[str] | None,
+    cache: tuple[str, str] = NO_CACHE,
 ) -> list[str]:
     if len(nodes) <= BASELINE_NODE_LIMIT or not files:
-        return [python, "-m", "pytest", *nodes, "-q", "-p", "no:cacheprovider", "-rfE"]
-    return [
-        python, "-m", "pytest", *files, "-q", "-p", "no:cacheprovider", *(extra or []),
-        "-rfE",
-    ]
+        return [python, "-m", "pytest", *nodes, "-q", *cache, "-rfE"]
+    return [python, "-m", "pytest", *files, "-q", *cache, *(extra or []), "-rfE"]
 
 
 def _listed(nodes: list[str], limit: int = 10) -> str:
@@ -848,10 +862,12 @@ def run_touched_tests(
         record["deselected"] = kept
         return [argument for node in kept for argument in ("--deselect", node)]
 
+    cache = NO_CACHE
+
     def command_for(paths: list[str]) -> list[str]:
         if runner == "pytest":
             return [
-                python, "-m", "pytest", *paths, "-q", "-p", "no:cacheprovider",
+                python, "-m", "pytest", *paths, "-q", *cache,
                 *marker, *deselect_for(paths),
             ]
         return [python, "-m", "unittest", *paths]
@@ -867,6 +883,11 @@ def run_touched_tests(
         )
         if runner != "pytest" or result.timed_out or result.exit_code not in (2, 4):
             break
+        output = result.stdout + "\n" + result.stderr
+        if cache == NO_CACHE and result.exit_code == 4 and _UNKNOWN_CACHE_DIR in output:
+            cache = _scratch_cache(run_directory)
+            record["cache_option"] = list(cache)
+            continue
         # A test file whose import needs an optional extra the environment
         # lacks, or a DLL this host blocks, is left out with its reason, and
         # the rest run again (#127, #214).
@@ -939,9 +960,11 @@ def run_touched_tests(
             nodes=nodes,
             timeout_seconds=timeout_seconds,
             files=files,
-            # The marker filter and deselects: what follows `-q -p no:cacheprovider`.
+            # The marker filter and deselects: what follows `-q` and the
+            # two cache tokens.
             extra=command[3 + len(files) + 3:],
             directory=record["working_directory"],
+            cache=cache,
         )
     return _write(run_directory, record)
 

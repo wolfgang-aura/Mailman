@@ -623,6 +623,37 @@ class CollectionErrorTests(_RunFixture):
         self.assertIn("pyarrow", detail)
 
 
+class CacheOptionTests(_RunFixture):
+    """#297: a project that sets `cache_dir` refuses `-p no:cacheprovider`."""
+
+    def test_an_unknown_cache_dir_option_reruns_with_a_scratch_cache(self) -> None:
+        # beets' setup.cfg sets `cache_dir = /tmp/pytest_cache` under
+        # --strict-config; without the cache plugin the option is unknown.
+        executor = SequenceExecutor(
+            [
+                (4, "ERROR: Unknown config option: cache_dir\n"),
+                (0, "3 passed in 0.7s\n"),
+            ]
+        )
+        record = self._run(executor)
+        runs = [call["command"] for call in executor.calls if "pytest" in call["command"]]
+        self.assertEqual(len(runs), 2)
+        self.assertIn("no:cacheprovider", runs[0])
+        self.assertNotIn("no:cacheprovider", runs[1])
+        option = runs[1][runs[1].index("-o") + 1]
+        self.assertTrue(option.startswith("cache_dir="))
+        self.assertIn(str(self.run_directory), option)
+        self.assertEqual(record["exit_code"], 0)
+        self.assertIsNone(touched_tests_verdict(record)[0])
+
+    def test_another_usage_error_is_not_retried(self) -> None:
+        executor = SequenceExecutor([(4, "ERROR: file or directory not found: x\n")])
+        record = self._run(executor)
+        runs = [call["command"] for call in executor.calls if "pytest" in call["command"]]
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(record["exit_code"], 4)
+
+
 class TestDirectoryTests(_RunFixture):
     """#215: suites that load data relative to their own directory run from it."""
 
