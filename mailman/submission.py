@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from mailman.reproduction import (
     not_reproductions,
 )
 from mailman.toolchain import resolve_tool
+from mailman.workspace import WORKSPACE_DIRECTORY
 from mailman.touched_tests import (
     BASELINE_NODE_LIMIT,
     TOUCHED_TESTS_CAP,
@@ -853,15 +855,17 @@ def _accountability_markdown(run: RunRecord, *, policy: TargetPolicy) -> str:
 def _superseded_merges(run_directory: Path) -> frozenset[int]:
     """Merged pull requests already in the tree the run started from."""
     prior_art = run_directory / "prior-art.json"
-    if not prior_art.is_file():
-        return frozenset()
-    try:
-        payload = json.loads(prior_art.read_text(encoding="utf-8", errors="replace"))
-    except json.JSONDecodeError:
-        return frozenset()
+    payload: Any = None
+    if prior_art.is_file():
+        try:
+            payload = json.loads(
+                prior_art.read_text(encoding="utf-8", errors="replace")
+            )
+        except json.JSONDecodeError:
+            payload = None
     attempts = payload.get("attempts") if isinstance(payload, dict) else None
     if not isinstance(attempts, list):
-        return frozenset()
+        attempts = []
     reproduction_path = run_directory / REPRODUCTION_FILENAME
     try:
         reproduction = json.loads(
@@ -871,14 +875,57 @@ def _superseded_merges(run_directory: Path) -> frozenset[int]:
         return frozenset()
     if not isinstance(reproduction, dict):
         return frozenset()
-    return frozenset(
+    superseded = {
         attempt["number"]
         for attempt in attempts
         if isinstance(attempt, dict)
         and isinstance(attempt.get("number"), int)
         and attempt.get("outcome") == "merged"
         and merge_is_in_base(run_directory, attempt, reproduction)
-    )
+    }
+    # A merged row only the duplicate search found carries no merge commit.
+    # Its squash commit, subject ending "(#N)", is the one to test. cloud-init
+    # pr#744 blocked a finished run this way. Mailman #289.
+    search = load_duplicate_search(run_directory) or {}
+    for row in search.get("matches") or []:
+        number = row.get("number") if isinstance(row, dict) else None
+        if (
+            not isinstance(number, int)
+            or number in superseded
+            or str(row.get("state") or "").lower() != "merged"
+        ):
+            continue
+        commit = _squash_commit(run_directory, number)
+        if commit and merge_is_in_base(
+            run_directory, {"merge_commit": commit}, reproduction
+        ):
+            superseded.add(number)
+    return frozenset(superseded)
+
+
+def _squash_commit(run_directory: Path, number: int) -> str | None:
+    """The base-history commit whose subject ends with `(#number)`, if any."""
+    workspace = run_directory / WORKSPACE_DIRECTORY
+    if not (workspace / ".git").exists():
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                "git", "-C", str(workspace), "log", "--format=%H %s",
+                "--fixed-strings", f"--grep=(#{number})", "HEAD",
+            ],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=60, check=False, shell=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    for line in completed.stdout.splitlines():
+        sha, _, subject = line.partition(" ")
+        if subject.rstrip().endswith(f"(#{number})"):
+            return sha
+    return None
 
 
 def prepare_submission(

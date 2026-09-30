@@ -935,7 +935,9 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertIn("already-fixed-upstream", record["blocking_codes"])
         self.assertNotIn("possible-duplicate", record["blocking_codes"])
 
-    def _merged_match_already_in_base(self, *, reproduced: bool) -> None:
+    def _merged_match_already_in_base(
+        self, *, reproduced: bool, prior_art: bool = True
+    ) -> None:
         """Record a merged match whose merge commit precedes the base commit."""
         (self.run_directory / "duplicate-search.json").write_text(
             json.dumps(
@@ -966,7 +968,7 @@ class PrepareSubmissionTests(unittest.TestCase):
         git("config", "user.name", "Test")
         (workspace / "core.py").write_text("first\n", encoding="utf-8")
         git("add", "core.py")
-        git("commit", "--quiet", "-m", "the merged fix")
+        git("commit", "--quiet", "-m", "the merged fix (#1)")
         merged = git("rev-parse", "HEAD")
         (workspace / "core.py").write_text("second\n", encoding="utf-8")
         git("add", "core.py")
@@ -986,6 +988,8 @@ class PrepareSubmissionTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        if not prior_art:
+            return
         (self.run_directory / "prior-art.json").write_text(
             json.dumps(
                 {
@@ -1015,6 +1019,28 @@ class PrepareSubmissionTests(unittest.TestCase):
             "merged-fix-already-in-base",
             [finding["code"] for finding in record["findings"]],
         )
+
+    def test_a_squash_merge_found_only_by_the_search_and_in_base_does_not_block(
+        self,
+    ) -> None:
+        # cloud-init pr#744, a 2021 docs change, matched the search terms and
+        # blocked a finished run: prior art never listed it, so it had no merge
+        # commit to test. Its squash subject "(#744)" is in the base history.
+        # Mailman #289.
+        self._merged_match_already_in_base(reproduced=True, prior_art=False)
+        record = self._prepare()
+        self.assertNotIn("already-fixed-upstream", record["blocking_codes"])
+        self.assertIn(
+            "merged-fix-already-in-base",
+            [finding["code"] for finding in record["findings"]],
+        )
+
+    def test_a_squash_merge_in_base_still_blocks_without_a_reproduction(
+        self,
+    ) -> None:
+        self._merged_match_already_in_base(reproduced=False, prior_art=False)
+        record = self._prepare()
+        self.assertIn("already-fixed-upstream", record["blocking_codes"])
 
     def test_a_merged_match_in_base_still_blocks_without_a_reproduction(self) -> None:
         self._merged_match_already_in_base(reproduced=False)
