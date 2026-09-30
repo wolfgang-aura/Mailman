@@ -378,10 +378,6 @@ def record_provenance(
             ).splitlines()
             if line.strip()
         ]
-        if commits:
-            patch_path = str(
-                write_patch(clone, base_commit, directory / PATCH_FILENAME)
-            )
 
     branch = head or existing.get("head")
     if branch and commits:
@@ -402,6 +398,11 @@ def record_provenance(
                 "moved on. Reset the workspace to the pushed head and re-run, "
                 "so the permalinks name commits the branch actually has."
             )
+
+    # Only after the tip check: a refused call must leave the recorded patch
+    # alone, or the next reader gets the workspace's diff, not what was filed.
+    if clone.is_dir() and commits:
+        patch_path = str(write_patch(clone, base_commit, directory / PATCH_FILENAME))
 
     record: dict[str, Any] = {
         "schema_version": PROVENANCE_SCHEMA_VERSION,

@@ -185,6 +185,30 @@ class HeadTipTests(unittest.TestCase):
                 )
             self.assertIsNone(load_provenance(root))
 
+    def test_a_refusal_leaves_the_recorded_patch_untouched(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            workspace, base = _repository(root)
+            patch = root / "submission" / "contribution.patch"
+            patch.parent.mkdir(parents=True)
+            patch.write_text("the patch that was filed\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ProvenanceError, "force-pushed"):
+                record_provenance(
+                    run_id="20260909T000000Z-eeeeee",
+                    run_directory=root,
+                    repository="nilearn/nilearn",
+                    base_commit=base,
+                    workspace=workspace,
+                    head="wolfgang-aura:mailman/issue-1",
+                    state_lookup=_merged,
+                    head_lookup=lambda repository, head: "f" * 40,
+                )
+
+            self.assertEqual(
+                patch.read_text(encoding="utf-8"), "the patch that was filed\n"
+            )
+
     def test_an_unreadable_branch_is_refused_not_assumed_to_agree(self) -> None:
         with TemporaryDirectory() as name:
             root = Path(name)
