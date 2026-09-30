@@ -47,9 +47,36 @@ _STOPWORDS = frozenset(
 )
 
 
+#: A heading or bold label that names a version: "### Pylint version",
+#: "**Version**". An issue form puts the answer on the lines below it.
+_VERSION_HEADING = re.compile(r"(?i)^\s*(?:#{1,6}\s+.*\bversions?\b.*|\*\*[^*]*\bversions?\b[^*]*\*\*:?)\s*$")
+_BARE_VERSION = re.compile(r"(?<![\w.])v?(\d+\.\d+(?:\.\d+)?(?:[-.]?(?:post|rc|a|b)\d*)?)\b")
+#: Lines read under a version heading before the answer is taken to be absent.
+_HEADING_LINES = 6
+
+
+def _heading_versions(body: str) -> list[str]:
+    """Numbers under an issue form's version heading, up to the next heading."""
+    found: list[str] = []
+    lines = body.splitlines()
+    for index, line in enumerate(lines):
+        if not _VERSION_HEADING.match(line):
+            continue
+        for below in lines[index + 1 : index + 1 + _HEADING_LINES]:
+            if below.lstrip().startswith("#"):
+                break
+            found.extend(_BARE_VERSION.findall(below))
+    return found
+
+
 def reported_versions(markdown: str) -> list[str]:
-    """Version numbers the issue body names, in the order it names them."""
-    return list(dict.fromkeys(_VERSION.findall(_issue_body(markdown))))
+    """Version numbers the issue body names, in the order it names them.
+
+    Numbers under a version heading come first: an issue form's answer is the
+    release the reporter ran. https://github.com/wolfgang-aura/Mailman/issues/261
+    """
+    body = _issue_body(markdown)
+    return list(dict.fromkeys([*_heading_versions(body), *_VERSION.findall(body)]))
 
 
 def _title(markdown: str) -> str:

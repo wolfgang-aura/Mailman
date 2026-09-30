@@ -48,6 +48,17 @@ class VersionGapTests(unittest.TestCase):
     def test_reported_versions_reads_version_lines(self):
         self.assertEqual(reported_versions(ISSUE), ["3.14.7", "1.0.0"])
 
+    def test_reported_versions_reads_an_issue_form_version_heading(self):
+        # pylint-dev/pylint#10761: a GitHub issue form puts the answer under
+        # its own heading. https://github.com/wolfgang-aura/Mailman/issues/261
+        issue = (
+            "# pylint-dev/pylint#10761: false positive\n\n## Issue body\n\n"
+            "### Bug description\n\nSee 2.1 of the spec.\n\n"
+            "### Pylint version\n\n```shell\npylint 4.0.3\nastroid 4.0.2\n```\n\n"
+            "### OS / Environment\n\nWindows 11\n\n## Capture boundary\n"
+        )
+        self.assertEqual(reported_versions(issue)[:2], ["4.0.3", "4.0.2"])
+
     def test_matching_tag_accepts_common_tag_shapes(self):
         self.assertEqual(matching_tag("2.13.1", ["v2.13.0", "v2.13.1"]), "v2.13.1")
         self.assertEqual(matching_tag("2.13.1", ["beets-2.13.1"]), "beets-2.13.1")
