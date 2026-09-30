@@ -688,30 +688,49 @@ def _passing_screens(root: Path, held_repositories: set[str] | None,
 #: reads screens up to this old; the prescreen re-reads the issue itself.
 SWEEP_SCREEN_MAX_AGE_DAYS = 30
 SWEEP_SINCE_DAYS = 60
-#: Repositories per search query; GitHub caps a query at 256 characters.
-SWEEP_REPOSITORIES_PER_QUERY = 8
-#: Seconds between search calls, under GitHub's burst limit for search.
-SWEEP_PAUSE_SECONDS = 3.0
-#: Every bug label the passing screens' rows carried on 2026-09-30, OR'd;
-#: search matches labels exactly but ignores case, so `bug` covers `BUG`.
-_SWEEP_LABELS = ('bug', '"kind/bug"', '"kind: bug"', '"type: bug"', '"T: bug"',
-                 '"Issue Type: Bug Report"', "regression")
-_SWEEP_FILTERS = (f"is:issue is:open label:{','.join(_SWEEP_LABELS)} "
-                  "-linked:pr no:assignee")
+#: Seconds between repository reads. The sweep reads the core issues endpoint,
+#: one call per repository: search tripped GitHub's secondary limit after two
+#: calls four seconds apart, and `label:"Needs PR"` returned nothing for
+#: pylint while pylint#11440 carried that label. Mailman #259.
+SWEEP_PAUSE_SECONDS = 0.5
+#: A label that says the report is a defect: "bug", "kind/bug",
+#: "Issue Type: Bug Report", "False Positive 🦟", "Crash 💥".
+_DEFECT_LABEL = re.compile(r"(?i)\bbug\b|regression|false (?:positive|negative)|crash")
+#: A label a maintainer puts on a report they want fixed: pylint's "Needs PR".
+_INVITATION_LABEL = re.compile(
+    r"(?i)\bconfirmed\b|needs[ -]pr\b|help[ -]wanted|good first issue|\baccepted\b")
+#: A label that says nobody has decided the report is a defect to fix.
+_UNDECIDED_LABEL = re.compile(
+    r"(?i)needs[ -](?:decision|discussion|specification|triage|info|more info|reproduction|repro)"
+    r"|needs[ -]product|cannot[ -]reproduce|can't reproduce|\bquestion\b|duplicate"
+    r"|wontfix|won't fix|invalid|\bstale\b|awaiting"
+    # PyMuPDF's "fix developed" and "Fixed in next release": already fixed.
+    r"|fix(?:ed)? (?:developed|in|merged)")
+#: An invitation on a feature request is not a bug to fix.
+_REQUEST_LABEL = re.compile(r"(?i)enhancement|feature|documentation|\bdocs?\b|proposal")
+
+
+def sweep_labels_admit(labels: list[str]) -> bool:
+    """A defect label, or a maintainer's invitation on something not a request."""
+    if any(_UNDECIDED_LABEL.search(label) for label in labels):
+        return False
+    if any(_DEFECT_LABEL.search(label) for label in labels):
+        return True
+    return (any(_INVITATION_LABEL.search(label) for label in labels)
+            and not any(_REQUEST_LABEL.search(label) for label in labels))
 
 
 def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = None,
                        since_days: int = SWEEP_SINCE_DAYS,
-                       per_query: int = SWEEP_REPOSITORIES_PER_QUERY,
                        pause_seconds: float = SWEEP_PAUSE_SECONDS,
                        now: datetime | None = None) -> dict:
     """Open bug issues opened lately in passing repositories, not yet screened.
 
-    Rows with comments come first, newest first within each group. A query
-    GitHub refused is listed under `failed`; the rows from the others stand.
+    One core `issues` read per repository; labels are judged here by
+    `sweep_labels_admit`. Rows with comments come first, newest first within
+    each group. A repository GitHub refused is listed under `failed`; the rows
+    from the others stand.
     """
-    from urllib.parse import quote
-
     from mailman.prescreen import prescreen_path
 
     moment = now or datetime.now(UTC)
@@ -721,21 +740,27 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
     claimed = {claim["target"] for claim in target_claims(root) if claim["live"]}
     rows: dict[str, dict] = {}
     failed: list[str] = []
-    groups = [slugs[start:start + per_query] for start in range(0, len(slugs), per_query)]
-    for index, group in enumerate(groups):
+    for index, slug in enumerate(slugs):
         if index:
             gh.sleep(pause_seconds)
-        repositories = " ".join(f"repo:{slug}" for slug in group)
-        query = f"{_SWEEP_FILTERS} created:>{since} {repositories}"
-        result = gh.json(f"search/issues?q={quote(query)}&per_page=100")
-        items = result.get("items") if isinstance(result, dict) else None
+        items = gh.json(f"repos/{slug}/issues?state=open&since={since}T00:00:00Z"
+                        "&sort=created&direction=desc&per_page=100")
         if not isinstance(items, list):
-            failed.append(repositories)
+            failed.append(slug)
             continue
         for item in items:
             if not isinstance(item, dict) or not isinstance(item.get("number"), int):
                 continue
-            slug = str(item.get("repository_url") or "").split("/repos/", 1)[-1]
+            # The issues endpoint lists pull requests too, and `since` reads
+            # the last update, so an old issue with a new comment comes back.
+            if item.get("pull_request") is not None or item.get("assignee") or item.get("assignees"):
+                continue
+            if str(item.get("created_at") or "")[:10] <= since:
+                continue
+            labels = [str((label or {}).get("name") or "") for label in item.get("labels") or []
+                      if isinstance(label, dict)]
+            if not sweep_labels_admit(labels):
+                continue
             target = f"{slug}#{item['number']}"
             if target in claimed or prescreen_path(root, slug, item["number"]).is_file():
                 continue
@@ -743,6 +768,7 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
                 "target": target,
                 "title": item.get("title"),
                 "comments": item.get("comments") or 0,
+                "labels": labels,
                 "created_at": item.get("created_at"),
                 "author_association": item.get("author_association"),
                 "url": item.get("html_url"),
@@ -786,7 +812,7 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
         kept.append(row)
     ordered = sorted(kept, key=lambda row: str(row["created_at"] or ""), reverse=True)
     ordered.sort(key=lambda row: (row["engaged"] is not True, row["comments"] == 0))
-    return {"queries": len(groups), "repositories": len(slugs), "since": since,
+    return {"queries": len(slugs), "repositories": len(slugs), "since": since,
             "failed": failed, "claimed": claimed_rows, "rows": ordered}
 
 

@@ -55,10 +55,12 @@ the command the warning prints.
 
 A shortlist is frozen when its screen is written, so issues opened since then
 never reach `hunt targets`. When it runs dry, run `mailman hunt sweep HUNT_ID
-[--since-days 60]` before screening new repositories: one paced search per
-eight passing screens, returning open, unassigned, bug-labelled issues with no
-linked pull request that nobody has prescreened, commented ones first. It exits
-non-zero when GitHub refused a query. Pre-screen its rows as usual (#226).
+[--since-days 60]` before screening new repositories: one paced core read per
+passing screen, returning open, unassigned issues with a defect label or a
+maintainer's invitation (`Needs PR`, `help wanted`, `confirmed`), no undecided
+or already-fixed label, and no cross-referenced pull request, that nobody has
+prescreened, engaged ones first. It exits non-zero when GitHub refused a read.
+Pre-screen its rows as usual (#226, #259).
 
 A failed screen is not re-read on its own. When the gate's rules change, the
 `hunt targets` warning names the screens that failed only on responsiveness

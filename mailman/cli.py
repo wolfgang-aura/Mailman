@@ -1072,9 +1072,10 @@ def _hunt(arguments: argparse.Namespace) -> int:
         return 0
     if arguments.action == "sweep":
         # Issues opened after a repository's screen never reach its frozen
-        # shortlist; one paced search per group of passing screens finds
-        # them. Non-zero when GitHub refused a query.
+        # shortlist; one paced core read per passing screen finds them.
+        # Non-zero when GitHub refused a read.
         # https://github.com/wolfgang-aura/Mailman/issues/226
+        # https://github.com/wolfgang-aura/Mailman/issues/259
         from mailman.target_intel import _Gh
         from mailman.toolchain import resolve_tool
 

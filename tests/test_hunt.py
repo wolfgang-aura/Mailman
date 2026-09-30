@@ -1231,7 +1231,7 @@ class PrescreenRecordTests(OrchestratorHarness):
 
 
 class _SearchGh:
-    """Answers `search/issues` with canned items, one list per query."""
+    """Answers `repos/R/issues` with canned items, one list per repository."""
 
     def __init__(self, answers, timelines=None):
         self.answers = list(answers)
@@ -1247,22 +1247,23 @@ class _SearchGh:
         if "/timeline" in path:
             return self.timelines.get(path.split("?")[0], [])
         self.paths.append(path)
-        answer = self.answers.pop(0) if self.answers else {"items": []}
+        answer = self.answers.pop(0) if self.answers else []
         if answer is None:
             self.failures.append(path)
         return answer
 
 
-def _item(slug, number, *, comments=0, created="2026-09-20T00:00:00Z"):
+def _item(slug, number, *, comments=0, created="2026-09-20T00:00:00Z", labels=("bug",)):
     return {"repository_url": f"https://api.github.com/repos/{slug}",
             "number": number, "title": f"bug {number}", "comments": comments,
+            "labels": [{"name": name} for name in labels],
             "created_at": created, "author_association": "NONE",
             "user": {"login": "reporter"},
             "html_url": f"https://github.com/{slug}/issues/{number}"}
 
 
 class SweepTests(OrchestratorHarness):
-    """Fresh issues in passing repositories, read with the search API.
+    """Fresh issues in passing repositories, read with the core issues endpoint.
 
     Hunt 20260929T150205Z-08d690 had 83 passing screens and four workable
     rows, because a shortlist is frozen when its screen is written. Mailman #226.
@@ -1271,8 +1272,7 @@ class SweepTests(OrchestratorHarness):
     new_hunt = HuntTests.new_hunt
     _screen = PrescreenRecordTests._screen
 
-    def test_one_paced_query_per_group_of_passing_repositories(self):
-        from urllib.parse import unquote
+    def test_one_paced_core_read_per_passing_repository(self):
         from mailman.hunt import sweep_fresh_issues
         for slug in ("acme/a", "acme/b", "acme/c"):
             self._screen(slug, [])
@@ -1280,30 +1280,47 @@ class SweepTests(OrchestratorHarness):
         self._screen("acme/old", [], days_old=40)
         self._screen("acme/failed", [], verdict="fail")
         self._screen("acme/held", [])
-        gh = _SearchGh([{"items": []}, {"items": []}])
+        gh = _SearchGh([])
 
         result = sweep_fresh_issues(
-            self.data_root, gh, held_repositories={"acme/held"}, per_query=2,
+            self.data_root, gh, held_repositories={"acme/held"},
             since_days=60, now=datetime(2026, 9, 30, tzinfo=UTC))
 
-        queries = [unquote(path) for path in gh.paths]
-        self.assertEqual(len(queries), 2)
-        named = " ".join(queries)
-        for slug in ("acme/a", "acme/b", "acme/c", "acme/month"):
-            self.assertIn(f"repo:{slug}", named)
-        for slug in ("acme/old", "acme/failed", "acme/held"):
-            self.assertNotIn(f"repo:{slug} ", named + " ")
-        for part in ("is:issue", "is:open", "-linked:pr",
-                     "no:assignee", "created:>2026-08-01"):
-            self.assertIn(part, queries[0])
-        # The labels the passing screens actually use, OR'd: celery's
-        # "Issue Type: Bug Report" and kind/bug were invisible to label:bug.
-        self.assertIn("label:bug,", queries[0])
-        for label in ('"kind/bug"', '"Issue Type: Bug Report"', "regression"):
-            self.assertIn(label, queries[0])
-        self.assertEqual(len(gh.sleeps), 1)
-        self.assertEqual(result["queries"], 2)
+        read = sorted(path.split("/issues?")[0] for path in gh.paths)
+        self.assertEqual(read, ["repos/acme/a", "repos/acme/b", "repos/acme/c",
+                                "repos/acme/month"])
+        for part in ("state=open", "since=2026-08-01T00:00:00Z", "per_page=100"):
+            self.assertIn(part, gh.paths[0])
+        self.assertEqual(len(gh.sleeps), 3)
+        self.assertEqual(result["queries"], 4)
         self.assertEqual(result["repositories"], 4)
+
+    def test_labels_pull_requests_assignees_and_old_issues_are_judged_locally(self):
+        # pylint's "Needs PR" was invisible to the search API, and search
+        # refused its third call. Mailman #259.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        pull = {**_item("acme/a", 5), "pull_request": {"url": "x"}}
+        taken = {**_item("acme/a", 6), "assignee": {"login": "someone"}}
+        gh = _SearchGh([[
+            _item("acme/a", 1, labels=("False Positive 🦟", "Needs PR")),
+            _item("acme/a", 2, labels=("Needs PR",)),
+            _item("acme/a", 3, labels=("Enhancement ✨", "Needs PR")),
+            _item("acme/a", 4, labels=("bug", "Needs decision :lock:")),
+            pull, taken,
+            _item("acme/a", 7, created="2026-07-01T00:00:00Z"),
+            _item("acme/a", 8, labels=()),
+            _item("acme/a", 9, labels=("Issue Type: Bug Report",)),
+            _item("acme/a", 10, labels=("type:bug", "status:cannot-reproduce")),
+            _item("acme/a", 11, labels=("upstream bug", "fix developed")),
+            _item("acme/a", 12, labels=("bug", "status:needs-product-approval")),
+        ]])
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(sorted(row["target"] for row in result["rows"]),
+                         ["acme/a#1", "acme/a#2", "acme/a#9"])
 
     def test_rows_skip_prescreened_and_rank_commented_issues_first(self):
         from mailman.hunt import sweep_fresh_issues
@@ -1312,11 +1329,11 @@ class SweepTests(OrchestratorHarness):
         done = prescreen_path(self.data_root, "acme/a", 2)
         done.parent.mkdir(parents=True, exist_ok=True)
         done.write_text("{}", encoding="utf-8")
-        gh = _SearchGh([{"items": [
+        gh = _SearchGh([[
             _item("acme/a", 1, created="2026-09-28T00:00:00Z"),
             _item("acme/a", 2, comments=4),
             _item("acme/a", 3, comments=2, created="2026-09-10T00:00:00Z"),
-        ]}])
+        ]])
 
         result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
                                     now=datetime(2026, 9, 30, tzinfo=UTC))
@@ -1331,13 +1348,15 @@ class SweepTests(OrchestratorHarness):
         from mailman.hunt import sweep_fresh_issues
         self._screen("acme/a", [])
         self._screen("acme/b", [])
-        gh = _SearchGh([None, {"items": [_item("acme/b", 5)]}])
+        gh = _SearchGh([None, [_item("acme/b", 5)]])
 
         result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
-                                    per_query=1, now=datetime(2026, 9, 30, tzinfo=UTC))
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
 
         self.assertEqual(len(result["failed"]), 1)
-        self.assertEqual([row["target"] for row in result["rows"]], ["acme/b#5"])
+        [row] = result["rows"]
+        self.assertTrue(row["target"].endswith("#5"))
+        self.assertNotEqual(row["target"].split("#")[0], result["failed"][0])
 
     def test_hunt_sweep_exits_non_zero_when_a_query_failed(self):
         record = self.new_hunt()
@@ -1361,7 +1380,7 @@ class SweepTests(OrchestratorHarness):
         closed = {"event": "cross-referenced", "source": {"issue": {
             "number": 13, "state": "closed", "pull_request": {"merged_at": None}}}}
         gh = _SearchGh(
-            [{"items": [_item("acme/a", 1), _item("acme/a", 2)]}],
+            [[_item("acme/a", 1), _item("acme/a", 2)]],
             timelines={"repos/acme/a/issues/1/timeline": [rival],
                        "repos/acme/a/issues/2/timeline": [closed]})
 
@@ -1381,8 +1400,8 @@ class SweepTests(OrchestratorHarness):
         replied = {"event": "commented", "author_association": "MEMBER",
                    "actor": {"login": "maintainer"}}
         gh = _SearchGh(
-            [{"items": [_item("acme/a", 1, comments=5), _item("acme/a", 2),
-                        _item("acme/a", 3, comments=1)]}],
+            [[_item("acme/a", 1, comments=5), _item("acme/a", 2),
+                        _item("acme/a", 3, comments=1)]],
             timelines={"repos/acme/a/issues/1/timeline": [self_labelled],
                        "repos/acme/a/issues/2/timeline": [labelled],
                        "repos/acme/a/issues/3/timeline": [replied]})
@@ -1402,7 +1421,7 @@ class SweepTests(OrchestratorHarness):
         self._screen("acme/a", [])
         bot = {"event": "labeled", "label": {"name": "triage/confirmed"},
                "actor": {"login": "github-actions[bot]", "type": "Bot"}}
-        gh = _SearchGh([{"items": [_item("acme/a", 1)]}],
+        gh = _SearchGh([[_item("acme/a", 1)]],
                        timelines={"repos/acme/a/issues/1/timeline": [bot]})
 
         result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
