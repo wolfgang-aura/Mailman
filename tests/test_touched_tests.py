@@ -86,6 +86,14 @@ class ModuleNameTests(unittest.TestCase):
     def test_a_package_init_names_the_package(self) -> None:
         self.assertEqual(module_names("edgar/xbrl/__init__.py"), ["edgar.xbrl", "xbrl"])
 
+    def test_a_stem_that_names_a_stdlib_module_is_dropped(self) -> None:
+        # prefect's plugins/collections.py matched every `import collections`
+        # in the suite; 21 files ran and timed out. Mailman #248.
+        self.assertEqual(
+            module_names("src/prefect/_internal/plugins/collections.py"),
+            ["prefect._internal.plugins.collections", "prefect._internal.plugins"],
+        )
+
     def test_a_non_python_file_has_no_module(self) -> None:
         self.assertEqual(module_names("docs/notes.md"), [])
 

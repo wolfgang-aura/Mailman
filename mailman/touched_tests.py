@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -100,7 +101,9 @@ def module_names(path: str) -> list[str]:
     if len(segments) > 2:
         names.append(".".join(segments[:-1]))
     stem = segments[-1]
-    if stem not in names:
+    # A stem that names a stdlib module matches every test importing that
+    # module: `collections.py` pulled in 19 unrelated files. Mailman #248.
+    if stem not in names and (len(segments) == 1 or stem not in sys.stdlib_module_names):
         names.append(stem)
     return names
 
