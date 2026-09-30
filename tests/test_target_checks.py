@@ -434,6 +434,48 @@ class OtherLinterTests(_Fixture):
         self.assertIn([python, "-m", "flake8", "--max-line-length=79", "pkg/mod.py"],
                       executor.calls)
 
+    def test_a_ruff_hook_s_config_path_reaches_check_and_format(self) -> None:
+        # capa's local ruff hooks pass `--config .github/ruff.toml`; ruff ran
+        # with its defaults and flagged capa's length-sorted imports. The
+        # hook's `--fix` still stays out. Mailman #299.
+        self.write(
+            ".pre-commit-config.yaml",
+            "repos:\n"
+            "-   repo: local\n"
+            "    hooks:\n"
+            "    -   id: ruff-format\n"
+            "        entry: ruff\n"
+            "        args:\n"
+            "        -   \"format\"\n"
+            "        -   \"--config\"\n"
+            "        -   \".github/ruff.toml\"\n"
+            "        -   \"capa/\"\n"
+            "-   repo: local\n"
+            "    hooks:\n"
+            "    -   id: ruff\n"
+            "        entry: ruff\n"
+            "        args:\n"
+            "        -   \"check\"\n"
+            "        -   \"--fix\"\n"
+            "        -   \"--config\"\n"
+            "        -   \".github/ruff.toml\"\n"
+            "        -   \"capa/\"\n",
+        )
+        executor = Executor()
+        self._run(executor)
+        python = str(self.python)
+        self.assertIn(
+            [python, "-m", "ruff", "check", "--no-cache", "--force-exclude",
+             "--config", ".github/ruff.toml", "pkg/mod.py"],
+            executor.calls,
+        )
+        self.assertIn(
+            [python, "-m", "ruff", "format", "--check", "--no-cache", "--force-exclude",
+             "--config", ".github/ruff.toml", "pkg/mod.py"],
+            executor.calls,
+        )
+        self.assertFalse(any("--fix" in call for call in executor.calls))
+
     def test_a_mypy_error_blocks_as_lint_failed(self) -> None:
         self.write("mypy.ini", "[mypy]\nstrict = True\n")
         record, findings = self._run(Executor({"mypy pkg/mod.py": 1}))

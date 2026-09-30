@@ -472,7 +472,7 @@ def _run_tool(
     for arguments in tool.commands:
         commands = [[*arguments, *hook_arguments]]
         if tool.name == "ruff" and configuration.get("format") and arguments[0] == "check":
-            commands.append(["format", "--check", *_RUFF_OPTIONS])
+            commands.append(["format", "--check", *_RUFF_OPTIONS, *hook_arguments])
         for command_arguments in commands:
             command = [*base, *command_arguments, *files]
             result = execute(
@@ -684,14 +684,34 @@ def _pre_commit_arguments(workspace: Path, tool: LintTool) -> list[str]:
     agentscope's black hook sets `--line-length=79`; black ran at its
     default 88 and passed lines CI rejects.
     """
-    if tool.name not in _HOOK_ARGUMENT_TOOLS:
-        return []
     scopes = _pre_commit_scopes(workspace)
     if scopes is None:
+        return []
+    if tool.name == "ruff":
+        return _ruff_config(scopes[1])
+    if tool.name not in _HOOK_ARGUMENT_TOOLS:
         return []
     for hook in _own_hooks(scopes[1], tool):
         if hook.get("args"):
             return [argument for argument in hook["args"] if argument.startswith("-")]
+    return []
+
+
+def _ruff_config(hooks: list[dict]) -> list[str]:
+    """Only the `--config` path of a ruff hook; its `--fix` would rewrite.
+
+    capa's hooks run `ruff check --fix --config .github/ruff.toml`; ruff ran
+    at its defaults and flagged imports capa sorts by length. Mailman #299.
+    """
+    for hook in hooks:
+        if not str(hook.get("id") or "").startswith("ruff"):
+            continue
+        arguments = [str(argument) for argument in hook.get("args") or []]
+        for index, argument in enumerate(arguments):
+            if argument.startswith("--config="):
+                return [argument]
+            if argument == "--config" and index + 1 < len(arguments):
+                return ["--config", arguments[index + 1]]
     return []
 
 
