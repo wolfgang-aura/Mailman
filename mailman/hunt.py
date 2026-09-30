@@ -18,7 +18,9 @@ from mailman.maintainers import MAINTAINER_ASSOCIATIONS, load_maintainer_logins
 from mailman.models import RunStatus, utc_now
 from mailman.orchestrator import orchestration_step_names
 from mailman.provenance import upstream_issue_number
-from mailman.review_decision import UNTRIAGED_GATE, DecisionError, load_decision
+from mailman.review_decision import (
+    CLA_GATE, UNTRIAGED_GATE, DecisionError, load_decision,
+)
 from mailman.screen import load_screen, screen_is_current
 from mailman.target_intel import _is_bot, repository_slug
 from mailman.targeting import (
@@ -1057,6 +1059,10 @@ OWN_WORDS_ACTION = (
     "request body in your own words, set own_words_confirmed in the target "
     "policy and rerun prepare-submission."
 )
+CLA_ACTION = (
+    "Include in the final approval packet. Before filing, sign the target's "
+    "CLA with the account that opens the pull request."
+)
 
 
 def ask_ready(run, directory: Path, decision, action, warnings: list) -> dict:
@@ -1216,7 +1222,12 @@ def next_action(directory: Path) -> dict:
         return ask_ready(run, directory, decision, action, warnings)
     if decision.recommendation != "SEND":
         return action("decision", "Resolve the HOLD or replace the candidate.", disposition="REPLACE" if decision.recommendation == "DROP" else "REPAIR")
-    if decision.blocking_questions and not own_words:
+    # A CLA signature is the operator's act at filing approval, like the
+    # own-words rewrite. Mailman #290.
+    blocking = [question for question in decision.blocking_questions
+                if question.gate != CLA_GATE]
+    cla = len(blocking) < len(decision.blocking_questions)
+    if blocking and not own_words:
         return action("decision", "Resolve coordinator work; record a genuine user dependency with hunt escalate.")
     try:
         finalize_review(directory)
@@ -1237,6 +1248,8 @@ def next_action(directory: Path) -> dict:
              "action": "Include in the final approval packet."}
     if own_words:
         ready.update(human_required=True, action=OWN_WORDS_ACTION)
+    elif cla:
+        ready.update(human_required=True, action=CLA_ACTION)
     if warnings:
         ready["warnings"] = list(warnings)
     return ready

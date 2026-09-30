@@ -431,6 +431,41 @@ class HuntTests(OrchestratorHarness):
         self.assertFalse(result["ready"])
         self.assertEqual(result["stage"], "submission")
 
+    def cla_run(self, gates):
+        """A ready run whose decision carries one blocking question per gate."""
+        directory = self.ready_run()
+        path = directory / "decision.json"
+        decision = json.loads(path.read_text(encoding="utf-8"))
+        decision["questions"] = [
+            {
+                "question": "Has the author signed the project's CLA?",
+                "blocking": True,
+                **({"gate": gate} if gate else {}),
+                "options": [
+                    {"label": "A", "text": "Signed; file.", "cost": "None."},
+                    {"label": "B", "text": "Drop.", "cost": "The run."},
+                ],
+                "recommendation": "A.",
+            }
+            for gate in gates
+        ]
+        path.write_text(json.dumps(decision), encoding="utf-8")
+        return directory
+
+    def test_a_run_held_only_for_the_cla_is_ready_for_the_human(self):
+        # cloud-init: SEND, packaged, and held at REPAIR by the CLA question
+        # while escalate refused a CLA as a reason. Mailman #290.
+        result = next_action(self.cla_run(["cla"]))
+        self.assertTrue(result["ready"], result)
+        self.assertEqual(result["stage"], "filing-approval")
+        self.assertTrue(result["human_required"])
+        self.assertIn("CLA", result["action"])
+
+    def test_another_blocking_question_beside_the_cla_still_blocks(self):
+        result = next_action(self.cla_run(["cla", None]))
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["stage"], "decision")
+
     def test_acknowledged_closed_attempts_remain_ready_after_orchestration(self):
         directory = self.ready_run()
         (directory / "prior-art.json").write_text(

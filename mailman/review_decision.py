@@ -73,6 +73,10 @@ from mailman.claims import triage_warning
 from mailman.target_intel import load_target_intel
 
 UNTRIAGED_GATE = "untriaged-issue"
+#: A question the operator answers by signing the target's Contributor License
+#: Agreement. Signing happens at filing approval, like the own-words rewrite,
+#: so it is not coordinator work. Mailman #290.
+CLA_GATE = "cla"
 
 _MAX_CLAIM = 220
 
