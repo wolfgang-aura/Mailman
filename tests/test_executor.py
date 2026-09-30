@@ -11,6 +11,26 @@ from mailman.executor import StopExecution, execute, reset_deadline, set_deadlin
 
 
 class ExecutorTests(unittest.TestCase):
+    def test_a_finished_command_leaves_no_pipe_open(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/281"""
+        import gc
+        import warnings
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", ResourceWarning)
+                result = execute(
+                    [sys.executable, "-c", "print('out')"],
+                    working_directory=Path(temporary_directory),
+                    timeout_seconds=30,
+                )
+                gc.collect()
+
+        self.assertEqual(result.stdout.strip(), "out")
+        self.assertEqual(
+            [str(w.message) for w in caught if w.category is ResourceWarning], []
+        )
+
     def test_active_hunt_deadline_clamps_a_command_timeout(self) -> None:
         token = set_deadline(
             datetime.now(UTC) + timedelta(seconds=0.1), label="hunt fixture"

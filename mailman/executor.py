@@ -207,6 +207,14 @@ def _stream(
         watchdog.cancel()
         stdin_thread.join(timeout=5)
         stderr_thread.join(timeout=5)
+        # Popen leaves its pipes open; unclosed, they surface as a
+        # ResourceWarning on the caller's stderr. Mailman #281.
+        for pipe in (process.stdout, process.stderr):
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
 
     if timed_out.is_set():
         exit_code = None
