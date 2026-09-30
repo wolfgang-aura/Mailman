@@ -12,7 +12,7 @@ from mailman import health
 from mailman.agents import normalize_agent_name
 from mailman.artifacts import load_run, new_run_id
 from mailman.completion import finalize_review, read_object
-from mailman.claims import load_claims
+from mailman.claims import is_routing_label, load_claims
 from mailman.handoff import check_handoff, load_handoff, load_offer_handoff
 from mailman.maintainers import MAINTAINER_ASSOCIATIONS, load_maintainer_logins
 from mailman.models import RunStatus, utc_now
@@ -840,7 +840,9 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
             or (event.get("event") == "labeled"
                 and (event.get("actor") or {}).get("login") not in (None, author)
                 # A labelling bot is not triage (#253).
-                and not _is_bot(event.get("actor")))
+                and not _is_bot(event.get("actor"))
+                # `ai-review` only summons a triage bot (#267).
+                and not is_routing_label(str((event.get("label") or {}).get("name") or "")))
             for event in events if isinstance(event, dict)
         )
         kept.append(row)

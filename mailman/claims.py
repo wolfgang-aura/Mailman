@@ -549,6 +549,21 @@ def rival_pull_requests(timeline: Any) -> list[str]:
     return rivals
 
 
+#: A label that only routes the issue to triage says nobody has triaged it:
+#: streamlit's `ai-review` summons a bot that labels and comments, and
+#: `needs triage` asks for a person. Mailman #267.
+_ROUTING_LABEL = re.compile(
+    r"(?i)\bai[ _-]?(?:review|triage)\b"
+    r"|\b(?:needs|pending|awaiting|to)[ _:-]*triage\b"
+    r"|\buntriaged\b|^\s*triage\s*$"
+)
+
+
+def is_routing_label(name: str) -> bool:
+    """Whether a label only asks for triage rather than recording it."""
+    return bool(_ROUTING_LABEL.search(name))
+
+
 def maintainer_labels(timeline: Any, *, reporter: str | None) -> list[dict[str, Any]]:
     """The labels somebody who can triage put on the issue, grouped per act.
 
@@ -572,6 +587,8 @@ def maintainer_labels(timeline: Any, *, reporter: str | None) -> list[dict[str, 
         label = entry.get("label")
         name = label.get("name") if isinstance(label, dict) else None
         if not login or not name or (reporter and login.lower() == reporter.lower()):
+            continue
+        if is_routing_label(name):
             continue
         at = entry.get("created_at")
         if rows and rows[-1]["actor"] == login and rows[-1]["at"] == at:

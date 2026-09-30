@@ -1049,6 +1049,19 @@ class MaintainerLabelTests(unittest.TestCase):
             self.assertEqual(record["maintainer_labelled"], [])
             self.assertIsNotNone(triage_warning(root))
 
+    def test_a_label_that_only_summons_a_triage_bot_is_not_triage(self) -> None:
+        # streamlit#17126: a maintainer added `ai-review`, the bot triaged and
+        # removed it, and nobody said the fix was wanted. Mailman #267.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record = self._read(root, [
+                _labelled("ai-review", "sfc-gh-lwilby-1"),
+                _labelled("status: needs triage", "sfc-gh-lwilby-1"),
+                _labelled("untriaged", "sfc-gh-lwilby-1"),
+            ])
+            self.assertEqual(record["maintainer_labelled"], [])
+            self.assertIsNotNone(triage_warning(root))
+
 
 class PullRequestReferenceTests(unittest.TestCase):
     """Every way a thread names the pull request that already fixes the issue.

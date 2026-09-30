@@ -1472,6 +1472,20 @@ class SweepTests(OrchestratorHarness):
             [("acme/a#3", True), ("acme/a#2", True), ("acme/a#1", False)],
         )
 
+    def test_a_label_that_summons_a_triage_bot_is_not_engagement(self):
+        # streamlit#17126's only human act was `ai-review`. Mailman #267.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        routed = {"event": "labeled", "label": {"name": "ai-review"},
+                  "actor": {"login": "maintainer", "type": "User"}}
+        gh = _SearchGh([[_item("acme/a", 1)]],
+                       timelines={"repos/acme/a/issues/1/timeline": [routed]})
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual([row["engaged"] for row in result["rows"]], [False])
+
     def test_a_bot_label_is_not_triage(self):
         # agentscope's github-actions[bot] labels every new issue
         # triage/confirmed. Mailman #253.
