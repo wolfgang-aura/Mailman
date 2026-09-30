@@ -312,6 +312,19 @@ class AgentExclusionTests(unittest.TestCase):
         )
         self.assertTrue(excludes_agents(_comment(body, association="MEMBER")))
 
+    def test_a_threat_to_ban_drive_by_llm_prs_reserves_the_issue(self) -> None:
+        # stanfordnlp/stanza#1651, a collaborator, verbatim. Mailman #245.
+        for body in (
+            "Anyone else who does a driveby LLM PR with zero interaction with "
+            "the maintainers will be banned.",
+            "Drive-by AI pull requests will be closed.",
+            "AI-generated PRs will get you banned.",
+        ):
+            with self.subTest(body=body):
+                self.assertTrue(
+                    excludes_agents(_comment(body, association="COLLABORATOR"))
+                )
+
     def test_a_mentoring_programme_earmark_reserves_the_issue(self) -> None:
         # django-debug-toolbar#2481 and #2482, verbatim. Mailman #194.
         for body in (

@@ -82,7 +82,13 @@ _AGENT_EXCLUSION = re.compile(
     r"(?:prs?|pull requests?|patch(?:es)?|contributions?|code)"
     r"|(?:fully |purely )?(?:automated|ai[- ]generated|llm[- ]generated|agent[- ]generated|agentic)"
     r" (?:prs?|pull requests?|patch(?:es)?|contributions?)"
-    r"(?: from (?:agents?|bots?|ai|llms?))? (?:may|will|would) be (?:rejected|closed|declined)"
+    r"(?: from (?:agents?|bots?|ai|llms?))? (?:may|will|would) (?:be|get you)"
+    r" (?:rejected|closed|declined|banned)"
+    # stanfordnlp/stanza#1651, a collaborator: "Anyone else who does a
+    # driveby LLM PR with zero interaction with the maintainers will be
+    # banned." Mailman #245.
+    r"|drive[- ]?by (?:ai|llm|agent|bot)[- ]?(?:generated |written )?"
+    r"(?:prs?|pull requests?|patch(?:es)?|contributions?)"
     # An issue set aside for a mentoring programme is held for its people:
     # django-debug-toolbar#2481 "this may be a good djangonaut space
     # ticket". Mailman #194.
