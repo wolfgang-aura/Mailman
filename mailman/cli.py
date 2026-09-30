@@ -1993,11 +1993,24 @@ def _package(arguments: argparse.Namespace) -> int:
                arguments.repo, "--head", arguments.head, "--title", arguments.title]
     if arguments.base:
         handoff += ["--base", arguments.base]
+    def prepare_submission() -> int:
+        code = main([
+            "prepare-submission", run_id, "--policy", str(arguments.policy),
+            "--title", arguments.title, "--branch", branch, *root])
+        # An own-words refusal alone leaves the operator's rewrite, which
+        # happens at filing approval; hunt status counts that run ready once
+        # the handoff exists, so stopping here left it unreachable. #272.
+        from mailman.hunt import OWN_WORDS
+        submission = run_directory / "submission" / "submission.json"
+        if code and submission.is_file():
+            record = json.loads(submission.read_text(encoding="utf-8"))
+            if record.get("blocking_codes") == [OWN_WORDS]:
+                return 0
+        return code
+
     stages = [
         ("export-patch", lambda: main(["export-patch", run_id, *root])),
-        ("prepare-submission", lambda: main([
-            "prepare-submission", run_id, "--policy", str(arguments.policy),
-            "--title", arguments.title, "--branch", branch, *root])),
+        ("prepare-submission", prepare_submission),
         ("decision", lambda: main(["decision", run_id, *root])),
         ("finalize-review", lambda: main(["finalize-review", run_id, *root])),
         ("commit", commit),

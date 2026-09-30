@@ -197,6 +197,56 @@ class PackageCommandTests(unittest.TestCase):
         self.assertEqual(committed.call_args.kwargs["branch"], "mailman/issue-7")
         self.assertEqual(committed.call_args.kwargs["paths"], ["m.py"])
 
+    def test_an_own_words_refusal_alone_does_not_stop_packaging(self) -> None:
+        # zarr run 20260930T111012Z-fcf02a stopped at prepare-submission, so
+        # commit and handoff never ran and hunt status could only say REPAIR.
+        # The rewrite is the operator's at filing approval. Mailman #272.
+        import json
+
+        from mailman import cli
+
+        for codes, expected in (
+            (["policy-requires-own-words"], 0),
+            (["policy-requires-own-words", "missing-test"], 1),
+        ):
+            with self.subTest(codes=codes), tempfile.TemporaryDirectory() as temporary_directory:
+                data_root = Path(temporary_directory) / "runs"
+                run, _ = create_run(
+                    repository="https://github.com/example/project.git",
+                    issue="https://github.com/example/project/issues/7",
+                    base_commit="a" * 40, primary="codex", reviewer="claude",
+                    data_root=data_root,
+                )
+                arguments = argparse.Namespace(
+                    run_id=run.run_id, data_root=data_root, policy=Path("policy.json"),
+                    title="Fix it", body=Path("body.md"), repo="example/project",
+                    head="fork:mailman/issue-7", base="main", commit_message=None,
+                )
+                directory = data_root / run.run_id
+                (directory / "decision.json").write_text("{}", encoding="utf-8")
+                export = directory / "export"
+                export.mkdir(parents=True, exist_ok=True)
+                (export / "changes.diff").write_text("diff --git a/m.py b/m.py\n", encoding="utf-8")
+                (directory / "submission").mkdir()
+                (directory / "submission" / "submission.json").write_text(
+                    json.dumps({"ready": False, "blocking_codes": codes}), encoding="utf-8")
+                calls = []
+
+                def stage(argv):
+                    calls.append(argv[0])
+                    return 1 if argv[0] == "prepare-submission" else 0
+
+                with (
+                    patch.object(cli, "main", side_effect=stage),
+                    patch("mailman.cli.resolve_identity", return_value=IDENTITY),
+                    patch("mailman.package.commit_candidate", return_value="b" * 40),
+                    patch("sys.stdout", StringIO()), patch("sys.stderr", StringIO()),
+                ):
+                    code = cli._package(arguments)
+
+                self.assertEqual(code, expected)
+                self.assertEqual("handoff" in calls, expected == 0)
+
     def test_a_missing_decision_stops_before_any_stage(self) -> None:
         # pyinstaller run 20260929T022154Z-8fc17e exported and prepared the
         # submission, then stopped at the decision stage. Mailman #186.
