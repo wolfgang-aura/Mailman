@@ -941,19 +941,13 @@ class PrepareSubmissionTests(unittest.TestCase):
         reproduced: bool,
         prior_art: bool = True,
         subject: str = "the merged fix (#1)",
+        rewritten: bool = False,
     ) -> None:
-        """Record a merged match whose merge commit precedes the base commit."""
-        (self.run_directory / "duplicate-search.json").write_text(
-            json.dumps(
-                {
-                    "searched_at": "2026-09-03T00:00:00+00:00",
-                    "success": True,
-                    "complete": True,
-                    "matches": [dict(_weak_match(1), state="merged", methods=["search"])],
-                }
-            ),
-            encoding="utf-8",
-        )
+        """Record a merged match whose merge commit precedes the base commit.
+
+        `rewritten` records GitHub's merge sha as one the history lacks and the
+        branch head as the landed commit, the way beets pr#10 (2011) reads.
+        """
         workspace = self.run_directory / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
 
@@ -978,6 +972,21 @@ class PrepareSubmissionTests(unittest.TestCase):
         git("add", "core.py")
         git("commit", "--quiet", "-m", "later work")
         base = git("rev-parse", "HEAD")
+        recorded = "6ddefb056946f5b084f612a4d8174d75358a5e7e" if rewritten else merged
+        row = dict(_weak_match(1), state="merged", methods=["search"])
+        if rewritten:
+            row.update(merge_commit=recorded, head_sha=merged)
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-03T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [row],
+                }
+            ),
+            encoding="utf-8",
+        )
         (self.run_directory / "workspace.json").write_text(
             json.dumps({"head": base, "clean": True}), encoding="utf-8"
         )
@@ -1003,7 +1012,8 @@ class PrepareSubmissionTests(unittest.TestCase):
                             "number": 1,
                             "outcome": "merged",
                             "url": "https://github.com/example/project/pull/1",
-                            "merge_commit": merged,
+                            "merge_commit": recorded,
+                            "head_sha": merged,
                         }
                     ],
                 }
@@ -1052,6 +1062,32 @@ class PrepareSubmissionTests(unittest.TestCase):
         )
         record = self._prepare()
         self.assertNotIn("already-fixed-upstream", record["blocking_codes"])
+
+    def test_a_rewritten_merge_whose_branch_head_is_in_base_does_not_block(
+        self,
+    ) -> None:
+        # beets pr#10 (2011): GitHub's merge sha is gone from the rewritten
+        # history, the subject names no pull request, but the branch head
+        # commit is an ancestor of base. Mailman #298.
+        for prior_art in (True, False):
+            with self.subTest(prior_art=prior_art):
+                self._merged_match_already_in_base(
+                    reproduced=True,
+                    prior_art=prior_art,
+                    subject="lastgenre whitelist",
+                    rewritten=True,
+                )
+                if not prior_art:
+                    (self.run_directory / "prior-art.json").unlink(missing_ok=True)
+                record = self._prepare()
+                self.assertNotIn("already-fixed-upstream", record["blocking_codes"])
+
+    def test_a_rewritten_merge_still_blocks_without_a_reproduction(self) -> None:
+        self._merged_match_already_in_base(
+            reproduced=False, subject="lastgenre whitelist", rewritten=True
+        )
+        record = self._prepare()
+        self.assertIn("already-fixed-upstream", record["blocking_codes"])
 
     def test_a_later_pull_request_number_is_not_mistaken_for_the_merge(
         self,

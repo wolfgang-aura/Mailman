@@ -875,13 +875,23 @@ def _superseded_merges(run_directory: Path) -> frozenset[int]:
         return frozenset()
     if not isinstance(reproduction, dict):
         return frozenset()
+    def landed(*commits: object) -> bool:
+        # GitHub's merge sha is missing from a rewritten history; the branch
+        # head commit, when it is an ancestor, is the same change landed.
+        # beets pr#10 (2011) blocked a reproduced 2026 bug. Mailman #298.
+        return any(
+            isinstance(commit, str)
+            and merge_is_in_base(run_directory, {"merge_commit": commit}, reproduction)
+            for commit in commits
+        )
+
     superseded = {
         attempt["number"]
         for attempt in attempts
         if isinstance(attempt, dict)
         and isinstance(attempt.get("number"), int)
         and attempt.get("outcome") == "merged"
-        and merge_is_in_base(run_directory, attempt, reproduction)
+        and landed(attempt.get("merge_commit"), attempt.get("head_sha"))
     }
     # A merged row only the duplicate search found carries no merge commit.
     # Its squash commit, subject ending "(#N)", is the one to test. cloud-init
@@ -895,10 +905,9 @@ def _superseded_merges(run_directory: Path) -> frozenset[int]:
             or str(row.get("state") or "").lower() != "merged"
         ):
             continue
-        commit = _squash_commit(run_directory, number)
-        if commit and merge_is_in_base(
-            run_directory, {"merge_commit": commit}, reproduction
-        ):
+        if landed(row.get("merge_commit")) or landed(
+            _squash_commit(run_directory, number)
+        ) or landed(row.get("head_sha")):
             superseded.add(number)
     return frozenset(superseded)
 
@@ -1350,7 +1359,7 @@ def record_duplicate_acknowledgement(
 # not know makes it refuse the whole call. `updatedAt` is what decides whether
 # an open attempt still claims the issue; see targeting.STALE_ATTEMPT_DAYS.
 _SEARCH_FIELDS = {
-    "pr": "number,title,body,state,url,createdAt,updatedAt,isDraft",
+    "pr": "number,title,body,state,url,createdAt,updatedAt,isDraft,headRefOid,mergeCommit",
     "issue": "number,title,body,state,url,createdAt,updatedAt",
 }
 # `gh search prs` and `gh search issues` are the only two that carry the author
@@ -1397,6 +1406,11 @@ def _match_rows(
                 "updated_at": entry.get("updatedAt"),
                 "is_draft": entry.get("isDraft"),
                 "author_association": entry.get("authorAssociation"),
+                # What `_superseded_merges` tests against base. Mailman #298.
+                "merge_commit": (entry.get("mergeCommit") or {}).get("oid")
+                if isinstance(entry.get("mergeCommit"), dict)
+                else None,
+                "head_sha": entry.get("headRefOid"),
                 "pull_request": pull_request,
                 "matched_by": list(reasons or ["search"]),
                 # How a row was found decides what it is worth. GitHub's index
@@ -1754,7 +1768,9 @@ def _add_match(
     # Only `gh search` returns an author association, and only the
     # pull request methods return `isDraft`, so the row that got
     # here first may be missing what the staleness rule needs.
-    for field_name in ("updated_at", "is_draft", "author_association"):
+    for field_name in (
+        "updated_at", "is_draft", "author_association", "merge_commit", "head_sha"
+    ):
         if existing.get(field_name) is None:
             existing[field_name] = row.get(field_name)
     existing["term_count"] = max(

@@ -42,7 +42,7 @@ _CITED_FIELDS = (
 
 _PULL_REQUEST_FIELDS = (
     "number,title,state,url,body,author,createdAt,updatedAt,closedAt,mergedAt,"
-    "mergeCommit,isDraft,files,comments,reviews"
+    "mergeCommit,headRefOid,isDraft,files,comments,reviews"
 )
 
 # GitHub's author association for someone who can merge. A comment from one of
@@ -207,6 +207,9 @@ def summarize_pull_request(payload: dict[str, Any]) -> dict[str, Any]:
         summary["merge_commit"] = (
             merge_commit.get("oid") if isinstance(merge_commit, dict) else None
         )
+        # A rewritten history drops the merge sha but keeps the branch head.
+        # Mailman #298.
+        summary["head_sha"] = payload.get("headRefOid")
         return summary
     summary["body"] = _trim(payload.get("body"), _BODY_CHARACTER_LIMIT)
     summary["changed_files"] = changed
