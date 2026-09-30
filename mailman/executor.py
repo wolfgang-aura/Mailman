@@ -221,6 +221,23 @@ def _stream(
     )
 
 
+def _venv_activation(program: str, base: Mapping[str, str]) -> dict[str, str]:
+    """PATH and VIRTUAL_ENV as activation would set them for a venv program.
+
+    A reproducer or test suite run with the environment's interpreter can
+    spawn a console script installed beside it: prefect's hosted API fixture
+    runs bare `uvicorn`, found none on the host PATH, and the baseline failed.
+    Mailman #246.
+    """
+    path = Path(program)
+    if not path.is_absolute() or not (path.parent.parent / "pyvenv.cfg").is_file():
+        return {}
+    return {
+        "PATH": os.pathsep.join([str(path.parent), base.get("PATH", "")]),
+        "VIRTUAL_ENV": str(path.parent.parent),
+    }
+
+
 def execute(
     command: Sequence[str],
     *,
@@ -246,6 +263,7 @@ def execute(
     # this, so an agent's own pytest run is covered too.
     # See https://github.com/wolfgang-aura/Mailman/issues/11.
     process_environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    process_environment.update(_venv_activation(command[0], process_environment))
     if environment:
         process_environment.update(environment)
 

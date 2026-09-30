@@ -94,6 +94,46 @@ class ExecutorTests(unittest.TestCase):
         self.assertTrue(result.timed_out)
 
 
+class VenvActivationTests(unittest.TestCase):
+    def test_a_venv_interpreter_gets_its_scripts_folder_on_path(self) -> None:
+        # prefect's hosted_api_server fixture spawns bare `uvicorn`; without
+        # the venv's scripts folder on PATH it found none and the baseline
+        # failed. Mailman #246.
+        import os
+        import venv
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            venv.create(root / "env", with_pip=False)
+            scripts = root / "env" / ("Scripts" if os.name == "nt" else "bin")
+            interpreter = scripts / ("python.exe" if os.name == "nt" else "python")
+            result = execute(
+                [
+                    str(interpreter),
+                    "-c",
+                    "import os; print(os.environ['PATH'].split(os.pathsep)[0]);"
+                    " print(os.environ.get('VIRTUAL_ENV', ''))",
+                ],
+                working_directory=root,
+            )
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        first, virtual_env = result.stdout.splitlines()[:2]
+        self.assertEqual(Path(first), scripts)
+        self.assertEqual(Path(virtual_env), root / "env")
+
+    def test_a_host_interpreter_leaves_path_alone(self) -> None:
+        import os
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            result = execute(
+                ["python", "-c", "import os; print(os.environ['PATH'])"],
+                working_directory=Path(temporary_directory),
+            )
+
+        self.assertEqual(result.stdout.strip(), os.environ["PATH"])
+
+
 class StreamingTests(unittest.TestCase):
     def test_hands_over_each_line_before_the_process_exits(self) -> None:
         seen: list[tuple[str, float]] = []
