@@ -1397,6 +1397,31 @@ class SweepTests(OrchestratorHarness):
         self.assertTrue(any("acme/narrow" in path for path in gh.paths))
         self.assertEqual(result["stale_screens"], ["acme/wide"])
 
+    def test_a_repository_a_hunt_dropped_as_closed_is_not_swept(self):
+        # streamlit#17030 was dropped as target-closed-to-outside-prs, and the
+        # next hunt was offered streamlit again. Mailman #300.
+        from mailman.hunt import closed_repositories, save, hunt_path, sweep_fresh_issues
+        for slug in ("acme/open", "acme/closed", "acme/banned", "acme/cheap"):
+            self._screen(slug, [])
+        record = self.new_hunt(3)
+        record["runs"] = [
+            {"run_id": "r1", "target": "acme/closed#1", "dropped": True,
+             "reason": "target-closed-to-outside-prs", "evidence": "CONTRIBUTING.md"},
+            {"run_id": "r2", "target": "acme/banned#2", "dropped": True,
+             "reason": "maintainers refuse generated code", "evidence": "x",
+             "closes_repository": True},
+            {"run_id": "r3", "target": "acme/cheap#3", "dropped": True,
+             "reason": "already-fixed-upstream", "evidence": "x"},
+        ]
+        save(hunt_path(self.data_root, record["hunt_id"]), record)
+
+        self.assertEqual(closed_repositories(self.data_root), {"acme/closed", "acme/banned"})
+        gh = _SearchGh([])
+        sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                           now=datetime.now(UTC))
+        read = sorted(path.split("/issues?")[0] for path in gh.paths)
+        self.assertEqual(read, ["repos/acme/cheap", "repos/acme/open"])
+
     def test_other_invitation_labels_are_admitted(self):
         # bleachbit's maintainer filed #2307 as `status:ready-for-dev`; only a
         # hand-run label pool found it. Mailman #285.

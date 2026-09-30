@@ -240,6 +240,7 @@ def restore_run(
     row.pop("dropped", None)
     row.pop("reason", None)
     row.pop("evidence", None)
+    row.pop("closes_repository", None)
     row["restored"] = {"reason": reason, "evidence": evidence, "at": utc_now()}
     save(hunt_path(root, record["hunt_id"]), record)
 
@@ -508,6 +509,27 @@ def open_pull_request_repositories(root: Path) -> set[str]:
     }
 
 
+#: Drop reasons that say the repository, not the issue, is closed to us.
+#: Recorded before `hunt drop --closes-repository` existed. Mailman #300.
+_CLOSING_REASON = re.compile(r"(?i)^(?:target-closed-to-outside-prs|prohibited(?:-policy)?)")
+
+
+def closed_repositories(root: Path) -> set[str]:
+    """Repositories a hunt dropped a run from because they refuse our pull requests.
+
+    streamlit#17030 was dropped as closed to outside pull requests, and the
+    next hunt was offered streamlit again. https://github.com/wolfgang-aura/Mailman/issues/300
+    """
+    closed: set[str] = set()
+    for record in iter_hunts(root):
+        for row in record.get("runs") or []:
+            if not row.get("dropped") or "#" not in str(row.get("target") or ""):
+                continue
+            if row.get("closes_repository") or _CLOSING_REASON.match(str(row.get("reason") or "")):
+                closed.add(str(row["target"]).split("#", 1)[0])
+    return closed
+
+
 ENGAGED = "engaged"
 NOT_ENGAGED = "not-engaged"
 ENGAGEMENT_UNKNOWN = "unknown"
@@ -673,7 +695,7 @@ def _passing_screens(root: Path, held_repositories: set[str] | None,
     held = {slug.lower() for slug in (
         open_pull_request_repositories(root) if held_repositories is None
         else held_repositories
-    )}
+    ) | closed_repositories(root)}
     screens = []
     for path in sorted((root / SCREENS_DIRECTORY).glob("*.json")):
         screen = read_object(path)

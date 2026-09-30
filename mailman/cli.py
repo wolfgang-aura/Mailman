@@ -224,6 +224,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     hunt.add_argument("--evidence")
     hunt.add_argument(
+        "--closes-repository",
+        action="store_true",
+        help="for hunt drop: the repository refuses our pull requests, so "
+        "hunt targets and sweep leave it out from now on (#300)",
+    )
+    hunt.add_argument(
         "--owner",
         help="this coordinator's lease token, printed by hunt init. One hunt "
         "has one owner; a second coordinator must take it over explicitly",
@@ -1228,6 +1234,8 @@ def _hunt(arguments: argparse.Namespace) -> int:
         if row is None:
             raise ValueError("run is not in this hunt")
         row.update(dropped=True, reason=arguments.reason, evidence=arguments.evidence)
+        if arguments.closes_repository:
+            row["closes_repository"] = True
         hunt.save(hunt.hunt_path(root, record["hunt_id"]), record)
     if arguments.action == "restore":
         if not arguments.reason or not arguments.evidence:
