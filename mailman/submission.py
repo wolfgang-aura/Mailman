@@ -1135,7 +1135,11 @@ def duplicate_is_related(row: dict[str, Any]) -> bool:
         # this row's title and body and found only part of the query, that is
         # the better evidence: anndata#2596 shared "arrayview" with a query
         # for "arrayview dataframe" and blocked #2348 with no override. #196.
-        partial = "listing" in methods and term_count and len(matched) < term_count
+        # A listing that read the row and matched nothing emits no row of its
+        # own, so it marks the index row instead: toga#4279 matched "startup
+        # exception" only in text the listing never saw and "claimed" #3628.
+        read_locally = "listing" in methods or row.get("listing_read")
+        partial = read_locally and term_count and len(matched) < term_count
         return not partial
     if not (term_count and len(matched) >= term_count):
         return False
@@ -1566,6 +1570,35 @@ def _local_matches(
     return rows
 
 
+def _mark_listing_read(
+    record: dict[str, Any],
+    listing: object,
+    *,
+    rows: list[dict[str, Any]],
+    pull_request: bool,
+    term_count: int,
+) -> None:
+    """Mark index rows whose own text the listing read without a match.
+
+    `_local_matches` drops an entry that matches no query term, so without
+    this an index hit on comment text alone stands as related. #243.
+    """
+    if not isinstance(listing, list) or not term_count:
+        return
+    read = {
+        entry.get("number") for entry in listing if isinstance(entry, dict)
+    }
+    matched = {row.get("number") for row in rows}
+    for row in record.get("matches") or []:
+        if (
+            row.get("pull_request") == pull_request
+            and row.get("number") in read
+            and row.get("number") not in matched
+        ):
+            row["listing_read"] = True
+            row["term_count"] = max(row.get("term_count") or 0, term_count)
+
+
 def _add_match(
     record: dict[str, Any], row: dict[str, Any], *, issue_number: int | None
 ) -> None:
@@ -1927,6 +1960,14 @@ def record_duplicate_search(
                 )
             for row in rows:
                 _add_match(record, row, issue_number=issue_number)
+            if method == "listing":
+                _mark_listing_read(
+                    record,
+                    payload,
+                    rows=rows,
+                    pull_request=kind == "pr",
+                    term_count=len(_query_terms(query)),
+                )
             succeeded.append(method)
             if method == "narrow" and kind == "pr":
                 definite = [
