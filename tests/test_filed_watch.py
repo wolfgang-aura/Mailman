@@ -528,6 +528,36 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(row["inherited"], {})
         self.assertEqual(row["reasons"], ["failing check: flake8"])
 
+    def test_a_job_level_annotation_on_dot_github_is_not_a_failure_location(
+        self,
+    ) -> None:
+        """prefect#23237 broke its CLI tests; the only annotations were GitHub's
+        job-level ones on `.github`. https://github.com/wolfgang-aura/Mailman/issues/251
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "PrefectHQ/prefect", 23237)
+            failing = {**_check("CLI Tests", "failure"), "id": 58,
+                       "output": {"annotations_count": 2}}
+            gh = FakeGitHub(
+                {"PrefectHQ/prefect#23237": {
+                    "checks": [failing], "files": ["src/prefect/cli/_worker_utils.py"]}},
+                annotations={"58": [
+                    {"path": ".github", "annotation_level": "failure",
+                     "message": "Process completed with exit code 1."},
+                    {"path": "docs/notes.md", "annotation_level": "notice",
+                     "message": "The ubuntu-latest label will migrate."},
+                ]},
+            )
+
+            result = self._watch(root, gh)
+
+        self.assertFalse(result["ok"])
+        (row,) = result["rows"]
+        self.assertEqual(row["status"], "attention")
+        self.assertEqual(row["inherited"], {})
+        self.assertEqual(row["reasons"], ["failing check: CLI Tests"])
+
     def test_a_test_file_we_never_edited_is_not_proof_the_failure_is_inherited(
         self,
     ) -> None:

@@ -409,7 +409,11 @@ def _reported_paths(gh: _Gh, slug: str, run: dict[str, Any]) -> set[str]:
     if output.get("annotations_count") and run.get("id"):
         rows = gh.json(f"repos/{slug}/check-runs/{run['id']}/annotations?per_page=50")
         for row in rows if isinstance(rows, list) else []:
-            if isinstance(row, dict) and row.get("path"):
+            # GitHub files job-level annotations ("Process completed with exit
+            # code 1.") under `.github`, and a notice is not a failure (#251).
+            if (isinstance(row, dict) and row.get("path")
+                    and row["path"] != ".github"
+                    and row.get("annotation_level") != "notice"):
                 paths.add(row["path"])
     return paths
 
