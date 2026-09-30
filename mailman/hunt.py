@@ -710,7 +710,10 @@ _UNDECIDED_LABEL = re.compile(
     # PyMuPDF's "fix developed" and "Fixed in next release": already fixed.
     r"|fix(?:ed)? (?:developed|in|merged)"
     # PyMuPDF's "upstream bug" is in the MuPDF C library. Mailman #262.
-    r"|upstream")
+    r"|upstream"
+    # mlflow's "needs design", "needs author feedback" and "has-closing-pr":
+    # undecided, waiting on the reporter, or already taken. Mailman #265.
+    r"|needs[ -](?:design|author)|author[ -]feedback|(?:has|with)[ -](?:a[ -])?(?:closing|linked)[ -]pr")
 #: An invitation on a feature request is not a bug to fix.
 _REQUEST_LABEL = re.compile(r"(?i)enhancement|feature|documentation|\bdocs?\b|proposal")
 

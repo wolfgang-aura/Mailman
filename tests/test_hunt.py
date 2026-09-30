@@ -1331,6 +1331,10 @@ class SweepTests(OrchestratorHarness):
             _item("acme/a", 11, labels=("upstream bug", "fix developed")),
             _item("acme/a", 12, labels=("bug", "status:needs-product-approval")),
             _item("acme/a", 13, labels=("upstream bug",)),
+            # mlflow's undecided and already-closed rows. Mailman #265.
+            _item("acme/a", 14, labels=("bug", "needs design", "has-closing-pr")),
+            _item("acme/a", 15, labels=("bug", "needs author feedback")),
+            _item("acme/a", 16, labels=("bug", "has-closing-pr")),
         ]])
 
         result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
