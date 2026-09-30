@@ -31,7 +31,7 @@ import statistics
 import sys
 import tomllib
 from collections import Counter
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -1600,12 +1600,42 @@ def _host_gate(
     )
 
 
+#: The branch a guide or template tells contributors to open pull requests
+#: against. stanza: "create a pull request **against the `dev` branch**", and
+#: its template adds "We cannot accept pull requests against the `main`
+#: branch", which the negation check drops. Mailman #258.
+_PULL_REQUEST_BASE = re.compile(
+    r"(?:pull[- ]requests?|\bPRs?)\b[^.\n]{0,40}?\b(?:against|into|to|targeting)"
+    r"\s+(?:the\s+)?[*`'\"]*([A-Za-z0-9][\w./-]*?)[*`'\"]*\s+branch\b",
+    re.IGNORECASE,
+)
+_NEGATED = re.compile(
+    r"\b(?:cannot|can't|not|never|don't|do not|won't)\b", re.IGNORECASE
+)
+
+
+def _pull_request_base(texts: Sequence[str]) -> dict[str, Any] | None:
+    """The first branch a document says pull requests go to, with its quote."""
+    for text in texts:
+        flat = " ".join(text.split())
+        for match in _PULL_REQUEST_BASE.finditer(flat):
+            if _NEGATED.search(flat[max(0, match.start() - 30) : match.end()]):
+                continue
+            return {
+                "branch": match.group(1),
+                "quote": _sentence(flat, match.start(), match.end()),
+            }
+    return None
+
+
 def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     """Gate 4. Does the guide, the policy it links, or the pull request template close an AI-assisted pull request?"""
+    template = ""
     for relative in _TEMPLATE_PATHS:
         body = _decoded(gh.json(f"repos/{slug}/contents/{relative}"))
         if not body:
             continue
+        template = body
         ban = _POLICY_BANS.search(" ".join(body.split()))
         if ban:
             return _gate(
@@ -1734,6 +1764,9 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
                 "requires_cla": REQUIRES_CLA in kinds,
                 "constraints": constraints,
                 "quote": _quoted(constraints, "disclosure"),
+                "pull_request_base": _pull_request_base(
+                    [entry["body"] for entry in documents] + [template]
+                ),
                 **trail,
             },
         )
@@ -1742,7 +1775,11 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         passed=True,
         blocking=False,
         detail="no contributing guide found, so nothing forbids the work in writing",
-        data={"source": None, "result": "no-guide"},
+        data={
+            "source": None,
+            "result": "no-guide",
+            "pull_request_base": _pull_request_base([template]),
+        },
     )
 
 
@@ -2591,6 +2628,30 @@ def forbids_duplicate_pull_requests(
         kind=NO_DUPLICATE_PULL_REQUESTS,
         flag="forbids_duplicate_pull_requests",
     )
+
+
+def pull_request_base(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The branch pull requests must target, when it is not the default one.
+
+    `None` when the guide names none, names the default branch, or the screen
+    predates the field. Mailman #258.
+    """
+    if not isinstance(record, dict):
+        return None
+    base = None
+    default = None
+    for gate in record.get("gates") or []:
+        if not isinstance(gate, dict):
+            continue
+        data = gate.get("data") or {}
+        if gate.get("name") == "policy":
+            base = data.get("pull_request_base")
+        default = default or data.get("default_branch")
+    if not isinstance(base, dict) or not base.get("branch"):
+        return None
+    if default and str(base["branch"]).lower() == str(default).lower():
+        return None
+    return {**base, "default_branch": default}
 
 
 def _stars_gate(meta: dict[str, Any]) -> dict[str, Any]:

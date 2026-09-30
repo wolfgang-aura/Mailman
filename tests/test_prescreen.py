@@ -28,6 +28,7 @@ from mailman.prescreen import (
     PRESCREEN_HOURS,
     REPOSITORY_SCREEN_FAILED,
     TRIVIAL,
+    base_branch_refusal,
     identifier_terms,
     TRIVIAL_FIX,
     TRIVIAL_FIX_DIRECT_PUSH,
@@ -197,6 +198,8 @@ if ARGUMENTS[:2] == ["pr", "view"]:
     emit("pr-" + slug.replace("/", "__") + "-" + ARGUMENTS[2] + ".json")
 if ARGUMENTS[:1] == ["api"]:
     path = ARGUMENTS[1]
+    if "/compare/" in path:
+        emit("compare.json")
     if "/comments" in path:
         emit("comments.json")
     if "/timeline" in path:
@@ -261,6 +264,7 @@ class PrescreenTests(unittest.TestCase):
         open_pull_requests: list[dict] | None = None,
         merged_pull_requests: list[dict] | None = None,
         issues: dict[int, dict] | None = None,
+        compare: dict | None = None,
     ) -> str:
         """A `gh` that answers from fixture files, one per question asked.
 
@@ -307,6 +311,8 @@ class PrescreenTests(unittest.TestCase):
         # GitHub would, instead of every search returning `payload`.
         if open_pull_requests is not None:
             fixtures["corpus-pr.json"] = json.dumps(open_pull_requests)
+        if compare is not None:
+            fixtures["compare.json"] = json.dumps(compare)
         # `gh search prs --merged` answers from these, and nothing else does.
         if merged_pull_requests is not None:
             fixtures["merged-prs.json"] = json.dumps(merged_pull_requests)
@@ -2592,6 +2598,66 @@ class RankingTests(unittest.TestCase):
         # window with no maintainer reply, so it is demoted. Mailman #116.
         self.assertEqual(
             record["ranking"]["reasons"], [NO_LINKED_PR, UNACKNOWLEDGED]
+        )
+
+
+
+
+class PullRequestBaseTests(unittest.TestCase):
+    """stanza takes pull requests only against `dev`. Mailman #258."""
+
+    setUp = PrescreenTests.setUp
+    stub = PrescreenTests.stub
+
+    record = {
+        "repository": "stanfordnlp/stanza",
+        "pull_request_base": {
+            "branch": "dev",
+            "quote": "create a pull request **against the `dev` branch**.",
+            "default_branch": "main",
+        },
+    }
+
+    def test_a_base_commit_behind_the_named_branch_is_refused(self) -> None:
+        refusal = base_branch_refusal(
+            self.record,
+            base_commit="a0a64ca",
+            executable=self.stub("[]", compare={"status": "ahead", "ahead_by": 91}),
+        )
+        self.assertIsNotNone(refusal)
+        self.assertIn("`dev`", refusal)
+        self.assertIn("91", refusal)
+
+    def test_the_head_of_the_named_branch_is_accepted(self) -> None:
+        for compare in (
+            {"status": "identical", "ahead_by": 0},
+            {"status": "ahead", "ahead_by": 2},
+        ):
+            with self.subTest(compare=compare):
+                self.assertIsNone(
+                    base_branch_refusal(
+                        self.record,
+                        base_commit="e0767aa",
+                        executable=self.stub("[]", compare=compare),
+                    )
+                )
+
+    def test_a_commit_off_the_named_branch_is_refused(self) -> None:
+        self.assertIsNotNone(
+            base_branch_refusal(
+                self.record,
+                base_commit="a0a64ca",
+                executable=self.stub("[]", compare={"status": "diverged", "ahead_by": 3}),
+            )
+        )
+
+    def test_no_named_branch_costs_no_call(self) -> None:
+        self.assertIsNone(
+            base_branch_refusal(
+                {"repository": "example/project", "pull_request_base": None},
+                base_commit="abc",
+                executable="no-such-gh",
+            )
         )
 
 

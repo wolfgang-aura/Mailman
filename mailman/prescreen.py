@@ -30,6 +30,7 @@ from mailman.screen import (
     direct_push_share,
     forbids_duplicate_pull_requests,
     load_screen,
+    pull_request_base,
     requires_prior_discussion,
     screen_is_current,
     screen_shortlist,
@@ -644,6 +645,9 @@ def prescreen_issue(
         record["required_labels_missing"] = missing
     screen = load_screen(data_root, slug)
     record["maintainer_logins_known"] = len(maintainers)
+    # stanza takes pull requests only against `dev`, 91 commits ahead of
+    # `main`; a run pinned to `main` patches the wrong tree. Mailman #258.
+    record["pull_request_base"] = pull_request_base(screen)
     if screen and screen.get("success") and screen.get("verdict") != "pass":
         issue_blocking.append(REPOSITORY_SCREEN_FAILED)
     share = direct_push_share(screen)
@@ -1143,6 +1147,12 @@ def prescreen_issue(
             f"mailman init-run --repository https://github.com/{slug}.git "
             f"--issue https://github.com/{slug}/issues/{number} ..."
         )
+        if record["pull_request_base"]:
+            branch = record["pull_request_base"]["branch"]
+            record["next"] += (
+                f" -- with --base-commit at the head of `{branch}`, not the "
+                f"default branch: {record['pull_request_base']['quote']!r}"
+            )
         if UNACKNOWLEDGED_ISSUE in record["warnings"]:
             record["next"] += (
                 f" -- but first weigh {UNACKNOWLEDGED_ISSUE}: "
@@ -1401,3 +1411,61 @@ def completed_cited_issues(
                 }
             )
     return found
+
+
+#: How far the named base branch may have moved past a run's base commit
+#: between choosing it and `init-run`. Mailman #258.
+BASE_BRANCH_SLACK = 3
+
+
+def base_branch_refusal(
+    record: dict[str, Any] | None,
+    *,
+    base_commit: str,
+    executable: str | None = None,
+    timeout_seconds: float = 60,
+) -> str | None:
+    """Why `base_commit` is not a base the project takes pull requests on.
+
+    `None` when the screen names no other branch. One compare call: the
+    branch may be at most `BASE_BRANCH_SLACK` commits past the base commit,
+    and the base commit must be on it. Mailman #258.
+    """
+    base = (record or {}).get("pull_request_base")
+    if not isinstance(base, dict) or not base.get("branch"):
+        return None
+    slug = str(record.get("repository") or "")
+    branch = str(base["branch"])
+    result = execute(
+        [
+            executable or resolve_tool(Path.cwd(), "gh"),
+            "api",
+            f"repos/{slug}/compare/{base_commit}...{branch}",
+            "--jq",
+            "{status: .status, ahead_by: .ahead_by}",
+        ],
+        working_directory=Path.cwd(),
+        timeout_seconds=timeout_seconds,
+    )
+    if result.timed_out or result.exit_code != 0:
+        return (
+            f"{slug} takes pull requests against `{branch}`, and whether "
+            f"{base_commit} is on it could not be read: "
+            + ((result.stderr or "").strip()[:200] or "gh api failed")
+        )
+    try:
+        compared = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return f"the compare of {base_commit} with `{branch}` was unreadable"
+    status = compared.get("status")
+    ahead = compared.get("ahead_by")
+    if status == "identical" or (
+        status == "ahead" and isinstance(ahead, int) and ahead <= BASE_BRANCH_SLACK
+    ):
+        return None
+    return (
+        f"{slug} takes pull requests against `{branch}` "
+        f"({base.get('quote')!r}), and {base_commit} is not its head: "
+        f"compare says {status}, {ahead} commits behind. Use the head of "
+        f"`{branch}` as --base-commit"
+    )

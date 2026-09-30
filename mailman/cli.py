@@ -1380,6 +1380,12 @@ def _init_run(arguments: argparse.Namespace) -> int:
         prescreen_record, refusal = prescreen.check(root, arguments.issue)
         if refusal and not arguments.no_prescreen:
             raise ValueError(refusal)
+        # Mailman #258: a project whose pull requests go to another branch.
+        wrong_base = prescreen.base_branch_refusal(
+            prescreen_record, base_commit=arguments.base_commit
+        )
+        if wrong_base:
+            raise ValueError(wrong_base)
     elif arguments.no_prescreen:
         raise ValueError("a defect report has no upstream issue to pre-screen")
     run, run_directory = create_run(

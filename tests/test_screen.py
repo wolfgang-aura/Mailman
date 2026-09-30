@@ -3062,5 +3062,68 @@ class ShortlistTests(unittest.TestCase):
         self.assertEqual(printed["shortlist"][0]["number"], 11)
 
 
+
+
+class PullRequestBaseTests(unittest.TestCase):
+    """The branch a guide sends pull requests to. Mailman #258."""
+
+    def test_stanzas_guide_and_template_name_dev(self) -> None:
+        from mailman.screen import _pull_request_base
+
+        found = _pull_request_base(
+            [
+                "- Once the bug is confirmed, you can go ahead with implementing "
+                "the bugfix, and create a pull request **against the `dev` branch**.",
+            ]
+        )
+        self.assertEqual(found["branch"], "dev")
+        template = _pull_request_base(
+            [
+                "**BEFORE YOU START**: please make sure your pull request is "
+                "against the `dev` branch.\nWe cannot accept pull requests "
+                "against the `main` branch."
+            ]
+        )
+        self.assertEqual(template["branch"], "dev")
+
+    def test_a_refused_branch_is_not_the_base(self) -> None:
+        from mailman.screen import _pull_request_base
+
+        self.assertIsNone(
+            _pull_request_base(
+                ["We cannot accept pull requests against the `main` branch."]
+            )
+        )
+
+    def test_prose_about_branches_is_not_a_base(self) -> None:
+        from mailman.screen import _pull_request_base
+
+        self.assertIsNone(
+            _pull_request_base(
+                ["Create a branch for your change. Push it to your fork."]
+            )
+        )
+
+    def test_the_default_branch_named_is_no_constraint(self) -> None:
+        from mailman.screen import pull_request_base
+
+        def screen(branch: str) -> dict:
+            return {
+                "gates": [
+                    {
+                        "name": "policy",
+                        "data": {
+                            "pull_request_base": {"branch": branch, "quote": "q"}
+                        },
+                    },
+                    {"name": "direct-push", "data": {"default_branch": "main"}},
+                ]
+            }
+
+        self.assertIsNone(pull_request_base(screen("main")))
+        self.assertEqual(pull_request_base(screen("dev"))["branch"], "dev")
+        self.assertIsNone(pull_request_base(None))
+
+
 if __name__ == "__main__":
     unittest.main()
