@@ -117,6 +117,11 @@ TRIVIAL = "trivial"
 #: risk is seen before a run is opened. urllib3#5053 spent a full run in this
 #: state and closed `not_planned`. https://github.com/wolfgang-aura/Mailman/issues/116
 UNACKNOWLEDGED_ISSUE = "unacknowledged-issue"
+#: Reported from outside, still inside the grace window, and nobody who speaks
+#: for the project has replied or labelled it yet. A warning: a run on it ends
+#: in an ASK decision, which counts as ready_to_ask and never toward the hunt's
+#: quota. agentscope#3059 passed silently in this state. Mailman #287.
+UNTRIAGED_ASK_FIRST = "untriaged-ask-first"
 UNKNOWN = "unknown"
 #: Somebody in the thread says the bug is gone on main or the latest release.
 #: A warning: the claim is often right and cheap to check before `init-run`.
@@ -543,8 +548,26 @@ def _acknowledgement(
         ),
         created_at=claims.get("issue_created_at"),
     )
+    # The same question with no grace window: a fresh report nobody answered
+    # is not yet overdue, but it is still untriaged. Mailman #287.
+    untriaged = (
+        bool(claims.get("success"))
+        and not unacknowledged
+        and is_unacknowledged(
+            reporter_association=claims.get("reporter_association"),
+            maintainer_answered=bool(
+                shortlist_engaged
+                or claims.get("maintainer_replied")
+                or claims.get("maintainer_labelled")
+                or claims.get("invitations")
+            ),
+            created_at=claims.get("issue_created_at"),
+            days=0,
+        )
+    )
     return {
         "unacknowledged": unacknowledged,
+        "untriaged": untriaged,
         "reporter_association": claims.get("reporter_association"),
         "maintainer_replied": claims.get("maintainer_replied"),
         "maintainer_labelled": bool(claims.get("maintainer_labelled")),
@@ -794,6 +817,8 @@ def prescreen_issue(
     )
     if record["acknowledgement"]["unacknowledged"]:
         warnings.append(UNACKNOWLEDGED_ISSUE)
+    if record["acknowledgement"]["untriaged"]:
+        warnings.append(UNTRIAGED_ASK_FIRST)
     record["reported_fixed"] = claims.get("reported_fixed")
     if record["reported_fixed"]:
         warnings.append(REPORTED_FIXED_ON_MAIN)
@@ -1211,6 +1236,13 @@ def prescreen_issue(
             record["next"] += (
                 f" -- but first weigh {UNACKNOWLEDGED_ISSUE}: "
                 + record["acknowledgement"]["detail"]
+            )
+        if UNTRIAGED_ASK_FIRST in record["warnings"]:
+            record["next"] += (
+                f" -- but first weigh {UNTRIAGED_ASK_FIRST}: no owner, member "
+                "or collaborator has replied or labelled this report yet, so a "
+                "run on it decides ASK and counts only as ready_to_ask, never "
+                "toward the quota"
             )
         if REPORTED_FIXED_ON_MAIN in record["warnings"]:
             record["next"] += (

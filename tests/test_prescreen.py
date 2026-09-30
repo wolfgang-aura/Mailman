@@ -34,6 +34,7 @@ from mailman.prescreen import (
     TRIVIAL_FIX_DIRECT_PUSH,
     REPORTED_FIXED_ON_MAIN,
     UNACKNOWLEDGED_ISSUE,
+    UNTRIAGED_ASK_FIRST,
     UNKNOWN,
     check,
     estimate_fix_size,
@@ -767,6 +768,43 @@ class PrescreenTests(unittest.TestCase):
         )
 
         self.assertNotIn(UNACKNOWLEDGED_ISSUE, record["warnings"])
+
+    def test_a_fresh_untriaged_report_warns_that_the_run_only_asks(self) -> None:
+        # agentscope#3059 passed prescreen at five days old with no maintainer
+        # word, then its run decided ASK and never counted toward the quota.
+        # Mailman #287.
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub("[]", issue_api=self._aged(5)),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertIn(UNTRIAGED_ASK_FIRST, record["warnings"])
+        self.assertNotIn(UNACKNOWLEDGED_ISSUE, record["warnings"])
+        self.assertTrue(record["acknowledgement"]["untriaged"])
+        self.assertIn("ready_to_ask", record["next"])
+
+    def test_a_maintainer_reply_clears_the_untriaged_warning(self) -> None:
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                issue_api=self._aged(5),
+                comments=[
+                    {
+                        "body": "Confirmed, thanks.",
+                        "author_association": "MEMBER",
+                        "created_at": "2026-09-28T00:00:00Z",
+                        "user": {"login": "maintainer", "type": "User"},
+                    }
+                ],
+            ),
+        )
+
+        self.assertNotIn(UNTRIAGED_ASK_FIRST, record["warnings"])
+        self.assertFalse(record["acknowledgement"]["untriaged"])
 
     def test_each_symbol_in_the_issue_body_gets_its_own_narrow_search(self) -> None:
         # llama_index#22639: the body named the functions, two open rivals
