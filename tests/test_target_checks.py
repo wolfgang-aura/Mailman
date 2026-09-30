@@ -442,6 +442,73 @@ class OtherLinterTests(_Fixture):
         self.assertEqual(record["reason"], "passed")
         self.assertEqual(executor.calls, [])
 
+    # pylint's config (#260): black's exclude is a YAML anchor, a second black
+    # hook takes only doc/, and mypy's exclude is inline.
+    _PYLINT_PRE_COMMIT = (
+        "exclude: '^vendor/'\n"
+        "repos:\n"
+        "  - repo: https://github.com/psf/black-pre-commit-mirror\n"
+        "    rev: 26.5.1\n"
+        "    hooks:\n"
+        "      - id: black\n"
+        "        args: [--safe, --quiet]\n"
+        "        exclude: &fixtures tests(/\\w*)*/functional/|tests/input|doc/data/messages\n"
+        "      - id: black\n"
+        "        name: black-doc\n"
+        "        files: doc/data/messages/\n"
+        "        exclude: |\n"
+        "          (?x)^(\n"
+        "            doc/data/messages/r/raw.py\n"
+        "          )$\n"
+        "  - repo: https://github.com/pre-commit/mirrors-mypy\n"
+        "    rev: v2.3.1\n"
+        "    hooks:\n"
+        "      - id: mypy\n"
+        "        additional_dependencies:\n"
+        "          [\"isort>=5\"]\n"
+        "        exclude: *fixtures\n"
+    )
+
+    def _lint_pylint_shape(self, changed: list[str]) -> Executor:
+        self.write(".pre-commit-config.yaml", self._PYLINT_PRE_COMMIT)
+        for path in changed:
+            self.write(path, "x = 1\n")
+        executor = Executor({"--check --diff": 1, "mypy pkg": 1})
+        with patch("mailman.target_checks.execute", executor):
+            self.record, self.findings = run_lint(
+                self.run_directory, workspace=self.workspace, changed_paths=changed
+            )
+        return executor
+
+    def _linted(self, executor: Executor, tool: str) -> list[str]:
+        return [
+            path for call in executor.calls
+            if tool in call and "--version" not in call and "pip" not in call
+            for path in call if path.endswith(".py")
+        ]
+
+    def test_a_pre_commit_hook_exclude_skips_the_file_in_ci(self) -> None:
+        executor = self._lint_pylint_shape(
+            ["pkg/checker.py", "tests/functional/u/unreachable.py"]
+        )
+        self.assertEqual(self._linted(executor, "black"), ["pkg/checker.py"])
+        self.assertEqual(self._linted(executor, "mypy"), ["pkg/checker.py"])
+
+    def test_every_changed_file_outside_the_hooks_does_not_run(self) -> None:
+        executor = self._lint_pylint_shape(
+            ["tests/functional/u/unreachable.py", "vendor/lib.py"]
+        )
+        self.assertEqual(self._linted(executor, "black"), [])
+        self.assertEqual(self._linted(executor, "mypy"), [])
+        self.assertEqual(self.findings, [])
+        self.assertEqual(self.record["reason"], "passed")
+
+    def test_a_second_hook_of_the_tool_covers_its_own_files(self) -> None:
+        executor = self._lint_pylint_shape(
+            ["doc/data/messages/a/good.py", "doc/data/messages/r/raw.py"]
+        )
+        self.assertEqual(self._linted(executor, "black"), ["doc/data/messages/a/good.py"])
+
     def test_a_ty_that_installs_but_cannot_start_blocks_as_not_run(self) -> None:
         # securo#1039: CI ran ty, which Application Control blocks on this
         # host; the first CI run on the pull request failed.

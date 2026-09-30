@@ -23,6 +23,7 @@ import configparser
 import hashlib
 import json
 import re
+import textwrap
 import tomllib
 from collections import Counter
 from dataclasses import dataclass
@@ -539,6 +540,121 @@ def _mypy_excluded(workspace: Path, path: str) -> bool:
     return False
 
 
+_YAML_KEY = re.compile(r"^(\s*)(-\s+)?([\w-]+):(?:\s+(.*))?$")
+
+
+def _yaml_scalar(
+    value: str, lines: list[str], index: int, indent: int, anchors: dict[str, str]
+) -> tuple[str | None, int]:
+    """One scalar of a pre-commit config and the index of the line after it.
+
+    Handles what hook scopes use: an `&anchor`, a `*alias`, a `|` block and
+    single or double quotes.
+    """
+    anchor = None
+    if value.startswith("&"):
+        anchor, _, value = value.partition(" ")
+        anchor, value = anchor[1:], value.strip()
+    if value.startswith("*"):
+        return anchors.get(value[1:].strip()), index
+    if value[:1] in ("|", ">"):
+        body: list[str] = []
+        while index < len(lines) and (
+            not lines[index].strip()
+            or len(lines[index]) - len(lines[index].lstrip()) > indent
+        ):
+            body.append(lines[index])
+            index += 1
+        text = textwrap.dedent("\n".join(body)).strip("\n")
+    elif value[:1] in ("'", '"'):
+        quote = value[0]
+        end = value.rfind(quote)
+        text = value[1:end] if end > 0 else value[1:]
+        text = text.replace("''", "'") if quote == "'" else text.replace(chr(92) * 2, chr(92))
+    else:
+        text = re.sub(r"\s+#.*$", "", value)
+    if anchor:
+        anchors[anchor] = text
+    return text, index
+
+
+def _pre_commit_scopes(workspace: Path) -> tuple[dict, list[dict]] | None:
+    """The top-level `files`/`exclude`, and each hook's repo, id, files and exclude."""
+    path = workspace / ".pre-commit-config.yaml"
+    if not path.is_file():
+        return None
+    lines = _read(path).splitlines()
+    anchors: dict[str, str] = {}
+    top: dict[str, str | None] = {"files": None, "exclude": None}
+    hooks: list[dict[str, str | None]] = []
+    repo = ""
+    hook: dict[str, str | None] | None = None
+    key_indent = -1
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        found = _YAML_KEY.match(line)
+        if not found:
+            continue
+        spaces, dash, key, value = found.groups()
+        indent = len(spaces) + len(dash or "")
+        value = (value or "").strip()
+        if dash and key == "repo":
+            repo, hook = value, None
+            continue
+        if dash and repo:
+            hook = {"repo": repo, "id": None, "files": None, "exclude": None}
+            hooks.append(hook)
+            key_indent = indent
+        if key not in ("files", "exclude", "id") and not value.startswith("&"):
+            continue
+        text, index = _yaml_scalar(value, lines, index, indent, anchors)
+        if indent == 0:
+            if key in top:
+                top[key] = text
+        elif hook is not None and indent == key_indent and key in hook:
+            hook[key] = text
+    return top, hooks
+
+
+def _pre_commit_skips(workspace: Path, tool: LintTool, path: str) -> bool:
+    """Whether CI's pre-commit leaves `path` out of every hook of `tool` (#260).
+
+    pylint excludes tests/functional/ from black and mypy; linting a new
+    functional test there blocked a run on findings CI never reports. A
+    pattern that does not compile counts as covering the file.
+    """
+    scopes = _pre_commit_scopes(workspace)
+    if scopes is None:
+        return False
+    top, hooks = scopes
+    own = [
+        hook for hook in hooks
+        if hook["id"] == tool.name
+        or (re.search(tool.pre_commit_repo, str(hook["repo"]), re.IGNORECASE)
+            and not str(hook["id"]).endswith("-format"))
+    ]
+    if not own:
+        return False
+    posix = path.replace(chr(92), "/")
+
+    def matches(pattern: str | None, default: bool) -> bool:
+        if pattern is None:
+            return default
+        try:
+            return re.search(pattern, posix) is not None
+        except re.error:
+            return default
+
+    if not matches(top["files"], True) or matches(top["exclude"], False):
+        return True
+    return not any(
+        matches(hook["files"], True) and not matches(hook["exclude"], False)
+        for hook in own
+    )
+
+
 BASELINE_DIRECTORY = "lint-base"
 _DIGITS = re.compile(r"\d+")
 _NOTE = re.compile(r":\d+(?::\d+)?: note: ")
@@ -754,13 +870,14 @@ def _lint_each(
         files = changed_files
         if tool.name == "mypy":
             files = [path for path in files if not _mypy_excluded(workspace, path)]
+        files = [path for path in files if not _pre_commit_skips(workspace, tool, path)]
         if not files:
             entries.append(
                 {
                     **configuration,
                     "ran": True,
-                    "reason": "excluded: the target's mypy configuration excludes "
-                    "every changed file",
+                    "reason": f"excluded: the target's {tool.name} configuration or "
+                    "pre-commit hooks exclude every changed file",
                     "install": None,
                     "commands": [],
                     "results": [],
