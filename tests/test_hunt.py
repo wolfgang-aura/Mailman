@@ -1429,6 +1429,25 @@ class SweepTests(OrchestratorHarness):
         self.assertEqual([row["target"] for row in result["rows"]], ["acme/a#2"])
         self.assertEqual(result["claimed"], [{"target": "acme/a#1", "pull_requests": [12]}])
 
+    def test_a_closed_earlier_pull_request_ranks_the_row_after_clean_ones(self):
+        # airflow#73311, huggingface_hub#4893 and two marimo rows came back
+        # maintainer-closed-attempt at prescreen on 2026-09-30. Mailman #266.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        closed = {"event": "cross-referenced", "source": {"issue": {
+            "number": 13, "state": "closed", "pull_request": {"merged_at": None}}}}
+        gh = _SearchGh(
+            [[_item("acme/a", 1, comments=3), _item("acme/a", 2)]],
+            timelines={"repos/acme/a/issues/1/timeline": [closed]})
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(
+            [(row["target"], row["prior_attempts"]) for row in result["rows"]],
+            [("acme/a#2", []), ("acme/a#1", [13])],
+        )
+
     def test_a_maintainer_label_or_reply_ranks_the_row_engaged_first(self):
         from mailman.hunt import sweep_fresh_issues
         self._screen("acme/a", [])

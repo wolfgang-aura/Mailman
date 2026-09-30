@@ -821,6 +821,19 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
         if rivals:
             claimed_rows.append({"target": row["target"], "pull_requests": rivals})
             continue
+        # A closed, unmerged attempt is often one a maintainer turned down,
+        # which prescreen rejects; a self-closed one can still be superseded,
+        # so the row stays but ranks after clean ones. Mailman #266.
+        row["prior_attempts"] = sorted({
+            source["number"] for source in (
+                ((event.get("source") or {}).get("issue") or {}) for event in events
+                if isinstance(event, dict) and event.get("event") == "cross-referenced"
+            )
+            if source.get("pull_request") is not None
+            and isinstance(source.get("number"), int)
+            and source.get("state") == "closed"
+            and not (source.get("pull_request") or {}).get("merged_at")
+        })
         row["engaged"] = any(
             (event.get("event") == "commented"
              and event.get("author_association") in MAINTAINER_ASSOCIATIONS)
@@ -832,7 +845,8 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
         )
         kept.append(row)
     ordered = sorted(kept, key=lambda row: str(row["created_at"] or ""), reverse=True)
-    ordered.sort(key=lambda row: (row["engaged"] is not True, row["comments"] == 0))
+    ordered.sort(key=lambda row: (bool(row.get("prior_attempts")),
+                                  row["engaged"] is not True, row["comments"] == 0))
     return {"queries": len(slugs), "repositories": len(slugs), "since": since,
             "failed": failed, "truncated": truncated, "claimed": claimed_rows,
             "rows": ordered}
