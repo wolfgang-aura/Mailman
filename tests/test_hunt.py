@@ -992,7 +992,8 @@ class PrescreenRecordTests(OrchestratorHarness):
         return {"repository": slug, "issue_number": number, "verdict": verdict,
                 "blocking": list(blocking), "screened_at": "2026-09-28T01:00:00+00:00"}
 
-    def _screen(self, slug, numbers, *, verdict="pass", days_old=0, flags=None):
+    def _screen(self, slug, numbers, *, verdict="pass", days_old=0, flags=None,
+                window_days=None):
         from mailman.screen import (FRESHNESS_WINDOW_DAYS, ISSUE_WINDOW_DAYS,
                                     RESPONSIVENESS_WINDOW_DAYS)
         path = screen_path(self.data_root, slug)
@@ -1003,7 +1004,7 @@ class PrescreenRecordTests(OrchestratorHarness):
         path.write_text(json.dumps({
             "repository": slug, "success": True, "verdict": verdict,
             "screened_at": (datetime.now(UTC) - timedelta(days=days_old)).isoformat(),
-            "window_days": FRESHNESS_WINDOW_DAYS,
+            "window_days": FRESHNESS_WINDOW_DAYS if window_days is None else window_days,
             "issue_window_days": ISSUE_WINDOW_DAYS,
             "responsiveness_days": RESPONSIVENESS_WINDOW_DAYS,
             "gates": [{"name": "saturation", "data": {"shortlist": rows}}],
@@ -1343,6 +1344,23 @@ class SweepTests(OrchestratorHarness):
 
         self.assertEqual(sorted(row["target"] for row in result["rows"]),
                          ["acme/a#1", "acme/a#2", "acme/a#9"])
+
+    def test_a_pass_read_under_a_narrower_freshness_window_is_still_swept(self):
+        # #284 widened the window to 60 days and the next sweep read one
+        # repository of about 150, saying nothing. Mailman #286.
+        from mailman.hunt import sweep_fresh_issues
+        from mailman.screen import FRESHNESS_WINDOW_DAYS
+        self._screen("acme/narrow", [], window_days=FRESHNESS_WINDOW_DAYS - 15)
+        self._screen("acme/wide", [], window_days=FRESHNESS_WINDOW_DAYS + 30)
+        self._screen("acme/now", [])
+        gh = _SearchGh([])
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime.now(UTC))
+
+        self.assertEqual(result["repositories"], 2)
+        self.assertTrue(any("acme/narrow" in path for path in gh.paths))
+        self.assertEqual(result["stale_screens"], ["acme/wide"])
 
     def test_other_invitation_labels_are_admitted(self):
         # bleachbit's maintainer filed #2307 as `status:ready-for-dev`; only a

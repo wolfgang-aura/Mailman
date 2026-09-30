@@ -641,11 +641,29 @@ def rescreen_warning(rows: list[dict], limit: int = 10) -> str | None:
     )
 
 
+def _pass_stands(screen: dict) -> bool:
+    """A pass read under today's windows, or a freshness window no wider.
+
+    Widening the freshness window only adds merges, so such a pass still
+    stands. Requiring exact windows left one repository of about 150 to sweep
+    after #284. Mailman #286.
+    """
+    from mailman.screen import FRESHNESS_WINDOW_DAYS
+
+    if screen_is_current(screen):
+        return True
+    window = screen.get("window_days")
+    return (isinstance(window, int) and window <= FRESHNESS_WINDOW_DAYS
+            and screen_is_current(screen, window_days=window))
+
+
 def _passing_screens(root: Path, held_repositories: set[str] | None,
-                     max_age_days: int, now: datetime | None) -> list[tuple]:
+                     max_age_days: int, now: datetime | None,
+                     stale: list[str] | None = None) -> list[tuple]:
     """(screened_at, slug, screen) for current passing screens, newest first.
 
-    A repository holding our open pull request is left out.
+    A repository holding our open pull request is left out. A pass that no
+    longer stands under today's windows is named in `stale` when given.
     """
     from mailman.screen import SCREENS_DIRECTORY
 
@@ -659,7 +677,9 @@ def _passing_screens(root: Path, held_repositories: set[str] | None,
         screen = read_object(path)
         if not screen or not screen.get("success") or screen.get("verdict") != "pass":
             continue
-        if not screen_is_current(screen):
+        if not _pass_stands(screen):
+            if stale is not None:
+                stale.append(repository_slug(str(screen.get("repository") or "")))
             continue
         try:
             screened = datetime.fromisoformat(str(screen.get("screened_at")))
@@ -747,8 +767,9 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
     from mailman.prescreen import prescreen_path, required_labels
 
     moment = now or datetime.now(UTC)
+    stale: list[str] = []
     slugs = [slug for _, slug, _ in _passing_screens(
-        root, held_repositories, SWEEP_SCREEN_MAX_AGE_DAYS, moment)]
+        root, held_repositories, SWEEP_SCREEN_MAX_AGE_DAYS, moment, stale)]
     since = (moment - timedelta(days=since_days)).date().isoformat()
     claimed = {claim["target"] for claim in target_claims(root) if claim["live"]}
     rows: dict[str, dict] = {}
@@ -864,7 +885,7 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
                                   row["engaged"] is not True, row["comments"] == 0))
     return {"queries": len(slugs), "repositories": len(slugs), "since": since,
             "failed": failed, "truncated": truncated, "claimed": claimed_rows,
-            "unverified": unverified, "rows": ordered}
+            "unverified": unverified, "stale_screens": sorted(stale), "rows": ordered}
 
 
 def workable_targets(root: Path, *, held_repositories: set[str] | None = None,

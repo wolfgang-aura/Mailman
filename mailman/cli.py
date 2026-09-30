@@ -1083,6 +1083,11 @@ def _hunt(arguments: argparse.Namespace) -> int:
         gh = _Gh(resolve_tool(home, "gh"), home, 60.0)
         result = hunt.sweep_fresh_issues(root, gh, since_days=arguments.since_days)
         print(json.dumps(result, indent=2))
+        if result.get("stale_screens"):
+            # Passes skipped as stale shrink the sweep without a word. #286.
+            print(f"{len(result['stale_screens'])} passing screen(s) read under other "
+                  "windows were skipped; `mailman screen-target SLUG --refresh` re-reads them",
+                  file=sys.stderr)
         return 1 if result["failed"] or result.get("unverified") else 0
     if arguments.action == "watch":
         # Every filed pull request, re-read from GitHub. Non-zero when one is
