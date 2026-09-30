@@ -20,7 +20,7 @@ from mailman.orchestrator import orchestration_step_names
 from mailman.provenance import upstream_issue_number
 from mailman.review_decision import UNTRIAGED_GATE, DecisionError, load_decision
 from mailman.screen import load_screen, screen_is_current
-from mailman.target_intel import repository_slug
+from mailman.target_intel import _is_bot, repository_slug
 from mailman.targeting import (
     STALE_PRIOR_ATTEMPT,
     UNACKNOWLEDGED_ATTEMPTS,
@@ -778,7 +778,9 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
             (event.get("event") == "commented"
              and event.get("author_association") in MAINTAINER_ASSOCIATIONS)
             or (event.get("event") == "labeled"
-                and (event.get("actor") or {}).get("login") not in (None, author))
+                and (event.get("actor") or {}).get("login") not in (None, author)
+                # A labelling bot is not triage (#253).
+                and not _is_bot(event.get("actor")))
             for event in events if isinstance(event, dict)
         )
         kept.append(row)

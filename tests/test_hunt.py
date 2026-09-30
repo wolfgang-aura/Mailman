@@ -1395,6 +1395,21 @@ class SweepTests(OrchestratorHarness):
             [("acme/a#3", True), ("acme/a#2", True), ("acme/a#1", False)],
         )
 
+    def test_a_bot_label_is_not_triage(self):
+        # agentscope's github-actions[bot] labels every new issue
+        # triage/confirmed. Mailman #253.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        bot = {"event": "labeled", "label": {"name": "triage/confirmed"},
+               "actor": {"login": "github-actions[bot]", "type": "Bot"}}
+        gh = _SearchGh([{"items": [_item("acme/a", 1)]}],
+                       timelines={"repos/acme/a/issues/1/timeline": [bot]})
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual([row["engaged"] for row in result["rows"]], [False])
+
 
 class RescreenTests(OrchestratorHarness):
     """Failing screens judged under older responsiveness rules. Mailman #227."""
