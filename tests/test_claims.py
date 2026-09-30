@@ -1313,6 +1313,23 @@ class MaintainerDisputeTests(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertIsNotNone(maintainer_dispute([self._comment(body)]))
 
+    def test_a_retry_request_or_an_unsure_question_is_a_dispute(self):
+        # huggingface_hub#3430 and marimo#9185 passed prescreen on these.
+        # Mailman #256.
+        from mailman.claims import maintainer_dispute
+
+        for body in (
+            "Can you retry? Maybe it was a transient error. It works on my side:",
+            "It works on my end with the latest wheel.",
+            "Hmm, I actually am not sure why your database is being locked. "
+            "Are you writing to the db?",
+            "The connection lives in the kernel globals, but maybe can try "
+            "closing the connection manually and reconnect",
+            "@someone can you please share a file which triggers the problem?",
+        ):
+            with self.subTest(body=body):
+                self.assertIsNotNone(maintainer_dispute([self._comment(body)]))
+
     def test_an_outsider_saying_works_for_me_is_not_a_dispute(self):
         from mailman.claims import maintainer_dispute
 

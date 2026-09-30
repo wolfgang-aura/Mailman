@@ -1055,6 +1055,8 @@ _NOT_REPRODUCED = re.compile(
     r"|tried (?:to )?(?:reproduc|repro|replicat)\w*(?:[^.!?\n]|(?<=\d)\.(?=\d)){0,60}?\bbut"
     r" (?:couldn't|could not|can't|cannot|wasn't able|was not able|was unable|failed)\b"
     r"|works (?:fine )?for me\b"
+    # huggingface_hub#3430 "It works on my side". Mailman #256.
+    r"|works (?:fine )?on my (?:side|end|machine)\b"
     r"|no repro\b"
     r")",
     re.IGNORECASE,
@@ -1079,8 +1081,15 @@ _NEEDS_INFO = re.compile(
     # #3795 "Could you try disabling xet". Mailman #193.
     r"|(?:can|could) you (?:please )?(?:attach|share|post|send|provide)"
     r" (?:the |a |an |some |your |us )?[\"'“]?(?:full |complete |debug )?"
-    r"(?:logs?|crash|stack ?trace|output|details)"
-    r"|(?:can|could) you (?:please )?try\b"
+    # docling#2714 "can you please share a file which triggers the problem?"
+    r"(?:logs?|crash|stack ?trace|output|details|files?|samples?|documents?"
+    r"|pdfs?|examples?|reproduc\w*|repro)"
+    r"|(?:can|could) you (?:please )?(?:re)?try\b"
+    # marimo#9185 "not sure why your database is being locked. Are you
+    # writing to the db?" and "maybe can try closing the connection
+    # manually": a guess and a workaround, not a confirmed bug. Mailman #256.
+    r"|not sure why\b"
+    r"|maybe (?:you )?(?:can|could) try\b"
     # s3fs#999 "Could you please show the contents of fs.dircache". #195.
     r"|(?:can|could) you (?:please )?show (?:us |me )?(?:the |what|how|your)"
     r"|have you tried\b"
