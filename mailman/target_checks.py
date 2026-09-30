@@ -279,11 +279,14 @@ def _version(tool: LintTool, sources: dict[str, str]) -> str | None:
         rf"{tool.pre_commit_repo}[^\n]*\n\s*rev:\s*['\"]?v?([0-9][\w.]*)", re.IGNORECASE
     )
     pinned = re.compile(rf"(?<![\w-]){re.escape(tool.name)}\s*==\s*([0-9][\w.]*)")
-    for text in sources.values():
-        # A pin can sit in a dependency group of a pyproject with no [tool.x].
-        found = pre_commit.search(text) or pinned.search(text)
-        if found:
-            return found.group(1)
+    # CI's pre-commit rev outranks a dev-group pin in any file: prefect's CI
+    # runs ruff v0.15.19 while its dev group pins 0.16.2. Mailman #247.
+    for pattern in (pre_commit, pinned):
+        for text in sources.values():
+            # A pin can sit in a dependency group of a pyproject with no [tool.x].
+            found = pattern.search(text)
+            if found:
+                return found.group(1)
     return None
 
 
@@ -417,6 +420,53 @@ def _run_tool(
                 "install: " + _tail(probed.stdout + "\n" + probed.stderr, 3).strip()
             )
             return entry
+    environment: dict[str, str] | None = None
+    pinned = configuration.get("version")
+    found = re.search(r"\d+(?:\.\d+)+", probed.stdout)
+    if pinned and found and found.group(0) != pinned:
+        # A newer tool enables rules the target's CI never runs: the lockfile's
+        # ruff 0.16.2 flagged UP007 where prefect's pinned 0.15.19 passed.
+        # The pin goes beside the environment, not into it. Mailman #247.
+        tools = Path(python).parent.parent.parent / "lint-tools" / f"{tool.name}-{pinned}"
+        requirement = f"{tool.name}=={pinned}"
+        install = execute(
+            [python, "-m", "pip", "install", "--disable-pip-version-check",
+             "--target", str(tools), requirement],
+            working_directory=workspace,
+            timeout_seconds=INSTALL_TIMEOUT_SECONDS,
+        )
+        entry["install"] = {
+            "requirement": requirement,
+            "replaces": found.group(0),
+            "exit_code": install.exit_code,
+            "timed_out": install.timed_out,
+            "output_tail": _tail(install.stdout + "\n" + install.stderr, 20),
+        }
+        if install.timed_out or install.exit_code != 0:
+            entry["reason"] = (
+                f"not-run: the target pins {requirement}, the environment has "
+                f"{found.group(0)}, and `pip install --target` exited {install.exit_code}"
+            )
+            return entry
+        environment = {"PYTHONPATH": str(tools)}
+        # `python -m ruff` looks for the venv's ruff.exe before the --target
+        # folder's bin/, so PYTHONPATH alone still ran 0.16.2. A tool that
+        # ships a binary is called by that binary.
+        binaries = [tools / "bin" / f"{tool.name}{suffix}" for suffix in (".exe", "")]
+        binary = next((path for path in binaries if path.is_file()), None)
+        if binary is not None:
+            base = [str(binary)]
+        probed = execute(
+            [*base, "--version"], working_directory=workspace,
+            timeout_seconds=120, environment=environment,
+        )
+        if pinned not in probed.stdout:
+            entry["reason"] = (
+                f"not-run: installed {requirement} beside the environment, but "
+                f"`{tool.name} --version` reports: "
+                + _tail(probed.stdout + "\n" + probed.stderr, 3).strip()
+            )
+            return entry
     for arguments in tool.commands:
         commands = [list(arguments)]
         if tool.name == "ruff" and configuration.get("format") and arguments[0] == "check":
@@ -424,12 +474,16 @@ def _run_tool(
         for command_arguments in commands:
             command = [*base, *command_arguments, *files]
             result = execute(
-                command, working_directory=workspace, timeout_seconds=timeout_seconds
+                command,
+                working_directory=workspace,
+                timeout_seconds=timeout_seconds,
+                environment=environment,
             )
             entry["commands"].append(command)
             entry["results"].append(
                 {
                     "command": command,
+                    "environment": environment,
                     "label": " ".join([tool.name, *command_arguments[:1]]),
                     "exit_code": result.exit_code,
                     "timed_out": result.timed_out,
@@ -584,7 +638,12 @@ def _new_findings(
     if not base_files:
         return None, "every linted file is new in this patch"
     command = [*result["command"][: len(result["command"]) - len(files)], *base_files]
-    ran = execute(command, working_directory=baseline.path, timeout_seconds=timeout_seconds)
+    ran = execute(
+        command,
+        working_directory=baseline.path,
+        timeout_seconds=timeout_seconds,
+        environment=result.get("environment"),
+    )
     if ran.timed_out:
         return None, "the base run timed out"
     roots = (workspace.resolve(), baseline.path.resolve(), workspace, baseline.path)

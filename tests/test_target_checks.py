@@ -160,6 +160,20 @@ class RuffConfigurationTests(_Fixture):
         self.assertEqual(configuration["version"], "0.6.9")
         self.assertTrue(configuration["format"])
 
+    def test_a_pre_commit_rev_outranks_a_dev_dependency_pin(self) -> None:
+        # prefect's CI runs pre-commit at v0.15.19; its dev group pins
+        # ruff==0.16.2, which the gate took and failed a clean patch. #247.
+        self.write(
+            "pyproject.toml",
+            '[dependency-groups]\ndev = ["ruff==0.16.2"]\n[tool.ruff]\n',
+        )
+        self.write(
+            ".pre-commit-config.yaml",
+            "repos:\n  - repo: https://github.com/astral-sh/ruff-pre-commit\n"
+            "    rev: v0.15.19\n    hooks:\n      - id: ruff-check\n",
+        )
+        self.assertEqual(ruff_configuration(self.workspace)["version"], "0.15.19")
+
 
 class LintTests(_Fixture):
     def setUp(self) -> None:
@@ -201,6 +215,67 @@ class LintTests(_Fixture):
         self.assertEqual(record["tools"][0]["install"]["requirement"], "ruff==0.16.0")
         self.assertIn("ruff==0.16.0", executor.calls[1])
         self.assertTrue(record["ran"])
+
+    def test_a_ruff_other_than_the_pin_runs_the_pin_from_a_tools_folder(self) -> None:
+        # prefect pins ruff 0.15.19; the lockfile's 0.16.2 added UP007 and
+        # the gate blocked a clean patch. `python -m ruff` still found the
+        # venv's ruff.exe, so the pinned binary is called directly. Mailman #247.
+        tools = self.run_directory / "lint-tools" / "ruff-0.16.0"
+        binary = tools / "bin" / "ruff.exe"
+
+        class Newer(Executor):
+            def __call__(self, command, *, working_directory, timeout_seconds, **options):
+                result = super().__call__(
+                    command,
+                    working_directory=working_directory,
+                    timeout_seconds=timeout_seconds,
+                )
+                self.environments = getattr(self, "environments", [])
+                self.environments.append(options.get("environment"))
+                if "--target" in command:
+                    binary.parent.mkdir(parents=True)
+                    binary.write_bytes(b"")
+                if command[-1] == "--version":
+                    version = "0.16.0" if command[0] == str(binary) else "0.16.2"
+                    return _result(list(command), stdout=f"ruff {version}\n")
+                return result
+
+        executor = Newer()
+        record, findings = self._run(executor)
+        self.assertEqual(findings, [])
+        install = record["tools"][0]["install"]
+        self.assertEqual(install["requirement"], "ruff==0.16.0")
+        self.assertIn("--target", executor.calls[1])
+        self.assertIn(str(tools), executor.calls[1])
+        self.assertEqual(executor.calls[-1][:2], [str(binary), "check"])
+        self.assertEqual(executor.environments[-1], {"PYTHONPATH": str(tools)})
+
+    def test_a_pin_that_still_reports_another_version_blocks_as_not_run(self) -> None:
+        class Stuck(Executor):
+            def __call__(self, command, **options):
+                result = super().__call__(command, **options)
+                if command[-1] == "--version":
+                    return _result(list(command), stdout="ruff 0.16.2\n")
+                return result
+
+        executor = Stuck()
+        record, findings = self._run(executor)
+        self.assertEqual([f["code"] for f in findings], ["lint-not-run"])
+        self.assertIn("0.16.2", record["tools"][0]["reason"])
+        self.assertFalse(any("check" in call for call in executor.calls))
+
+    def test_a_ruff_at_the_pin_is_not_reinstalled(self) -> None:
+        class Pinned(Executor):
+            def __call__(self, command, **options):
+                if command[-1] == "--version":
+                    self.calls.append(list(command))
+                    return _result(list(command), stdout="ruff 0.16.0\n")
+                return super().__call__(command, **options)
+
+        executor = Pinned()
+        record, _ = self._run(executor)
+        self.assertIsNone(record["tools"][0]["install"])
+        self.assertFalse(any("pip" in call for call in executor.calls))
 
     def test_a_ruff_that_cannot_be_installed_blocks_as_not_run(self) -> None:
         executor = Executor({"ruff --version": 1, "pip install": 1})
