@@ -275,6 +275,16 @@ class ClassifyCommentTests(unittest.TestCase):
         # Only somebody who can actually hand out the work is handing it out.
         self.assertIsNone(classify_comment(_comment("Go ahead, all yours")))
 
+    def test_an_issue_form_heading_is_not_a_claim(self) -> None:
+        # netbox-community/netbox's bug form: every report carries the
+        # "Proposed Fix" heading, filled or not. Mailman #254.
+        body = (
+            "### NetBox Edition\n\nNetBox Community\n\n"
+            "### Proposed Fix\n\n_No response_\n\n"
+            "### Steps to Reproduce\n\n1. Open the device list"
+        )
+        self.assertIsNone(classify_comment(_comment(body)))
+
     def test_a_bot_comment_is_never_a_claim(self) -> None:
         comment = _comment("I'm working on this", login="github-actions[bot]")
         comment["user"]["type"] = "Bot"

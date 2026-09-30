@@ -595,6 +595,9 @@ def classify_comment(
     # Fenced code is pasted output, not prose: pyright's "cannot be assigned
     # to parameter" read as a handover on py-shiny#2497. Mailman #207.
     prose = _CODE_FENCE.sub(" ", _unquoted(comment.get("body")))
+    # A Markdown heading is a label: NetBox's issue form prints "### Proposed
+    # Fix" on every report, filled or not. Mailman #254.
+    prose = _HEADING.sub(" ", prose)
     body = _matchable(_flat(prose))
     if not body:
         return None
@@ -610,6 +613,7 @@ def classify_comment(
 
 
 _SENTENCE_BREAK = re.compile(r"(?<=[.?!;])\s+")
+_HEADING = re.compile(r"^[ \t]{0,3}#{1,6}[ \t].*$", re.MULTILINE)
 
 
 def classify_thread(
