@@ -693,6 +693,9 @@ SWEEP_SINCE_DAYS = 60
 #: calls four seconds apart, and `label:"Needs PR"` returned nothing for
 #: pylint while pylint#11440 carried that label. Mailman #259.
 SWEEP_PAUSE_SECONDS = 0.5
+#: Pages of 100 open issues read per repository before it is reported under
+#: `truncated`.
+SWEEP_PAGES = 5
 #: A label that says the report is a defect: "bug", "kind/bug",
 #: "Issue Type: Bug Report", "False Positive 🦟", "Crash 💥".
 _DEFECT_LABEL = re.compile(r"(?i)\bbug\b|regression|false (?:positive|negative)|crash")
@@ -705,7 +708,9 @@ _UNDECIDED_LABEL = re.compile(
     r"|needs[ -]product|cannot[ -]reproduce|can't reproduce|\bquestion\b|duplicate"
     r"|wontfix|won't fix|invalid|\bstale\b|awaiting"
     # PyMuPDF's "fix developed" and "Fixed in next release": already fixed.
-    r"|fix(?:ed)? (?:developed|in|merged)")
+    r"|fix(?:ed)? (?:developed|in|merged)"
+    # PyMuPDF's "upstream bug" is in the MuPDF C library. Mailman #262.
+    r"|upstream")
 #: An invitation on a feature request is not a bug to fix.
 _REQUEST_LABEL = re.compile(r"(?i)enhancement|feature|documentation|\bdocs?\b|proposal")
 
@@ -740,12 +745,25 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
     claimed = {claim["target"] for claim in target_claims(root) if claim["live"]}
     rows: dict[str, dict] = {}
     failed: list[str] = []
+    truncated: list[str] = []
     for index, slug in enumerate(slugs):
         if index:
             gh.sleep(pause_seconds)
-        items = gh.json(f"repos/{slug}/issues?state=open&since={since}T00:00:00Z"
-                        "&sort=created&direction=desc&per_page=100")
-        if not isinstance(items, list):
+        # One page is 100 issues, a few weeks of a large repository; the
+        # rest of a wide window was dropped silently. Mailman #262.
+        items: list = []
+        for page in range(1, SWEEP_PAGES + 1):
+            answer = gh.json(f"repos/{slug}/issues?state=open&since={since}T00:00:00Z"
+                             f"&sort=created&direction=desc&per_page=100&page={page}")
+            if not isinstance(answer, list):
+                items = None
+                break
+            items.extend(answer)
+            if len(answer) < 100:
+                break
+        else:
+            truncated.append(slug)
+        if items is None:
             failed.append(slug)
             continue
         for item in items:
@@ -813,7 +831,8 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
     ordered = sorted(kept, key=lambda row: str(row["created_at"] or ""), reverse=True)
     ordered.sort(key=lambda row: (row["engaged"] is not True, row["comments"] == 0))
     return {"queries": len(slugs), "repositories": len(slugs), "since": since,
-            "failed": failed, "claimed": claimed_rows, "rows": ordered}
+            "failed": failed, "truncated": truncated, "claimed": claimed_rows,
+            "rows": ordered}
 
 
 def workable_targets(root: Path, *, held_repositories: set[str] | None = None,

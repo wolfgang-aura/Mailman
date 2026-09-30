@@ -1314,6 +1314,7 @@ class SweepTests(OrchestratorHarness):
             _item("acme/a", 10, labels=("type:bug", "status:cannot-reproduce")),
             _item("acme/a", 11, labels=("upstream bug", "fix developed")),
             _item("acme/a", 12, labels=("bug", "status:needs-product-approval")),
+            _item("acme/a", 13, labels=("upstream bug",)),
         ]])
 
         result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
@@ -1321,6 +1322,24 @@ class SweepTests(OrchestratorHarness):
 
         self.assertEqual(sorted(row["target"] for row in result["rows"]),
                          ["acme/a#1", "acme/a#2", "acme/a#9"])
+
+    def test_a_full_page_is_followed_and_the_cap_is_reported(self):
+        # One page of 100 is a few weeks of streamlit; a 180-day sweep kept
+        # three more rows than a 60-day one. Mailman #262.
+        from mailman.hunt import SWEEP_PAGES, sweep_fresh_issues
+        self._screen("acme/a", [])
+        self._screen("acme/b", [])
+        full = [_item("acme/a", 1000 + n, labels=("question",)) for n in range(100)]
+        gh = _SearchGh([full, [_item("acme/a", 7)]] + [list(full)] * SWEEP_PAGES)
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(len(gh.paths), 2 + SWEEP_PAGES)
+        self.assertIn("&page=2", gh.paths[1])
+        self.assertEqual(len(result["truncated"]), 1)
+        self.assertEqual(len(result["rows"]), 1)
+        self.assertTrue(result["rows"][0]["target"].endswith("#7"))
 
     def test_rows_skip_prescreened_and_rank_commented_issues_first(self):
         from mailman.hunt import sweep_fresh_issues
