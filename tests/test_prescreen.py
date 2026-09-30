@@ -198,6 +198,8 @@ if ARGUMENTS[:2] == ["pr", "view"]:
     emit("pr-" + slug.replace("/", "__") + "-" + ARGUMENTS[2] + ".json")
 if ARGUMENTS[:1] == ["api"]:
     path = ARGUMENTS[1]
+    if path == "graphql":
+        emit("mergers.json")
     if "/compare/" in path:
         emit("compare.json")
     if "/comments" in path:
@@ -2343,6 +2345,26 @@ class MaintainerOwnedFixTests(StalePriorAttemptTests):
         self.assertEqual(owned["number"], 8)
         self.assertEqual(owned["author"], "mscolnick")
         self.assertIn("maintainer", record["next"])
+
+    def test_a_screen_from_before_the_merger_record_is_read_live(self) -> None:
+        # marimo's screen dated from 2026-09-28, the day before #203; its lead
+        # maintainer's closed fix read as an outsider's. Mailman #263.
+        path = screen_path(self.root, "example/project")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"repository": "example/project", "success": True,
+                                    "verdict": "pass", "gates": []}), encoding="utf-8")
+        executable = self.stub("[]", self.issue(),
+                               pull_requests={"example/project#8": self.parked()},
+                               timelines={8: [{"event": "closed",
+                                               "actor": {"login": "github-actions[bot]"}}]})
+        answer = {"data": {"repository": {"pullRequests": {"nodes": [
+            {"mergedBy": {"login": "mscolnick", "__typename": "User"}}]}}}}
+        (Path(executable).parent / "mergers.json").write_text(json.dumps(answer), encoding="utf-8")
+
+        record = prescreen_issue(self.root, "example/project#7", executable=executable)
+
+        self.assertEqual(record["blocking"], [MAINTAINER_OWNED_FIX])
+        self.assertEqual(record["maintainer_logins_known"], 1)
 
     def test_without_a_screen_record_the_old_warning_stands(self) -> None:
         record = self.prescreen(self.parked())

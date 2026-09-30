@@ -581,6 +581,32 @@ def is_fresh(record: dict[str, Any], *, hours: int = PRESCREEN_HOURS) -> bool:
     return datetime.now(UTC) - screened < timedelta(hours=hours)
 
 
+def _live_maintainers(
+    slug: str, executable: str | None, timeout_seconds: float
+) -> frozenset[str]:
+    """Who merged the repository's recent pull requests, read with one call."""
+    from mailman.maintainers import MERGERS_QUERY, mergers
+
+    owner, _, name = slug.partition("/")
+    result = execute(
+        [
+            executable or resolve_tool(Path.cwd(), "gh"),
+            "api",
+            "graphql",
+            "-f",
+            f"query={MERGERS_QUERY % (owner, name)}",
+        ],
+        working_directory=Path.cwd(),
+        timeout_seconds=timeout_seconds,
+    )
+    if result.timed_out or result.exit_code != 0:
+        return frozenset()
+    try:
+        return frozenset(mergers(json.loads(result.stdout or "{}")))
+    except json.JSONDecodeError:
+        return frozenset()
+
+
 def prescreen_issue(
     data_root: Path,
     issue: str,
@@ -598,7 +624,12 @@ def prescreen_issue(
     # Who merges here, as the repository screen recorded it. GitHub calls a
     # maintainer with a private membership CONTRIBUTOR. Empty without a
     # screen, which leaves every check on the association alone. Mailman #203.
-    maintainers = maintainer_logins(load_screen(data_root, slug))
+    stored_screen = load_screen(data_root, slug)
+    maintainers = maintainer_logins(stored_screen)
+    # A screen written before #203 never read who merges; read it now rather
+    # than call a private-member maintainer an outsider. Mailman #263.
+    if isinstance(stored_screen, dict) and "maintainer_logins" not in stored_screen:
+        maintainers = _live_maintainers(slug, executable, timeout_seconds)
     captured = capture_issue_from_github(
         directory,
         issue_url=issue_url,
