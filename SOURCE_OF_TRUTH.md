@@ -386,10 +386,19 @@ opening the local packet URL during this session; visual state is unverified.
   - prefect#23237: the red checks are not ours. Every failing job shows
     `test_block_standards.py::test_has_a_valid_image` with `HTTP Error 402: Payment
     Required` from the block image host, in modules the PR does not touch.
-  - biopython#5336: still on hold for the AI policy, no new comment. edgartools#1370: no reply
-    to the 2026-09-27 offer. pymc#8442 approved, not merged.
+  - biopython#5336: still on hold for the AI policy, no new comment. pymc#8442 approved, not
+    merged.
+  - Re-read 2026-09-30 14:46 UTC: no open PR has activity after our xarray reply. The one change
+    is edgartools#1370: dgunning answered the offer at 14:33 and 14:35 UTC, "yes please, open a
+    PR", endorsed the approach, and will run the section network regressions before merging.
+    Run `20260927T071330Z-0be859` is `SEND`; no competing PR or claim; upstream `main` is 6
+    commits past our base `b022ad29` and none touch our files. The 2026-09-27 handoff predates
+    the reply and must be regenerated; the auto-mode classifier refused `mailman handoff`, so
+    the operator runs it. Branch `mailman/issue-1370` (`aaf4e75d`) is not on the fork yet.
+  - Mailman CI went red on `9128ca7`: `28734a8` (#276) left `_stream`'s pipes open, and two
+    orchestrator CLI tests saw a `ResourceWarning` on stderr. Fixed in `c819de6` (#281).
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
-  It still exists; deleting it is the operator's call.
+  It still exists and now carries the #1370 PR.
 
 ### Reproduce gate, live-verified 2026-09-04
 
