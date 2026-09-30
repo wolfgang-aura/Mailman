@@ -39,7 +39,9 @@ from mailman.toolchain import resolve_tool
 #: days failed `copier-org/copier` and `ipython/ipython`, which merge outside
 #: work every few weeks and answer strangers inside the responsiveness bar.
 #: Freshness asks whether the door is open; `responsiveness` asks how fast.
-FRESHNESS_WINDOW_DAYS = 45
+#: Forty-five days failed `jd/tenacity`, nine outside authors in 90 days with
+#: the latest merge 55 days old: release-burst repositories. Mailman #284.
+FRESHNESS_WINDOW_DAYS = 60
 
 TARGET_INTEL_FILENAME = "target-intel.json"
 TARGET_INTEL_MARKDOWN = "target-intel.md"

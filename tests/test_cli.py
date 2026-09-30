@@ -1061,7 +1061,9 @@ class ScreenTargetCliTests(unittest.TestCase):
     def test_a_verdict_read_under_the_same_windows_is_reused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_root = Path(temporary_directory) / "runs"
-            self._cached(data_root, window_days=45, issue_window_days=730, responsiveness_days=90)
+            from mailman.screen import FRESHNESS_WINDOW_DAYS
+            self._cached(data_root, window_days=FRESHNESS_WINDOW_DAYS,
+                         issue_window_days=730, responsiveness_days=90)
             with patch("mailman.cli.screen_repository") as screened:
                 with redirect_stdout(StringIO()):
                     code = main(["screen-target", "example/project", "--data-root", str(data_root)])

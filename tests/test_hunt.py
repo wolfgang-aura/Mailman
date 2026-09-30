@@ -483,10 +483,11 @@ class HuntTests(OrchestratorHarness):
         self.assertIn("--refresh", result["action"])
 
     def test_a_refusal_under_current_windows_is_replaced(self):
+        from mailman.screen import FRESHNESS_WINDOW_DAYS
         directory = self.ready_run()
         screen_path(self.data_root, "example/project").write_text(json.dumps({
             "success": True, "verdict": "fail", "failed_gates": ["freshness"],
-            "window_days": 45, "issue_window_days": 730, "responsiveness_days": 90,
+            "window_days": FRESHNESS_WINDOW_DAYS, "issue_window_days": 730, "responsiveness_days": 90,
         }), encoding="utf-8")
         result = next_action(directory)
         self.assertEqual(result["disposition"], "REPLACE", result)

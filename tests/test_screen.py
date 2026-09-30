@@ -454,15 +454,15 @@ class ScreenTests(unittest.TestCase):
 
     def test_a_repository_with_no_recent_outside_merge_fails_first(self) -> None:
         # OpenBB-finance/OpenBB: 72.6k stars. Its last outside merge was six
-        # weeks back when screened, inside today's 45-day window, so the
+        # weeks back when screened, inside today's 60-day window, so the
         # fixture puts the latest merge past it.
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(
                 Path(temporary),
                 FakeGitHub(
                     closed_pulls=[
-                        _pull(1, author="alice", merged_days_ago=60),
-                        _pull(2, author="bob", merged_days_ago=70),
+                        _pull(1, author="alice", merged_days_ago=75),
+                        _pull(2, author="bob", merged_days_ago=80),
                     ]
                 ),
             )
@@ -2112,7 +2112,7 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(gate["data"]["workable"], 2)
         self.assertEqual(gate["data"]["stale_beyond_window"], 0)
         self.assertEqual(gate["data"]["median_workable_age_days"], 30)
-        self.assertEqual(gate["data"]["window_days"], 45)
+        self.assertEqual(gate["data"]["window_days"], 60)
         self.assertEqual(gate["data"]["issue_window_days"], 730)
         self.assertEqual(record["issue_window_days"], 730)
 
@@ -2147,7 +2147,23 @@ class ScreenTests(unittest.TestCase):
             )
 
         self.assertNotIn("freshness", record["failed_gates"])
-        self.assertEqual(_named(record, "freshness")["data"]["window_days"], 45)
+        self.assertEqual(_named(record, "freshness")["data"]["window_days"], 60)
+
+    def test_a_merge_two_months_back_is_fresh_by_default(self) -> None:
+        # jd/tenacity: nine outside authors in 90 days, latest merge 55 days
+        # old, failed freshness alone. Mailman #284.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    closed_pulls=[
+                        _pull(1, author="alice", merged_days_ago=55),
+                        _pull(2, author="bob", merged_days_ago=58),
+                    ]
+                ),
+            )
+
+        self.assertNotIn("freshness", record["failed_gates"])
 
     def test_the_issue_window_is_set_apart_from_the_merge_window(self) -> None:
         # Passing the merge window as the age cap is the defect itself, so the
@@ -2166,7 +2182,7 @@ class ScreenTests(unittest.TestCase):
         self.assertIn("saturation", record["failed_gates"])
         self.assertEqual(gate["data"]["stale_beyond_window"], 1)
         self.assertIn("older than the 14-day issue window", gate["detail"])
-        self.assertIn("counted over 45 days", gate["detail"])
+        self.assertIn("counted over 60 days", gate["detail"])
 
     def test_the_workable_count_excludes_labels_and_staleness_from_the_median(
         self) -> None:
