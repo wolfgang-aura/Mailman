@@ -412,5 +412,44 @@ class AiAuthorshipDoubtTests(unittest.TestCase):
                 self.assertIsNone(self._doubt(body))
 
 
+class CitedPullRequestReadTests(unittest.TestCase):
+    """A `gh` failure is not GitHub saying "no such pull request". Mailman #344."""
+
+    def _resolve(self, stderr: str) -> dict:
+        from mailman.prior_art import resolve_cited_pull_requests
+
+        def fake_execute(command, **_):
+            return CommandResult(command, ".", "", 0.0, 1, "", stderr, False, 60, {})
+
+        with TemporaryDirectory() as directory, patch(
+            "mailman.prior_art.execute", fake_execute
+        ):
+            return resolve_cited_pull_requests(
+                Path(directory),
+                references=[
+                    {"repository": "example/project", "number": 12, "text": "#12"}
+                ],
+                executable="gh",
+                repository="example/project",
+                issue_number=7,
+            )
+
+    def test_an_issue_number_is_skipped_as_not_a_pull_request(self) -> None:
+        record = self._resolve(
+            "GraphQL: Could not resolve to a PullRequest with the number of 12. "
+            "(repository.pullRequest)"
+        )
+        self.assertTrue(record["success"])
+        self.assertEqual([row["number"] for row in record["skipped"]], [12])
+        self.assertEqual(record["unread"], [])
+
+    def test_a_failed_read_is_unknown_not_skipped(self) -> None:
+        record = self._resolve("HTTP 403: API rate limit exceeded")
+        self.assertFalse(record["success"])
+        self.assertEqual(record["skipped"], [])
+        self.assertEqual([row["number"] for row in record["unread"]], [12])
+        self.assertIn("could not be read", record["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -97,6 +97,10 @@ ISSUE_SCREENS = "issue-screens"
 #: shortlist in the morning and work it in the afternoon.
 PRESCREEN_HOURS = 24
 ISSUE_UNREADABLE = "issue-unreadable"
+#: A pull request the thread cites that `gh` could not read, for a reason
+#: other than GitHub saying it is not one. It may be the open rival, so the
+#: issue is held until it can be read. Mailman #344.
+CITED_UNREAD = "cited-pull-request-unread"
 ISSUE_NOT_OPEN = "issue-not-open"
 ISSUE_NOT_BOUNDED_FIX = "issue-not-bounded-fix"
 #: The maintainers have said the design is not settled. A patch on such an
@@ -945,6 +949,8 @@ def prescreen_issue(
 
     if any(_here(row) for row in cited["open"]):
         thread_blocking.append(OPEN_PULL_REQUEST)
+    if cited.get("success") is not True:
+        thread_blocking.append(CITED_UNREAD)
     # A merged pull request the reporter names in the body is the cause or
     # the context of the report, not its fix: zauberzeug/nicegui#6339 was
     # "found while reviewing #6294, where it is out of scope", and #6331 says
@@ -1095,6 +1101,11 @@ def prescreen_issue(
             details.append(
                 "it is labelled as a feature request and no maintainer in the "
                 "thread asked for a pull request"
+            )
+        if CITED_UNREAD in thread_blocking:
+            details.append(
+                f"{cited['detail']}; `mailman prescreen {slug}#{number}` again "
+                "once GitHub answers"
             )
         # The cited pull request is the reason only when it is what blocked.
         if cited["decided_by"] and (

@@ -554,6 +554,16 @@ def _closing_references(value: object) -> list[str]:
     return closes
 
 
+#: What `gh pr view` says when the number is an issue, or the repository or
+#: number does not exist: GitHub's answer that this is not a pull request.
+#: Anything else (a rate limit, a timeout, a network error) is no answer at
+#: all. Mailman #344.
+_NOT_A_PULL_REQUEST = re.compile(
+    r"Could not resolve to a (?:PullRequest|Repository)\b|no pull requests? found",
+    re.IGNORECASE,
+)
+
+
 def resolve_cited_pull_requests(
     run_directory: Path,
     *,
@@ -569,7 +579,9 @@ def resolve_cited_pull_requests(
 
     One `gh pr view` per reference, in any repository. A reference that turns
     out to be an issue, a heading anchor or a version number is skipped without
-    comment: `gh` exits non-zero and that is the whole answer.
+    comment: GitHub says it cannot resolve that pull request. Any other failure
+    is recorded under `unread` and the record is not a success: an open cited
+    pull request read as "not a PR" cleared the issue (#344).
 
     A merged pull request is recorded as merged, full stop. This stage has no
     clone, so it cannot ask whether the merge commit is already an ancestor of
@@ -593,6 +605,7 @@ def resolve_cited_pull_requests(
         "references": list(references),
         "resolved": [],
         "skipped": [],
+        "unread": [],
         "open": [],
         "merged": [],
         "stale": [],
@@ -602,6 +615,11 @@ def resolve_cited_pull_requests(
         "commands": [],
         "success": True,
     }
+
+    def unread(reference: dict[str, Any], detail: str) -> None:
+        record["unread"].append({**reference, "detail": detail})
+        record["success"] = False
+
     for reference in references:
         slug = str(reference.get("repository") or "")
         number = reference.get("number")
@@ -623,24 +641,25 @@ def resolve_cited_pull_requests(
         )
         record["commands"].append(result.to_dict())
         if result.timed_out or result.exit_code != 0:
-            record["skipped"].append(
-                {
-                    **reference,
-                    "detail": "not a pull request, or not readable from here",
-                }
-            )
+            stderr = str(getattr(result, "stderr", "") or "")
+            if not result.timed_out and _NOT_A_PULL_REQUEST.search(stderr):
+                record["skipped"].append(
+                    {**reference, "detail": "not a pull request"}
+                )
+            else:
+                first = stderr.strip().splitlines()[0] if stderr.strip() else ""
+                unread(
+                    reference,
+                    "timed out" if result.timed_out else first or "gh failed",
+                )
             continue
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError:
-            record["skipped"].append(
-                {**reference, "detail": "the GitHub CLI returned unreadable JSON"}
-            )
+            unread(reference, "the GitHub CLI returned unreadable JSON")
             continue
         if not isinstance(payload, dict):
-            record["skipped"].append(
-                {**reference, "detail": "the GitHub CLI returned no pull request"}
-            )
+            unread(reference, "the GitHub CLI returned no pull request")
             continue
         merge_commit = payload.get("mergeCommit")
         writer = payload.get("author")
@@ -730,6 +749,15 @@ def resolve_cited_pull_requests(
     decided = (record["open"] or record["merged"] or [None])[0]
     record["decided_by"] = decided
     record["detail"] = _cited_detail(record)
+    if record["unread"]:
+        named = ", ".join(
+            f"{row.get('repository')}#{row.get('number')} ({row.get('detail')})"
+            for row in record["unread"]
+        )
+        record["detail"] = (
+            f"{len(record['unread'])} cited reference(s) could not be read: "
+            f"{named}. {record['detail']}"
+        )
     path = run_directory / CITED_PULL_REQUESTS_FILENAME
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n")
     return record

@@ -206,7 +206,18 @@ if ARGUMENTS[:2] == ["search", "prs"] and "--merged" in ARGUMENTS:
     raise SystemExit(0)
 if ARGUMENTS[:2] == ["pr", "view"]:
     slug = ARGUMENTS[ARGUMENTS.index("--repo") + 1] if "--repo" in ARGUMENTS else ""
-    emit("pr-" + slug.replace("/", "__") + "-" + ARGUMENTS[2] + ".json")
+    name = "pr-" + slug.replace("/", "__") + "-" + ARGUMENTS[2] + ".json"
+    if (HERE / "pr-view-fails.txt").is_file():
+        sys.stderr.write((HERE / "pr-view-fails.txt").read_text(encoding="utf-8"))
+        raise SystemExit(1)
+    if not (HERE / name).is_file():
+        # What GitHub answers for an issue number or a heading anchor.
+        sys.stderr.write(
+            "GraphQL: Could not resolve to a PullRequest with the number of "
+            + ARGUMENTS[2] + ". (repository.pullRequest)\\n"
+        )
+        raise SystemExit(1)
+    emit(name)
 if ARGUMENTS[:1] == ["api"]:
     path = ARGUMENTS[1]
     if path == "graphql":
@@ -2920,6 +2931,58 @@ class ScopedLabelTests(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertEqual(blocking(label), [])
 
+
+
+class UnreadCitedPullRequestTests(unittest.TestCase):
+    """A cited pull request `gh` could not read may be an open rival. Mailman
+    #344. Not a `PrescreenTests` subclass, so its base tests do not run again."""
+
+    setUp = PrescreenTests.setUp
+    stub = PrescreenTests.stub
+
+    def test_an_unread_cited_pull_request_holds_the_issue(self) -> None:
+        executable = self.stub(
+            "[]",
+            comments=[
+                {
+                    "id": 1,
+                    "user": {"login": "someone", "type": "User"},
+                    "author_association": "NONE",
+                    "body": "There is a fix for this in #12.",
+                    "created_at": "2026-09-02T00:00:00Z",
+                }
+            ],
+        )
+        (Path(executable).parent / "pr-view-fails.txt").write_text(
+            "HTTP 403: API rate limit exceeded\n", encoding="utf-8"
+        )
+
+        record = prescreen_issue(self.root, "example/project#7", executable=executable)
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertIn("cited-pull-request-unread", record["blocking"])
+        self.assertIn("could not be read", record["next"])
+
+    def test_an_issue_number_cited_in_the_thread_does_not_hold_it(self) -> None:
+        executable = self.stub(
+            "[]",
+            comments=[
+                {
+                    "id": 1,
+                    "user": {"login": "someone", "type": "User"},
+                    "author_association": "NONE",
+                    "body": "Same as #12.",
+                    "created_at": "2026-09-02T00:00:00Z",
+                }
+            ],
+        )
+
+        record = prescreen_issue(self.root, "example/project#7", executable=executable)
+
+        self.assertNotIn("cited-pull-request-unread", record["blocking"])
+        self.assertEqual(
+            [row["number"] for row in record["cited_pull_requests"]["skipped"]], [12]
+        )
 
 
 class FailedClaimCheckTests(unittest.TestCase):
