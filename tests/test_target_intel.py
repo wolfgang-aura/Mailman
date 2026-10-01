@@ -65,6 +65,35 @@ class ReferencedIssueTests(unittest.TestCase):
         )
         self.assertEqual(referenced_issues(row), {"101", "102", "103", "104"})
 
+    def test_a_one_digit_reference_counts(self) -> None:
+        row = _pull(title="fix: repair #7", body="", head={"ref": "issue-8"})
+        self.assertEqual(referenced_issues(row), {"7", "8"})
+
+    def test_a_reference_past_the_first_two_thousand_characters_counts(self) -> None:
+        row = _pull(body="x" * 3000 + " Fixes #4321")
+        self.assertEqual(referenced_issues(row), {"4321"})
+
+    def test_only_the_target_repository_issues_count(self) -> None:
+        # Mailman #346: a link to another repository's issue 555 is not this
+        # repository's issue 555.
+        row = _pull(
+            body=(
+                "Fixes https://github.com/o/r/issues/12 and "
+                "https://github.com/O/R/issues/13. Upstream: "
+                "https://github.com/other/lib/issues/555 and other/lib#556."
+            ),
+            base={"repo": {"full_name": "o/r"}},
+        )
+        self.assertEqual(referenced_issues(row), {"12", "13"})
+        self.assertEqual(
+            referenced_issues(_pull(body="See other/lib#556"), repository="o/r"),
+            set(),
+        )
+        self.assertEqual(
+            referenced_issues(_pull(body="See o/r#557"), repository="o/r"),
+            {"557"},
+        )
+
 
 class ClaimClassificationTests(unittest.TestCase):
     """A closed unmerged pull request is not a claim.
