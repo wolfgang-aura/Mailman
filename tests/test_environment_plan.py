@@ -35,6 +35,40 @@ test = [{include-group = "common"}, "pytest"]
             with self.assertRaisesRegex(ValueError, "already exists"):
                 draft_plan(root, path)
 
+    def test_extras_the_poe_test_task_installs_are_installed(self):
+        # schwifty: `test = "uv run --extra pydantic pytest ..."`; the plan
+        # installed `.` and test_pydantic_protocol failed at baseline. Mailman #360.
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "pyproject.toml").write_text('''
+[project]
+name = "fixture"
+[project.optional-dependencies]
+pydantic = ["pydantic>=2.0"]
+docs = ["sphinx"]
+[tool.poe.tasks]
+test = "uv run --extra pydantic pytest --cov"
+''', encoding="utf-8")
+            path = root / "plan.json"
+            draft_plan(root, path)
+            self.assertEqual(load_plan(path)["steps"][2]["command"][-1], ".[pydantic]")
+
+    def test_all_extras_in_a_poe_test_task_join_the_test_extra(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "pyproject.toml").write_text('''
+[project]
+name = "fixture"
+[project.optional-dependencies]
+test = ["pytest"]
+yaml = ["pyyaml"]
+[tool.poe.tasks.test]
+cmd = "uv run --all-extras pytest"
+''', encoding="utf-8")
+            path = root / "plan.json"
+            draft_plan(root, path)
+            self.assertEqual(load_plan(path)["steps"][2]["command"][-1], ".[test,yaml]")
+
     def test_group_cycles_refuse_without_writing_a_partial_plan(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)

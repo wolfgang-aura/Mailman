@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -100,6 +101,22 @@ def _hatch_test_dependencies(project: dict) -> tuple[list[str], list[str]]:
     return dependencies, used
 
 
+def _poe_test_extras(project: dict, declared: dict) -> list[str]:
+    """Extras the poe `test` task asks uv for.
+
+    schwifty runs `uv run --extra pydantic pytest`, so a test imports pydantic
+    although no test extra names it. Mailman #360.
+    """
+    task = project.get("tool", {}).get("poe", {}).get("tasks", {}).get("test")
+    if isinstance(task, dict):
+        task = task.get("cmd") or task.get("shell")
+    if not isinstance(task, str):
+        return []
+    if "--all-extras" in task:
+        return list(declared)
+    return [name for name in re.findall(r"--extra[= ](\S+)", task) if name in declared]
+
+
 def draft_plan(workspace: Path, destination: Path, *, python: str = sys.executable) -> dict:
     if destination.exists():
         raise ValueError(f"plan already exists at {destination}; edit it instead of overwriting")
@@ -112,6 +129,7 @@ def draft_plan(workspace: Path, destination: Path, *, python: str = sys.executab
     groups = project.get("dependency-groups", {})
     names = ("test", "tests", "testing", "dev")
     extra = next((name for name in names if name in extras), None)
+    extra = ",".join(dict.fromkeys([*([extra] if extra else []), *_poe_test_extras(project, extras)])) or None
     group = next((name for name in names if name in groups), None)
 
     def expand(name: str, visiting: tuple[str, ...] = ()) -> list[str]:
