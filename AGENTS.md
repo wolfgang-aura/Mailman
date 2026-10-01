@@ -17,6 +17,13 @@ Escalate only the dependencies allowed by the shared procedure, with evidence.
 Keep new issue drafts and all upstream writes for final filing approval unless
 the user has separately authorized them. Do not count issue drafts as PRs.
 
+## PR follow-up sessions
+
+Requests to check filed PRs for updates follow
+[.claude/skills/pr-followup/SKILL.md](.claude/skills/pr-followup/SKILL.md):
+`mailman hunt watch`, triage, the work each row needs, one approval gate for
+every upstream write, then the status docs.
+
 ## Review pages for a human
 
 Anything a person is asked to decide from is generated, never composed.
