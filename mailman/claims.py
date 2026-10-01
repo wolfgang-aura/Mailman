@@ -315,8 +315,11 @@ _CLAIM = re.compile(
     r"\b(?:"
     r"i(?:'m|m| am) (?:currently )?(?:working on|taking|fixing|looking into)"
     r"|i(?:'ll|ll| will| can| could| would like to|'d like to|d like to"
+    # sktime/sktime#10255: "I would love to take a crack at fixing this ...
+    # I plan to implement the safety guard". Mailman #367.
+    r"| would love to|'d love to|d love to"
     r"| want to| plan to| intend to) "
-    r"(?:take|work on|pick|fix|handle|submit|open|raise|send|look into"
+    r"(?:take|work on|pick|fix|handle|submit|open|raise|send|look into|implement"
     r"|tackle|contribute|have a go|give)"
     r"|i(?:'ve|ve| have) (?:a|an|the) (?:pr|patch|fix|branch|change)"
     r"|(?:please )?assign (?:this |it |the issue |me )?(?:to )?(?:me\b|myself)"

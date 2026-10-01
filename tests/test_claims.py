@@ -168,6 +168,13 @@ class ClassifyCommentTests(unittest.TestCase):
             # invitation. Mailman #225.
             "Happy to put that together with tests if you would like it.",
             "Glad to fix this if it helps.",
+            # sktime/sktime#10255, verbatim. Mailman #367.
+            "I would love to take a crack at fixing this as my very first "
+            "open-source contribution to sktime! I plan to implement the safety "
+            "guard for scalar string group_keys exactly as outlined in the issue "
+            "description",
+            "I'd love to work on this.",
+            "I plan to implement the fix described above.",
         ):
             with self.subTest(body=body):
                 self.assertEqual(classify_comment(_comment(body)), "claim")
