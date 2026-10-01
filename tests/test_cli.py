@@ -185,6 +185,37 @@ class CliTests(unittest.TestCase):
             )
             self.assertIsNone(_command_hunt(arguments), subcommand)
 
+    def test_post_filing_commands_are_not_stopped_by_hunt_deadline(self) -> None:
+        """A maintainer reviews a filed PR after the hunt's clock ran out. #354"""
+        from mailman.artifacts import write_run
+        from mailman.hunt import add_run, create_hunt, hunt_path, save
+        from mailman.models import AgentConfig
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, _ = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40, primary="codex", reviewer="claude",
+                data_root=data_root,
+            )
+            run.primary = AgentConfig("codex", "p")
+            run.reviewer = AgentConfig("claude", "r")
+            write_run(run, data_root / run.run_id)
+            hunt = create_hunt(data_root, 1, primary="codex", primary_model="p",
+                               reviewer="claude", reviewer_model="r")
+            add_run(data_root, hunt, run.run_id)
+            hunt["deadline_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+            save(hunt_path(data_root, hunt["hunt_id"]), hunt)
+
+            for subcommand in ("fetch-review", "revision-response", "retrospective"):
+                arguments = SimpleNamespace(subcommand=subcommand, data_root=data_root,
+                                            run_id=run.run_id)
+                self.assertIsNone(_command_hunt(arguments), subcommand)
+            arguments = SimpleNamespace(subcommand="verify", data_root=data_root,
+                                        run_id=run.run_id)
+            self.assertIsNotNone(_command_hunt(arguments))
+
     def test_hunt_finish_is_not_stopped_by_hunt_deadline(self) -> None:
         arguments = SimpleNamespace(
             subcommand="hunt",

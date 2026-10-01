@@ -3167,7 +3167,10 @@ def _command_hunt(arguments: argparse.Namespace) -> dict | None:
         "provenance",
         "review",
     }
-    if arguments.subcommand in post_engineering_commands:
+    # A maintainer reviews a filed pull request on their own schedule, often
+    # after the hunt's clock has run out. Mailman #354.
+    post_filing_commands = {"fetch-review", "revision-response", "retrospective"}
+    if arguments.subcommand in post_engineering_commands | post_filing_commands:
         return None
     explicit = getattr(arguments, "deadline_hunt_id", None)
     if explicit:
@@ -3188,7 +3191,6 @@ def _command_hunt(arguments: argparse.Namespace) -> dict | None:
         "check-target",
         "draft-environment",
         "fetch-issue",
-        "fetch-review",
         "init-run",
         "orchestrate",
         "prepare-environment",
@@ -3198,8 +3200,6 @@ def _command_hunt(arguments: argparse.Namespace) -> dict | None:
         "probe-tool",
         "reproduce",
         "resume-review",
-        "revision-response",
-        "retrospective",
         "run-agent",
         "screen-target",
         "target-intel",
