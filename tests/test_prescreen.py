@@ -62,6 +62,7 @@ from mailman.targeting import (
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     MAINTAINER_CLOSED_ATTEMPT,
     MAINTAINER_OWNED_FIX,
+    MAINTAINER_PENDING_FIX,
     NO_MAINTAINER_REPLY,
     STALE_PRIOR_ATTEMPT,
     NO_REPRODUCTION,
@@ -2613,6 +2614,136 @@ class MaintainerOwnedFixTests(StalePriorAttemptTests):
 
         self.assertEqual(record["verdict"], "reject")
         self.assertEqual(record["blocking"], [MAINTAINER_OWNED_FIX])
+
+
+class MaintainerPendingFixTests(StalePriorAttemptTests):
+    """A project voice's closed fix the duplicate search found is parked work.
+
+    marimo#9808 passed with a `stale-prior-attempt` warning over #9862,
+    mscolnick's own fix closed by github-actions for inactivity: the prior-art
+    record carried the author but not the association. Mailman #199.
+    """
+
+    record_maintainers = MaintainerOwnedFixTests.record_maintainers
+
+    def found(self) -> str:
+        return json.dumps(
+            [
+                {
+                    "number": 8,
+                    "title": "fix: guard the empty-input path",
+                    "body": "Fixes #7",
+                    "state": "CLOSED",
+                    "url": "https://github.com/example/project/pull/8",
+                    "createdAt": "2026-09-10T00:00:00Z",
+                    "updatedAt": "2026-09-11T00:00:00Z",
+                    "isDraft": False,
+                }
+            ]
+        )
+
+    def attempt(self, *, author: str, association: str) -> dict:
+        return {
+            **self.cited(days_old=120, association=association),
+            "state": "CLOSED",
+            "title": "fix: guard the empty-input path",
+            "author": {"login": author},
+            "body": "Fixes #7",
+            "createdAt": "2026-09-10T00:00:00Z",
+            "updatedAt": "2026-09-11T00:00:00Z",
+            "closedAt": "2026-09-11T00:00:00Z",
+        }
+
+    def search_prescreen(
+        self, pull: dict, *, closer: str = "github-actions[bot]",
+        closer_association: str = "",
+    ) -> dict:
+        # No citation in the body: only the duplicate search finds #8.
+        issue = {**self.issue(), "body": "The command crashes on empty input."}
+        events: list[dict] = [{"event": "closed", "actor": {"login": closer}}]
+        if closer_association:
+            events.insert(
+                0,
+                {
+                    "event": "commented",
+                    "actor": {"login": closer},
+                    "author_association": closer_association,
+                    "body": "Not the direction we want.",
+                },
+            )
+        return prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                self.found(),
+                issue,
+                pull_requests={"example/project#8": pull},
+                timelines={8: events},
+            ),
+        )
+
+    def prior_attempt(self) -> dict:
+        directory = prescreen_directory(self.root, "example/project", 7)
+        record = json.loads((directory / "prior-art.json").read_text(encoding="utf-8"))
+        return record["attempts"][0]
+
+    def test_a_members_bot_closed_fix_blocks_instead_of_warning(self) -> None:
+        record = self.search_prescreen(
+            self.attempt(author="keeper", association="MEMBER")
+        )
+
+        self.assertEqual(record["prior_art"]["requested"], [8])
+        self.assertEqual(record["verdict"], "reject")
+        self.assertEqual(record["blocking"], [MAINTAINER_PENDING_FIX])
+        self.assertIn(MAINTAINER_PENDING_FIX, DECIDABLE)
+        self.assertNotIn(STALE_PRIOR_ATTEMPT, record["warnings"])
+        self.assertEqual(record["stale_attempts"], [])
+        pending = record["maintainer_pending_attempts"][0]
+        self.assertEqual(pending["number"], 8)
+        self.assertEqual(pending["author"], "keeper")
+        self.assertIn("keeper", record["next"])
+        self.assertEqual(self.prior_attempt()["author_association"], "MEMBER")
+
+    def test_a_collaborators_self_closed_fix_blocks(self) -> None:
+        record = self.search_prescreen(
+            self.attempt(author="helper", association="COLLABORATOR"),
+            closer="helper",
+        )
+
+        self.assertEqual(record["blocking"], [MAINTAINER_PENDING_FIX])
+        self.assertTrue(self.prior_attempt()["author_is_project_voice"])
+
+    def test_a_screened_maintainer_reported_as_contributor_blocks(self) -> None:
+        # mscolnick's membership is private; the screen's merger set decides.
+        self.record_maintainers(["mscolnick"])
+        record = self.search_prescreen(
+            self.attempt(author="mscolnick", association="CONTRIBUTOR")
+        )
+
+        self.assertEqual(record["blocking"], [MAINTAINER_PENDING_FIX])
+        attempt = self.prior_attempt()
+        self.assertEqual(attempt["author_association"], "CONTRIBUTOR")
+        self.assertTrue(attempt["author_is_project_voice"])
+
+    def test_an_outsiders_bot_closed_attempt_is_still_stale(self) -> None:
+        record = self.search_prescreen(
+            self.attempt(author="outsider", association="CONTRIBUTOR")
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertIn(STALE_PRIOR_ATTEMPT, record["warnings"])
+        self.assertEqual(record["maintainer_pending_attempts"], [])
+        self.assertFalse(self.prior_attempt()["author_is_project_voice"])
+
+    def test_another_maintainer_closing_it_is_a_rejection_not_pending(self) -> None:
+        record = self.search_prescreen(
+            self.attempt(author="keeper", association="MEMBER"),
+            closer="lead",
+            closer_association="OWNER",
+        )
+
+        self.assertEqual(record["blocking"], [MAINTAINER_CLOSED_ATTEMPT])
+        self.assertEqual(record["maintainer_pending_attempts"], [])
 
 
 class DuplicatePolicyTests(StalePriorAttemptTests):

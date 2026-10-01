@@ -111,6 +111,15 @@ MAINTAINER_CLOSED_ATTEMPT = "maintainer-closed-attempt"
 #: him CONTRIBUTOR because his membership is private, and the issue passed
 #: with a `stale-prior-attempt` warning. Mailman #203.
 MAINTAINER_OWNED_FIX = "maintainer-owned-fix"
+#: A closed, unmerged attempt the duplicate search found, written by somebody
+#: who speaks for the project (OWNER, MEMBER, COLLABORATOR, or a login in the
+#: repository screen's maintainer set), and closed by no maintainer other than
+#: its author. However it was closed (by its author, by a stale bot, for
+#: inactivity) it is the project's own fix waiting, not an outsider's abandoned
+#: attempt, so the stale rule does not apply. marimo#9862 was mscolnick's own
+#: fix for #9808, closed by github-actions, and passed with a
+#: `stale-prior-attempt` warning. Blocking. Mailman #199.
+MAINTAINER_PENDING_FIX = "maintainer-pending-fix"
 
 #: How long an open pull request may sit untouched before it stops claiming the
 #: issue. Decided by the operator on 2026-09-17: the last hunt lost 40 of 66
@@ -125,6 +134,11 @@ STALE_ATTEMPT_DAYS = 60
 #: to one of these is a maintainer's own work in progress, and opening a second
 #: pull request over it is the same offence as racing a live one.
 _MAINTAINER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER"})
+#: Author associations that count as the project's own voice for a closed,
+#: unmerged attempt. Wider than `_MAINTAINER_ASSOCIATIONS`: a collaborator's
+#: parked fix is still the project's, though a collaborator's dormant open
+#: attempt keeps the stale rule. Mailman #199.
+_PROJECT_VOICE_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 
 def _first(row: dict[str, Any], *names: str) -> Any:
@@ -256,6 +270,44 @@ def attempt_is_maintainer_closed(row: dict[str, Any]) -> bool:
     return bool(row.get("maintainer_closed"))
 
 
+def attempt_is_project_voice(row: dict[str, Any]) -> bool:
+    """Whether the attempt's author speaks for the project.
+
+    GitHub's association (OWNER, MEMBER or COLLABORATOR), or the flag the
+    fetching stage set when the login is in the repository screen's maintainer
+    set. Mailman #199.
+    """
+    if not isinstance(row, dict):
+        return False
+    if row.get("author_is_project_voice") is True or attempt_is_maintainers(row):
+        return True
+    association = str(
+        _first(row, "author_association", "authorAssociation") or ""
+    ).upper()
+    return association in _PROJECT_VOICE_ASSOCIATIONS
+
+
+def attempt_is_pending_fix(row: dict[str, Any]) -> bool:
+    """A project voice's closed, unmerged attempt that no maintainer rejected.
+
+    Closed by its author, a stale bot or for inactivity, it is the project's
+    own fix parked. A closure by another maintainer is a rejection and answers
+    to `maintainer-closed-attempt` instead. An attempt whose closer was never
+    read is neither: nobody knows whether it was parked or rejected, and it
+    keeps the older handling. Mailman #199.
+    """
+    if not isinstance(row, dict):
+        return False
+    closed_by = row.get("closed_by")
+    closer_known = isinstance(closed_by, dict) and bool(closed_by.get("login"))
+    return (
+        closer_known
+        and attempt_is_closed_unmerged(row)
+        and attempt_is_project_voice(row)
+        and not attempt_is_maintainer_closed(row)
+    )
+
+
 def is_stale_attempt(row: dict[str, Any], *, now: datetime | None = None) -> bool:
     """Whether this pull request is a dormant prior attempt, not a claim.
 
@@ -268,6 +320,9 @@ def is_stale_attempt(row: dict[str, Any], *, now: datetime | None = None) -> boo
         attempt_is_dormant(row, now=now)
         and not attempt_is_maintainers(row)
         and not attempt_is_maintainer_closed(row)
+        # A project voice's parked fix is not an outsider's abandoned one.
+        # Mailman #199.
+        and not attempt_is_pending_fix(row)
         # The author answered a maintainer and is waiting: not abandoned.
         # See prior_art.awaits_maintainer and Mailman #157.
         and not (attempt_is_open(row) and bool(row.get("awaiting_maintainer")))
@@ -299,6 +354,7 @@ def stale_attempt_row(
         "author": _author_login(row),
         "author_association": _first(row, "author_association", "authorAssociation"),
         "author_is_maintainer": attempt_is_maintainers(row),
+        "author_is_project_voice": attempt_is_project_voice(row),
         # Who closed it, when the stage that fetched the row found out. `None`
         # means nobody asked or GitHub did not say, which the reader has to be
         # able to tell from "the author withdrew it".
@@ -341,6 +397,7 @@ class TargetAssessment:
     stale_attempts: list[dict[str, Any]] = field(default_factory=list)
     duplicate_blocked_attempts: list[dict[str, Any]] = field(default_factory=list)
     maintainer_closed_attempts: list[dict[str, Any]] = field(default_factory=list)
+    maintainer_pending_attempts: list[dict[str, Any]] = field(default_factory=list)
     blocking: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -364,6 +421,7 @@ class TargetAssessment:
             "stale_attempts": self.stale_attempts,
             "duplicate_blocked_attempts": self.duplicate_blocked_attempts,
             "maintainer_closed_attempts": self.maintainer_closed_attempts,
+            "maintainer_pending_attempts": self.maintainer_pending_attempts,
             "blocking": self.blocking,
             "warnings": self.warnings,
             "may_start": self.may_start,
@@ -536,6 +594,21 @@ class TargetAssessment:
                 "branch here to supersede. Read the closure, then pick another "
                 "issue."
             )
+        for attempt in self.maintainer_pending_attempts:
+            lines.append(
+                f"parked    #{attempt.get('number')} {attempt.get('title', '')} "
+                f"(by {attempt.get('author')}, "
+                f"{attempt.get('author_association') or 'listed maintainer'}) "
+                f"{attempt.get('url', '')}"
+            )
+        if self.maintainer_pending_attempts:
+            lines.append(
+                "Somebody who speaks for the project wrote that attempt, and no "
+                "maintainer rejected it. It is the project's own fix parked, not "
+                "an abandoned one; a second pull request would race it. Ask on "
+                "the issue whether they want help finishing it, or pick another "
+                "issue."
+            )
         for attempt in self.duplicate_blocked_attempts:
             days = attempt.get("days_stale")
             age = f", {days} days since its last activity" if days is not None else ""
@@ -620,6 +693,7 @@ class TargetAssessment:
             and not self.stale_attempts
             and not self.duplicate_blocked_attempts
             and not self.maintainer_closed_attempts
+            and not self.maintainer_pending_attempts
             and not (self.claims.get("claims") or self.claims.get("assignments"))
             and not self.claims.get("assignees")
         ):
@@ -765,6 +839,15 @@ def assess_target(
         and not attempt_is_merged(attempt)
     ]
     rejected_numbers = {row["number"] for row in maintainer_closed}
+    # A project voice's closed fix that no maintainer rejected is parked work,
+    # not an abandoned attempt. Read before the stale rule, which excludes it.
+    # Mailman #199.
+    maintainer_pending = [
+        stale_attempt_row(attempt, now=now)
+        for attempt in attempts
+        if isinstance(attempt, dict) and attempt_is_pending_fix(attempt)
+    ]
+    rejected_numbers |= {row["number"] for row in maintainer_pending}
     dormant = [
         stale_attempt_row(attempt, now=now)
         for attempt in attempts
@@ -870,6 +953,10 @@ def assess_target(
         # `--acknowledge-prior-attempts`: that flag answers "an attempt was
         # closed", and this is "the project read it and said no".
         blocking.append(MAINTAINER_CLOSED_ATTEMPT)
+    if maintainer_pending:
+        # Not overridable: the project's own fix is waiting, and no flag
+        # answers "a maintainer already wrote this". Mailman #199.
+        blocking.append(MAINTAINER_PENDING_FIX)
     if duplicate_blocked:
         # Not overridable and not a warning. Superseding a dormant attempt is
         # exactly the contribution this repository's guide says it rejects
@@ -918,6 +1005,7 @@ def assess_target(
         stale_attempts=stale_attempts,
         duplicate_blocked_attempts=duplicate_blocked,
         maintainer_closed_attempts=maintainer_closed,
+        maintainer_pending_attempts=maintainer_pending,
         blocking=blocking,
         warnings=warnings,
     )

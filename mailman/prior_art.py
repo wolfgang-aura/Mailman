@@ -13,7 +13,7 @@ from mailman.redaction import redact
 from mailman.targeting import (
     attempt_is_closed_unmerged,
     attempt_is_dormant,
-    attempt_is_maintainers,
+    attempt_is_project_voice,
     is_stale_attempt,
     stale_attempt_row,
 )
@@ -375,6 +375,13 @@ def render_prior_art(record: dict[str, Any]) -> str:
         lines.append("")
         lines.append(f"- Outcome: **{item['outcome']}**")
         lines.append(f"- URL: {item['url']}")
+        if item.get("author"):
+            association = item.get("author_association")
+            lines.append(
+                f"- Author: {item['author']}"
+                + (f" ({association.lower()})" if association else "")
+                + (", speaks for the project" if item.get("author_is_project_voice") else "")
+            )
         if item["changed_files"]:
             listed = ", ".join(f"`{path}`" for path in item["changed_files"][:10])
             lines.append(f"- Files touched: {listed}")
@@ -516,6 +523,27 @@ def collect_prior_art(
             if isinstance(inline, list):
                 payload["reviewComments"] = inline
         summary = summarize_pull_request(payload)
+        # Who the author is to the project. A project voice's closed attempt
+        # is its own fix parked, not an outsider's abandoned one; without the
+        # association the stale rule called marimo#9862 abandoned. `gh pr view`
+        # does not carry it, so a merged attempt, which nothing asks about,
+        # does not pay the extra call. Mailman #199.
+        association = _first_association(payload)
+        if association is None and summary["outcome"] != "merged":
+            association = _author_association(
+                run_directory,
+                executable=command_executable,
+                slug=slug,
+                number=summary["number"],
+                timeout_seconds=timeout_seconds,
+                commands=record["commands"],
+            )
+        writer = {"association": association, "author": summary["author"]}
+        summary["author_association"] = association
+        summary["author_is_maintainer"] = is_maintainer(
+            writer, maintainers, associations=frozenset({"OWNER", "MEMBER"})
+        )
+        summary["author_is_project_voice"] = is_maintainer(writer, maintainers)
         if summary["outcome"] == "closed unmerged":
             # A maintainer's closure is a decision about the change; the
             # author's own is a withdrawal. `check-target` reads this to tell
@@ -746,7 +774,7 @@ def resolve_cited_pull_requests(
             row["closes_issue"]
             and attempt_is_closed_unmerged(row)
             and attempt_is_dormant(row, now=now)
-            and attempt_is_maintainers(row)
+            and attempt_is_project_voice(row)
         ):
             record["maintainer_owned"].append(stale_attempt_row(row, now=now))
         elif is_stale_attempt(row, now=now):
@@ -770,6 +798,20 @@ def resolve_cited_pull_requests(
     path = run_directory / CITED_PULL_REQUESTS_FILENAME
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n")
     return record
+
+
+#: GitHub's `author_association` values are one upper-case word. Anything else
+#: on stdout is not an answer.
+_ASSOCIATION_WORD = re.compile(r"[A-Z_]+")
+
+
+def _first_association(payload: dict[str, Any]) -> str | None:
+    """The author association a payload already carries, in either spelling."""
+    for key in ("authorAssociation", "author_association"):
+        value = str(payload.get(key) or "").strip().upper()
+        if _ASSOCIATION_WORD.fullmatch(value):
+            return value
+    return None
 
 
 def _author_association(
@@ -805,7 +847,7 @@ def _author_association(
     if result.timed_out or result.exit_code != 0:
         return None
     association = (result.stdout or "").strip().strip('"').upper()
-    return association or None
+    return association if _ASSOCIATION_WORD.fullmatch(association) else None
 
 
 def _api(

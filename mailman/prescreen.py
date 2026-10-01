@@ -57,6 +57,7 @@ from mailman.targeting import (
     ISSUE_ASSIGNED,
     MAINTAINER_CLOSED_ATTEMPT,
     MAINTAINER_OWNED_FIX,
+    MAINTAINER_PENDING_FIX,
     MAINTAINER_REMARK_ELSEWHERE,
     MERGED_BEFORE_ISSUE_DAYS,
     NO_CLAIM_CHECK,
@@ -89,7 +90,9 @@ from mailman.toolchain import resolve_tool
 #: 13 reads maintainers from the repository screen's recorded set as well as
 #: from `author_association`, and refuses a maintainer's own parked fix.
 #: Mailman #203.
-PRESCREEN_SCHEMA_VERSION = 13
+#: 14 records each searched attempt's author association and refuses a
+#: project voice's closed fix that no maintainer rejected. Mailman #199.
+PRESCREEN_SCHEMA_VERSION = 14
 ISSUE_SCREENS = "issue-screens"
 #: A pre-screen filters a shortlist; it is not the filing gate. The run stage
 #: still re-runs the duplicate search under its own one-hour limit, and
@@ -302,6 +305,7 @@ DECIDABLE = (
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     MAINTAINER_CLOSED_ATTEMPT,
     MAINTAINER_OWNED_FIX,
+    MAINTAINER_PENDING_FIX,
 )
 
 
@@ -718,6 +722,7 @@ def prescreen_issue(
         "duplicate_blocked_attempts": [],
         "maintainer_closed_attempts": [],
         "maintainer_owned_attempts": [],
+        "maintainer_pending_attempts": [],
         "issue": {
             "success": captured.get("success"),
             "state": captured.get("state"),
@@ -1237,6 +1242,11 @@ def prescreen_issue(
         for row in assessment.maintainer_closed_attempts
         if row.get("number") not in rejected_known
     )
+    # A project voice's closed fix the search found: parked, not abandoned.
+    # Mailman #199.
+    record["maintainer_pending_attempts"] = list(
+        assessment.maintainer_pending_attempts
+    )
     record["open_attempts"] = [row.get("number") for row in assessment.open_attempts]
     record["merged_attempts"] = [
         row.get("number") for row in assessment.merged_attempts
@@ -1253,6 +1263,7 @@ def prescreen_issue(
             record["stale_attempts"]
             or record["duplicate_blocked_attempts"]
             or record["maintainer_closed_attempts"]
+            or record["maintainer_pending_attempts"]
             or record["open_attempts"]
             or record["merged_attempts"]
             or record["closed_attempts"]
@@ -1262,6 +1273,17 @@ def prescreen_issue(
     record["verdict"] = "reject" if blocking else "pass"
     if blocking:
         record["next"] = f"Do not open a run on {slug}#{number}: " + "; ".join(blocking)
+        if MAINTAINER_PENDING_FIX in blocking:
+            named = ", ".join(
+                f"#{row.get('number')} by {row.get('author')}"
+                for row in record["maintainer_pending_attempts"]
+            )
+            record["next"] += (
+                f". Somebody who speaks for {slug} wrote a fix that was closed "
+                f"without merging and that no maintainer rejected: {named}. "
+                "That is the project's own work parked, not an abandoned "
+                "attempt; ask on the issue whether they want help finishing it"
+            )
         if NO_CLAIM_CHECK in blocking:
             record["next"] += (
                 f". The issue thread could not be read ({claims.get('detail')}); "
