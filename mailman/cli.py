@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 import webbrowser
 from pathlib import Path
@@ -560,6 +561,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         help="a function, class or file the change touches, repeatable. "
         "Searched with the issue number before the broad listing",
+    )
+    duplicate.add_argument(
+        "--issue-symbol",
+        action="append",
+        dest="issue_symbols",
+        default=[],
+        help="a symbol read out of the issue body, repeatable; each gets its own "
+        "pull request query",
     )
     duplicate.add_argument("--limit", type=int, default=30)
     duplicate.add_argument("--executable")
@@ -1498,13 +1507,26 @@ def _fetch_issue(arguments: argparse.Namespace) -> int:
     return 0 if record["success"] else 1
 
 
+def _verification_argv(text: str) -> list[str]:
+    """Split a --verification string, keeping a quoted argument whole.
+
+    Non-POSIX mode leaves Windows backslashes alone but keeps the quotes, so
+    they are stripped here. `.split()` cut `-k "a and b"` apart. Mailman #355.
+    """
+    return [
+        token[1:-1] if len(token) > 1 and token[0] == token[-1] and token[0] in "\"'"
+        else token
+        for token in shlex.split(text, posix=False)
+    ]
+
+
 def _build_prompts(arguments: argparse.Namespace) -> int:
     run, run_directory = load_run(arguments.run_id, arguments.data_root)
     verification = (
         resolve_command(
             run_directory,
             environment_command(
-                run_directory, arguments.command or arguments.verification.split()
+                run_directory, arguments.command or _verification_argv(arguments.verification)
             ),
         )
         if arguments.command or arguments.verification
@@ -1634,6 +1656,7 @@ def _duplicate_search(arguments: argparse.Namespace) -> int:
         timeout_seconds=arguments.timeout,
         limit=arguments.limit,
         symbols=arguments.symbols,
+        issue_symbols=arguments.issue_symbols,
     )
     print(
         json.dumps(
@@ -2024,7 +2047,8 @@ def _package(arguments: argparse.Namespace) -> int:
         raise ValueError("--head must be OWNER:BRANCH")
     branch = arguments.head.split(":", 1)[1]
     message = (
-        arguments.commit_message.read_text(encoding="utf-8")
+        # utf-8-sig: a BOM from Notepad or PowerShell led the commit subject. #355.
+        arguments.commit_message.read_text(encoding="utf-8-sig")
         if arguments.commit_message else arguments.title
     )
 
@@ -2076,6 +2100,11 @@ def _package(arguments: argparse.Namespace) -> int:
             if search.get("query"):
                 symbols = [part for symbol in search.get("symbols") or []
                            for part in ("--symbol", symbol)]
+                # The repeat is the same search, not a narrower one. #355.
+                symbols += [part for symbol in search.get("issue_symbols") or []
+                            for part in ("--issue-symbol", symbol)]
+                if search.get("limit"):
+                    symbols += ["--limit", str(search["limit"])]
                 code = main(["duplicate-search", run_id, "--query", search["query"],
                              *symbols, *root])
                 if code:
@@ -2218,7 +2247,7 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         tuple(
             resolve_command(
                 run_directory,
-                environment_command(run_directory, arguments.verification.split()),
+                environment_command(run_directory, _verification_argv(arguments.verification)),
             )
         )
         if arguments.verification

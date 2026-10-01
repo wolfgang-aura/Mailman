@@ -1552,6 +1552,9 @@ def refresh(root: Path, record: dict, *, include_ready: bool = False) -> dict:
                 query=search["query"],
                 issue_number=search.get("issue_number"),
                 symbols=search.get("symbols") or (),
+                # The same search, not a narrower one. Mailman #355.
+                issue_symbols=search.get("issue_symbols") or (),
+                limit=search.get("limit") or 30,
             )
             outcome["duplicate_search"] = {
                 "success": fresh["success"], "complete": fresh["complete"],

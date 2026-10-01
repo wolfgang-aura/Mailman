@@ -1013,6 +1013,25 @@ class PreFilingRefreshTests(HuntTests):
         result = refresh(self.data_root, record, include_ready=True)
         self.assertEqual([row["run_id"] for row in result["refreshed"]], [directory.name])
 
+    def test_the_repeated_search_keeps_its_limit_and_issue_symbols(self):
+        # The pre-filing repeat dropped the symbols read out of the issue
+        # body and the recorded limit, so it searched less. Mailman #355.
+        record = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        path = directory / "duplicate-search.json"
+        search = json.loads(path.read_text(encoding="utf-8"))
+        search.update(query="fixture defect", issue_number=1, symbols=["fix"],
+                      issue_symbols=["_handle_upserts"], limit=80)
+        path.write_text(json.dumps(search), encoding="utf-8")
+        fresh = {"success": True, "complete": True, "match_count": 0, "decided_by": "broad"}
+        with mock.patch("mailman.submission.record_duplicate_search",
+                        return_value=fresh) as searched:
+            refresh(self.data_root, record, include_ready=True)
+
+        self.assertEqual(searched.call_args.kwargs["issue_symbols"], ["_handle_upserts"])
+        self.assertEqual(searched.call_args.kwargs["limit"], 80)
+
 
 class PrescreenRecordTests(OrchestratorHarness):
     """A hunt keeps its prescreens, and the next target comes from screens.

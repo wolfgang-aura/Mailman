@@ -881,6 +881,31 @@ class CliTests(unittest.TestCase):
             self.assertIn("python", command[0].replace("\\", "/"))
             self.assertEqual(command[1:], ["-m", "pytest"])
 
+    def test_a_quoted_verification_argument_stays_one_argument(self) -> None:
+        # `.split()` cut `-k "a and b"` into three argv items, so the gate ran a
+        # different command than the one the operator wrote. Mailman #355.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, run_directory = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40, primary="codex", reviewer="claude",
+                data_root=data_root,
+            )
+            (run_directory / "issue.md").write_text("# Issue\n\nBody.\n", encoding="utf-8")
+            stderr = StringIO()
+            with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                exit_code = main([
+                    "build-prompts", run.run_id, "--verification",
+                    '{environment}/bin/python -m pytest -k "a and b" C:\\t\\x.py',
+                    "--data-root", str(data_root),
+                ])
+
+            self.assertEqual(exit_code, 0, stderr.getvalue())
+            record = json.loads((run_directory / "prompts.json").read_text(encoding="utf-8"))
+            self.assertEqual(record["verification_command"][1:],
+                             ["-m", "pytest", "-k", "a and b", "C:\\t\\x.py"])
+
     def test_show_renders_a_run_and_lists_them_without_a_run_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_root = Path(temporary_directory) / "runs"

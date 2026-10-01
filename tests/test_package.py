@@ -313,6 +313,81 @@ class PackageCommandTests(unittest.TestCase):
                                         "rolling window", "--symbol", "roll",
                                         "--symbol", "Window"])
 
+    def test_the_repeated_search_keeps_its_limit_and_issue_symbols(self) -> None:
+        # The refresh reran at the default limit without the symbols read out
+        # of the issue body, so it was a narrower search than the one it
+        # replaced. Mailman #355.
+        import json
+
+        from mailman import cli
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, _ = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40, primary="codex", reviewer="claude",
+                data_root=data_root,
+            )
+            arguments = argparse.Namespace(
+                run_id=run.run_id, data_root=data_root, policy=Path("policy.json"),
+                title="Fix it", body=Path("body.md"), repo="example/project",
+                head="fork:mailman/issue-7", base="main", commit_message=None, affirm=[],
+            )
+            directory = data_root / run.run_id
+            (directory / "decision.json").write_text("{}", encoding="utf-8")
+            (directory / "duplicate-search.json").write_text(json.dumps({
+                "query": "rolling window", "symbols": [], "limit": 80,
+                "issue_symbols": ["_handle_upserts"]}), encoding="utf-8")
+            calls = []
+
+            def stage(argv):
+                calls.append(argv)
+                return 1
+
+            with (
+                patch.object(cli, "main", side_effect=stage),
+                patch("sys.stdout", StringIO()), patch("sys.stderr", StringIO()),
+            ):
+                cli._package(arguments)
+
+        argv = calls[0]
+        self.assertEqual(argv[argv.index("--limit") + 1], "80")
+        self.assertEqual(argv[argv.index("--issue-symbol") + 1], "_handle_upserts")
+
+    def test_a_byte_order_mark_does_not_reach_the_commit_subject(self) -> None:
+        # Notepad and PowerShell 5.1 write a BOM, which then led the public
+        # commit subject. Mailman #355.
+        from mailman import cli
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, _ = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40, primary="codex", reviewer="claude",
+                data_root=data_root,
+            )
+            message_path = Path(temporary_directory) / "message.txt"
+            message_path.write_text("Fix it\n", encoding="utf-8-sig")
+            arguments = argparse.Namespace(
+                run_id=run.run_id, data_root=data_root, policy=Path("policy.json"),
+                title="Fix it", body=Path("body.md"), repo="example/project",
+                head="fork:mailman/issue-7", base="main", commit_message=message_path,
+                affirm=[],
+            )
+            (data_root / run.run_id / "decision.json").write_text("{}", encoding="utf-8")
+            with (
+                patch.object(cli, "main", return_value=0),
+                patch("mailman.cli.resolve_identity", return_value=IDENTITY),
+                patch("mailman.package.changed_paths", return_value=["m.py"]),
+                patch("mailman.package.commit_candidate", return_value="b" * 40) as committed,
+                patch("sys.stdout", StringIO()), patch("sys.stderr", StringIO()),
+            ):
+                self.assertEqual(cli._package(arguments), 0)
+
+        self.assertEqual(committed.call_args.kwargs["message"], "Fix it\n")
+
     def test_an_own_words_refusal_alone_does_not_stop_packaging(self) -> None:
         # zarr run 20260930T111012Z-fcf02a stopped at prepare-submission, so
         # commit and handoff never ran and hunt status could only say REPAIR.
