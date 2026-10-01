@@ -1336,8 +1336,24 @@ def _hunt(arguments: argparse.Namespace) -> int:
         result = hunt.finish(root, record)
     else:
         result = hunt.status(root, record)
+        _report_leftover_processes(root, result)
     print(json.dumps(result if arguments.full else hunt.compact(result), indent=2))
     return 1 if arguments.action == "finish" and not result["complete"] else 0
+
+
+def _report_leftover_processes(root: Path, result: dict) -> None:
+    """Name any process still running from a run's environment. Mailman #277."""
+    from mailman.leftovers import leftover_processes
+
+    found, failure = leftover_processes(root)
+    if found:
+        result["leftover_processes"] = found
+        result["leftover_processes_action"] = (
+            "These outlived the step that started them. Stop each with"
+            " `taskkill /PID <pid> /T /F` and report it against Mailman #277."
+        )
+    if failure:
+        result["leftover_processes_unchecked"] = failure
 
 
 def _doctor() -> int:
