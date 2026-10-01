@@ -172,6 +172,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "abandon",
             "refresh",
             "file",
+            "ship",
             "targets",
             "sweep",
             "watch",
@@ -183,6 +184,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "is what stops a later session offering a filed candidate again",
     )
     hunt.add_argument("--commit", help="the filed head commit, for hunt file")
+    hunt.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="for hunt ship: print what would be forked, pushed, opened and "
+        "recorded, and write nothing",
+    )
     hunt.add_argument(
         "--since-days",
         type=int,
@@ -205,7 +212,7 @@ def _build_parser() -> argparse.ArgumentParser:
     hunt.add_argument(
         "--json",
         action="store_true",
-        help="print the full record instead of the table, for hunt watch",
+        help="print the full record instead of the table, for hunt watch and ship",
     )
     hunt.add_argument(
         "--engaged-only",
@@ -1248,8 +1255,29 @@ def _hunt(arguments: argparse.Namespace) -> int:
         "finish",
         "refresh",
         "file",
+        "ship",
     ):
         hunt.require_lease(record, arguments.owner)
+    if arguments.action == "ship":
+        # Package, fork, push, open and record every run at filing approval,
+        # stopping at the first failure. Running it is the batch's approval.
+        # https://github.com/wolfgang-aura/Mailman/issues/362
+        from mailman.ship import render, ship
+
+        shipped = ship(
+            root,
+            record,
+            lease_owner=arguments.owner,
+            dry_run=arguments.dry_run,
+            refresh_evidence=not arguments.no_refresh,
+            only=arguments.run_id,
+            data_root=arguments.data_root,
+        )
+        if arguments.json:
+            print(json.dumps(shipped, indent=2))
+        else:
+            _emit(render(shipped))
+        return 1 if shipped["failure"] else 0
     if arguments.action == "file":
         if not arguments.run_id or not arguments.pr_url:
             raise ValueError("provide the run ID and --pr-url")
