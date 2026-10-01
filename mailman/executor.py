@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import platform
+import queue
 import re
 import signal
 import subprocess
@@ -115,6 +116,88 @@ def _environment_metadata(program: str | None = None) -> dict[str, str]:
     }
 
 
+# How long the read keeps waiting for end-of-file once the process tree has
+# been killed. A descendant the kill missed can hold the pipe for hours; the
+# timeout is the caller's budget, not that descendant's. Mailman #335.
+_PIPE_GRACE_SECONDS = 2.0
+
+
+def _open_job(process: subprocess.Popen) -> int | None:
+    """A Windows job object holding the child, or None where there is none.
+
+    Every process the child starts joins the job, so a timeout can stop a
+    grandchild whose parent already exited. taskkill /T walks the tree from
+    the parent's pid and finds nothing once that parent is gone. Mailman #335.
+    The child joins a moment after it starts; anything it launches in that
+    moment escapes, and the read deadline in _stream covers that case.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
+        kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        if not kernel32.AssignProcessToJobObject(job, int(process._handle)):
+            kernel32.CloseHandle(job)
+            return None
+        return job
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _close_job(job: int | None) -> None:
+    if job is None:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle(job)
+
+
+def _kill_tree(process: subprocess.Popen, job: int | None) -> None:
+    """Stop the wrapper and every descendant, even when the wrapper has exited."""
+    if job is not None:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+        kernel32.TerminateJobObject(job, 1)
+    elif os.name == "nt":
+        if process.poll() is None:
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                    shell=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+    else:
+        # The group outlives its leader, so this reaches a grandchild of an
+        # exited child too.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    if process.poll() is None:
+        process.kill()
+
+
 def _stream(
     command: Sequence[str],
     *,
@@ -148,34 +231,13 @@ def _stream(
         shell=False,
         **popen_options,
     )
+    job = _open_job(process)
     timed_out = threading.Event()
     kill_lock = threading.Lock()
 
     def kill_tree() -> None:
-        """Stop the wrapper and every child that inherited its output pipes."""
         with kill_lock:
-            if process.poll() is not None:
-                return
-            if os.name == "nt":
-                try:
-                    subprocess.run(
-                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                        stdin=subprocess.DEVNULL,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=10,
-                        check=False,
-                        shell=False,
-                    )
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
-            else:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            if process.poll() is None:
-                process.kill()
+            _kill_tree(process, job)
 
     def give_up() -> None:
         timed_out.set()
@@ -186,12 +248,33 @@ def _stream(
     watchdog.start()
 
     stderr_lines: list[str] = []
+    stdout_queue: queue.Queue[str | None] = queue.Queue()
 
+    # Each reader closes its own pipe: closing it from here while a reader is
+    # blocked on it would block too. Unclosed pipes surface as a
+    # ResourceWarning on the caller's stderr. Mailman #281.
     def drain_stderr() -> None:
         if process.stderr is None:
             return
-        for line in process.stderr:
-            stderr_lines.append(line)
+        try:
+            for line in process.stderr:
+                stderr_lines.append(line)
+        except (OSError, ValueError):
+            pass
+        finally:
+            process.stderr.close()
+
+    def read_stdout() -> None:
+        try:
+            if process.stdout is not None:
+                for line in process.stdout:
+                    stdout_queue.put(line)
+        except (OSError, ValueError):
+            pass
+        finally:
+            if process.stdout is not None:
+                process.stdout.close()
+            stdout_queue.put(None)
 
     def write_stdin() -> None:
         # Written from a thread so a large prompt cannot deadlock against a
@@ -206,39 +289,58 @@ def _stream(
             pass
 
     stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+    stdout_thread = threading.Thread(target=read_stdout, daemon=True)
     stdin_thread = threading.Thread(target=write_stdin, daemon=True)
     stderr_thread.start()
+    stdout_thread.start()
     stdin_thread.start()
 
     stdout_lines: list[str] = []
     stopped_reason: str | None = None
+    abandoned = False
+    give_up_reading_at: float | None = None
     try:
-        if process.stdout is not None:
-            for line in process.stdout:
-                stdout_lines.append(line)
-                if stopped_reason is not None:
-                    continue
-                try:
-                    on_stdout_line(line.rstrip("\r\n"))
-                except StopExecution as error:
-                    stopped_reason = str(error)
-                    kill_tree()
-                except Exception:  # noqa: BLE001 - a broken console must not
-                    pass  # cost the run its evidence
-        exit_code = process.wait()
+        while True:
+            if give_up_reading_at is None and (
+                timed_out.is_set() or stopped_reason is not None
+            ):
+                give_up_reading_at = time.monotonic() + _PIPE_GRACE_SECONDS
+            try:
+                line = stdout_queue.get(timeout=0.1)
+            except queue.Empty:
+                if give_up_reading_at is not None and time.monotonic() >= give_up_reading_at:
+                    abandoned = True
+                    break
+                continue
+            if line is None:
+                break
+            stdout_lines.append(line)
+            if stopped_reason is not None:
+                continue
+            try:
+                on_stdout_line(line.rstrip("\r\n"))
+            except StopExecution as error:
+                stopped_reason = str(error)
+                kill_tree()
+            except Exception:  # noqa: BLE001 - a broken console must not
+                pass  # cost the run its evidence
+        try:
+            exit_code = process.wait(timeout=_PIPE_GRACE_SECONDS if abandoned else None)
+        except subprocess.TimeoutExpired:
+            exit_code = None
     finally:
         watchdog.cancel()
         stdin_thread.join(timeout=5)
-        stderr_thread.join(timeout=5)
-        # Popen leaves its pipes open; unclosed, they surface as a
-        # ResourceWarning on the caller's stderr. Mailman #281.
-        for pipe in (process.stdout, process.stderr):
-            if pipe is not None:
-                try:
-                    pipe.close()
-                except OSError:
-                    pass
+        stderr_thread.join(timeout=0.1 if abandoned else 5)
+        with kill_lock:
+            _close_job(job)
+            job = None
 
+    if abandoned:
+        stderr_lines.append(
+            "\n[mailman] stopped reading: a descendant process still held the"
+            " output pipe after the process tree was killed. Mailman #335.\n"
+        )
     if timed_out.is_set():
         exit_code = None
     if stopped_reason is not None:
@@ -250,7 +352,6 @@ def _stream(
         timed_out.is_set(),
         stopped_reason,
     )
-
 
 def venv_activation(program: str, base: Mapping[str, str]) -> dict[str, str]:
     """PATH and VIRTUAL_ENV as activation would set them for a venv program.
