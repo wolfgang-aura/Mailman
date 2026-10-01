@@ -56,6 +56,8 @@ _CLOSING_KEYWORD = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
 
 _BODY_CHARACTER_LIMIT = 1200
 _COMMENT_CHARACTER_LIMIT = 800
+# Pages of a pull request timeline read for its last closure.
+_TIMELINE_PAGES = 5
 
 
 def _trim(text: str | None, limit: int) -> str:
@@ -118,11 +120,29 @@ def _comment_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
 #: closed by its own author, but only after two members asked "was any LLM
 #: used to generate this PR" and quoted GPTZero. Another agent-written pull
 #: request on the same issue is the pattern they named. Mailman #304.
+#:
+#: Each form names the pull request or its author, not AI in general: on an
+#: agent or LLM framework "this is an LLM provider bug" and "the AI-generated
+#: response" are the project's subject, and matched the first version.
+_AI_TOOL = r"(?:llms?|ai|chatgpt|copilot|claude|gpt-?\d*)"
+_AI_MADE = rf"(?:{_AI_TOOL}|machine)[- ](?:generated|written|authored|assisted)"
+_THE_WORK = (
+    r"(?:this|the|your)(?: \w+)? (?:pr|pull request|change|changes|code|patch|"
+    r"diff|commit|contribution|submission|description)s?"
+)
 _AI_AUTHORSHIP_DOUBT = re.compile(
     r"\b(?:"
-    r"(?:was|were|is|did you use) (?:any |an |the )?(?:llms?|ai|chatgpt|copilot|claude)\b"
-    r"|(?:ai|llm|chatgpt|machine)[- ](?:generated|written|authored)"
-    r"|(?:generated|written) (?:by|with|using) (?:an? )?(?:llms?|ai|chatgpt|copilot)\b"
+    # "was any LLM used", "did you use ChatGPT"
+    rf"(?:was|were) (?:any |an |the )?{_AI_TOOL} (?:used|involved)"
+    rf"|did you (?:use|write this with) (?:any |an |the )?{_AI_TOOL}\b"
+    # "is this AI-generated", "this PR looks AI-generated"
+    rf"|(?:is|was) (?:this|it)(?: \w+)? {_AI_MADE}"
+    rf"|{_THE_WORK} (?:is|was|looks|seems|reads)(?: like)?(?: it was)?(?: an?)? {_AI_MADE}"
+    # "we do not accept AI-generated pull requests"
+    rf"|{_AI_MADE} (?:prs?|pull requests?|code|patch(?:es)?|changes?|contributions?|submissions?)\b"
+    # "was this code written with an LLM"
+    rf"|{_THE_WORK} (?:was |were |been )?(?:generated|written) (?:by|with|using) "
+    rf"(?:an? |the )?{_AI_TOOL}\b"
     r"|gptzero|pangram"
     r")",
     re.IGNORECASE,
@@ -801,14 +821,23 @@ def closing_actor(
     associations: dict[str, str] = {}
     login: str | None = None
     association: str | None = None
-    events = _api(
-        run_directory,
-        executable=executable,
-        path=f"repos/{slug}/issues/{number}/timeline?per_page=100",
-        timeout_seconds=timeout_seconds,
-        commands=commands,
-    )
-    for event in events if isinstance(events, list) else []:
+    # The last closure can sit past the first hundred events; reading one
+    # page took an early self-close for the one that stands.
+    events: list[Any] = []
+    for page in range(1, _TIMELINE_PAGES + 1):
+        got = _api(
+            run_directory,
+            executable=executable,
+            path=f"repos/{slug}/issues/{number}/timeline?per_page=100&page={page}",
+            timeout_seconds=timeout_seconds,
+            commands=commands,
+        )
+        if not isinstance(got, list):
+            break
+        events += got
+        if len(got) < 100:
+            break
+    for event in events:
         if not isinstance(event, dict):
             continue
         actor = event.get("actor") if isinstance(event.get("actor"), dict) else None
