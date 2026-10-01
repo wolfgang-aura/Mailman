@@ -464,7 +464,8 @@ sign-off in the filing approval request, because it certifies the DCO.
     for that approval per run, as soon as `handoff-check` passes, not when
     the quota is met: a SEND-ready pandas-stubs run waited 1h40m for a third
     candidate and an outside pull request took the issue in that time
-    (#315). Record `hunt file` for each run as it is filed. For a self-sourced defect,
+    (#315). File with `hunt ship` (below), which records `hunt file` for
+    each run as it is filed. For a self-sourced defect,
     prepare any required issue text alongside the PR and ask for approval of
     the ordered filings.
     A closed issue is refused; an issue with no maintainer reply is flagged
@@ -550,7 +551,28 @@ resume the run through `resume-review`. Before pushing the revision, run
 `mailman revision-response RUN_ID` until it exits 0. A revision that silently
 skips one of the maintainer's points costs a second review round.
 
-Record each filing in the hunt as it happens: `mailman hunt file HUNT_ID RUN_ID
+Hand the operator one command per batch, not a script of blocks:
+`mailman hunt ship HUNT_ID --owner TOKEN`. Running it is his approval for that
+batch, so give it to him with the packet and do not run it for him. For every
+run at filing approval (`hunt status` reads it `ready` at stage
+`filing-approval`, not yet filed, within the hunt's open slots) it confirms the
+run is packaged, forks the upstream into the account the handoff's `--head`
+names, pushes the branch, opens the pull request with the handoff's title, body
+file, head and base, and records `hunt file` with the URL and commit. It never
+repackages: that would re-hash the body and post bytes nobody read. It
+refreshes duplicate searches and claims first, as `finish` does (`--no-refresh`
+skips that offline). A run whose decision or handoff check fails is skipped
+with the gate's reason. A run that needs the operator (an own-words rewrite, a
+CLA) or is an ask-first offer is skipped and never filed. A head owner other
+than the account gh is signed in as is skipped too, because the fork would land
+in the wrong account. Each step reads first, so a rerun reuses the fork, a
+branch already at the approved commit and an open pull request from that
+account. It refuses to overwrite a fork branch at another commit or to open a
+second pull request after a closed one. It stops at the first failure, prints
+what succeeded and the command to resume, and exits 1. `--dry-run` prints the
+plan and writes nothing; `--json` prints the result as JSON.
+
+When a run was filed by hand, record it as it happens: `mailman hunt file HUNT_ID RUN_ID
 --owner TOKEN --pr-url https://github.com/OWNER/REPO/pull/N --commit SHA`. The
 hunt becomes `FILED` once every requested candidate carries a pull request, and
 a `FILED` hunt is read-only: `finish`, `refresh-procedure` and further checks
