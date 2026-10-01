@@ -640,6 +640,10 @@ def _yaml_list(
 
     value = re.sub(r"\s+#.*$", "", value).strip()
     if value.startswith("["):
+        # A flow list may run over several lines; read up to its `]`.
+        while "]" not in value and index < len(lines):
+            value += " " + re.sub(r"\s+#.*$", "", lines[index]).strip()
+            index += 1
         inner = value[1:value.rfind("]")] if "]" in value else value[1:]
         return [unquote(item) for item in inner.split(",") if item.strip()], index
     items: list[str] = []
@@ -728,8 +732,28 @@ def _pre_commit_arguments(workspace: Path, tool: LintTool) -> list[str]:
         return []
     for hook in _own_hooks(scopes[1], tool):
         if hook.get("args"):
-            return [argument for argument in hook["args"] if argument.startswith("-")]
+            return _options(hook["args"])
     return []
+
+
+def _options(arguments: list[str]) -> list[str]:
+    """A hook's options, each with its value; positional paths stay out.
+
+    isort's documented hook is `args: ["--profile", "black"]`. Keeping only
+    dashed tokens ran `isort --profile pkg/mod.py`, which read the file as
+    the profile. A bare token right after an option without `=` is that
+    option's value.
+    """
+    options: list[str] = []
+    expects_value = False
+    for argument in arguments:
+        if argument.startswith("-"):
+            options.append(argument)
+            expects_value = "=" not in argument
+        elif expects_value:
+            options.append(argument)
+            expects_value = False
+    return options
 
 
 def _ruff_config(hooks: list[dict]) -> list[str]:

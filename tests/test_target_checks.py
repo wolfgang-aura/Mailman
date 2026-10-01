@@ -495,6 +495,40 @@ class OtherLinterTests(_Fixture):
         self.assertIn([python, "-m", "flake8", "--max-line-length=79", "pkg/mod.py"],
                       executor.calls)
 
+    def test_a_hook_option_keeps_its_separate_value(self) -> None:
+        # isort's documented hook is `args: ["--profile", "black"]`. Keeping
+        # only dashed tokens ran `isort --profile pkg/mod.py`, which read the
+        # file as the profile name and failed a clean candidate.
+        self.write(
+            ".pre-commit-config.yaml",
+            "repos:\n"
+            "  - repo: https://github.com/pycqa/isort\n"
+            "    hooks:\n"
+            "      - id: isort\n"
+            "        args: [\"--profile\", \"black\", \"--filter-files\"]\n"
+            "  - repo: https://github.com/pycqa/flake8\n"
+            "    hooks:\n"
+            "      - id: flake8\n"
+            "        args: [\n"
+            "          --max-line-length, \"100\",\n"
+            "          --extend-ignore=E203,\n"
+            "          src,\n"
+            "        ]\n",
+        )
+        executor = Executor()
+        self._run(executor)
+        python = str(self.python)
+        self.assertIn(
+            [python, "-m", "isort", "--check-only", "--diff", "--profile", "black",
+             "--filter-files", "pkg/mod.py"],
+            executor.calls,
+        )
+        self.assertIn(
+            [python, "-m", "flake8", "--max-line-length", "100",
+             "--extend-ignore=E203", "pkg/mod.py"],
+            executor.calls,
+        )
+
     def test_a_ruff_hook_s_config_path_reaches_check_and_format(self) -> None:
         # capa's local ruff hooks pass `--config .github/ruff.toml`; ruff ran
         # with its defaults and flagged capa's length-sorted imports. The
