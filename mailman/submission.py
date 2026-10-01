@@ -465,6 +465,27 @@ def _policy_findings(
         issue_opened=issue_opened,
     )
     open_rivals = [row for row in rivals if row not in stale]
+    cleared = (acknowledgement or {}).get("not_duplicates") or {}
+    named_clear = [
+        row
+        for row in open_rivals
+        if _duplicate_key(row) in cleared
+        and cleared[_duplicate_key(row)] == row.get("head_sha")
+        and not row.get("references_issue")
+    ]
+    if named_clear:
+        open_rivals = [row for row in open_rivals if row not in named_clear]
+        findings.append(
+            Finding(
+                code="rival-read-not-duplicate",
+                blocking=False,
+                detail=(
+                    "read by hand and recorded as a different change at its "
+                    "current head: "
+                    + ", ".join(_duplicate_key(row) for row in named_clear)
+                ),
+            )
+        )
     if stale:
         named = ", ".join(
             f"{_duplicate_key(row)} ({summary['state']}"
@@ -1320,7 +1341,7 @@ def stale_prior_attempts(
 
 
 def record_duplicate_acknowledgement(
-    run_directory: Path, *, note: str
+    run_directory: Path, *, note: str, not_duplicates: list[str] | None = None
 ) -> dict[str, Any]:
     """Record that a human read this run's weak duplicate candidates.
 
@@ -1339,13 +1360,32 @@ def record_duplicate_acknowledgement(
     strong, weak = partition_duplicates(
         search.get("matches"), issue_number=issue_number
     )
+    # A strong row that names no issue matched on wording alone. Once read,
+    # it can be cleared by name, pinned to its head so a push re-blocks
+    # (pandas-stubs#1900, #306). One that names the issue never can.
+    cleared: dict[str, str | None] = {}
+    by_key = {_duplicate_key(row): row for row in strong}
+    for key in not_duplicates or []:
+        row = by_key.get(key)
+        if row is None:
+            raise ValueError(f"{key} is not a strong match in this run's search")
+        if duplicate_strength(row) == "merged" or row.get("references_issue") or any(
+            str(reason).startswith("#") for reason in row.get("matched_by") or []
+        ):
+            raise ValueError(
+                f"{key} names the issue or is merged, so no acknowledgement clears it"
+            )
+        cleared[key] = row.get("head_sha")
     record = {
         "schema_version": 1,
         "acknowledged_at": datetime.now(UTC).isoformat(),
         "note": note.strip(),
         "searched_at": search.get("searched_at"),
         "reviewed": sorted(_duplicate_key(row) for row in weak),
-        "strong_at_acknowledgement": sorted(_duplicate_key(row) for row in strong),
+        "strong_at_acknowledgement": sorted(
+            key for key in by_key if key not in cleared
+        ),
+        "not_duplicates": cleared,
     }
     _write_json(run_directory / DUPLICATE_ACKNOWLEDGEMENT_FILENAME, record)
     return record

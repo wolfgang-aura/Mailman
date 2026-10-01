@@ -565,6 +565,16 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="what you read and why none of them is this change",
     )
+    acknowledge.add_argument(
+        "--not-duplicate",
+        action="append",
+        default=[],
+        metavar="pr#N",
+        help=(
+            "clear one strong match that names no issue, after reading its "
+            "diff; a push to it blocks again (#306)"
+        ),
+    )
     acknowledge.add_argument("--data-root", type=Path)
 
     acknowledge_no_test = subparsers.add_parser(
@@ -1654,14 +1664,23 @@ def _duplicate_search(arguments: argparse.Namespace) -> int:
 
 def _acknowledge_duplicates(arguments: argparse.Namespace) -> int:
     _, run_directory = load_run(arguments.run_id, arguments.data_root)
-    record = record_duplicate_acknowledgement(run_directory, note=arguments.note)
+    try:
+        record = record_duplicate_acknowledgement(
+            run_directory,
+            note=arguments.note,
+            not_duplicates=arguments.not_duplicate,
+        )
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 2
     print(json.dumps(record, indent=2))
     if record["strong_at_acknowledgement"]:
         print(
             "This does not clear "
             + ", ".join(record["strong_at_acknowledgement"])
-            + ". Those name the issue or matched the whole query, and no "
-            "acknowledgement clears them.",
+            + ". Those name the issue or matched the whole query. A whole-query "
+            "match that names no issue clears only by name, after reading its "
+            "diff: --not-duplicate pr#N.",
             file=sys.stderr,
         )
     return 0

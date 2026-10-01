@@ -1163,6 +1163,81 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertFalse(record["ready"])
         self.assertIn("possible-duplicate", record["blocking_codes"])
 
+    def _whole_query_rival(self, head_sha: str = "a" * 40) -> None:
+        # pandas-stubs#1900: a whole-query match that names no issue (#306).
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-03T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [
+                        {
+                            "number": 1900,
+                            "title": "Update fill value series dataframe",
+                            "state": "open",
+                            "pull_request": True,
+                            "head_sha": head_sha,
+                            "matched_by": ["search", "series"],
+                            "methods": ["search", "listing"],
+                            "matched_terms": ["comparison", "series", "float"],
+                            "term_count": 3,
+                            "references_issue": False,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_a_named_rival_that_cites_no_issue_can_be_cleared(self) -> None:
+        self._whole_query_rival()
+        record_duplicate_acknowledgement(
+            self.run_directory,
+            note="types fill_value on the flex methods, not the dunders",
+            not_duplicates=["pr#1900"],
+        )
+        record = self._prepare()
+        self.assertTrue(record["ready"], record["blocking_codes"])
+
+    def test_a_push_to_a_cleared_rival_blocks_again(self) -> None:
+        self._whole_query_rival()
+        record_duplicate_acknowledgement(
+            self.run_directory, note="read it", not_duplicates=["pr#1900"]
+        )
+        self._whole_query_rival(head_sha="b" * 40)
+        record = self._prepare()
+        self.assertIn("possible-duplicate", record["blocking_codes"])
+
+    def test_a_rival_that_names_the_issue_cannot_be_cleared(self) -> None:
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-09-03T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "matches": [
+                        {
+                            "number": 3485,
+                            "title": "Delay background task execution",
+                            "state": "OPEN",
+                            "pull_request": True,
+                            "matched_by": ["#7"],
+                            "methods": ["listing"],
+                            "matched_terms": [],
+                            "term_count": 4,
+                            "references_issue": True,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(ValueError):
+            record_duplicate_acknowledgement(
+                self.run_directory, note="looked", not_duplicates=["pr#3485"]
+            )
+
     def test_a_maintainer_assignment_requirement_blocks(self) -> None:
         record = self._prepare(policy=_policy(requires_maintainer_assignment=True))
         self.assertIn("needs-maintainer-assignment", record["blocking_codes"])
