@@ -352,6 +352,27 @@ _POLICY_BANS = re.compile(
     r"(?:(?:external|outside|community|third[- ]party)\s+)?"
     r"(?:pull\s+requests?|prs?|code\s+contributions?|contributions?)"
     r"(?:\s+from\s+outside\b)?"
+    # SpikeInterface/spikeinterface AGENTS.md: "tell them this repo requires
+    # human-authored contributions". Mailman #366.
+    r"|requires?\s+human[- ](?:authored|written|made)\s+contributions?"
+    r"|contributions?\s+must\s+be\s+human[- ](?:authored|written|made)"
+    r")",
+    re.IGNORECASE,
+)
+
+#: Files written to coding agents. There, an unconditional "do not open pull
+#: requests" is addressed to this project and refuses it outright; in a human
+#: guide the same words usually end "without an issue". spikeinterface's
+#: AGENTS.md: "Do not open pull requests against this repository" and "You may
+#: not: push branches, open PRs". Mailman #366.
+_AGENT_FILES = ("AGENTS.md",)
+_AGENT_FILE_BANS = re.compile(
+    r"(?:"
+    r"(?:do\s+not|don't|never|must\s+not|may\s+not)\s+"
+    r"(?:open|create|submit|file|send|make)\s+(?:any\s+|a\s+|an\s+)?"
+    r"(?:pull\s+requests|pull\s+request|prs|pr)\b"
+    r"(?!\s+(?:without|unless|until|before|if|when|that|which|with)\b)"
+    r"|you\s+may\s+not\W+[^.]{0,60}\bopen\s+(?:prs|pull\s+requests)\b"
     r")",
     re.IGNORECASE,
 )
@@ -1682,8 +1703,34 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
                 },
             )
         break
+    guides = {
+        relative: _decoded(gh.json(f"repos/{slug}/contents/{relative}"))
+        for relative in _POLICY_PATHS
+    }
+    # Every guide is read for a ban, not only the first: a CONTRIBUTING.md
+    # used to hide the AGENTS.md behind it. Mailman #366.
+    for relative, body in guides.items():
+        if not body:
+            continue
+        flat = " ".join(body.split())
+        ban = _POLICY_BANS.search(flat)
+        if not ban and relative in _AGENT_FILES:
+            ban = _AGENT_FILE_BANS.search(flat)
+        if ban:
+            return _gate(
+                "policy",
+                passed=False,
+                blocking=True,
+                detail=f"{relative} refuses AI-assisted work: {ban.group(0)!r}",
+                data={
+                    "source": relative,
+                    "guide": relative,
+                    "result": "refused",
+                    "quote": ban.group(0),
+                },
+            )
     for relative in _POLICY_PATHS:
-        body = _decoded(gh.json(f"repos/{slug}/contents/{relative}"))
+        body = guides[relative]
         if not body:
             continue
         followed, unread = _followed_policies(gh, slug, relative, body)

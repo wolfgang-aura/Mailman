@@ -1305,6 +1305,59 @@ class ScreenTests(unittest.TestCase):
         self.assertIn("policy", record["failed_gates"])
         self.assertIn("refuses AI-assisted work", _named(record, "policy")["detail"])
 
+    def test_an_agents_file_that_forbids_pull_requests_fails_the_gate(self) -> None:
+        # SpikeInterface/spikeinterface AGENTS.md, verbatim. The gate called
+        # it permitted and a whole run was spent. Mailman #366.
+        agents = (
+            "# Instructions for automated agents\n\n## General instructions\n\n"
+            "Do not open pull requests against this repository.\n\n"
+            "You may: read the code, answer questions about it, suggest patches "
+            "in your\nreply to the user.\nYou may not: push branches, open PRs, "
+            "comment on existing PRs, open issues or comment on existing issues.\n"
+        )
+        for guide in ({}, {"CONTRIBUTING.md": "## Rules\n\nRun the tests.\n"}):
+            with self.subTest(guide=bool(guide)):
+                with tempfile.TemporaryDirectory() as temporary:
+                    record = _screen(
+                        Path(temporary),
+                        FakeGitHub(policies={"AGENTS.md": agents, **guide}),
+                    )
+                gate = _named(record, "policy")
+
+                self.assertIn("policy", record["failed_gates"])
+                self.assertEqual(gate["data"]["source"], "AGENTS.md")
+
+    def test_requiring_human_authored_contributions_fails_the_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "CONTRIBUTING.md": (
+                            "This repo requires human-authored contributions.\n"
+                        )
+                    }
+                ),
+            )
+
+        self.assertIn("policy", record["failed_gates"])
+
+    def test_an_agents_file_with_a_conditional_pull_request_rule_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "AGENTS.md": (
+                            "Do not open pull requests without a linked issue.\n"
+                            "Never create a PR until the tests pass.\n"
+                        )
+                    }
+                ),
+            )
+
+        self.assertNotIn("policy", record["failed_gates"])
+
     def test_a_ban_in_the_pull_request_template_fails_the_gate(self) -> None:
         # sunpy/sunpy's .github/PULL_REQUEST_TEMPLATE.md, verbatim; sunpy has
         # no guide in the repository and the gate passed it. Mailman #153.
