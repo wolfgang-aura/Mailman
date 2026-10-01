@@ -802,6 +802,36 @@ class MaintainerClosedAttemptTests(unittest.TestCase):
         self.assertEqual(assessment.maintainer_closed_attempts[0]["number"], 307)
         self.assertIn("said no", assessment.summary())
 
+    def test_a_reaffirmed_rejection_is_not_reported_unclaimed(self) -> None:
+        """Python-Markdown#1643's summary said both. Mailman #378."""
+        closed_at = _NOW - timedelta(days=3)
+        attempt = self._closed(
+            closed_by={
+                "login": "maintainer",
+                "association": "MEMBER",
+                "maintainer": True,
+                "at": closed_at.isoformat(),
+                "detail": "maintainer (member) closed it, and did not write it",
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _record(Path(temporary), attempts=[attempt])
+            claims_path = root / "claims.json"
+            claims = json.loads(claims_path.read_text(encoding="utf-8"))
+            claims["maintainer_labelled"] = [
+                {
+                    "labels": ["confirmed"],
+                    "actor": "maintainer",
+                    "at": (closed_at + timedelta(hours=1)).isoformat(),
+                }
+            ]
+            claims_path.write_text(json.dumps(claims), encoding="utf-8")
+            assessment = assess_target(root, now=_NOW)
+
+        self.assertTrue(assessment.may_start)
+        self.assertEqual(assessment.reaffirmed_closed_attempts[0]["number"], 307)
+        self.assertNotIn("looks unclaimed", assessment.summary())
+
     def test_an_author_closing_their_own_attempt_is_stale(self) -> None:
         assessment = self._assess(
             [

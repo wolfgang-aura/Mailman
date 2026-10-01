@@ -743,6 +743,7 @@ class TargetAssessment:
             and not self.stale_attempts
             and not self.duplicate_blocked_attempts
             and not self.maintainer_closed_attempts
+            and not self.reaffirmed_closed_attempts
             and not self.maintainer_pending_attempts
             and not (self.claims.get("claims") or self.claims.get("assignments"))
             and not self.claims.get("assignees")
