@@ -184,6 +184,42 @@ class DecisionFileTests(unittest.TestCase):
         self.assertEqual(decision.recommendation, "SEND")
 
 
+class UndecodableFileTests(unittest.TestCase):
+    """Mailman #337: one file saved by PowerShell 5.1 took down the packet.
+
+    Review pages and hunt status catch DecisionError; a UnicodeDecodeError went
+    past them. Each file the decision reads has to fail as a DecisionError
+    that names it.
+    """
+
+    def problems(self, directory: Path) -> str:
+        with self.assertRaises(DecisionError) as caught:
+            load_decision(directory)
+        return " ".join(caught.exception.problems)
+
+    def test_a_utf16_decision_file_is_a_decision_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / DECISION_FILENAME).write_text(
+                json.dumps(VALID), encoding="utf-16"
+            )
+            self.assertIn(DECISION_FILENAME, self.problems(directory))
+
+    def test_a_cp1252_body_is_a_decision_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / DECISION_FILENAME).write_text(json.dumps(VALID), encoding="utf-8")
+            (directory / "body.md").write_bytes("Fixes the hash \u2014 twice.\n".encode("cp1252"))
+            self.assertIn("body.md", self.problems(directory))
+
+    def test_a_utf16_offer_is_a_decision_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ask_decision(directory, offer_text=None)
+            (directory / "offer-comment.md").write_text(OFFER_TEXT, encoding="utf-16")
+            self.assertIn("offer-comment.md", self.problems(directory))
+
+
 class BodyClaimGateTests(unittest.TestCase):
     """spack run 20260930T180712Z-3af3d7: SEND passed, then handoff refused the body. #294."""
 

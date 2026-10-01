@@ -370,6 +370,14 @@ def _parse_offer(raw: Any, recommendation: str, problems: list[str]) -> Offer | 
     return Offer(path)
 
 
+def _not_utf8(path: Path, error: UnicodeDecodeError) -> str:
+    """The problem for a file the decision reads that is not UTF-8 (#337)."""
+    return (
+        f"{path.name} is not valid UTF-8 ({error}). Re-save it as UTF-8; "
+        "Windows PowerShell 5.1 writes UTF-16 by default."
+    )
+
+
 def offer_problems(run_directory: Path, offer: Offer) -> tuple[list[str], str]:
     """What is wrong with the offer draft on disk, and its text when nothing is."""
     root = Path(run_directory).resolve()
@@ -378,7 +386,10 @@ def offer_problems(run_directory: Path, offer: Offer) -> tuple[list[str], str]:
         return [f"offer.path {offer.path!r} must stay inside the run directory."], ""
     if not draft.is_file():
         return [f"offer.path {offer.path!r} does not exist; write the draft first."], ""
-    text = draft.read_text(encoding="utf-8").strip()
+    try:
+        text = draft.read_text(encoding="utf-8").strip()
+    except UnicodeDecodeError as error:
+        return [_not_utf8(draft, error)], ""
     problems: list[str] = []
     words = len(text.split())
     if not words:
@@ -396,7 +407,7 @@ def offer_problems(run_directory: Path, offer: Offer) -> tuple[list[str], str]:
         )
     try:
         run = json.loads((root / "run.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         run = {}
     base = str(run.get("base_commit") or "").lower() if isinstance(run, dict) else ""
     if not base:
@@ -464,6 +475,8 @@ def load_decision(
         )
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as error:
+        raise DecisionError([_not_utf8(path, error)], path) from error
     except json.JSONDecodeError as error:
         raise DecisionError([f"not valid JSON: {error}"], path) from error
     try:
@@ -514,9 +527,13 @@ def body_claim_problem(
             if isinstance(claim, dict)
         }
     lines = set(affirmed_lines)
+    try:
+        text = body.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        return _not_utf8(body, error)
     claims = [
         claim
-        for claim in first_person_claims(body.read_text(encoding="utf-8"))
+        for claim in first_person_claims(text)
         if claim["text"] not in affirmed and claim["line"] not in lines
     ]
     if not claims:
