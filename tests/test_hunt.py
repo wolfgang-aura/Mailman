@@ -1539,6 +1539,32 @@ class SweepTests(OrchestratorHarness):
         self.assertEqual([row["target"] for row in result["rows"]], ["acme/a#2"])
         self.assertEqual(result["claimed"], [{"target": "acme/a#1", "pull_requests": [12]}])
 
+    def test_a_dormant_outside_pull_request_is_a_prior_attempt_not_a_claim(self):
+        # typeshed#15495 sat behind typeshed#15497, untouched for 195 days by
+        # an outside author; prescreen took it as stale. A maintainer's
+        # dormant pull request still claims. Mailman #309.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        old = "2026-05-01T00:00:00Z"
+        outside = {"event": "cross-referenced", "source": {"issue": {
+            "number": 12, "state": "open", "updated_at": old,
+            "author_association": "NONE", "pull_request": {"merged_at": None}}}}
+        member = {"event": "cross-referenced", "source": {"issue": {
+            "number": 13, "state": "open", "updated_at": old,
+            "author_association": "MEMBER", "pull_request": {"merged_at": None}}}}
+        gh = _SearchGh(
+            [[_item("acme/a", 1), _item("acme/a", 2)]],
+            timelines={"repos/acme/a/issues/1/timeline": [outside],
+                       "repos/acme/a/issues/2/timeline": [member]})
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    since_days=365,
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual([row["target"] for row in result["rows"]], ["acme/a#1"])
+        self.assertEqual(result["rows"][0]["prior_attempts"], [12])
+        self.assertEqual(result["claimed"], [{"target": "acme/a#2", "pull_requests": [13]}])
+
     def test_a_row_whose_timeline_could_not_be_read_is_unverified(self):
         # 13 rows kept after a rate-limited timeline read all had an open
         # pull request at prescreen. Mailman #283.

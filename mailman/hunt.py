@@ -27,6 +27,7 @@ from mailman.targeting import (
     STALE_PRIOR_ATTEMPT,
     UNACKNOWLEDGED_ATTEMPTS,
     assess_target,
+    is_stale_attempt,
 )
 
 PROCEDURE = Path(__file__).with_name("procedure.md")
@@ -866,13 +867,24 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
             # one at prescreen. Sweep again once the limit resets. Mailman #283.
             unverified.append(row["target"])
             continue
-        rivals = sorted({
-            source["number"] for source in (
+        sources = [
+            source for source in (
                 ((event.get("source") or {}).get("issue") or {}) for event in events
                 if isinstance(event, dict) and event.get("event") == "cross-referenced"
             )
             if source.get("pull_request") is not None
             and isinstance(source.get("number"), int)
+        ]
+        # An open pull request an outsider left for 60 days is prior art, as
+        # prescreen and check-target judge it, not a claim: typeshed#15495
+        # was hidden behind one 195 days old. Mailman #309.
+        dormant = {
+            source["number"] for source in sources
+            if source.get("state") == "open" and is_stale_attempt(source, now=moment)
+        }
+        rivals = sorted({
+            source["number"] for source in sources
+            if source["number"] not in dormant
             and (source.get("state") == "open"
                  or (source.get("pull_request") or {}).get("merged_at"))
         })
@@ -882,14 +894,9 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
         # A closed, unmerged attempt is often one a maintainer turned down,
         # which prescreen rejects; a self-closed one can still be superseded,
         # so the row stays but ranks after clean ones. Mailman #266.
-        row["prior_attempts"] = sorted({
-            source["number"] for source in (
-                ((event.get("source") or {}).get("issue") or {}) for event in events
-                if isinstance(event, dict) and event.get("event") == "cross-referenced"
-            )
-            if source.get("pull_request") is not None
-            and isinstance(source.get("number"), int)
-            and source.get("state") == "closed"
+        row["prior_attempts"] = sorted(dormant | {
+            source["number"] for source in sources
+            if source.get("state") == "closed"
             and not (source.get("pull_request") or {}).get("merged_at")
         })
         row["engaged"] = any(
