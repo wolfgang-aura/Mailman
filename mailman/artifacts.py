@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from mailman.agents.base import normalize_agent_name
+from mailman.finding import is_finding_file, load_finding
 from mailman.models import AgentConfig, RunRecord
 
 
@@ -117,6 +118,16 @@ def create_run(
         defect_report = Path(defect_report).resolve()
         if not defect_report.is_file():
             raise ValueError("defect_report must be a readable file")
+        if is_finding_file(defect_report):
+            # A finding record is checked here, not when fetch-issue reads it
+            # minutes later. Mailman #54.
+            finding = load_finding(defect_report)
+            recorded = (finding.get("base_commit") or "").lower()
+            if recorded and recorded != base_commit.lower():
+                raise ValueError(
+                    f"the finding was recorded at {recorded}, not at the "
+                    f"base commit {base_commit.lower()}"
+                )
     if not _COMMIT_PATTERN.fullmatch(base_commit):
         raise ValueError(
             "base_commit must be a full 40 or 64 character hexadecimal Git object ID"

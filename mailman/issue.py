@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from mailman.executor import CommandResult, execute
+from mailman.finding import (
+    is_finding_file,
+    load_finding,
+    render_finding_markdown,
+    unmet_conditions,
+)
 from mailman.redaction import redact
 from mailman.toolchain import resolve_tool
 
@@ -342,7 +348,14 @@ def capture_defect_report(
     path = source_file.resolve(strict=True)
     if not path.is_file():
         raise ValueError("defect report must be a file")
-    body = path.read_text(encoding="utf-8")
+    finding = load_finding(path) if is_finding_file(path) else None
+    if finding is not None:
+        # A finding record carries its conditions, and the briefing has to
+        # keep saying which of them this host could not supply. Mailman #54.
+        body = render_finding_markdown(finding)
+        title = title or finding["title"]
+    else:
+        body = path.read_text(encoding="utf-8")
     if not body.strip():
         raise ValueError("defect report is empty")
     captured_at = datetime.now(UTC).isoformat()
@@ -363,6 +376,11 @@ def capture_defect_report(
         "issue_markdown": str((run_directory / "issue.md").resolve()),
         "success": True,
     }
+    if finding is not None:
+        record["finding"] = finding
+        record["unmet_conditions"] = [
+            condition["name"] for condition in unmet_conditions(finding)
+        ]
     _write_record(run_directory, record)
     return record
 
