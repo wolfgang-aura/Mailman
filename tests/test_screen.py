@@ -1100,6 +1100,28 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(gate["data"]["required_blocked"], ["eth-account", "web3"])
         self.assertIn("ckzg", gate["detail"])
 
+    def test_a_jax_project_fails_the_host_gate(self) -> None:
+        # pyro-ppl/numpyro on 2026-10-02: the environment built, then
+        # `import jax` died on jaxlib's blocked DLLs, on 3.14 and 3.12 alike.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "pyproject.toml": (
+                            '[project]\nname = "numpyro"\n'
+                            'dependencies = ["jax>=0.4.25", "jaxlib>=0.4.25", '
+                            '"multipledispatch", "numpy", "tqdm"]\n'
+                        )
+                    }
+                ),
+            )
+        gate = _named(record, "host")
+
+        self.assertIn("host", record["failed_gates"])
+        self.assertEqual(gate["data"]["required_blocked"], ["jax", "jaxlib"])
+        self.assertIn("jaxlib", gate["detail"])
+
     def test_a_blocked_package_in_an_extra_warns_without_failing(self) -> None:
         # electrum's Qt window needs PyQt6, which is an extra; the crash we
         # picked was in that window. The screen cannot know which issue comes

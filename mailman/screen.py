@@ -1388,6 +1388,11 @@ HOST_BLOCKED_PACKAGES: dict[str, str] = {
     "eth-account": "eth-account imports ckzg, whose DLL Application Control blocks on this host",
     "web3": "web3 imports eth-account and ckzg, whose DLL Application Control blocks on this host",
     "py-evm": "py-evm imports ckzg, whose DLL Application Control blocks on this host",
+    # pyro-ppl/numpyro#2301, 2026-10-02: "DLL load failed while importing
+    # _jax" under jaxlib 0.11.2 on 3.14, and "_sdy" under 0.10.2 on 3.12.
+    # The environment had built. Mailman #373.
+    "jaxlib": "jaxlib's DLLs are blocked by Application Control on this host",
+    "jax": "jax imports jaxlib, whose DLLs Application Control blocks on this host",
 }
 
 #: Frameworks whose test suite needs a running service the host does not
