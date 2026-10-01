@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Callable, Sequence
@@ -38,6 +39,17 @@ DEFAULT_PRIMARY_COMMAND_BUDGET = None
 DEFAULT_REVIEWER_COMMAND_BUDGET = None
 DEFAULT_MAX_CHANGED_FILES = 8
 DEFAULT_MAX_CHANGED_LINES = 500
+
+_REVISION_BUDGET_BLOCK = "reviewer requested changes beyond the revision budget"
+#: What `_review_once` returns for an approval, so it reads apart from a report.
+_APPROVED = object()
+
+
+def _sha256(text: str | None) -> str | None:
+    if text is None:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
 
 _TEST_DIRECTORIES = {"tests", "test", "testing"}
 _DOC_DIRECTORIES = {"docs", "doc", "changelog", "changelog.d", "changes", "news", "newsfragments"}
@@ -1080,6 +1092,8 @@ class _Orchestration:
         # clone. The gate runs again a few lines down, so a precondition that
         # is still unsatisfied blocks the run a second time rather than
         # slipping past.
+        stored_review: tuple[str, str, str] | None = None
+        stored_findings: str | None = None
         if resume_review:
             if self.run.status not in (
                 RunStatus.BLOCKED,
@@ -1138,7 +1152,9 @@ class _Orchestration:
             (archive / f"{len(list(archive.glob('*.json'))) + 1:04d}.json").write_bytes(
                 previous.read_bytes()
             )
-            if self.run.status is not RunStatus.BLOCKED:
+            if self.run.status is RunStatus.BLOCKED:
+                stored_review = self._stored_revise_review(old)
+            else:
                 self._block("candidate requires a fresh independent review")
         if self.run.status not in (RunStatus.INITIALIZED, RunStatus.BLOCKED):
             raise ValueError(
@@ -1240,6 +1256,7 @@ class _Orchestration:
             if not commit_is_ancestor(self.workspace, self.run.base_commit):
                 raise ValueError("candidate does not descend from the run base")
             self._record_workspace_change("resume")
+            stored_findings = self._reuse_stored_review(stored_review)
         else:
             baseline_ok, _ = self._verify("baseline")
             if not baseline_ok:
@@ -1249,7 +1266,9 @@ class _Orchestration:
                 return self._outcome()
             self._transition(RunStatus.PRIMARY_RUNNING, "primary agent starting")
         try:
-            return self._loop(start_primary=not resume_review)
+            return self._loop(
+                start_primary=not resume_review, stored_findings=stored_findings
+            )
         except RunTimeBudgetExpired as error:
             self._block(str(error))
             return self._outcome()
@@ -1257,6 +1276,66 @@ class _Orchestration:
             # A started run must never be left claiming it is still in flight.
             self._block(f"orchestration stopped on an unexpected error: {error}")
             return self._outcome()
+
+    def _stored_revise_review(
+        self, old: dict[str, Any]
+    ) -> tuple[str, str, str] | None:
+        """Find a REVISE review the prior orchestration never got to act on.
+
+        Only a run that stopped on the revision budget straight after a REVISE
+        verdict qualifies, and only when that verdict recorded the candidate
+        digest it read. Returns (digest, report, execution record) or None.
+        https://github.com/wolfgang-aura/Mailman/issues/241
+        """
+        steps = old.get("steps") or []
+        if old.get("final_status") != str(RunStatus.BLOCKED) or not steps:
+            return None
+        last = steps[-1]
+        if last.get("name") != "blocked" or last.get("detail") != _REVISION_BUDGET_BLOCK:
+            return None
+        verdict = next(
+            (step for step in reversed(steps) if step.get("name") == "verdict"), None
+        )
+        data = (verdict or {}).get("data") or {}
+        digest = data.get("candidate_digest")
+        if data.get("verdict") != VERDICT_REVISE or not digest:
+            return None
+        directory = self.run_directory / "agent-executions"
+        records = sorted(directory.glob("*-reviewer.json")) if directory.is_dir() else []
+        if not records:
+            return None
+        try:
+            record = json.loads(records[-1].read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        report = record.get("report")
+        if (
+            not isinstance(report, str)
+            or parse_verdict(report) != VERDICT_REVISE
+            or _sha256(report) != data.get("report_sha256")
+        ):
+            return None
+        return str(digest), report, str(records[-1])
+
+    def _reuse_stored_review(
+        self, stored: tuple[str, str, str] | None
+    ) -> str | None:
+        """Return the stored findings when the candidate is the one reviewed."""
+        if stored is None or self.revisions_used >= self.max_revisions:
+            return None
+        digest, report, record = stored
+        if candidate_digest(self.workspace, self.run.base_commit) != digest:
+            return None
+        self._step(
+            "review-reused",
+            ok=True,
+            detail=(
+                "the candidate is unchanged since the REVISE review that hit "
+                "the revision budget; its findings go straight to the primary"
+            ),
+            data={"candidate_digest": digest, "execution_record": record},
+        )
+        return report
 
     def _check_verification_agreement(self) -> None:
         """Require identical resolved verification executables and arguments.
@@ -1280,7 +1359,9 @@ class _Orchestration:
             "runs, or pass the command the prompts quote."
         )
 
-    def _announce_review_budget(self, *, resume: bool) -> None:
+    def _announce_review_budget(
+        self, *, resume: bool, reuses_review: bool = False
+    ) -> None:
         """Say how many reviewer passes this call may spend, before it spends any.
 
         A REVISE verdict buys a revision and then another reviewer pass, so one
@@ -1292,7 +1373,10 @@ class _Orchestration:
         used = self.run.review_cycles
         remaining_cycles = max(self.max_review_cycles - used, 0)
         remaining_revisions = max(self.max_revisions - self.revisions_used, 0)
-        passes = min(remaining_cycles, remaining_revisions + 1)
+        # A reused REVISE verdict spends its revision without a review first.
+        passes = min(
+            remaining_cycles, remaining_revisions + (0 if reuses_review else 1)
+        )
         self._step(
             "review-budget",
             ok=True,
@@ -1307,79 +1391,32 @@ class _Orchestration:
                 "max_review_cycles": self.max_review_cycles,
                 "revisions_left": remaining_revisions,
                 "max_passes_this_call": passes,
+                "reuses_stored_review": reuses_review,
             },
         )
 
-    def _loop(self, *, start_primary: bool = True) -> OrchestrationOutcome:
-        self._announce_review_budget(resume=not start_primary)
+    def _loop(
+        self, *, start_primary: bool = True, stored_findings: str | None = None
+    ) -> OrchestrationOutcome:
+        self._announce_review_budget(
+            resume=not start_primary, reuses_review=stored_findings is not None
+        )
         if start_primary and not self._finish_primary_stage(
             self.primary_prompt, "primary"
         ):
             return self._outcome()
 
         while True:
-            # `review_cycles` lives on the run record, so it survives every
-            # `resume-review`. A per-call limit does not: one recovered run
-            # reached five reviewer passes against a one-revision budget, each
-            # a full reviewer stage on the shared model allowance. See
-            # https://github.com/wolfgang-aura/Mailman/issues/65.
-            if self.run.review_cycles >= self.max_review_cycles:
-                self._block(
-                    f"review budget spent: {self.run.review_cycles} of "
-                    f"{self.max_review_cycles} cycles used across this run. "
-                    "Raise --max-review-cycles deliberately, or replace the "
-                    "candidate."
-                )
-                return self._outcome()
-            review_prompt = self._review_prompt()
-            self._transition(RunStatus.REVIEW_PENDING, "reviewer reading the candidate")
-            reviewer_before = inspect_workspace(self.workspace).changes
-            reviewer_digest = candidate_digest(self.workspace, self.run.base_commit)
-            reviewer_ok, review_report = self._run_agent("reviewer", review_prompt)
-            self.run.review_cycles += 1
-            write_run(self.run, self.run_directory)
-            if not reviewer_ok:
-                self._block("reviewer did not complete a readable review")
-                return self._outcome()
-            if self._record_reviewer_change(reviewer_before, reviewer_digest):
-                self._block(
-                    "the reviewer changed the workspace it was only supposed "
-                    "to read. The workspace diff is the candidate, so a "
-                    "reviewer's edit would enter the submission silently; the "
-                    "changed paths are in the record and a human decides what "
-                    "to keep."
-                )
-                return self._outcome()
-
-            verdict = parse_verdict(review_report)
-            self._step(
-                "verdict",
-                ok=verdict is not None,
-                detail=f"reviewer verdict {verdict or 'missing or contradictory'}",
-                data={"verdict": verdict},
-            )
-            if verdict is None:
-                self._block("reviewer verdict was missing or contradictory")
-                return self._outcome()
-            if verdict == VERDICT_APPROVE:
-                claim = parse_verification_claim(review_report)
-                reviewer_commands = self.commands_run.get("reviewer", 0)
-                self._step(
-                    "reviewer-execution",
-                    ok=True,
-                    detail=(
-                        f"reviewer completed the code review and ran "
-                        f"{reviewer_commands} optional command(s)"
-                    ),
-                    data={
-                        "verification_claim": claim,
-                        "commands_run": reviewer_commands,
-                    },
-                )
-                break
-            if self.revisions_used >= self.max_revisions:
-                self._block("reviewer requested changes beyond the revision budget")
-                return self._outcome()
+            if stored_findings is not None:
+                # The REVISE verdict on this exact candidate is already on
+                # record; spend the revision it asked for, not another review.
+                review_report, stored_findings = stored_findings, None
+            else:
+                review_report = self._review_once()
+                if review_report is None:
+                    return self._outcome()
+                if review_report is _APPROVED:
+                    break
 
             self._transition(
                 RunStatus.REVISION_REQUIRED, "reviewer requested one revision"
@@ -1415,6 +1452,82 @@ class _Orchestration:
             "approved by the reviewer and verified independently",
         )
         return self._outcome()
+
+    def _review_once(self) -> str | object | None:
+        """Run one reviewer pass.
+
+        Returns the REVISE report when a revision is due, `_APPROVED` on an
+        approval, and None once the run is blocked.
+        """
+        # `review_cycles` lives on the run record, so it survives every
+        # `resume-review`. A per-call limit does not: one recovered run
+        # reached five reviewer passes against a one-revision budget, each
+        # a full reviewer stage on the shared model allowance. See
+        # https://github.com/wolfgang-aura/Mailman/issues/65.
+        if self.run.review_cycles >= self.max_review_cycles:
+            self._block(
+                f"review budget spent: {self.run.review_cycles} of "
+                f"{self.max_review_cycles} cycles used across this run. "
+                "Raise --max-review-cycles deliberately, or replace the "
+                "candidate."
+            )
+            return None
+        review_prompt = self._review_prompt()
+        self._transition(RunStatus.REVIEW_PENDING, "reviewer reading the candidate")
+        reviewer_before = inspect_workspace(self.workspace).changes
+        reviewer_digest = candidate_digest(self.workspace, self.run.base_commit)
+        reviewer_ok, review_report = self._run_agent("reviewer", review_prompt)
+        self.run.review_cycles += 1
+        write_run(self.run, self.run_directory)
+        if not reviewer_ok:
+            self._block("reviewer did not complete a readable review")
+            return None
+        if self._record_reviewer_change(reviewer_before, reviewer_digest):
+            self._block(
+                "the reviewer changed the workspace it was only supposed "
+                "to read. The workspace diff is the candidate, so a "
+                "reviewer's edit would enter the submission silently; the "
+                "changed paths are in the record and a human decides what "
+                "to keep."
+            )
+            return None
+
+        verdict = parse_verdict(review_report)
+        self._step(
+            "verdict",
+            ok=verdict is not None,
+            detail=f"reviewer verdict {verdict or 'missing or contradictory'}",
+            # The digest names the candidate this review read, so a resume can
+            # tell whether the verdict still applies (#241).
+            data={
+                "verdict": verdict,
+                "candidate_digest": reviewer_digest,
+                "report_sha256": _sha256(review_report),
+            },
+        )
+        if verdict is None:
+            self._block("reviewer verdict was missing or contradictory")
+            return None
+        if verdict == VERDICT_APPROVE:
+            claim = parse_verification_claim(review_report)
+            reviewer_commands = self.commands_run.get("reviewer", 0)
+            self._step(
+                "reviewer-execution",
+                ok=True,
+                detail=(
+                    f"reviewer completed the code review and ran "
+                    f"{reviewer_commands} optional command(s)"
+                ),
+                data={
+                    "verification_claim": claim,
+                    "commands_run": reviewer_commands,
+                },
+            )
+            return _APPROVED
+        if self.revisions_used >= self.max_revisions:
+            self._block(_REVISION_BUDGET_BLOCK)
+            return None
+        return review_report or ""
 
     def _finish_primary_stage(self, prompt: Path, stage: str) -> bool:
         primary_ok, primary_report = self._run_agent("primary", prompt)
