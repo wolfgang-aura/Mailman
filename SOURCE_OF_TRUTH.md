@@ -406,7 +406,7 @@ opening the local packet URL during this session; visual state is unverified.
   merged. Provenance re-recorded `MERGED` with `maintainer_commits` = `2fda300`. Run record
   0020. The failures reproduce offline here (19 failed at `aaf4e75d`); touched-tests selected
   only direct importers of the changed module, filed as #302. Delete `wolfgang-aura/edgartools`
-  now that it carries no open PR.
+  now that it carries no open PR. Deleted by the operator 2026-10-01.
   - Mailman CI went red on `9128ca7`: `28734a8` (#276) left `_stream`'s pipes open, and two
     orchestrator CLI tests saw a `ResourceWarning` on stderr. Fixed in `c819de6` (#281).
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
