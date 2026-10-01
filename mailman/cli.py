@@ -333,8 +333,9 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help=(
             "a defect you found and wrote up, for a target with no usable "
-            "issue tracker. The duplicate search and the reproduction then "
-            "carry the whole evidence burden."
+            "issue tracker: prose, or a finding.json from `mailman finding`. "
+            "The duplicate search and the reproduction then carry the whole "
+            "evidence burden."
         ),
     )
     init_run.add_argument("--base-commit", required=True)
@@ -1063,6 +1064,51 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--data-root", type=Path)
     verify.add_argument("--working-directory", type=Path, default=Path.cwd())
     verify.add_argument("--timeout", type=float, default=900)
+
+    # Mailman #54: the three hand steps of a bug hunt, as commands.
+    baseline = subparsers.add_parser(
+        "baseline",
+        help=(
+            "clone a target at its default-branch head, build its environment, "
+            "run its whole suite and match each failure to an open issue"
+        ),
+    )
+    baseline.add_argument("repository", help="OWNER/REPO or a GitHub URL")
+    baseline.add_argument(
+        "--commit", help="a full commit ID instead of the default-branch head"
+    )
+    baseline.add_argument("--clone-timeout", type=float, default=600)
+    baseline.add_argument("--install-timeout", type=float, default=1800)
+    baseline.add_argument("--suite-timeout", type=float, default=3600)
+    baseline.add_argument("--executable", default="gh")
+    baseline.add_argument("--data-root", type=Path)
+
+    from mailman.fuzz import add_arguments as add_fuzz_arguments
+
+    fuzz = subparsers.add_parser(
+        "fuzz",
+        help=(
+            "compare a function against a model on seeded generated cases, "
+            "after a self-check of the target against itself"
+        ),
+    )
+    add_fuzz_arguments(fuzz)
+    fuzz.add_argument(
+        "--python",
+        help="run under this interpreter, such as a baseline's environment python",
+    )
+    fuzz.add_argument("--timeout", type=float, default=1800)
+
+    finding = subparsers.add_parser(
+        "finding",
+        help="write a blank finding.json, or check one; init-run --defect-report takes it",
+    )
+    finding.add_argument("path", type=Path)
+    finding.add_argument(
+        "--init", action="store_true", help="write a template that fails until filled in"
+    )
+    finding.add_argument("--repository", default="")
+    finding.add_argument("--base-commit", default="")
     return parser
 
 
@@ -3126,6 +3172,90 @@ def _verify(arguments: argparse.Namespace) -> int:
     return result.exit_code or 0
 
 
+def _baseline(arguments: argparse.Namespace) -> int:
+    from mailman.baseline import record_baseline
+
+    def announce(message: str) -> None:
+        print(message, file=sys.stderr, flush=True)
+
+    record = record_baseline(
+        arguments.repository,
+        root=arguments.data_root or default_data_root(),
+        commit=arguments.commit,
+        gh_executable=arguments.executable,
+        clone_timeout_seconds=arguments.clone_timeout,
+        install_timeout_seconds=arguments.install_timeout,
+        suite_timeout_seconds=arguments.suite_timeout,
+        announce=announce,
+    )
+    interpreter = record.get("interpreter") or {}
+    print(
+        json.dumps(
+            {
+                "baseline": record["path"],
+                "success": record["success"],
+                "base_commit": record["base_commit"],
+                "python": interpreter.get("used"),
+                "differs_from_ci": interpreter.get("differs_from_ci"),
+                "reason": interpreter.get("reason"),
+                **{
+                    key: record.get(key)
+                    for key in (
+                        "passed", "failed", "errors",
+                        "known", "unexplained", "unchecked",
+                    )
+                },
+                "detail": record.get("detail"),
+            },
+            indent=2,
+        )
+    )
+    return 0 if record["success"] else 1
+
+
+def _fuzz(arguments: argparse.Namespace) -> int:
+    from mailman import fuzz
+
+    if not arguments.python:
+        return fuzz.run_from_arguments(arguments)
+    # Under the target's own interpreter, which has its dependencies. The
+    # runner imports only the standard library, so it runs there as a script.
+    command = [arguments.python, str(Path(fuzz.__file__).resolve()), *fuzz.fuzz_arguments(arguments)]
+    result = execute(
+        command,
+        working_directory=Path.cwd(),
+        timeout_seconds=arguments.timeout,
+        on_stdout_line=print,
+    )
+    sys.stderr.write(result.stderr)
+    if result.timed_out:
+        print(f"error: the fuzz run timed out after {arguments.timeout}s", file=sys.stderr)
+        return 2
+    return result.exit_code if result.exit_code is not None else 2
+
+
+def _finding(arguments: argparse.Namespace) -> int:
+    from mailman.finding import FindingError, blank_finding, load_finding
+
+    if arguments.init:
+        if arguments.path.exists():
+            raise ValueError(f"{arguments.path} exists; edit it instead of overwriting")
+        arguments.path.parent.mkdir(parents=True, exist_ok=True)
+        arguments.path.write_text(
+            json.dumps(blank_finding(arguments.repository, arguments.base_commit), indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(json.dumps({"finding": str(arguments.path.resolve()), "valid": False}, indent=2))
+        return 0
+    try:
+        load_finding(arguments.path)
+    except FindingError as error:
+        print(json.dumps({"finding": str(arguments.path), "valid": False, "problems": error.problems}, indent=2))
+        return 1
+    print(json.dumps({"finding": str(arguments.path), "valid": True}, indent=2))
+    return 0
+
+
 def _report_failed_command(result: CommandResult, record_path: Path) -> None:
     """Say why a gate failed on stderr, so stdout stays one JSON document."""
     reason = (
@@ -3455,6 +3585,12 @@ def main(arguments: list[str] | None = None) -> int:
             return _packet(parsed)
         if parsed.subcommand == "verify":
             return _verify(parsed)
+        if parsed.subcommand == "baseline":
+            return _baseline(parsed)
+        if parsed.subcommand == "fuzz":
+            return _fuzz(parsed)
+        if parsed.subcommand == "finding":
+            return _finding(parsed)
     except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
