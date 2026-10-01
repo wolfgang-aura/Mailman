@@ -41,7 +41,10 @@ from mailman.toolchain import resolve_tool
 #: Freshness asks whether the door is open; `responsiveness` asks how fast.
 #: Forty-five days failed `jd/tenacity`, nine outside authors in 90 days with
 #: the latest merge 55 days old: release-burst repositories. Mailman #284.
-FRESHNESS_WINDOW_DAYS = 60
+#: Sixty days left 96 of 679 screens failing on freshness alone and PRHunt
+#: with no candidates; 56 of them merged an outside pull request inside 180
+#: days. Mailman #317.
+FRESHNESS_WINDOW_DAYS = 180
 
 TARGET_INTEL_FILENAME = "target-intel.json"
 TARGET_INTEL_MARKDOWN = "target-intel.md"
