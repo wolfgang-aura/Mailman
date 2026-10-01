@@ -139,8 +139,10 @@ def run_stages(stages: Sequence[tuple[str, Callable[[], int]]],
         started = time.monotonic()
         try:
             code = stage()
-        except ValueError as error:
-            print(f"error: {error}", file=stream)
+        except (Exception, SystemExit) as error:
+            # A timeout or an argparse exit is a failed stage too; escaping
+            # here left no stage record. Mailman #356.
+            print(f"error: {error or type(error).__name__}", file=stream)
             code = 2
         record.append({"stage": name, "exit_code": code,
                        "seconds": round(time.monotonic() - started, 1)})

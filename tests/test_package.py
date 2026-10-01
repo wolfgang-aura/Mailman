@@ -181,6 +181,24 @@ class RunStagesTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("candidate-changed", stream.getvalue())
 
+    def test_any_exception_is_a_recorded_failed_stage(self) -> None:
+        """A timeout or an argparse exit escaped without a stage record. #356"""
+        def times_out() -> int:
+            raise subprocess.TimeoutExpired(["pytest"], 600)
+
+        def exits() -> int:
+            raise SystemExit(2)
+
+        for stage, expected in ((times_out, "timed out"), (exits, "2")):
+            with self.subTest(stage=stage.__name__):
+                stream = StringIO()
+                code, record = run_stages([("handoff-check", stage)], stream=stream)
+
+                self.assertEqual(code, 2)
+                self.assertEqual(record[0]["stage"], "handoff-check")
+                self.assertEqual(record[0]["exit_code"], 2)
+                self.assertIn(expected, stream.getvalue())
+
 
 class PackageCommandTests(unittest.TestCase):
     def test_the_stages_run_in_the_procedure_order(self) -> None:
