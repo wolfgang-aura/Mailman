@@ -1635,6 +1635,70 @@ class SweepTests(OrchestratorHarness):
         self.assertEqual(result["rows"][0]["prior_attempts"], [])
         self.assertEqual(result["claimed"], [])
 
+    def test_a_sibling_repository_pull_request_claims_as_prescreen_counts_it(self):
+        # prescreen blocks on an open fix PR under the same owner
+        # (jsonschema#1497's is in python-jsonschema/referencing); the sweep
+        # dropped it and offered the row. Mailman #340.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        sibling = {"event": "cross-referenced", "source": {"issue": {
+            "number": 40, "state": "open", "pull_request": {"merged_at": None},
+            "repository_url": "https://api.github.com/repos/acme/core"}}}
+        gh = _SearchGh(
+            [[_item("acme/a", 1)]],
+            timelines={"repos/acme/a/issues/1/timeline": [sibling]})
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(result["claimed"],
+                         [{"target": "acme/a#1", "pull_requests": ["acme/core#40"]}])
+
+    def test_a_timeline_past_the_page_cap_is_unverified(self):
+        # Five full pages were returned as the whole timeline, so a rival on
+        # the sixth went unseen and the row was offered. Mailman #340.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        filler = [{"event": "subscribed"}] * 100
+
+        class EndlessGh(_SearchGh):
+            def json(self, path):
+                if "/timeline" in path:
+                    return filler
+                return super().json(path)
+
+        gh = EndlessGh([[_item("acme/a", 1)]])
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(result["unverified"], ["acme/a#1"])
+
+    def test_a_rival_found_before_a_later_page_fails_still_claims(self):
+        # A failed second page threw away the rival read on the first, and
+        # the row became unverified instead of claimed. Mailman #340.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        rival = {"event": "cross-referenced", "source": {"issue": {
+            "number": 12, "state": "open", "pull_request": {"merged_at": None}}}}
+        first = [rival] + [{"event": "subscribed"}] * 99
+
+        class FailingGh(_SearchGh):
+            def json(self, path):
+                if "/timeline" in path:
+                    return None if path.endswith("page=2") else first
+                return super().json(path)
+
+        gh = FailingGh([[_item("acme/a", 1)]])
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(result["unverified"], [])
+        self.assertEqual(result["claimed"], [{"target": "acme/a#1", "pull_requests": [12]}])
+
     def test_a_dormant_outside_pull_request_is_a_prior_attempt_not_a_claim(self):
         # typeshed#15495 sat behind typeshed#15497, untouched for 195 days by
         # an outside author; prescreen took it as stale. A maintainer's
