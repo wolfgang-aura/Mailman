@@ -4,8 +4,8 @@
 request could be a failure Mailman never looked for:
 
 - pypdf#4105 failed "Check code style issues" 22 seconds after filing on a
-  ruff finding (#120). The lint stage finds ruff, flake8, black, isort, mypy
-  and ty in the target's configuration and CI, runs each over the changed
+  ruff finding (#120). The lint stage finds ruff, flake8, black, isort, mypy,
+  pylint and ty in the target's configuration and CI, runs each over the changed
   Python files in the run environment, and blocks on a finding. A tool CI runs
   that cannot run here blocks too: securo#1039's CI ran ty, which this host
   cannot start, and the pull request's first CI run failed.
@@ -196,6 +196,18 @@ LINT_TOOLS: tuple[LintTool, ...] = (
         pre_commit_repo=r"pre-commit/mirrors-mypy",
         sections=("[tool.mypy", "[mypy"),
         files=("mypy.ini", ".mypy.ini"),
+    ),
+    LintTool(
+        name="pylint",
+        # Found only where it runs. A leftover `[tool.pylint]` or `.pylintrc`
+        # in a project whose CI never runs pylint would block a clean patch on
+        # a missing docstring. `pylint-django` is a plugin, not pylint.
+        invocation=re.compile(r"(?<![\w-])pylint(?![\w-])"),
+        pre_commit_repo=r"(?:pylint-dev|pycqa)/pylint",
+        # `--score=n` drops the rating line, whose "previous run" suffix
+        # differs between the patched and the base run; `--persistent=n`
+        # keeps pylint's stats out of the user's profile.
+        commands=(("--persistent=n", "--score=n"),),
     ),
     LintTool(
         name="ty",
@@ -432,6 +444,15 @@ def _run_tool(
         )
 
     probed = probe()
+    if (probed.timed_out or probed.exit_code != 0) and _environment_hook(workspace, tool):
+        entry["reason"] = (
+            f"not-run: the target's pre-commit runs {tool.name} as a `repo: local` "
+            f"hook from its own environment, and `{tool.name} --version` exited "
+            f"{probed.exit_code} in the run environment. Install the target's lint "
+            f"dependencies into the run environment; another {tool.name} could "
+            "disagree with CI"
+        )
+        return entry
     if probed.timed_out or probed.exit_code != 0:
         version = configuration.get("version")
         requirement = f"{tool.name}=={version}" if version else tool.name
@@ -776,7 +797,24 @@ def _pre_commit_scopes(workspace: Path) -> tuple[dict, list[dict]] | None:
 
 # Hook args that only set how a tool judges code. A `--fix` or `--write`
 # would rewrite the candidate, so ruff's and mypy's hook args are not taken.
-_HOOK_ARGUMENT_TOOLS = ("black", "isort", "flake8")
+# agentscope's pylint hook disables 25 messages and raises the size limits.
+_HOOK_ARGUMENT_TOOLS = ("black", "isort", "flake8", "pylint")
+
+# pylint imports the code it checks, so a `repo: local` pylint hook runs the
+# project's own pylint. When the run environment lacks it, installing
+# another one could pass or fail where CI does not; the run says so instead.
+_ENVIRONMENT_HOOK_TOOLS = ("pylint",)
+
+
+def _environment_hook(workspace: Path, tool: LintTool) -> bool:
+    """Whether every pre-commit hook of `tool` is a `repo: local` hook."""
+    if tool.name not in _ENVIRONMENT_HOOK_TOOLS:
+        return False
+    scopes = _pre_commit_scopes(workspace)
+    if scopes is None:
+        return False
+    own = _own_hooks(scopes[1], tool)
+    return bool(own) and all(str(hook["repo"]).strip("'\"") == "local" for hook in own)
 
 # Options of those tools that take no value, from each tool's --help. A bare
 # token after one of these is a path, not a value. Any other option keeps the
@@ -813,6 +851,12 @@ _FLAGS: dict[str, frozenset[str]] = {
         "--count", "--show-source", "--no-show-source", "--statistics", "--exit-zero",
         "--tee", "--benchmark", "--bug-report", "--isolated", "--hang-closing",
         "--disable-noqa", "--doctests",
+    },
+    "pylint": _COMMON_FLAGS | {
+        "-E", "--errors-only", "--exit-zero", "--enable-all-extensions",
+        "--long-help", "--list-msgs", "--list-msgs-enabled", "--list-groups",
+        "--list-conf-levels", "--list-extensions", "--full-documentation",
+        "--generate-rcfile", "--generate-toml-config",
     },
 }
 
