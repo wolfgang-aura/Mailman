@@ -1596,8 +1596,10 @@ def finish(root: Path, record: dict) -> dict:
     # A filed row satisfies its slot without joining the packet. The packet is
     # what the operator approves for filing, and its pull request is already
     # open. https://github.com/wolfgang-aura/Mailman/issues/97
+    # It also took its slot, so the packet offers only the slots left. #351.
     directories = [root / row["run_id"] for row in result["runs"]
-                   if row["ready"] and not row.get("filed")][:record["requested"]]
+                   if row["ready"] and not row.get("filed")
+                   ][:max(record["requested"] - result["filed"], 0)]
     if not directories:
         # Every requested slot is filled by a pull request that is already
         # open. `hunt file` moves a hunt to FILED once the last requested

@@ -679,6 +679,29 @@ class FilingRecordTests(HuntTests):
         self.assertNotIn("filed", stored["runs"][0])
         self.assertEqual(stored["status"], "RUNNING")
 
+    def test_the_packet_offers_only_the_slots_still_open(self):
+        # Two requested, one filed: the packet offered two more runs, so the
+        # operator was asked to approve three PRs for a hunt of two. #351.
+        record = self.new_hunt(2)
+        result = {"remaining": 0, "filed": 1, "runs": [
+            {"run_id": "a", "ready": True, "filed": "https://github.com/example/project/pull/7"},
+            {"run_id": "b", "ready": True},
+            {"run_id": "c", "ready": True},
+        ]}
+
+        def packet(directories, path, **_):
+            path.write_text("packet", encoding="utf-8")
+
+        with (
+            mock.patch("mailman.hunt.status", return_value=result),
+            mock.patch("mailman.review_page.write_run_page"),
+            mock.patch("mailman.review_packet.write_packet_page",
+                       side_effect=packet) as written,
+        ):
+            finish(self.data_root, record)
+
+        self.assertEqual(written.call_args.args[0], [self.data_root / "b"])
+
     def test_a_partly_filed_hunt_is_not_terminal(self):
         record = self.new_hunt(2)
         directory = self.ready_run()
