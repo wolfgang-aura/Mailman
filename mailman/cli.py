@@ -153,7 +153,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "draft-environment", help="derive an editable plan from pyproject.toml"
     )
     draft.add_argument("run_id")
-    draft.add_argument("--python", default=sys.executable)
+    draft.add_argument(
+        "--python",
+        help="interpreter for the plan; without it, each installed one in the CI "
+        "and requires-python range is probed and the newest that needs no source "
+        "build is chosen",
+    )
     draft.add_argument("--data-root", type=Path)
     hunt = subparsers.add_parser("hunt", help="manage a persistent PRHunt session")
     hunt.add_argument(
@@ -3564,7 +3569,34 @@ def main(arguments: list[str] | None = None) -> int:
 
             _, directory = load_run(parsed.run_id, parsed.data_root)
             destination = directory / "environment-plan.json"
-            draft_plan(directory / "workspace", destination, python=parsed.python)
+            candidates = None
+            if parsed.python is None and not destination.exists():
+                from mailman.baseline import (
+                    candidate_versions,
+                    ci_python_versions,
+                    host_interpreters,
+                    requires_python_floor,
+                )
+
+                workspace = directory / "workspace"
+                available = host_interpreters(working_directory=directory)
+                versions = candidate_versions(
+                    ci_python_versions(workspace)["versions"],
+                    requires_python_floor(workspace),
+                    available,
+                )
+                candidates = [
+                    (f"{major}.{minor}", available[(major, minor)])
+                    for major, minor in versions
+                    if (major, minor) in available
+                ] or None
+            draft_plan(
+                directory / "workspace",
+                destination,
+                python=parsed.python or sys.executable,
+                candidates=candidates,
+                announce=lambda message: print(message, file=sys.stderr, flush=True),
+            )
             print(json.dumps({"plan": str(destination), "executed": False}, indent=2))
             return 0
         if parsed.subcommand == "finalize-review":

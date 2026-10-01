@@ -5,7 +5,10 @@ import json
 import re
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
+
+from mailman.executor import CommandResult, execute
 
 
 def _builds_editables_by_import(project: dict) -> bool:
@@ -55,11 +58,124 @@ HOST_CONSTRAINTS_FILENAME = "host-constraints.txt"
 DIRECT_REFERENCE_BACKENDS = ("hatchling", "hatch-vcs", "setuptools-scm", "flit-core", "poetry-core")
 
 
+def _is_direct_reference(entry: object) -> bool:
+    return isinstance(entry, str) and bool(re.match(r"^[A-Za-z0-9._\[\], -]+@", entry))
+
+
 def _declares_direct_reference(metadata: dict, groups: dict) -> bool:
     declared = [*metadata.get("dependencies", []),
                 *(entry for entries in metadata.get("optional-dependencies", {}).values() for entry in entries),
                 *(entry for entries in groups.values() for entry in entries)]
-    return any(isinstance(entry, str) and re.match(r"^[A-Za-z0-9._\[\], -]+@", entry) for entry in declared)
+    return any(_is_direct_reference(entry) for entry in declared)
+
+
+#: Seconds one interpreter's dry-run resolution may take. pip builds an sdist's
+#: metadata to resolve it: spikeinterface's `numcodecs<0.16.0` took 49s on
+#: Python 3.14, which has no cp314 wheel for it, and 3s on 3.12.
+PROBE_TIMEOUT_SECONDS = 300
+PROBE_DIRECTORY = "interpreter-probes"
+
+
+def _normalized(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _admits(requires_python: object, version: str) -> bool:
+    """Whether a `requires-python` range admits a minor version, by its bounds."""
+    if not isinstance(requires_python, str):
+        return True
+    minor = int(version.split(".")[1])
+    for operator, bound in re.findall(r"(>=|<=|>|<)\s*3\.(\d+)", requires_python):
+        bound = int(bound)
+        if (operator == "<" and minor >= bound) or (operator == "<=" and minor > bound):
+            return False
+        if operator in {">=", ">"} and minor < bound:
+            return False
+    return True
+
+
+def _source_builds(report: dict) -> list[str]:
+    """Packages a pip install report fetches as an sdist, so builds from source.
+
+    A direct reference (`vcs_info`) or a local path (`dir_info`) always builds
+    from source on every interpreter, so it says nothing about the choice.
+    """
+    found = []
+    for item in report.get("install", []):
+        info = item.get("download_info") or {}
+        if "vcs_info" in info or "dir_info" in info:
+            continue
+        if not str(info.get("url", "")).endswith(".whl"):
+            found.append(str(item.get("metadata", {}).get("name")))
+    return sorted(found)
+
+
+def probe_interpreter(
+    executable: str,
+    requirements: list[str],
+    *,
+    report: Path,
+    constraints: list[str],
+    run: Callable[..., CommandResult] = execute,
+    timeout_seconds: float = PROBE_TIMEOUT_SECONDS,
+) -> dict:
+    """Resolve the target's requirements for one interpreter without installing.
+
+    The host's pip runs inside the candidate through `pip --python`, so a
+    candidate without pip of its own (uv's managed CPython) can be probed.
+    """
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.unlink(missing_ok=True)
+    result = run(
+        [sys.executable, "-m", "pip", "--python", executable, "install", "--dry-run",
+         "--ignore-installed", "--quiet", BINARY_POLICY, *constraints,
+         "--report", str(report), *requirements],
+        working_directory=report.parent,
+        timeout_seconds=timeout_seconds,
+    )
+    seconds = round(result.duration_seconds)
+    if result.timed_out or result.exit_code != 0 or not report.is_file():
+        output = (result.stderr or "") + "\n" + (result.stdout or "")
+        tail = [line.strip() for line in output.splitlines() if line.strip()][-2:]
+        reason = "timed out" if result.timed_out else f"exit {result.exit_code}"
+        return {"ok": False, "seconds": seconds, "detail": f"{reason}: {' / '.join(tail)}"[:400]}
+    try:
+        parsed = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        return {"ok": False, "seconds": seconds, "detail": f"unreadable report: {error}"}
+    return {"ok": True, "seconds": seconds, "source_builds": _source_builds(parsed)}
+
+
+def choose_interpreter(
+    candidates: list[tuple[str, str]],
+    requirements: list[str],
+    *,
+    probe: Callable[[str, list[str], str], dict],
+    announce: Callable[[str], None],
+) -> dict:
+    """The newest candidate whose dependencies all install from wheels.
+
+    This host has no compiler, so a dependency pip has to build from an sdist
+    fails the install when it holds C code. Candidates come newest first; the
+    first that needs no source build wins and the rest are not probed. When
+    every one needs some, the one needing fewest wins, newest on a tie, since
+    a pure-Python sdist (beets' `langdetect`) builds anywhere. Mailman #365.
+    """
+    probes = []
+    for version, executable in candidates:
+        result = {"python": version, "executable": executable, **probe(executable, requirements, version)}
+        probes.append(result)
+        if result["ok"]:
+            builds = result["source_builds"]
+            announce(f"python {version}: {len(builds)} source build(s)"
+                     f"{' (' + ', '.join(builds) + ')' if builds else ''} in {result['seconds']}s")
+            if not builds:
+                break
+        else:
+            announce(f"python {version}: resolution failed, {result['detail']}")
+    usable = [result for result in probes if result["ok"]]
+    chosen = min(usable, key=lambda result: len(result["source_builds"])) if usable else None
+    return {"chosen": chosen, "probes": probes}
 
 
 def _builds_compiled_extensions(workspace: Path) -> bool:
@@ -131,7 +247,20 @@ def _poe_test_extras(project: dict, declared: dict) -> list[str]:
     return [name for name in re.findall(r"--extra[= ](\S+)", task) if name in declared]
 
 
-def draft_plan(workspace: Path, destination: Path, *, python: str = sys.executable) -> dict:
+def draft_plan(
+    workspace: Path,
+    destination: Path,
+    *,
+    python: str = sys.executable,
+    candidates: list[tuple[str, str]] | None = None,
+    probe: Callable[[str, list[str], str], dict] | None = None,
+    announce: Callable[[str], None] = lambda message: None,
+) -> dict:
+    """Draft the plan; with `candidates`, pick its interpreter by probing them.
+
+    `candidates` are (minor version, executable) pairs, newest first. Without
+    them the plan uses `python` as given.
+    """
     if destination.exists():
         raise ValueError(f"plan already exists at {destination}; edit it instead of overwriting")
     source = workspace / "pyproject.toml"
@@ -176,6 +305,43 @@ def draft_plan(workspace: Path, destination: Path, *, python: str = sys.executab
     if "--no-build-isolation" in install and "-e" in install and _builds_editables_by_import(project):
         dependencies = list(dict.fromkeys([*dependencies, "editables"]))
     review = "Read CI and contributing instructions before execution. This draft does not reproduce uv or poetry lock resolution. Adjust the interpreter to requires-python and the supported CI matrix."
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if constraints:
+        (destination.parent / HOST_CONSTRAINTS_FILENAME).write_text(
+            "\n".join(HOST_BLOCKED_RELEASES) + "\n", encoding="utf-8"
+        )
+    interpreter_choice = None
+    if candidates is not None:
+        own = _normalized(str(metadata.get("name", "")))
+        declared = [*dependencies, *metadata.get("dependencies", []),
+                    *(entry for name in (extra or "").split(",") for entry in extras.get(name, []))]
+        requirements = list(dict.fromkeys(
+            entry for entry in declared
+            if isinstance(entry, str) and not _is_direct_reference(entry)
+            and _normalized(re.split(r"[\[<>=!~;\s]", entry, maxsplit=1)[0]) != own
+        ))
+        admitted = [(version, path) for version, path in candidates
+                    if _admits(metadata.get("requires-python"), version)]
+
+        def default_probe(executable: str, needed: list[str], version: str) -> dict:
+            return probe_interpreter(
+                executable, needed, constraints=constraints,
+                report=destination.parent / PROBE_DIRECTORY / f"python-{version}.json",
+            )
+
+        interpreter_choice = choose_interpreter(
+            admitted, requirements, probe=probe or default_probe, announce=announce
+        )
+        chosen = interpreter_choice["chosen"]
+        if chosen is not None:
+            python = chosen["executable"]
+            builds = chosen["source_builds"]
+            review += f" Interpreter: Python {chosen['python']}, the newest installed one whose dependencies resolve"
+            review += (f" with the fewest source builds ({', '.join(builds)}); each needs a compiler unless it is pure Python."
+                       if builds else " entirely from wheels.")
+        else:
+            review += (" Interpreter: no installed interpreter in the CI and requires-python range resolved the"
+                       " dependencies (see draft.interpreter.probes), so this plan keeps the default.")
     # No compiler on the Windows host, so an editable build of C extensions
     # cannot succeed. Borrow the release wheel's compiled modules and run the
     # workspace's Python source over them. Mailman #213.
@@ -211,12 +377,8 @@ def draft_plan(workspace: Path, destination: Path, *, python: str = sys.executab
             "extra": extra, "group": group, "hatch_environments": hatch_environments,
             "compiled_extensions": compiled,
             "review": review,
+            **({"interpreter": interpreter_choice} if interpreter_choice is not None else {}),
         },
     }
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if constraints:
-        (destination.parent / HOST_CONSTRAINTS_FILENAME).write_text(
-            "\n".join(HOST_BLOCKED_RELEASES) + "\n", encoding="utf-8"
-        )
     destination.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
     return plan
