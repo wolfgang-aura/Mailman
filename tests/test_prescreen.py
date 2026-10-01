@@ -2888,5 +2888,38 @@ class PullRequestBaseTests(unittest.TestCase):
         )
 
 
+class ScopedLabelTests(unittest.TestCase):
+    def test_a_scoped_label_is_read_by_its_name(self) -> None:
+        # pypdf#4105: `status: needs discussion`, `type: enhancement` and
+        # `kind/feature` matched no exact name and nothing later caught them.
+        # Mailman #334.
+        from mailman.prescreen import _issue_blocking
+
+        def blocking(*labels: str) -> list[str]:
+            return _issue_blocking(
+                {"success": True, "state": "OPEN", "labels": list(labels)}
+            )
+
+        for label, code in (
+            ("status: needs discussion", "issue-under-discussion"),
+            ("Status: Needs-Discussion", "issue-under-discussion"),
+            ("needs_discussion", "issue-under-discussion"),
+            ("type: enhancement", ISSUE_NOT_BOUNDED_FIX),
+            ("kind/feature", ISSUE_NOT_BOUNDED_FIX),
+            ("Type: Feature Request", ISSUE_NOT_BOUNDED_FIX),
+        ):
+            with self.subTest(label=label):
+                self.assertIn(code, blocking(label))
+        for label in (
+            "type: bug",
+            "kind/bug",
+            "area/design",
+            "component: project",
+            "topic: discussion forum",
+        ):
+            with self.subTest(label=label):
+                self.assertEqual(blocking(label), [])
+
+
 if __name__ == "__main__":
     unittest.main()

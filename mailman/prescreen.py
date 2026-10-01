@@ -350,11 +350,34 @@ def _store_prescreen(
     temporary.replace(path)
 
 
+#: A classification scope in front of a label name: `status: needs
+#: discussion`, `type: enhancement`, `kind/feature`. pypdf#4105 got past an
+#: exact-name check this way (#334). Only these scopes: `area/design` names a
+#: subject, not a decision still open.
+_LABEL_SCOPE = re.compile(
+    r"^(?:type|kind|status|state|stage|triage|category|resolution)\s*[:/]\s*"
+)
+
+
+def _label_name(label: object) -> str:
+    """A label with its scope dropped and its separators read as spaces."""
+    name = _LABEL_SCOPE.sub("", str(label).strip().lower())
+    return re.sub(r"[\s_-]+", " ", name).strip()
+
+
+def _label_names(captured: dict[str, Any]) -> set[str]:
+    return {_label_name(label) for label in captured.get("labels") or []}
+
+
+def _named(labels: frozenset[str]) -> frozenset[str]:
+    return frozenset(_label_name(label) for label in labels)
+
+
 def _feature_only(captured: dict[str, Any]) -> bool:
     """Say whether the issue's only non-fix labels are feature labels."""
-    labels = {str(label).strip().lower() for label in captured.get("labels") or []}
-    return bool(labels & _FEATURE_LABELS) and not (
-        labels & (_NON_FIX_LABELS - _FEATURE_LABELS)
+    labels = _label_names(captured)
+    return bool(labels & _named(_FEATURE_LABELS)) and not (
+        labels & _named(_NON_FIX_LABELS - _FEATURE_LABELS)
     )
 
 
@@ -365,10 +388,10 @@ def _issue_blocking(captured: dict[str, Any]) -> list[str]:
     elif str(captured.get("state") or "").upper() != "OPEN":
         blocking.append(ISSUE_NOT_OPEN)
     labels = {str(label).strip().lower() for label in captured.get("labels") or []}
-    if labels & _NON_FIX_LABELS:
+    if _label_names(captured) & _named(_NON_FIX_LABELS):
         blocking.append(ISSUE_NOT_BOUNDED_FIX)
     descriptions = (captured.get("label_descriptions") or {}).values()
-    if labels & _DISCUSSION_LABELS or any(
+    if _label_names(captured) & _named(_DISCUSSION_LABELS) or any(
         _DISCUSSION_DESCRIPTION.search(str(text)) for text in descriptions
     ):
         blocking.append(ISSUE_UNDER_DISCUSSION)
