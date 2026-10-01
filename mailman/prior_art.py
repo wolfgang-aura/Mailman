@@ -767,10 +767,18 @@ def _api(
     path: str,
     timeout_seconds: float,
     commands: list[dict[str, Any]],
+    query: dict[str, int | str] | None = None,
 ) -> Any | None:
     """One `gh api` read, recorded in the same command list as everything else."""
+    command = [executable, "api", path]
+    if query:
+        # Fields, not `?a=1&b=2`: `&` is a command separator to a Windows
+        # shell, including the one behind a `gh.cmd` shim.
+        command += ["-X", "GET"]
+        for key, value in query.items():
+            command += ["-f", f"{key}={value}"]
     result: CommandResult = execute(
-        [executable, "api", path],
+        command,
         working_directory=run_directory,
         timeout_seconds=timeout_seconds,
     )
@@ -824,18 +832,21 @@ def closing_actor(
     # The last closure can sit past the first hundred events; reading one
     # page took an early self-close for the one that stands.
     events: list[Any] = []
+    complete = False
     for page in range(1, _TIMELINE_PAGES + 1):
         got = _api(
             run_directory,
             executable=executable,
-            path=f"repos/{slug}/issues/{number}/timeline?per_page=100&page={page}",
+            path=f"repos/{slug}/issues/{number}/timeline",
             timeout_seconds=timeout_seconds,
             commands=commands,
+            query={"per_page": 100, "page": page},
         )
         if not isinstance(got, list):
             break
         events += got
         if len(got) < 100:
+            complete = True
             break
     for event in events:
         if not isinstance(event, dict):
@@ -851,6 +862,12 @@ def closing_actor(
             login = name
             association = kind or None
             found["source"] = "timeline"
+    if not complete:
+        # A page went unread or the cap was reached: a closure seen so far may
+        # not be the last one. `closed_by` names the last closer; the events
+        # read still supply associations.
+        login = association = None
+        found["source"] = None
     if login is None:
         issue = _api(
             run_directory,

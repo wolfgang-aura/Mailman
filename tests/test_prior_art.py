@@ -323,8 +323,9 @@ class ClosingActorTests(unittest.TestCase):
         late = [{"event": "closed", "actor": {"login": "keeper"},
                  "author_association": "MEMBER"}]
 
-        def api(_directory, *, path, **_):
-            return late if path.endswith("&page=2") else early
+        def api(_directory, *, path, query=None, **_):
+            self.assertNotIn("&", path)
+            return late if (query or {}).get("page") == 2 else early
 
         with patch("mailman.prior_art._api", side_effect=api):
             found = closing_actor(
@@ -332,6 +333,32 @@ class ClosingActorTests(unittest.TestCase):
                 author="outsider", timeout_seconds=5, commands=[],
             )
         self.assertEqual(found["login"], "keeper")
+        self.assertTrue(found["maintainer"])
+
+    def test_an_unread_later_page_defers_to_closed_by(self) -> None:
+        # Page two failed: the self-close on page one may not be the last
+        # closure, so the issue's own `closed_by` decides.
+        from unittest.mock import patch
+
+        from mailman.prior_art import closing_actor
+
+        early = [{"event": "closed", "actor": {"login": "outsider"},
+                  "author_association": "NONE"}]
+        early += [{"event": "commented", "actor": {"login": "keeper"},
+                   "author_association": "MEMBER"}] * 99
+
+        def api(_directory, *, path, query=None, **_):
+            if query is None:
+                return {"closed_by": {"login": "keeper"}}
+            return early if query["page"] == 1 else None
+
+        with patch("mailman.prior_art._api", side_effect=api):
+            found = closing_actor(
+                Path("."), executable="gh", slug="acme/a", number=8,
+                author="outsider", timeout_seconds=5, commands=[],
+            )
+        self.assertEqual(found["login"], "keeper")
+        self.assertEqual(found["source"], "closed_by")
         self.assertTrue(found["maintainer"])
 
 
