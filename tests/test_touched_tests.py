@@ -298,6 +298,23 @@ class SelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_a_changed_data_file_under_tests_is_not_run_as_a_test(self) -> None:
+        # uproot5#1529 committed tests/samples/test_1529.root; pytest was
+        # handed the .root path and exited 4. Mailman #376.
+        self._test_file("tests/test_1529_tarray.py", "import edgar.xbrl.xbrl\n")
+        sample = self.workspace / "tests" / "samples" / "test_1529.root"
+        sample.parent.mkdir(parents=True, exist_ok=True)
+        sample.write_bytes(b"root\x00")
+        selection = select_test_files(
+            self.workspace,
+            ["edgar/xbrl/xbrl.py", "tests/samples/test_1529.root",
+             "tests/test_1529_tarray.py"],
+        )
+        self.assertEqual(
+            [(e["path"], e["reason"]) for e in selection["selected"]],
+            [("tests/test_1529_tarray.py", "changed by the diff")],
+        )
+
     def test_a_changed_test_file_is_not_a_touched_module(self) -> None:
         self._test_file("tests/test_other.py", "import os\n")
         selection = select_test_files(self.workspace, ["tests/test_other.py"])

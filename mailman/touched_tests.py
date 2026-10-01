@@ -186,6 +186,10 @@ def _is_test_module(relative: str, python_files: list[str] | None = None) -> boo
     nothing and the stage exited 5 and called the candidate unverified.
     """
     name = relative.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    # pytest matches `python_files` only among .py files; uproot5#1529's
+    # tests/samples/test_1529.root was handed to pytest, which exited 4 (#376).
+    if not name.endswith(".py"):
+        return False
     if python_files:
         from fnmatch import fnmatch
 
