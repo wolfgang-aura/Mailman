@@ -1433,6 +1433,15 @@ class MaintainerDisputeTests(unittest.TestCase):
             "That looks like a configuration problem rather than a bug."
         )]))
 
+    def test_cannot_recreate_is_a_dispute(self):
+        # Arelle#2570, verbatim. Mailman #359.
+        from mailman.claims import maintainer_dispute
+
+        self.assertIsNotNone(maintainer_dispute([self._comment(
+            "I attempted to load the provided filing but since I am missing "
+            "`tifx-20251231.xsd`, I can't recreate this."
+        )]))
+
     def test_a_format_limitation_and_a_request_to_show_state_are_disputes(self):
         # biopython#5101 and s3fs#999, verbatim. Mailman #195.
         from mailman.claims import maintainer_dispute

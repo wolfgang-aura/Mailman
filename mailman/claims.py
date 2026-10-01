@@ -1087,7 +1087,8 @@ def render_claims(record: dict[str, Any]) -> str:
 _NOT_REPRODUCED = re.compile(
     r"\b(?:"
     r"(?:can(?:no|')?t|cannot|could(?:n't| not)|unable to|not able to|failed to)"
-    r" (?:reproduce|repro|replicate)\b"
+    # Arelle#2570 "I can't recreate this". Mailman #359.
+    r" (?:reproduce|repro|replicate|recreate)\b"
     # jedi#2077: "I have tried to reproduce this, but couldn't." Mailman #210.
     r"|tried (?:to )?(?:reproduc|repro|replicat)\w*(?:[^.!?\n]|(?<=\d)\.(?=\d)){0,60}?\bbut"
     r" (?:couldn't|could not|can't|cannot|wasn't able|was not able|was unable|failed)\b"
