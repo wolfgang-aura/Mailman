@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -39,7 +41,9 @@ _VERSION = re.compile(
 )
 #: A pinned requirement, as `pip freeze` or pypdf's `_debug_versions` prints it:
 #: "pypdf==5.1.0". https://github.com/wolfgang-aura/Mailman/issues/296
-_PINNED = re.compile(r"(?<![\w.-])[A-Za-z][\w.-]*==v?(\d+\.\d+(?:\.\d+)?(?:[-.]?(?:post|rc|a|b)\d*)?)\b")
+_PINNED = re.compile(r"(?<![\w.-])([A-Za-z][\w.-]*)==v?(\d+\.\d+(?:\.\d+)?(?:[-.]?(?:post|rc|a|b)\d*)?)\b")
+#: The capture heading, "# owner/repo#N: title", names the target.
+_HEADING_REPOSITORY = re.compile(r"^#\s+[\w.-]+/([\w.-]+)#\d+")
 _WORD = re.compile(r"[a-z][a-z0-9_]{3,}")
 _STOPWORDS = frozenset(
     "when with from that this than then into instead using uses used does doesn "
@@ -72,14 +76,39 @@ def _heading_versions(body: str) -> list[str]:
     return found
 
 
-def reported_versions(markdown: str) -> list[str]:
+def _distribution(name: str) -> str:
+    """A package name as PEP 503 compares it."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def reported_versions(markdown: str, names: Iterable[str] = ()) -> list[str]:
     """Version numbers the issue body names, in the order it names them.
 
     Numbers under a version heading come first: an issue form's answer is the
     release the reporter ran. https://github.com/wolfgang-aura/Mailman/issues/261
+
+    A `name==X.Y.Z` pin counts only for the target itself: `names`, and the
+    repository in the capture heading. A pasted `pip freeze` lists every
+    other package too, and one of those versions can match a tag here.
     """
     body = _issue_body(markdown)
-    return list(dict.fromkeys([*_heading_versions(body), *_PINNED.findall(body), *_VERSION.findall(body)]))
+    heading = _HEADING_REPOSITORY.match(markdown.splitlines()[0] if markdown else "")
+    wanted = {_distribution(name) for name in [*names, *(heading.groups() if heading else ())]}
+    pinned = [
+        version for name, version in _PINNED.findall(body)
+        if not wanted or _distribution(name) in wanted
+    ]
+    return list(dict.fromkeys([*_heading_versions(body), *pinned, *_VERSION.findall(body)]))
+
+
+def _project_names(tree: Path) -> list[str]:
+    """The distribution name the target's own pyproject.toml declares."""
+    try:
+        data = tomllib.loads((tree / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return []
+    name = (data.get("project") or {}).get("name")
+    return [name] if isinstance(name, str) and name else []
 
 
 def _title(markdown: str) -> str:
@@ -161,7 +190,7 @@ def check_version_gap(
         record["detail"] = "no captured issue or no prepared workspace"
         return _write(run_directory, record)
     markdown = issue_path.read_text(encoding="utf-8", errors="replace")
-    record["reported_versions"] = reported_versions(markdown)
+    record["reported_versions"] = reported_versions(markdown, _project_names(tree))
     tags = (_git(tree, "tag", "--list", timeout_seconds=timeout_seconds) or "").split()
     tag = next((t for v in record["reported_versions"] if (t := matching_tag(v, tags))), None)
     record["success"] = True

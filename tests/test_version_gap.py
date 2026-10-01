@@ -70,6 +70,19 @@ class VersionGapTests(unittest.TestCase):
         )
         self.assertEqual(reported_versions(issue)[0], "5.1.0")
 
+    def test_a_pasted_freeze_counts_only_the_target_pin(self):
+        # A `pip freeze` lists every dependency; numpy==2.1.0 is not the
+        # release the reporter ran, though a target tag 2.1.0 may exist.
+        issue = (
+            "# py-pdf/pypdf#3001: crash\n\n## Issue body\n\n"
+            "```\nnumpy==2.1.0\npillow==11.0.0\npypdf==5.1.0\n```\n\n"
+            "## Capture boundary\n"
+        )
+        self.assertEqual(reported_versions(issue), ["5.1.0"])
+        # The declared distribution name counts too, under PEP 503 spelling.
+        body = issue.replace("# py-pdf/pypdf#3001", "# owner/repo#1").replace("pypdf==", "My_Pkg==")
+        self.assertEqual(reported_versions(body, ["my-pkg"]), ["5.1.0"])
+
     def test_matching_tag_accepts_common_tag_shapes(self):
         self.assertEqual(matching_tag("2.13.1", ["v2.13.0", "v2.13.1"]), "v2.13.1")
         self.assertEqual(matching_tag("2.13.1", ["beets-2.13.1"]), "beets-2.13.1")
