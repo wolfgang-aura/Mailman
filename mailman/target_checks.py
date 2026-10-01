@@ -206,6 +206,21 @@ LINT_TOOLS: tuple[LintTool, ...] = (
         files=("ty.toml",),
         commands=(("check",),),
     ),
+    LintTool(
+        name="pyright",
+        invocation=re.compile(r"(?<![\w-])pyright(?![\w-])"),
+        pre_commit_repo=r"RobertCraigie/pyright-python",
+        sections=("[tool.pyright",),
+        files=("pyrightconfig.json",),
+    ),
+    LintTool(
+        name="pyrefly",
+        invocation=re.compile(r"(?<![\w-])pyrefly\s+check|facebook/pyrefly-pre-commit|id:\s*pyrefly"),
+        pre_commit_repo=r"facebook/pyrefly-pre-commit",
+        sections=("[tool.pyrefly",),
+        files=("pyrefly.toml",),
+        commands=(("check",),),
+    ),
 )
 LINT_TOOL_NAMES = tuple(tool.name for tool in LINT_TOOLS)
 LINT_ACKNOWLEDGEMENT_FILENAME = "lint-acknowledgement.json"
@@ -269,7 +284,12 @@ def _mentions(tool: LintTool, name: str, text: str) -> bool:
         headers = [line.strip() for line in text.splitlines() if line.lstrip().startswith("[")]
         if any(header.startswith(section) for header in headers for section in tool.sections):
             return True
+        # pandas-stubs runs every checker as a poe task of the same name (#305).
+        if f"[tool.poe.tasks.{tool.name}]" in headers:
+            return True
     if name.startswith(".github/workflows/") or name in _INVOKING_FILES:
+        if re.search(rf"poe\s+{re.escape(tool.name)}(?![\w-])", text):
+            return True
         return tool.invocation.search(text) is not None
     return False
 
@@ -750,6 +770,7 @@ def _pre_commit_skips(workspace: Path, tool: LintTool, path: str) -> bool:
 BASELINE_DIRECTORY = "lint-base"
 _DIGITS = re.compile(r"\d+")
 _NOTE = re.compile(r":\d+(?::\d+)?: note: ")
+_CODE_FRAME = re.compile(r"\s*\d*\s*\|")
 
 
 def _signatures(output: str, roots: tuple[Path, ...]) -> Counter[str]:
@@ -759,19 +780,30 @@ def _signatures(output: str, roots: tuple[Path, ...]) -> Counter[str]:
     counts change with it, so neither may tell an old finding from a new one.
     """
     lines: Counter[str] = Counter()
+    # pyright indents every finding, so only a diff's context lines are
+    # skipped (#305).
+    is_diff = any(line.startswith("@@") for line in output.splitlines())
     for line in output.splitlines():
         # A diff's context lines can hold the patch's own well-formatted code
         # next to an old reformat (ipython#9891, black); only +/- lines count.
         # Hunk and file headers carry no finding, and their count moves with
         # how the patch splits the hunks.
-        if line.startswith((" ", "@@", "--- ", "+++ ")):
+        if is_diff and line.startswith((" ", "@@", "--- ", "+++ ")):
             continue
-        line = line.replace("\\", "/")
+        # ruff's and ty's code frames quote source, which the patch can shift.
+        if _CODE_FRAME.match(line):
+            continue
+        line = line.replace("\\", "/").strip()
+        # pyrefly quotes the import root JSON-escaped, `C:\\Users` (#305).
+        line = re.sub(r"(?<!\w\w:)/{2,}", "/", line)
+        # pyright prints `c:\...` where the root says `C:\...` (#305).
         for root in roots:
-            line = line.replace(str(root).replace("\\", "/") + "/", "")
+            prefix = re.escape(str(root).replace("\\", "/"))
+            line = re.sub(prefix + "/", "", line, flags=re.IGNORECASE)
         # ty names the bare root in its module-resolution notes (#177).
         for root in roots:
-            line = line.replace(str(root).replace("\\", "/"), "<root>")
+            prefix = re.escape(str(root).replace("\\", "/"))
+            line = re.sub(prefix, "<root>", line, flags=re.IGNORECASE)
         line = _DIGITS.sub("#", line).rstrip()
         if line:
             lines[line] += 1
@@ -899,7 +931,10 @@ def run_lint(
         record["reason"] = "no-linter-configured"
         return record, []
     record["tools"] = configurations
-    files = [path for path in _existing(workspace, changed_paths) if path.endswith(".py")]
+    # A stubs package changes only .pyi files; skipping them linted nothing (#305).
+    files = [
+        path for path in _existing(workspace, changed_paths) if path.endswith((".py", ".pyi"))
+    ]
     record["files"] = files
     if not files:
         record["reason"] = "no-changed-python-files"

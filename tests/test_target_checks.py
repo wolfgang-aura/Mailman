@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from mailman.executor import CommandResult
 from mailman.target_checks import (
+    _signatures,
     lint_configurations,
     load_lint_acknowledgement,
     record_lint_acknowledgement,
@@ -379,6 +380,25 @@ class LintConfigurationTests(_Fixture):
         self.write(".github/workflows/ci.yml", "name: pretty ty docs\nsteps: []\n")
         self.assertEqual(self._tools(), [])
 
+    def test_checkers_run_as_poe_tasks_are_found(self) -> None:
+        # pandas-stubs (#305): CI runs `poetry run poe ty|pyrefly|pyright|mypy`
+        # and pyproject defines each task; no `[tool.ty]` and no `ty check`.
+        self.write(
+            "pyproject.toml",
+            "[tool.poe.tasks.ty]\nscript = 'x'\n[tool.poe.tasks.ty_dist]\n"
+            "[tool.poe.tasks.type_completeness]\n[tool.poe.tasks.pyrefly]\n",
+        )
+        self.write(
+            ".github/workflows/test.yml",
+            "steps:\n  - run: poetry run poe pyright\n  - run: poetry run poe mypy\n",
+        )
+        self.assertEqual(self._tools(), ["mypy", "ty", "pyright", "pyrefly"])
+
+    def test_a_poe_task_with_a_longer_name_is_not_the_checker(self) -> None:
+        self.write("pyproject.toml", "[tool.poe.tasks.ty_dist]\n[tool.poe.tasks.mypy_dist]\n")
+        self.write(".github/workflows/ci.yml", "- run: poe type_completeness\n")
+        self.assertEqual(self._tools(), [])
+
     def test_a_ruff_isort_section_is_not_isort(self) -> None:
         self.write("pyproject.toml", "[tool.ruff.lint.isort]\nknown-first-party = ['x']\n")
         self.assertEqual(self._tools(), ["ruff"])
@@ -405,6 +425,26 @@ class OtherLinterTests(_Fixture):
                       executor.calls)
         self.assertIn([python, "-m", "isort", "--check-only", "--diff", "pkg/mod.py"],
                       executor.calls)
+
+    def test_a_changed_stub_is_type_checked(self) -> None:
+        # pandas-stubs (#305): every source change is a .pyi; a `.py`-only
+        # filter linted nothing and the misplaced ty ignore went unseen.
+        self.write("pyproject.toml", "[tool.ty]\n[tool.pyright]\n[tool.pyrefly]\n")
+        self.write("pkg/mod.pyi", "x: int\n")
+        executor = Executor()
+        with patch("mailman.target_checks.execute", executor):
+            record, _ = run_lint(
+                self.run_directory, workspace=self.workspace,
+                changed_paths=["pkg/mod.pyi", "tests/test_mod.py"],
+            )
+        python = str(self.python)
+        self.assertEqual(record["files"], ["pkg/mod.pyi", "tests/test_mod.py"])
+        for command in (
+            [python, "-m", "ty", "check", "pkg/mod.pyi", "tests/test_mod.py"],
+            [python, "-m", "pyright", "pkg/mod.pyi", "tests/test_mod.py"],
+            [python, "-m", "pyrefly", "check", "pkg/mod.pyi", "tests/test_mod.py"],
+        ):
+            self.assertIn(command, executor.calls)
 
     def test_a_hook_s_args_reach_the_tool(self) -> None:
         # agentscope's black hook sets `args: [--line-length=79]`; black ran
@@ -800,3 +840,41 @@ class LintAcknowledgementTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignatureTests(unittest.TestCase):
+    """pyright output against the base comparison (#305)."""
+
+    ROOT = Path("C:/work/run/workspace")
+
+    def _pyright(self, drive: str, line: int) -> str:
+        path = rf"{drive}:\work\run\workspace\pkg\mod.pyi"
+        return (
+            f"{path}\n"
+            f"  {path}:{line}:6 - error: Import \"x\" could not be resolved (reportMissingImports)\n"
+            "1 error, 0 warnings, 0 informations\n"
+        )
+
+    def test_a_lowercase_drive_is_still_the_workspace_root(self) -> None:
+        signatures = _signatures(self._pyright("c", 3), (self.ROOT,))
+        self.assertIn("pkg/mod.pyi", signatures)
+        self.assertFalse(any("work/run" in line for line in signatures))
+
+    def test_indented_pyright_errors_are_findings_not_diff_context(self) -> None:
+        signatures = _signatures(self._pyright("C", 3), (self.ROOT,))
+        self.assertTrue(any("reportMissingImports" in line for line in signatures))
+
+    def test_a_diff_s_context_lines_are_still_skipped(self) -> None:
+        output = "--- a/pkg/mod.py\n+++ b/pkg/mod.py\n@@ -1,2 +1,2 @@\n x = 1\n-y=2\n+y = 2\n"
+        self.assertEqual(sorted(_signatures(output, (self.ROOT,))), ["+y = #", "-y=#"])
+
+    def test_a_code_frame_is_not_a_finding(self) -> None:
+        output = "error[x]: bad\n  --> pkg/mod.py:3:1\n   |\n 3 | x = 1\n   | ^\n"
+        self.assertEqual(
+            sorted(_signatures(output, (self.ROOT,))),
+            ["--> pkg/mod.py:#:#", "error[x]: bad"],
+        )
+
+    def test_a_json_escaped_root_is_still_the_workspace_root(self) -> None:
+        output = r'  Import root: "C:\\work\\run\\workspace"' + "\n"
+        self.assertEqual(list(_signatures(output, (self.ROOT,))), ['Import root: "<root>"'])
