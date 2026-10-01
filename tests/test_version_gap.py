@@ -83,6 +83,42 @@ class VersionGapTests(unittest.TestCase):
         body = issue.replace("# py-pdf/pypdf#3001", "# owner/repo#1").replace("pypdf==", "My_Pkg==")
         self.assertEqual(reported_versions(body, ["my-pkg"]), ["5.1.0"])
 
+    def test_a_target_pin_spelled_differently_from_the_repository_counts(self):
+        # The distribution behind dateutil/dateutil is python-dateutil, and
+        # behind encode/django-rest-framework, djangorestframework. Mailman #336.
+        dateutil = (
+            "# dateutil/dateutil#1: parse fails\n\n## Issue body\n\n"
+            "```\nsix==1.16.0\npython-dateutil==2.9.0\n```\n\n## Capture boundary\n"
+        )
+        self.assertEqual(reported_versions(dateutil), ["2.9.0"])
+        framework = (
+            "# encode/django-rest-framework#1: serializer fails\n\n## Issue body\n\n"
+            "```\nDjango==5.1.0\ndjangorestframework==3.15.2\n```\n\n## Capture boundary\n"
+        )
+        self.assertEqual(reported_versions(framework), ["3.15.2"])
+
+    def test_a_version_heading_counts_only_the_target_pin(self):
+        # numpy==2.1.0 under "### Environment versions" matched pypdf's own
+        # 2.1.0 tag. Mailman #336.
+        issue = (
+            "# py-pdf/pypdf#3001: crash\n\n## Issue body\n\n"
+            "### Environment versions\n\n```\nnumpy==2.1.0\npypdf==5.1.0\n```\n\n"
+            "## Capture boundary\n"
+        )
+        self.assertEqual(reported_versions(issue), ["5.1.0"])
+
+    def test_project_names_reads_a_bom_and_ignores_a_non_table_project(self):
+        from mailman.version_gap import _project_names
+
+        with tempfile.TemporaryDirectory() as directory:
+            tree = Path(directory)
+            (tree / "pyproject.toml").write_text(
+                '[project]\nname = "my-pkg"\n', encoding="utf-8-sig"
+            )
+            self.assertEqual(_project_names(tree), ["my-pkg"])
+            (tree / "pyproject.toml").write_text('project = "my-pkg"\n', encoding="utf-8")
+            self.assertEqual(_project_names(tree), [])
+
     def test_matching_tag_accepts_common_tag_shapes(self):
         self.assertEqual(matching_tag("2.13.1", ["v2.13.0", "v2.13.1"]), "v2.13.1")
         self.assertEqual(matching_tag("2.13.1", ["beets-2.13.1"]), "beets-2.13.1")
