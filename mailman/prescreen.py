@@ -59,6 +59,7 @@ from mailman.targeting import (
     MAINTAINER_OWNED_FIX,
     MAINTAINER_REMARK_ELSEWHERE,
     MERGED_BEFORE_ISSUE_DAYS,
+    NO_CLAIM_CHECK,
     NO_DUPLICATE_SEARCH,
     NO_MAINTAINER_REPLY,
     OPEN_PULL_REQUEST,
@@ -282,6 +283,9 @@ _DISCUSSION_DESCRIPTION = re.compile(
 #: Reproduction needs a clone, and target intel comes from `screen-target`.
 DECIDABLE = (
     NO_DUPLICATE_SEARCH,
+    # A claim check that could not run is no evidence the issue is free; a
+    # rate-limited batch passed issues with none. Mailman #342.
+    NO_CLAIM_CHECK,
     NO_MAINTAINER_REPLY,
     OPEN_PULL_REQUEST,
     ALREADY_FIXED_UPSTREAM,
@@ -1244,6 +1248,11 @@ def prescreen_issue(
     record["verdict"] = "reject" if blocking else "pass"
     if blocking:
         record["next"] = f"Do not open a run on {slug}#{number}: " + "; ".join(blocking)
+        if NO_CLAIM_CHECK in blocking:
+            record["next"] += (
+                f". The issue thread could not be read ({claims.get('detail')}); "
+                f"`mailman prescreen {slug}#{number}` again once GitHub answers"
+            )
     else:
         record["next"] = (
             f"mailman init-run --repository https://github.com/{slug}.git "

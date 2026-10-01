@@ -2921,5 +2921,29 @@ class ScopedLabelTests(unittest.TestCase):
                 self.assertEqual(blocking(label), [])
 
 
+
+class FailedClaimCheckTests(unittest.TestCase):
+    """A claim check that never ran is no evidence the issue is free. It
+    passed, with no ask-first, and orchestrate later failed on the missing
+    claims.json. Mailman #342. Not a `PrescreenTests` subclass, so its base
+    tests do not run again."""
+
+    setUp = PrescreenTests.setUp
+    stub = PrescreenTests.stub
+
+    def test_a_failed_claim_check_holds_the_issue(self) -> None:
+        from unittest.mock import patch
+
+        failed = {"success": False, "detail": "API rate limit exceeded"}
+        with patch("mailman.prescreen.read_claims", return_value=failed):
+            record = prescreen_issue(
+                self.root, "example/project#7", executable=self.stub("[]")
+            )
+
+        self.assertNotEqual(record["verdict"], "pass")
+        self.assertIn("no-claim-check", record["blocking"])
+        self.assertIn("prescreen example/project#7", record["next"])
+
+
 if __name__ == "__main__":
     unittest.main()
