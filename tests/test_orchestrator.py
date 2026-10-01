@@ -771,6 +771,8 @@ class OrchestrationTests(OrchestratorHarness):
             verification_command=[sys.executable, "-c", PASSING_CHECK],
             agent_factory=lambda name, model: agents[name],
             resume_review=True,
+            # No revision left, so the resume reviews afresh (#241).
+            max_revisions=0,
             run_time_budget_seconds=DEFAULT_RUN_TIME_BUDGET_SECONDS * 2,
             time_budget_name="hunt",
         )
@@ -801,6 +803,8 @@ class OrchestrationTests(OrchestratorHarness):
             verification_command=[sys.executable, "-c", PASSING_CHECK],
             agent_factory=lambda name, model: agents[name],
             resume_review=True,
+            # No revision left, so the resume reviews afresh (#241).
+            max_revisions=0,
             max_review_cycles=3,
         )
 
@@ -818,6 +822,9 @@ class OrchestrationTests(OrchestratorHarness):
         """
         run, directory = self.make_run()
         primary = self._blocked_after_one_review(run, directory)
+        # A coordinator edit means the stored REVISE no longer applies (#241),
+        # so this resume opens with a fresh review.
+        (self.workspace / "fix.txt").write_text("coordinator edit", encoding="utf-8")
         primary.script.append({"report": "revised", "touch": ("fix.txt", "again")})
         resumed = ScriptedAgent(
             "claude",
@@ -856,6 +863,127 @@ class OrchestrationTests(OrchestratorHarness):
         self.assertIn("at most 2 reviewer pass", announced[first_budget_line])
         # And the call spent exactly what it announced.
         self.assertEqual(outcome.review_cycles, 3)
+
+    _FINDINGS = "add a regression test for the empty input\nMAILMAN-VERDICT: REVISE\n"
+
+    def _resume_after_budget_block(self, *, edit_candidate: bool, resumed_script):
+        """Block on the revision budget after REVISE, then resume with one revision.
+
+        Returns the outcome, the reviewer invocations across both calls, and
+        the primary agent. https://github.com/wolfgang-aura/Mailman/issues/241
+        """
+        run, directory = self.make_run()
+        primary = ScriptedAgent(
+            "codex",
+            [
+                {"report": "candidate", "touch": ("fix.txt", "fixed")},
+                {"report": "revised", "touch": ("test_fix.txt", "covered")},
+            ],
+        )
+        first_reviewer = ScriptedAgent("claude", [{"report": self._FINDINGS}])
+        first = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: {
+                "codex": primary, "claude": first_reviewer
+            }[name],
+            max_revisions=0,
+        )
+        self.assertEqual(first.status, RunStatus.BLOCKED)
+        self.assertEqual(
+            first.steps[-1].detail,
+            "reviewer requested changes beyond the revision budget",
+        )
+        if edit_candidate:
+            (self.workspace / "fix.txt").write_text("coordinator edit", encoding="utf-8")
+
+        resumed_reviewer = ScriptedAgent("claude", list(resumed_script))
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: {
+                "codex": primary, "claude": resumed_reviewer
+            }[name],
+            resume_review=True,
+            max_revisions=1,
+            max_review_cycles=4,
+        )
+        reviews = len(first_reviewer.calls) + len(resumed_reviewer.calls)
+        return outcome, reviews, primary
+
+    def test_an_unchanged_budget_blocked_revise_resumes_into_the_revision(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/241
+
+        The reviewer already judged this exact candidate, so a resume goes
+        straight to the revision with the stored findings, then reviews it.
+        """
+        outcome, reviews, primary = self._resume_after_budget_block(
+            edit_candidate=False, resumed_script=[{"report": APPROVED}]
+        )
+
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
+        # One review before the block, one of the revision: the re-review of
+        # the unchanged candidate is gone.
+        self.assertEqual(reviews, 2)
+        self.assertEqual(outcome.review_cycles, 2)
+        self.assertEqual(outcome.revisions_used, 1)
+        self.assertEqual(len(primary.calls), 2)
+        self.assertIn("add a regression test for the empty input", primary.calls[1][1])
+        self.assertIn("review-reused", [step.name for step in outcome.steps])
+        budget = next(step for step in outcome.steps
+                      if step.name == "review-budget" and step.data.get("resume"))
+        self.assertEqual(budget.data["max_passes_this_call"], 1)
+
+    def test_a_changed_candidate_after_a_budget_block_gets_a_fresh_review(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/241"""
+        outcome, reviews, primary = self._resume_after_budget_block(
+            edit_candidate=True,
+            resumed_script=[{"report": self._FINDINGS}, {"report": APPROVED}],
+        )
+
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
+        self.assertEqual(reviews, 3)
+        self.assertEqual(outcome.review_cycles, 3)
+        self.assertEqual(len(primary.calls), 2)
+        self.assertNotIn("review-reused", [step.name for step in outcome.steps])
+
+    def test_a_review_without_a_recorded_digest_is_not_reused(self) -> None:
+        """An orchestration record from before #241 names no digest: review afresh."""
+        run, directory = self.make_run()
+        self._blocked_after_one_review(run, directory)
+        record_path = directory / "orchestration.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        for step in record["steps"]:
+            if step["name"] == "verdict":
+                step["data"].pop("candidate_digest", None)
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        primary = ScriptedAgent("codex", [])
+        resumed = ScriptedAgent("claude", [{"report": APPROVED}])
+
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: {"codex": primary, "claude": resumed}[name],
+            resume_review=True,
+            max_revisions=1,
+            max_review_cycles=3,
+        )
+
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
+        self.assertEqual(len(resumed.calls), 1)
+        self.assertEqual(primary.calls, [])
 
     def test_an_expired_run_deadline_stops_a_resume_review(self) -> None:
         """https://github.com/wolfgang-aura/Mailman/issues/81"""

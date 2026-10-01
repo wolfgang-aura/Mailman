@@ -75,8 +75,16 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     RunStatus.MAINTAINER_CHANGES_REQUESTED: frozenset(
         {RunStatus.BLOCKED, RunStatus.ABANDONED}
     ),
+    # REVISION_REQUIRED: a run blocked on the revision budget after a REVISE
+    # verdict resumes straight into the revision when the candidate is the one
+    # that review read. https://github.com/wolfgang-aura/Mailman/issues/241
     RunStatus.BLOCKED: frozenset(
-        {RunStatus.PRIMARY_RUNNING, RunStatus.REVIEW_PENDING, RunStatus.ABANDONED}
+        {
+            RunStatus.PRIMARY_RUNNING,
+            RunStatus.REVIEW_PENDING,
+            RunStatus.REVISION_REQUIRED,
+            RunStatus.ABANDONED,
+        }
     ),
     RunStatus.ABANDONED: frozenset(),
 }
