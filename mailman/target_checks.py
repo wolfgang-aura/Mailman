@@ -301,7 +301,9 @@ def _version(tool: LintTool, sources: dict[str, str]) -> str | None:
         r"(?:[ \t]*#[ \t]*frozen:[ \t]*v?([0-9][\w.]*))?",
         re.IGNORECASE,
     )
-    pinned = re.compile(rf"(?<![\w-]){re.escape(tool.name)}\s*==\s*([0-9][\w.]*)")
+    # `==1.1.*` keeps its wildcard; cut to `1.1.` it is no requirement pip
+    # accepts. Mailman #361.
+    pinned = re.compile(rf"(?<![\w-]){re.escape(tool.name)}\s*==\s*([0-9][\w.]*\*?)")
     # CI's pre-commit rev outranks a dev-group pin in any file: prefect's CI
     # runs ruff v0.15.19 while its dev group pins 0.16.2. Mailman #247.
     for text in sources.values():
@@ -459,11 +461,17 @@ def _run_tool(
     environment: dict[str, str] | None = None
     pinned = configuration.get("version")
     found = re.search(r"\d+(?:\.\d+)+", probed.stdout)
-    if pinned and found and found.group(0) != pinned:
+    wildcard = bool(pinned) and pinned.endswith(".*")
+    inside = bool(pinned and found) and (
+        found.group(0) == pinned
+        or (wildcard and found.group(0).startswith(pinned[:-1]))
+    )
+    if pinned and found and not inside:
         # A newer tool enables rules the target's CI never runs: the lockfile's
         # ruff 0.16.2 flagged UP007 where prefect's pinned 0.15.19 passed.
         # The pin goes beside the environment, not into it. Mailman #247.
-        tools = Path(python).parent.parent.parent / "lint-tools" / f"{tool.name}-{pinned}"
+        folder = pinned.replace("*", "x")
+        tools = Path(python).parent.parent.parent / "lint-tools" / f"{tool.name}-{folder}"
         requirement = f"{tool.name}=={pinned}"
         install = execute(
             [python, "-m", "pip", "install", "--disable-pip-version-check",
@@ -496,7 +504,7 @@ def _run_tool(
             [*base, "--version"], working_directory=workspace,
             timeout_seconds=120, environment=environment,
         )
-        if pinned not in probed.stdout:
+        if (pinned[:-1] if wildcard else pinned) not in probed.stdout:
             entry["reason"] = (
                 f"not-run: installed {requirement} beside the environment, but "
                 f"`{tool.name} --version` reports: "

@@ -175,6 +175,15 @@ class RuffConfigurationTests(_Fixture):
         )
         self.assertEqual(ruff_configuration(self.workspace)["version"], "0.15.19")
 
+    def test_a_wildcard_dependency_pin_keeps_its_wildcard(self) -> None:
+        # schwifty pins `ruff==0.15.*`; the parser kept `0.15.` and pip
+        # refused the requirement. Mailman #361.
+        self.write(
+            "pyproject.toml",
+            '[dependency-groups]\ndev = ["ruff==0.15.*"]\n[tool.ruff]\n',
+        )
+        self.assertEqual(ruff_configuration(self.workspace)["version"], "0.15.*")
+
     def _black_version(self, rev: str) -> str | None:
         self.write("pyproject.toml", "[tool.black]\n")
         self.write(
@@ -285,6 +294,23 @@ class LintTests(_Fixture):
         self.assertEqual([f["code"] for f in findings], ["lint-not-run"])
         self.assertIn("0.16.2", record["tools"][0]["reason"])
         self.assertFalse(any("check" in call for call in executor.calls))
+
+    def test_a_ruff_inside_a_wildcard_pin_is_not_reinstalled(self) -> None:
+        # Mailman #361: schwifty pins pyrefly==1.1.* and the venv has 1.1.1.
+        self.write(".github/workflows/ci.yml", "- run: pip install ruff==0.16.*\n")
+
+        class Inside(Executor):
+            def __call__(self, command, **options):
+                if command[-1] == "--version":
+                    self.calls.append(list(command))
+                    return _result(list(command), stdout="ruff 0.16.3\n")
+                return super().__call__(command, **options)
+
+        executor = Inside()
+        record, findings = self._run(executor)
+        self.assertEqual(findings, [])
+        self.assertIsNone(record["tools"][0]["install"])
+        self.assertFalse(any("pip" in call for call in executor.calls))
 
     def test_a_ruff_at_the_pin_is_not_reinstalled(self) -> None:
         class Pinned(Executor):
