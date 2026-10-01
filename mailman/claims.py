@@ -221,6 +221,10 @@ _DECLINED = re.compile(
     r"|(?:i(?:'m| am)|we(?:'re| are)) (?:still |just |really )?not (?:yet )?convinced"
     # docling#3528: "the rationale of docling not choosing sides". Mailman #234.
     r"|the rationale (?:of|for|behind) (?:\S+ ){0,3}not \w+ing\b"
+    # Arelle#2399: "this is the behavior I'd expect rather than a bug".
+    # Mailman #319.
+    r"|(?:the )?behaviou?r (?:i'd|i would|we'd|we would) expect\b"
+    r"|rather than a bug\b"
     r")",
     re.IGNORECASE,
 )
