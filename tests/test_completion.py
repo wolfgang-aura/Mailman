@@ -46,6 +46,44 @@ class CompletionTests(OrchestratorHarness):
         with self.assertRaisesRegex(ValueError, "candidate-changed"):
             finalize_review(directory)
 
+    def test_package_affirm_passes_decision_and_finalize_review(self):
+        # #322 fixed the decision stage only: finalize-review read the decision
+        # with no affirmations and refused the same line. Mailman #329.
+        import argparse
+        from io import StringIO
+        from unittest.mock import patch
+
+        from mailman import cli
+
+        directory = self.completed()
+        body = directory / "body.md"
+        body.write_text(
+            "Fixes the hash.\n\nI have read the CONTRIBUTING file and ran pre-commit.\n",
+            encoding="utf-8",
+        )
+        (directory / "export").mkdir(exist_ok=True)
+        (directory / "export" / "changes.diff").write_text(
+            "diff --git a/fix.txt b/fix.txt\n", encoding="utf-8"
+        )
+        arguments = argparse.Namespace(
+            run_id=directory.name, data_root=directory.parent, policy=directory / "policy.json",
+            title="Fix it", body=body, repo="example/project", head="fork:mailman/issue-7",
+            base="main", commit_message=None, affirm=[3],
+        )
+        real = cli.main
+        gated = {"decision", "finalize-review"}
+        stderr = StringIO()
+        with (
+            patch.object(cli, "main", side_effect=lambda argv: real(argv) if argv[0] in gated else 0),
+            patch("mailman.cli.resolve_identity", return_value=Identity("F", "f@example.com")),
+            patch("mailman.package.commit_candidate", return_value="b" * 40),
+            patch("sys.stdout", StringIO()), patch("sys.stderr", stderr),
+        ):
+            code = cli._package(arguments)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(str(load_run(directory.name, directory.parent)[0].status), "READY_FOR_HUMAN_REVIEW")
+
     def test_candidate_digest_survives_staging_and_commit(self):
         directory = self.completed()
         before = candidate_digest(self.workspace, self.base_commit)

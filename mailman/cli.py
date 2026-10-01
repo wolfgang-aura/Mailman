@@ -98,6 +98,7 @@ from mailman.review_decision import (
     DecisionError,
     blank_decision,
     load_decision,
+    record_affirmations,
 )
 from mailman.review_packet import write_packet_page
 from mailman.review_page import write_run_page
@@ -1019,6 +1020,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="LINE",
         help="a body.md first-person line the operator affirms, as handoff --affirm (#217)",
+    )
+    decision.add_argument(
+        "--body",
+        type=Path,
+        help="the body handoff will post, checked and recorded instead of the run's body.md (#329)",
     )
     decision.add_argument("--data-root", type=Path)
 
@@ -2094,7 +2100,8 @@ def _package(arguments: argparse.Namespace) -> int:
         ("refresh-evidence", refresh_evidence),
         ("export-patch", lambda: main(["export-patch", run_id, *root])),
         ("prepare-submission", prepare_submission),
-        ("decision", lambda: main(["decision", run_id, *affirm, *root])),
+        ("decision", lambda: main(["decision", run_id, "--body", str(arguments.body),
+                                   *affirm, *root])),
         ("finalize-review", lambda: main(["finalize-review", run_id, *root])),
         ("commit", commit),
         ("check-authors", lambda: main(["check-authors", run_id, *root])),
@@ -2891,10 +2898,20 @@ def _decision(arguments: argparse.Namespace) -> int:
         )
         return 0
     try:
-        decision = load_decision(run_directory, affirmed_lines=arguments.affirm)
+        decision = load_decision(
+            run_directory, affirmed_lines=arguments.affirm, body_path=arguments.body
+        )
     except DecisionError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
+    if arguments.affirm or arguments.body:
+        # finalize-review and hunt status read the decision later, with no
+        # affirmations of their own. Mailman #329.
+        record_affirmations(
+            run_directory,
+            body_path=arguments.body or run_directory / "body.md",
+            lines=arguments.affirm,
+        )
     print(
         json.dumps(
             {

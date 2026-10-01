@@ -262,6 +262,20 @@ class BodyClaimGateTests(unittest.TestCase):
                 load_decision(directory)
             load_decision(directory, affirmed_lines=[3])
 
+    def test_an_affirmed_line_without_a_claim_is_refused(self) -> None:
+        # handoff --affirm 99 was refused while decision --affirm 99 passed. #329.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "body.md").write_text(
+                "Fixes the hash.\n\nI have read the CONTRIBUTING file and ran pre-commit.\n",
+                encoding="utf-8",
+            )
+            (directory / DECISION_FILENAME).write_text(json.dumps(VALID), encoding="utf-8")
+            with self.assertRaises(DecisionError) as caught:
+                load_decision(directory, affirmed_lines=[3, 99])
+
+        self.assertIn("[99]", " ".join(caught.exception.problems))
+
     def test_a_malformed_handoff_is_a_decision_error(self) -> None:
         # A JSONDecodeError escaped load_decision, and review pages catch only
         # DecisionError, so one truncated file crashed the whole packet.
@@ -559,6 +573,65 @@ class DecisionGateCliTests(unittest.TestCase):
         self.assertEqual(unfilled, 1)
         self.assertEqual(filled, 0)
         self.assertEqual(json.loads(stdout.getvalue())["blocking"], 1)
+
+    def test_an_affirmation_reaches_every_later_read(self) -> None:
+        # package --affirm passed the decision stage and then stopped at
+        # finalize-review, which reads the decision with no affirmations. #329.
+        from mailman.cli import main
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run_id = self._run(data_root)
+            directory = data_root / run_id
+            (directory / DECISION_FILENAME).write_text(json.dumps(VALID), encoding="utf-8")
+            (directory / "body.md").write_text(
+                "Fixes the hash.\n\nI have read the CONTRIBUTING file and ran pre-commit.\n",
+                encoding="utf-8",
+            )
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                affirmed = main(
+                    ["decision", run_id, "--affirm", "3", "--data-root", str(data_root)]
+                )
+            load_decision(directory)
+            (directory / "body.md").write_text(
+                "Fixes the hash.\n\nI have read the CONTRIBUTING file and ran the tests.\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(DecisionError):
+                load_decision(directory)
+
+        self.assertEqual(affirmed, 0)
+
+    def test_the_decision_checks_the_body_handoff_will_post(self) -> None:
+        # package --body PATH handed handoff one file while the decision gate
+        # read the run's body.md. #329.
+        from mailman.cli import main
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run_id = self._run(data_root)
+            directory = data_root / run_id
+            (directory / DECISION_FILENAME).write_text(json.dumps(VALID), encoding="utf-8")
+            (directory / "body.md").write_text("Fixes the hash.\n", encoding="utf-8")
+            posted = Path(temporary_directory) / "pr-body.md"
+            posted.write_text(
+                "Fixes the hash.\n\nI have read and tested every line.\n", encoding="utf-8"
+            )
+            arguments = ["decision", run_id, "--data-root", str(data_root)]
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                refused = main(arguments + ["--body", str(posted)])
+                affirmed = main(arguments + ["--body", str(posted), "--affirm", "3"])
+            posted.write_text(
+                "Fixes the hash.\n\nI have read and tested every line twice.\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(DecisionError) as caught:
+                load_decision(directory)
+
+        self.assertEqual(refused, 1)
+        self.assertIn("pr-body.md line 3", stderr.getvalue())
+        self.assertEqual(affirmed, 0)
+        self.assertIn("pr-body.md line 3", " ".join(caught.exception.problems))
 
     def test_init_refuses_to_overwrite_a_filled_file(self) -> None:
         from mailman.cli import main
