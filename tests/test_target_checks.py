@@ -446,6 +446,17 @@ class LintConfigurationTests(_Fixture):
         self.write(".github/workflows/ci.yml", "- run: poe type_completeness\n")
         self.assertEqual(self._tools(), [])
 
+    def test_pylint_is_found_where_it_runs_not_where_it_is_configured(self) -> None:
+        self.write("pyproject.toml", "[tool.pylint.messages_control]\ndisable = ['C']\n")
+        self.write(".pylintrc", "[MASTER]\n")
+        self.write(
+            ".pre-commit-config.yaml",
+            "repos:\n  - repo: local\n    hooks:\n      - id: pylint-django-check\n",
+        )
+        self.assertEqual(self._tools(), [])
+        self.write(".github/workflows/lint.yml", "steps:\n  - run: pylint src\n")
+        self.assertEqual(self._tools(), ["pylint"])
+
     def test_a_ruff_isort_section_is_not_isort(self) -> None:
         self.write("pyproject.toml", "[tool.ruff.lint.isort]\nknown-first-party = ['x']\n")
         self.assertEqual(self._tools(), ["ruff"])
@@ -727,6 +738,94 @@ class OtherLinterTests(_Fixture):
             run_lint(self.run_directory, workspace=self.workspace, changed_paths=changed)
         self.assertEqual(self._linted(executor, "mypy"), ["pkg/mod.py"])
 
+    # agentscope's pylint hook (#288): configured, never run by the lint stage.
+    _AGENTSCOPE_PYLINT = (
+        "repos:\n"
+        "  - repo: https://github.com/pylint-dev/pylint\n"
+        "    rev: v3.0.2\n"
+        "    hooks:\n"
+        "      - id: pylint\n"
+        "        exclude:\n"
+        "            (?x)(\n"
+        "                ^docs\n"
+        "                | pb2\\.py$\n"
+        "          )\n"
+        "        args: [\n"
+        "          --disable=W0511,\n"
+        "          --disable=C0103,\n"
+        "          --max-branches=30,\n"
+        "        ]\n"
+    )
+
+    def _pylint_calls(self, executor: Executor) -> list[list[str]]:
+        return [
+            call for call in executor.calls
+            if "pylint" in call and "--version" not in call and "pip" not in call
+        ]
+
+    def test_the_pylint_hook_runs_with_its_args_and_scope(self) -> None:
+        self.write(".pre-commit-config.yaml", self._AGENTSCOPE_PYLINT)
+        changed = ["pkg/mod.py", "docs/conf.py"]
+        self.write("docs/conf.py", "x = 1\n")
+        executor = Executor({"pylint --persistent=n": 1})
+        with patch("mailman.target_checks.execute", executor):
+            record, findings = run_lint(
+                self.run_directory, workspace=self.workspace, changed_paths=changed
+            )
+        self.assertEqual(
+            self._pylint_calls(executor),
+            [[str(self.python), "-m", "pylint", "--persistent=n", "--score=n",
+              "--disable=W0511", "--disable=C0103", "--max-branches=30", "pkg/mod.py"]],
+        )
+        entry = record["tools"][0]
+        self.assertEqual((entry["tool"], entry["version"]), ("pylint", "3.0.2"))
+        self.assertEqual(entry["reason"], "failed")
+        self.assertEqual([f["code"] for f in findings], ["lint-failed"])
+        self.assertIn("pylint", findings[0]["detail"])
+
+    def test_a_missing_pylint_from_a_pinned_hook_is_installed_at_the_rev(self) -> None:
+        self.write(".pre-commit-config.yaml", self._AGENTSCOPE_PYLINT)
+        executor = Executor({"pylint --version": [1, 0]})
+        record, findings = self._run(executor)
+        self.assertEqual(findings, [])
+        self.assertEqual(record["tools"][0]["install"]["requirement"], "pylint==3.0.2")
+        self.assertEqual(len(self._pylint_calls(executor)), 1)
+
+    _LOCAL_PYLINT = (
+        "repos:\n"
+        "  - repo: local\n"
+        "    hooks:\n"
+        "      - id: pylint\n"
+        "        name: pylint\n"
+        "        entry: pylint\n"
+        "        language: system\n"
+        "        types: [python]\n"
+        "        args: [\"--rcfile=.pylintrc\"]\n"
+    )
+
+    def test_a_local_pylint_hook_runs_the_environment_s_pylint(self) -> None:
+        self.write(".pre-commit-config.yaml", self._LOCAL_PYLINT)
+        executor = Executor()
+        record, findings = self._run(executor)
+        self.assertEqual(findings, [])
+        self.assertEqual(record["tools"][0]["reason"], "passed")
+        self.assertEqual(
+            self._pylint_calls(executor),
+            [[str(self.python), "-m", "pylint", "--persistent=n", "--score=n",
+              "--rcfile=.pylintrc", "pkg/mod.py"]],
+        )
+
+    def test_a_local_pylint_hook_without_pylint_in_the_environment_blocks(self) -> None:
+        self.write(".pre-commit-config.yaml", self._LOCAL_PYLINT)
+        executor = Executor({"pylint --version": 1})
+        record, findings = self._run(executor)
+        self.assertEqual(record["reason"], "not-run")
+        self.assertIn("repo: local", record["tools"][0]["reason"])
+        self.assertEqual([f["code"] for f in findings], ["lint-not-run"])
+        self.assertTrue(findings[0]["blocking"])
+        self.assertFalse(any("pip" in call for call in executor.calls))
+        self.assertEqual(self._pylint_calls(executor), [])
+
     def test_a_ty_that_installs_but_cannot_start_blocks_as_not_run(self) -> None:
         # securo#1039: CI ran ty, which Application Control blocks on this
         # host; the first CI run on the pull request failed.
@@ -996,7 +1095,7 @@ class LintAcknowledgementTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             with self.assertRaises(ValueError):
                 record_lint_acknowledgement(
-                    Path(temporary), tools=["pylint"], note="x", diff="d\n"
+                    Path(temporary), tools=["prettier"], note="x", diff="d\n"
                 )
             with self.assertRaises(ValueError):
                 record_lint_acknowledgement(
