@@ -513,6 +513,19 @@ class HuntTests(OrchestratorHarness):
         self.assertFalse(result["ready"])
         self.assertEqual(result["stage"], "decision")
 
+    def test_a_run_held_only_for_personal_review_is_ready_for_the_human(self):
+        # Python-Markdown 1643: SEND and packaged, held at REPAIR because the
+        # policy wants the submitter to answer review personally. Mailman #381.
+        result = next_action(self.cla_run(["personal-review"]))
+        self.assertTrue(result["ready"], result)
+        self.assertTrue(result["human_required"])
+        self.assertIn("review comments", result["action"])
+
+    def test_another_blocking_question_beside_personal_review_still_blocks(self):
+        result = next_action(self.cla_run(["personal-review", "untriaged-issue"]))
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["stage"], "decision")
+
     def test_acknowledged_closed_attempts_remain_ready_after_orchestration(self):
         directory = self.ready_run()
         (directory / "prior-art.json").write_text(

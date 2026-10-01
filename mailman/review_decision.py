@@ -85,6 +85,10 @@ CLA_GATE = "cla"
 #: which also happens at filing approval. It is set aside only on a run
 #: whose sole submission hold is the own-words policy. Mailman #181.
 OWN_WORDS_GATE = "own-words"
+#: A question the operator answers by committing to reply to review comments
+#: personally, which a target's AI policy may require. Like the CLA, the
+#: commitment is made at filing approval. Mailman #381.
+PERSONAL_REVIEW_GATE = "personal-review"
 
 _MAX_CLAIM = 220
 
