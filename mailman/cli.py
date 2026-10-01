@@ -1097,7 +1097,9 @@ def _hunt(arguments: argparse.Namespace) -> int:
 
         home = root.parent
         gh = _Gh(resolve_tool(home, "gh"), home, 60.0)
-        result = hunt.sweep_fresh_issues(root, gh, since_days=arguments.since_days)
+        result = hunt.sweep_fresh_issues(
+            root, gh, since_days=arguments.since_days,
+            progress=lambda line: print(line, file=sys.stderr, flush=True))
         print(json.dumps(result, indent=2))
         if result.get("stale_screens"):
             # Passes skipped as stale shrink the sweep without a word. #286.

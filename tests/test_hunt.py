@@ -1565,6 +1565,20 @@ class SweepTests(OrchestratorHarness):
         self.assertEqual(result["rows"][0]["prior_attempts"], [12])
         self.assertEqual(result["claimed"], [{"target": "acme/a#2", "pull_requests": [13]}])
 
+    def test_the_sweep_reports_progress_per_repository_and_timeline_read(self):
+        # A 240-day sweep ran 25 minutes and was killed with no output at
+        # all; a slow sweep looked like a hung one. Mailman #313.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        gh = _SearchGh([[_item("acme/a", 1), _item("acme/a", 2)]])
+        lines: list[str] = []
+
+        sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                           now=datetime(2026, 9, 30, tzinfo=UTC), progress=lines.append)
+
+        self.assertTrue(any("acme/a" in line and "1/1" in line for line in lines), lines)
+        self.assertTrue(any("timeline 2/2" in line for line in lines), lines)
+
     def test_a_row_whose_timeline_could_not_be_read_is_unverified(self):
         # 13 rows kept after a rate-limited timeline read all had an open
         # pull request at prescreen. Mailman #283.

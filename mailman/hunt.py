@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import secrets
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -779,7 +780,8 @@ def sweep_labels_admit(labels: list[str]) -> bool:
 def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = None,
                        since_days: int = SWEEP_SINCE_DAYS,
                        pause_seconds: float = SWEEP_PAUSE_SECONDS,
-                       now: datetime | None = None) -> dict:
+                       now: datetime | None = None,
+                       progress: Callable[[str], None] | None = None) -> dict:
     """Open bug issues opened lately in passing repositories, not yet screened.
 
     One core `issues` read per repository; labels are judged here by
@@ -817,6 +819,11 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
                 break
         else:
             truncated.append(slug)
+        # A wide window ran 25 minutes with nothing printed and was killed
+        # as hung. Mailman #313.
+        if progress:
+            progress(f"sweep {index + 1}/{len(slugs)} {slug}: "
+                     + ("refused" if items is None else f"{len(items)} issue(s)"))
         if items is None:
             failed.append(slug)
             continue
@@ -858,9 +865,11 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
     claimed_rows: list[dict] = []
     kept: list[dict] = []
     unverified: list[str] = []
-    for row in rows.values():
+    for position, row in enumerate(rows.values(), 1):
         slug, number = row["target"].rsplit("#", 1)
         author = row.pop("_author")
+        if progress and (position == len(rows) or position % 10 == 0):
+            progress(f"sweep timeline {position}/{len(rows)}")
         events = gh.json(f"repos/{slug}/issues/{number}/timeline?per_page=100")
         if not isinstance(events, list):
             # Unread, a rival pull request goes unseen: 13 such rows all had
