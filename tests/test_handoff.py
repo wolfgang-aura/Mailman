@@ -671,6 +671,18 @@ class PriorArtFreshnessTests(unittest.TestCase):
             self.assertIn("pr#400", result["detail"])
             self.assertIn("prepare-submission", result["detail"])
 
+    def test_the_runs_own_filed_pull_request_is_no_rival(self) -> None:
+        # A filed run's refreshed search finds its own pull request (#97).
+        from mailman.provenance import provenance_path
+
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name), matches=[self.RIVAL])
+            provenance_path(directory).write_text(
+                json.dumps({"pull_request": 400}), encoding="utf-8"
+            )
+            result = check_handoff(directory)
+            self.assertTrue(result["ok"], result)
+
     def test_a_strong_match_the_submission_weighed_passes(self) -> None:
         with TemporaryDirectory() as name:
             directory = self._prepared(Path(name), matches=[self.RIVAL])

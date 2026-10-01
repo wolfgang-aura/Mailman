@@ -880,9 +880,17 @@ def _age_minutes(timestamp: object, now: datetime) -> float | None:
 def _unweighed_strong_matches(
     run_directory: Path, search: dict[str, Any]
 ) -> list[str]:
-    """Strong rows in the search that the prepared submission did not see."""
+    """Strong rows in the search that the prepared submission did not see.
+
+    The run's own filed pull request is no rival to it (#97).
+    """
+    from mailman.targeting import own_pull_request
+
+    own = own_pull_request(run_directory)
     strong, _ = partition_duplicates(
-        search.get("matches"), issue_number=search.get("issue_number")
+        [row for row in search.get("matches") or []
+         if not (isinstance(row, dict) and own is not None and row.get("number") == own)],
+        issue_number=search.get("issue_number"),
     )
     path = run_directory / "submission" / "submission.json"
     try:
