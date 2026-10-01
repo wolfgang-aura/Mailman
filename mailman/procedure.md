@@ -250,6 +250,17 @@ a time; a screen costs about 200 GitHub core calls.
    `claims`. Record evidence for every acknowledgement. Never acknowledge an
    overlap just to clear a gate. Choose another candidate when uncertain.
 
+When a screened target has no workable issue, hunt for a defect with the
+harness rather than by hand. `mailman baseline OWNER/REPO` clones the
+default-branch head, installs the CI interpreter or the nearest one that
+installs, runs the full suite and writes `baseline.json`; a failure that matches
+an open issue is `known`, not a finding. `mailman fuzz --target M:F --model M:F
+--generator M:F --output PATH` runs a seeded differential fuzz and refuses to
+report findings when its self-check against the target fails. Record a defect
+with `mailman finding PATH --init`, fill in its reproducer and the conditions it
+needs with whether this host meets each, check it with `mailman finding PATH`,
+and start the run with `init-run --defect-report PATH`.
+
 ## Prepare and prove
 
 6. Run `prepare-workspace`. Use the personal fork account and configured
