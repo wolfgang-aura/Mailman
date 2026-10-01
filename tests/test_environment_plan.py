@@ -208,6 +208,8 @@ dependencies = ["mkdocs"]
             self.assertIn("pyproj!=3.8.0", constraints)
             # awkward#4228: pyarrow 25.0.1's `_fs` DLL is blocked. #369.
             self.assertIn("pyarrow!=25.0.1", constraints)
+            # uproot5#1529: cramjam 2.13.0's DLL is blocked. #374.
+            self.assertIn("cramjam!=2.13.0", constraints)
             for step in plan["steps"][1:]:
                 command = step["command"]
                 self.assertEqual(
