@@ -561,7 +561,9 @@ next move is the maintainer's merge, so it is not work. A later comment, a
 later `CHANGES_REQUESTED`, or a red check puts the row back on `attention`.
 `inherited` is a row whose only red checks are ones the base branch broke:
 the check reports failures only in non-test files the pull request does not
-touch, or most of up to five other open pull requests fail it too. It is not
+touch, or most of up to five other open pull requests fail it too. A failing
+`codecov/project` is inherited when `codecov/patch` passed on the same head:
+every changed line is covered and the total moved with the base. It is not
 work; widening the pull request to fix it is out of scope.
 `unknown` is a row `gh` could not read, a 404, a rate limit, a
 timeout, and it counts as work because a reading with a hole in it proves

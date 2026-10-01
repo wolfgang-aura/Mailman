@@ -355,12 +355,20 @@ def _classify_inherited(gh: _Gh, slug: str, number: int, checks: dict[str, Any],
     branch fails it at its own tip, as pymc main failed `test_step_args` under
     pymc#8442 (#162). The extra calls are made only for a row with a failing
     check, and one that fails leaves the check counted against us.
+    `codecov/project` is decided first and alone: when `codecov/patch` passed
+    on the same head, every line we changed is covered and the project total
+    moved with the base's uploads, as on pymc#8442 (#316).
     https://github.com/wolfgang-aura/Mailman/issues/134
     """
     inherited: dict[str, str] = {}
     touched: set[str] | None = None
     undecided: list[str] = []
+    patch = runs.get("codecov/patch") or {}
     for name in checks["failing"]:
+        if (name == "codecov/project" and patch.get("status") == "completed"
+                and patch.get("conclusion") == "success"):
+            inherited[name] = "codecov/patch passes on this head; the project total moved"
+            continue
         run = runs.get(name) or {}
         paths = _reported_paths(gh, slug, run) if run.get("output") else set()
         if paths and touched is None:
