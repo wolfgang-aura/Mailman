@@ -1216,14 +1216,82 @@ class PrepareSubmissionTests(unittest.TestCase):
         record = self._prepare()
         self.assertIn("possible-duplicate", record["blocking_codes"])
 
-    def test_a_rival_with_no_head_cannot_be_pinned(self) -> None:
-        # A row only `gh search prs` found has no head. A None pin matched
-        # None on every later check, so no push could block again.
+    def _head_read(self, stdout: str, exit_code: int = 0):
+        from mailman.executor import CommandResult
+
+        calls: list[list[str]] = []
+
+        def fake(command, **_kwargs):
+            calls.append(list(command))
+            return CommandResult(
+                command=list(command), working_directory=".", started_at="",
+                duration_seconds=0.0, exit_code=exit_code, stdout=stdout,
+                stderr="", timed_out=False, timeout_seconds=60, environment={},
+            )
+
+        return calls, fake
+
+    def _headless_rival(self) -> None:
+        # The compact listing and the index carry no head (#331).
         self._whole_query_rival(head_sha=None)
-        with self.assertRaises(ValueError):
+        path = self.run_directory / "duplicate-search.json"
+        search = json.loads(path.read_text(encoding="utf-8"))
+        search["repository"] = "pandas-dev/pandas-stubs"
+        path.write_text(json.dumps(search), encoding="utf-8")
+
+    def test_a_rival_with_no_head_is_pinned_to_the_head_read_for_it(self) -> None:
+        self._headless_rival()
+        calls, fake = self._head_read(json.dumps({"headRefOid": "c" * 40}))
+        with patch("mailman.submission.execute", fake), patch(
+            "mailman.submission.resolve_tool", return_value="gh"
+        ):
+            ack = record_duplicate_acknowledgement(
+                self.run_directory, note="read it", not_duplicates=["pr#1900"]
+            )
+        self.assertEqual(ack["not_duplicates"], {"pr#1900": "c" * 40})
+        self.assertEqual(
+            calls[0][:6],
+            ["gh", "pr", "view", "1900", "--repo", "pandas-dev/pandas-stubs"],
+        )
+        record = self._prepare()
+        self.assertTrue(record["ready"], record["blocking_codes"])
+
+    def test_a_rival_whose_head_cannot_be_read_cannot_be_pinned(self) -> None:
+        # A None pin matched None on every later check, so no push could
+        # block again.
+        self._headless_rival()
+        _, fake = self._head_read("", exit_code=1)
+        with patch("mailman.submission.execute", fake), patch(
+            "mailman.submission.resolve_tool", return_value="gh"
+        ), self.assertRaises(ValueError):
             record_duplicate_acknowledgement(
                 self.run_directory, note="read it", not_duplicates=["pr#1900"]
             )
+        self.assertFalse(
+            (self.run_directory / "duplicate-acknowledgement.json").exists()
+        )
+
+    def test_a_new_search_reads_the_head_of_a_pinned_headless_row(self) -> None:
+        from mailman.submission import _read_pinned_heads
+
+        (self.run_directory / "duplicate-acknowledgement.json").write_text(
+            json.dumps({"not_duplicates": {"pr#1900": "c" * 40, "pr#7": None}}),
+            encoding="utf-8",
+        )
+        rows = [
+            {"number": 1900, "pull_request": True, "head_sha": None},
+            {"number": 7, "pull_request": True, "head_sha": None},
+            {"number": 8, "pull_request": True, "head_sha": None},
+        ]
+        record = {"matches": rows, "commands": []}
+        calls, fake = self._head_read(json.dumps({"headRefOid": "d" * 40}))
+        with patch("mailman.submission.execute", fake):
+            _read_pinned_heads(
+                record, self.run_directory, slug="pandas-dev/pandas-stubs",
+                executable="gh", timeout_seconds=60,
+            )
+        self.assertEqual([row["head_sha"] for row in rows], ["d" * 40, None, None])
+        self.assertEqual(len(calls), 1)
 
     def test_an_old_none_pin_never_clears(self) -> None:
         self._whole_query_rival(head_sha=None)
