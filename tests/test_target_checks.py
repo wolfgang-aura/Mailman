@@ -175,6 +175,27 @@ class RuffConfigurationTests(_Fixture):
         )
         self.assertEqual(ruff_configuration(self.workspace)["version"], "0.15.19")
 
+    def _black_version(self, rev: str) -> str | None:
+        self.write("pyproject.toml", "[tool.black]\n")
+        self.write(
+            ".pre-commit-config.yaml",
+            "repos:\n  - repo: https://github.com/psf/black-pre-commit-mirror\n"
+            f"    rev: {rev}\n    hooks:\n      - id: black\n",
+        )
+        return next(c for c in lint_configurations(self.workspace)
+                    if c["tool"] == "black")["version"]
+
+    def test_a_frozen_sha_rev_pins_the_version_in_its_comment(self) -> None:
+        # python/typeshed (#310): `rev: <sha> # frozen: 26.5.1` was read as
+        # black==<sha>, which pip refuses.
+        self.assertEqual(
+            self._black_version("4160603246a6b365d4a2af661c6d71b0a0f50478 # frozen: 26.5.1"),
+            "26.5.1",
+        )
+
+    def test_a_bare_sha_rev_is_no_pin(self) -> None:
+        self.assertIsNone(self._black_version("4160603246a6b365d4a2af661c6d71b0a0f50478"))
+
 
 class LintTests(_Fixture):
     def setUp(self) -> None:
@@ -802,6 +823,27 @@ class LintBaselineTests(_Fixture):
         self.assertEqual([f["code"] for f in findings], ["lint-failed"])
         self.assertIn("error: new", findings[0]["detail"])
         self.assertNotIn("see here", findings[0]["detail"])
+
+    def _pyrefly_missing(self, module: str, line: int) -> str:
+        return (f"ERROR Cannot find module `{module}` [missing-import]\n"
+                f" --> pkg/mod.py:{line}:1\n  |\n{line} | import {module}\n  |\n"
+                f"  Looked in these locations (from config in `{self.workspace}`):\n")
+
+    def test_an_added_import_of_a_module_the_base_cannot_find_is_not_new(self) -> None:
+        # python/typeshed#15495 (#312): pyrefly on bare files never resolves
+        # `grpc.aio`; the patch's extra import of it is one more such block.
+        base = self._pyrefly_missing("grpc.aio", 8) + " INFO 1 errors\n"
+        patched = (self._pyrefly_missing("grpc.aio", 8)
+                   + self._pyrefly_missing("grpc.aio", 9) + " INFO 2 errors\n")
+        _, findings = self._run(BaselineExecutor(patched, base))
+        self.assertEqual([f["code"] for f in findings], ["lint-preexisting"])
+
+    def test_an_import_of_a_module_the_base_finds_still_blocks(self) -> None:
+        base = self._pyrefly_missing("grpc.aio", 8)
+        patched = base + self._pyrefly_missing("grcp", 9)
+        _, findings = self._run(BaselineExecutor(patched, base))
+        self.assertEqual([f["code"] for f in findings], ["lint-failed"])
+        self.assertIn("grcp", findings[0]["detail"])
 
     def test_without_a_base_commit_no_worktree_is_made(self) -> None:
         executor = BaselineExecutor("pkg/mod.py:1:1: F401\n", "pkg/mod.py:1:1: F401\n")

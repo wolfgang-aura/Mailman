@@ -297,17 +297,32 @@ def _mentions(tool: LintTool, name: str, text: str) -> bool:
 def _version(tool: LintTool, sources: dict[str, str]) -> str | None:
     """A pinned version from a pre-commit rev or a `tool==x` requirement."""
     pre_commit = re.compile(
-        rf"{tool.pre_commit_repo}[^\n]*\n\s*rev:\s*['\"]?v?([0-9][\w.]*)", re.IGNORECASE
+        rf"{tool.pre_commit_repo}[^\n]*\n\s*rev:\s*['\"]?([^\s'\"#]+)['\"]?"
+        r"(?:[ \t]*#[ \t]*frozen:[ \t]*v?([0-9][\w.]*))?",
+        re.IGNORECASE,
     )
     pinned = re.compile(rf"(?<![\w-]){re.escape(tool.name)}\s*==\s*([0-9][\w.]*)")
     # CI's pre-commit rev outranks a dev-group pin in any file: prefect's CI
     # runs ruff v0.15.19 while its dev group pins 0.16.2. Mailman #247.
-    for pattern in (pre_commit, pinned):
-        for text in sources.values():
-            # A pin can sit in a dependency group of a pyproject with no [tool.x].
-            found = pattern.search(text)
-            if found:
-                return found.group(1)
+    for text in sources.values():
+        found = pre_commit.search(text)
+        if not found:
+            continue
+        rev = found.group(1)
+        # typeshed pins `rev: <sha> # frozen: 26.5.1`; the SHA is no
+        # version pip can install (#310).
+        if re.fullmatch(r"[0-9a-f]{40}", rev, re.IGNORECASE):
+            if found.group(2):
+                return found.group(2)
+            continue
+        version = re.match(r"v?([0-9][\w.]*)", rev)
+        if version:
+            return version.group(1)
+    for text in sources.values():
+        # A pin can sit in a dependency group of a pyproject with no [tool.x].
+        found = pinned.search(text)
+        if found:
+            return found.group(1)
     return None
 
 
@@ -771,6 +786,35 @@ BASELINE_DIRECTORY = "lint-base"
 _DIGITS = re.compile(r"\d+")
 _NOTE = re.compile(r":\d+(?::\d+)?: note: ")
 _CODE_FRAME = re.compile(r"\s*\d*\s*\|")
+#: pyrefly's `Cannot find module `x`` and mypy's missing-module error.
+_MISSING_MODULE = re.compile(
+    r"Cannot find module `([^`]+)`"
+    r'|Cannot find implementation or library stub for module named "([^"]+)"'
+)
+#: The first line of a pyrefly diagnostic; the lines under it belong to it.
+_BLOCK_HEADER = re.compile(r"\s*(?:ERROR|WARN|INFO)\b")
+
+
+def _without_missing_imports(output: str, modules: set[str]) -> str:
+    """`output` without the missing-import diagnostics for `modules`.
+
+    A pyrefly diagnostic runs from its ERROR line to the next header, so its
+    code frame and search-path notes go with it.
+    """
+    if not modules:
+        return output
+    kept: list[str] = []
+    skipping = False
+    for line in output.splitlines():
+        found = _MISSING_MODULE.search(line)
+        if found and (found.group(1) or found.group(2)) in modules:
+            skipping = _BLOCK_HEADER.match(line) is not None
+            continue
+        if skipping and not _BLOCK_HEADER.match(line):
+            continue
+        skipping = False
+        kept.append(line)
+    return "\n".join(kept)
 
 
 def _signatures(output: str, roots: tuple[Path, ...]) -> Counter[str]:
@@ -887,12 +931,21 @@ def _new_findings(
     if ran.timed_out:
         return None, "the base run timed out"
     roots = (workspace.resolve(), baseline.path.resolve(), workspace, baseline.path)
-    patched = _signatures(result["output"], roots)
+    # A module the base run cannot resolve either is this host's environment,
+    # not the patch: python/typeshed#15495 added one more import of an
+    # unresolved `grpc.aio` and read as a new finding (#312).
+    base_output = ran.stdout + "\n" + ran.stderr
+    unresolved = {
+        found.group(1) or found.group(2) for found in _MISSING_MODULE.finditer(base_output)
+    }
+    output = _without_missing_imports(result["output"], unresolved)
+    base_output = _without_missing_imports(base_output, unresolved)
+    patched = _signatures(output, roots)
     if ran.exit_code == 0:
         return list(patched.elements()) or ["(output unchanged)"], "the base commit passes"
-    new = patched - _signatures(ran.stdout + "\n" + ran.stderr, roots)
+    new = patched - _signatures(base_output, roots)
     lines = []
-    for line in result["output"].splitlines():
+    for line in output.splitlines():
         signature = next(iter(_signatures(line, roots)), None)
         if signature is not None and new[signature] > 0:
             new[signature] -= 1
