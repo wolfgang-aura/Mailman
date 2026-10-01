@@ -96,11 +96,16 @@ def _environment_metadata(program: str | None = None) -> dict[str, str]:
         if Path(program).is_absolute() and configuration.is_file():
             for line in configuration.read_text(encoding="utf-8", errors="replace").splitlines():
                 key, _, value = line.partition("=")
-                # virtualenv writes "version_info = 3.12.14.final.0"; keep
-                # the release platform.python_version() would report.
-                release = re.match(r"\d+\.\d+(?:\.\d+)?", value.strip())
+                # virtualenv writes "version_info = 3.15.0.beta.1"; record it
+                # as platform.python_version() would, 3.15.0b1. Mailman #357.
+                release = re.match(
+                    r"(\d+\.\d+(?:\.\d+)?)(?:\.(alpha|beta|candidate)\.(\d+))?",
+                    value.strip(),
+                )
                 if key.strip() in ("version", "version_info") and release:
-                    python_version = release.group()
+                    number, level, serial = release.groups()
+                    tag = {"alpha": "a", "beta": "b", "candidate": "rc"}.get(level or "")
+                    python_version = number + (f"{tag}{serial}" if tag else "")
                     break
     return {
         "operating_system": platform.system(),

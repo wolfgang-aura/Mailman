@@ -200,6 +200,30 @@ class VenvActivationTests(unittest.TestCase):
                 _environment_metadata(str(program))["python_version"], "3.12.14"
             )
 
+    def test_a_virtualenv_pre_release_keeps_its_tag(self) -> None:
+        # platform.python_version() reports 3.15.0b1 for this interpreter.
+        # Mailman #357.
+        from mailman.executor import _environment_metadata
+
+        cases = {
+            "3.15.0.alpha.2": "3.15.0a2",
+            "3.15.0.beta.1": "3.15.0b1",
+            "3.15.0.candidate.3": "3.15.0rc3",
+            "3.15.0.final.0": "3.15.0",
+        }
+        for version_info, expected in cases.items():
+            with self.subTest(version_info), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "env" / "Scripts").mkdir(parents=True)
+                (root / "env" / "pyvenv.cfg").write_text(
+                    f"home = /py\nversion_info = {version_info}\n", encoding="utf-8"
+                )
+                program = root / "env" / "Scripts" / "python.exe"
+
+                self.assertEqual(
+                    _environment_metadata(str(program))["python_version"], expected
+                )
+
     def test_a_host_interpreter_leaves_path_alone(self) -> None:
         import os
 
