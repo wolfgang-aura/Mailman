@@ -26,7 +26,7 @@ from mailman.models import RunStatus, utc_now
 from mailman.orchestrator import orchestration_step_names
 from mailman.provenance import upstream_issue_number
 from mailman.review_decision import (
-    CLA_GATE, UNTRIAGED_GATE, DecisionError, load_decision,
+    CLA_GATE, OWN_WORDS_GATE, UNTRIAGED_GATE, DecisionError, load_decision,
 )
 from mailman.screen import load_screen, screen_is_current
 from mailman.target_intel import _is_bot, repository_slug
@@ -1344,11 +1344,14 @@ def next_action(directory: Path) -> dict:
     if decision.recommendation != "SEND":
         return action("decision", "Resolve the HOLD or replace the candidate.", disposition="REPLACE" if decision.recommendation == "DROP" else "REPAIR")
     # A CLA signature is the operator's act at filing approval, like the
-    # own-words rewrite. Mailman #290.
+    # own-words rewrite. Mailman #290. Only the question naming that act is
+    # set aside; any other blocking question, the triage one included, still
+    # holds an own-words run. Mailman #181.
+    human_gates = {CLA_GATE} | ({OWN_WORDS_GATE} if own_words else set())
     blocking = [question for question in decision.blocking_questions
-                if question.gate != CLA_GATE]
-    cla = len(blocking) < len(decision.blocking_questions)
-    if blocking and not own_words:
+                if question.gate not in human_gates]
+    cla = any(question.gate == CLA_GATE for question in decision.blocking_questions)
+    if blocking:
         return action("decision", "Resolve coordinator work; record a genuine user dependency with hunt escalate.")
     try:
         finalize_review(directory)

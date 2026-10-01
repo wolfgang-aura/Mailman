@@ -440,6 +440,44 @@ class HuntTests(OrchestratorHarness):
         self.assertFalse(result["ready"])
         self.assertEqual(result["stage"], "submission")
 
+    def own_words_questions(self, gates):
+        directory = self.own_words_run(["policy-requires-own-words"])
+        path = directory / "decision.json"
+        decision = json.loads(path.read_text(encoding="utf-8"))
+        decision["questions"] = [
+            {
+                "question": f"Question for gate {gate}?",
+                "blocking": True,
+                **({"gate": gate} if gate else {}),
+                "options": [
+                    {"label": "A", "text": "File.", "cost": "None."},
+                    {"label": "B", "text": "Drop.", "cost": "The run."},
+                ],
+                "recommendation": "A.",
+            }
+            for gate in gates
+        ]
+        path.write_text(json.dumps(decision), encoding="utf-8")
+        return directory
+
+    def test_the_own_words_question_does_not_hold_an_own_words_run(self):
+        result = next_action(self.own_words_questions(["own-words"]))
+        self.assertTrue(result["ready"], result)
+        self.assertTrue(result["human_required"])
+
+    def assert_held_at_decision(self, gates):
+        result = next_action(self.own_words_questions(gates))
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["stage"], "decision")
+
+    def test_the_triage_question_still_holds_an_own_words_run(self):
+        # Before, any blocking question passed once own-words applied, so an
+        # untriaged run with the policy counted ready. Mailman #181.
+        self.assert_held_at_decision(["untriaged-issue"])
+
+    def test_an_ungated_question_beside_the_own_words_one_still_holds(self):
+        self.assert_held_at_decision(["own-words", None])
+
     def cla_run(self, gates):
         """A ready run whose decision carries one blocking question per gate."""
         directory = self.ready_run()

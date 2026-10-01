@@ -81,6 +81,10 @@ UNTRIAGED_GATE = "untriaged-issue"
 #: Agreement. Signing happens at filing approval, like the own-words rewrite,
 #: so it is not coordinator work. Mailman #290.
 CLA_GATE = "cla"
+#: A question the operator answers by rewriting the body in their own words,
+#: which also happens at filing approval. It is set aside only on a run
+#: whose sole submission hold is the own-words policy. Mailman #181.
+OWN_WORDS_GATE = "own-words"
 
 _MAX_CLAIM = 220
 
