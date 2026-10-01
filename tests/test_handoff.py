@@ -61,6 +61,8 @@ def _prior_art(
     repository: str = "pmorissette/ffn",
     success: bool = True,
     self_reported: bool = False,
+    complete: bool = True,
+    matches: list[dict[str, object]] | None = None,
 ) -> None:
     """Write the prior-art evidence a publishable run carries."""
     now = datetime.now(UTC)
@@ -73,8 +75,10 @@ def _prior_art(
                 ).isoformat(),
                 "repository": repository,
                 "query": "rolling window cache",
+                "issue_number": 327,
                 "success": success,
-                "matches": [],
+                "complete": complete,
+                "matches": matches or [],
             }
         ),
         encoding="utf-8",
@@ -639,6 +643,43 @@ class PriorArtFreshnessTests(unittest.TestCase):
             self.assertEqual(
                 check_handoff(directory)["reason"], "duplicate-search-failed"
             )
+
+    # Mailman #348: the refreshed search was read for its age alone, so one
+    # that half failed, or that found an open pull request for this issue,
+    # re-armed the run for filing.
+    RIVAL = {
+        "number": 400,
+        "pull_request": True,
+        "state": "open",
+        "references_issue": True,
+        "title": "Cache the rolling window",
+    }
+
+    def test_an_incomplete_search_clears_nothing(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name), complete=False)
+            result = check_handoff(directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "duplicate-search-incomplete")
+
+    def test_a_strong_match_the_submission_never_weighed_refuses(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name), matches=[self.RIVAL])
+            result = check_handoff(directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "duplicate-search-new-match")
+            self.assertIn("pr#400", result["detail"])
+            self.assertIn("prepare-submission", result["detail"])
+
+    def test_a_strong_match_the_submission_weighed_passes(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name), matches=[self.RIVAL])
+            path = directory / "submission" / "submission.json"
+            record = json.loads(path.read_text(encoding="utf-8"))
+            record["duplicate_candidates"] = {"strong": ["pr#400"]}
+            path.write_text(json.dumps(record), encoding="utf-8")
+            result = check_handoff(directory)
+            self.assertTrue(result["ok"], result)
 
     def test_a_search_of_another_repository_does_not_count(self) -> None:
         with TemporaryDirectory() as name:

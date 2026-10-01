@@ -26,7 +26,7 @@ from mailman.completion import check_authorship
 from mailman.executor import clamp_timeout_seconds
 from mailman.provenance import load_provenance, upstream_issue_number
 from mailman.review_decision import Offer, offer_problems
-from mailman.submission import load_duplicate_search
+from mailman.submission import load_duplicate_search, partition_duplicates
 from mailman.target_intel import repository_slug
 from mailman.touched_tests import diff_sha256, touched_tests_verdict
 
@@ -877,6 +877,27 @@ def _age_minutes(timestamp: object, now: datetime) -> float | None:
     return max(0.0, (now - recorded).total_seconds() / 60)
 
 
+def _unweighed_strong_matches(
+    run_directory: Path, search: dict[str, Any]
+) -> list[str]:
+    """Strong rows in the search that the prepared submission did not see."""
+    strong, _ = partition_duplicates(
+        search.get("matches"), issue_number=search.get("issue_number")
+    )
+    path = run_directory / "submission" / "submission.json"
+    try:
+        submission = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        submission = {}
+    candidates = submission.get("duplicate_candidates") if isinstance(submission, dict) else None
+    weighed = set((candidates or {}).get("strong") or []) if isinstance(candidates, dict) else set()
+    keys = [
+        f"{'pr' if row.get('pull_request') else 'issue'}#{row.get('number')}"
+        for row in strong
+    ]
+    return [key for key in keys if key not in weighed]
+
+
 def check_prior_art_freshness(
     run_directory: Path,
     *,
@@ -942,6 +963,24 @@ def check_prior_art_freshness(
             ),
             "evidence": evidence,
         }
+    # A search whose listing failed reports success with nothing found; that
+    # empty result is not evidence (#348).
+    if search.get("complete") is not True:
+        failed = ", ".join(
+            f"{entry.get('kind')} {entry.get('method')}"
+            for entry in search.get("failed_methods") or []
+            if isinstance(entry, dict)
+        )
+        return {
+            "ok": False,
+            "reason": "duplicate-search-incomplete",
+            "detail": (
+                "the recorded duplicate search did not finish the listing it "
+                f"relies on ({failed or 'a method failed'}), so an empty result "
+                f"clears nothing. {refresh}"
+            ),
+            "evidence": evidence,
+        }
     if repository and search.get("repository"):
         wanted = repository_slug(repository).lower()
         searched = repository_slug(str(search["repository"])).lower()
@@ -964,6 +1003,21 @@ def check_prior_art_freshness(
                 f"the limit is {max_age_minutes:g} minutes. An upstream "
                 "duplicate has appeared 94 minutes after a run finished, so "
                 f"evidence this old clears nothing. {refresh}"
+            ),
+            "evidence": evidence,
+        }
+    # A refreshed search can find what the prepared submission never weighed:
+    # its age alone re-armed the run with an open rival in the record (#348).
+    unweighed = _unweighed_strong_matches(run_directory, search)
+    if unweighed:
+        return {
+            "ok": False,
+            "reason": "duplicate-search-new-match",
+            "detail": (
+                "the duplicate search found a strong match the prepared "
+                "submission did not weigh: " + ", ".join(unweighed) + ". Read "
+                f"it, then run `mailman prepare-submission {run_id}` again "
+                "before handing over."
             ),
             "evidence": evidence,
         }
