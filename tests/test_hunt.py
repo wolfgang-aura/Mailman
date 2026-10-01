@@ -1579,6 +1579,33 @@ class SweepTests(OrchestratorHarness):
         self.assertTrue(any("acme/a" in line and "1/1" in line for line in lines), lines)
         self.assertTrue(any("timeline 2/2" in line for line in lines), lines)
 
+    def test_the_sweep_reads_timelines_concurrently_and_keeps_the_order(self):
+        # 284 timeline reads one at a time took about 20 minutes. Each read
+        # here waits for a second one to start, which a serial loop never
+        # does, so a serial sweep leaves both rows unverified. Mailman #314.
+        import threading
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        barrier = threading.Barrier(2, timeout=5)
+
+        class _Concurrent(_SearchGh):
+            def json(self, path):
+                if "/timeline" in path:
+                    try:
+                        barrier.wait()
+                    except threading.BrokenBarrierError:
+                        return None
+                return super().json(path)
+
+        gh = _Concurrent([[_item("acme/a", 1, created="2026-09-21T00:00:00Z"),
+                           _item("acme/a", 2)]])
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(result["unverified"], [])
+        self.assertEqual([row["target"] for row in result["rows"]], ["acme/a#1", "acme/a#2"])
+
     def test_a_row_whose_timeline_could_not_be_read_is_unverified(self):
         # 13 rows kept after a rate-limited timeline read all had an open
         # pull request at prescreen. Mailman #283.

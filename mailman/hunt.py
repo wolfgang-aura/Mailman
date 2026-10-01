@@ -5,7 +5,9 @@ import hashlib
 import json
 import re
 import secrets
+import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -739,6 +741,8 @@ SWEEP_SINCE_DAYS = 60
 #: calls four seconds apart, and `label:"Needs PR"` returned nothing for
 #: pylint while pylint#11440 carried that label. Mailman #259.
 SWEEP_PAUSE_SECONDS = 0.5
+#: Timeline reads in flight at once during a sweep (#314).
+SWEEP_TIMELINE_WORKERS = 4
 #: Pages of 100 open issues read per repository before it is reported under
 #: `truncated`.
 SWEEP_PAGES = 5
@@ -865,12 +869,26 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
     claimed_rows: list[dict] = []
     kept: list[dict] = []
     unverified: list[str] = []
-    for position, row in enumerate(rows.values(), 1):
+    # One at a time, 284 reads took about 20 minutes, mostly `gh` start-up;
+    # a few at once keep the order and stay under the burst limit, which
+    # `_Gh` retries anyway. Mailman #314.
+    done = 0
+    lock = threading.Lock()
+
+    def timeline(row: dict) -> object:
+        nonlocal done
         slug, number = row["target"].rsplit("#", 1)
-        author = row.pop("_author")
-        if progress and (position == len(rows) or position % 10 == 0):
-            progress(f"sweep timeline {position}/{len(rows)}")
         events = gh.json(f"repos/{slug}/issues/{number}/timeline?per_page=100")
+        with lock:
+            done += 1
+            if progress and (done == len(rows) or done % 10 == 0):
+                progress(f"sweep timeline {done}/{len(rows)}")
+        return events
+
+    with ThreadPoolExecutor(max_workers=SWEEP_TIMELINE_WORKERS) as pool:
+        timelines = list(pool.map(timeline, rows.values()))
+    for row, events in zip(rows.values(), timelines):
+        author = row.pop("_author")
         if not isinstance(events, list):
             # Unread, a rival pull request goes unseen: 13 such rows all had
             # one at prescreen. Sweep again once the limit resets. Mailman #283.
