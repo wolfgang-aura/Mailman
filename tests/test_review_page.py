@@ -253,6 +253,30 @@ class ReviewPageTests(unittest.TestCase):
         # the verdict is a pill at the top, so the contract line is not repeated
         self.assertNotIn("MAILMAN-VERDICT: APPROVE</p>", page)
 
+    def test_a_pending_own_words_rewrite_is_named_after_the_questions(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/181"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_directory = write_run(Path(temporary_directory))
+            write_decision(run_directory)
+            plain = render_run_page(run_directory)
+            (run_directory / "submission").mkdir()
+            (run_directory / "submission" / "submission.json").write_text(
+                json.dumps({"ready": False,
+                            "blocking_codes": ["policy-requires-own-words"]}),
+                encoding="utf-8",
+            )
+            page = render_run_page(run_directory)
+
+        self.assertNotIn("Before you file", plain)
+        self.assertIn("<h2>Before you file</h2>", page)
+        self.assertIn("Rewrite the pull request description in your own words.", page)
+        self.assertIn("own_words_confirmed", page)
+        self.assertIn("no publish command", page)
+        self.assertLess(page.index("<h2>What I need from you</h2>"),
+                        page.index("<h2>Before you file</h2>"))
+        self.assertLess(page.index("<h2>Before you file</h2>"),
+                        page.index("<h2>What is still open</h2>"))
+
     def test_a_run_without_a_decision_says_so_loudly(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             run_directory = write_run(Path(temporary_directory))

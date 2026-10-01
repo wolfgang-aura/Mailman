@@ -27,7 +27,7 @@ from mailman.review_decision import (
     recommendation_pill,
     render_offer,
 )
-from mailman.review_page import _read_json, _shorten
+from mailman.review_page import _read_json, _shorten, render_own_words
 from mailman.review_page import _STYLE as _RUN_STYLE
 
 _PACKET_STYLE = """
@@ -212,6 +212,27 @@ def _offers(entries: Sequence[PacketEntry]) -> str:
     )
 
 
+def _own_words(entries: Sequence[PacketEntry]) -> str:
+    """Every run whose description the human must rewrite before filing.
+
+    https://github.com/wolfgang-aura/Mailman/issues/181
+    """
+    blocks = [
+        render_own_words(entry.run_directory, f" {entry.target}")
+        for entry in entries
+        if entry.decision is not None
+    ]
+    blocks = [block for block in blocks if block]
+    if not blocks:
+        return ""
+    return (
+        "<section><h2>Rewrite before filing</h2>"
+        '<p class="note">These targets want the description in your own words. '
+        "Approving the patch does not approve the agent&#39;s text.</p>"
+        f"{''.join(blocks)}</section>"
+    )
+
+
 def _runs_table(entries: Sequence[PacketEntry]) -> str:
     rows = []
     for entry in entries:
@@ -298,6 +319,7 @@ that goes upstream or does not, and the decision is yours.</p></div></div>
 <p class="note">Questions are numbered once across the whole batch. Answer by
 number and letter &mdash; &ldquo;1A 2B 3A&rdquo; is a complete reply.</p>
 {_questions(entries)}</section>
+{_own_words(entries)}
 {_offers(entries)}
 <section><h2>The runs</h2>
 <p class="note">One row per run. Open a page for the patch, the evidence and

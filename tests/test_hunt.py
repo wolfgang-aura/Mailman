@@ -426,6 +426,15 @@ class HuntTests(OrchestratorHarness):
         self.assertTrue(result["human_required"])
         self.assertIn("own words", result["action"])
 
+    def test_an_own_words_run_still_fails_any_other_handoff_refusal(self):
+        # The own-words refusal is the only one a ready own-words run may
+        # carry; a body edited after the handoff still sends it back. #181.
+        directory = self.own_words_run(["policy-requires-own-words"])
+        (directory / "final-body.md").write_text("Changed after preview", encoding="utf-8")
+        result = next_action(directory)
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["stage"], "handoff")
+
     def test_another_blocking_code_beside_own_words_still_blocks(self):
         result = next_action(self.own_words_run(["policy-requires-own-words", "lint-failed"]))
         self.assertFalse(result["ready"])

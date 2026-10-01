@@ -638,6 +638,38 @@ def _offer_section(decision: Decision) -> str:
     )
 
 
+def render_own_words(run_directory: Path, where: str = "") -> str:
+    """The rewrite only the human can do, when the target asks for it.
+
+    A project that wants descriptions in the contributor's own words leaves
+    one step at filing approval: the body Mailman prepared is the agent's.
+    The handoff withholds the publish command until the rewrite, and this
+    says so where the decision is made. Empty when nothing is pending.
+    https://github.com/wolfgang-aura/Mailman/issues/181
+    """
+    from mailman.handoff import OWN_WORDS_INSTRUCTION
+    from mailman.submission import own_words_pending
+
+    if not own_words_pending(run_directory):
+        return ""
+    return (
+        f'<div class="card missing"><p class="byline">Before you file{_escape(where)}</p>'
+        '<p class="claim">Rewrite the pull request description in your own words.</p>'
+        '<p class="detail">The target requires descriptions in the author&#39;s own '
+        "words, and the prepared body was written by an agent. Filing it as it is "
+        f"breaks that rule. Before filing, {_escape(OWN_WORDS_INSTRUCTION)}. The "
+        "handoff prints no publish command until then. You still file it "
+        "yourself.</p></div>"
+    )
+
+
+def _own_words_section(run_directory: Path) -> str:
+    block = render_own_words(run_directory)
+    if not block:
+        return ""
+    return f"<section><h2>Before you file</h2>{block}</section>\n"
+
+
 def _decision_sections(run_directory: Path) -> str:
     """The decision layer, or a loud banner naming why there is none.
 
@@ -671,7 +703,7 @@ def _decision_sections(run_directory: Path) -> str:
 <p class="note">Answer by number and letter &mdash; &ldquo;1A 2B&rdquo; is a
 complete reply.</p>
 {render_questions(decision)}</section>
-{_offer_section(decision)}<section><h2>What is still open</h2>
+{_own_words_section(run_directory)}{_offer_section(decision)}<section><h2>What is still open</h2>
 <p class="note">Every open item carries the reason it is open and what closing
 it would cost. Nothing is listed here that was simply not done.</p>
 {render_gaps(decision)}</section>

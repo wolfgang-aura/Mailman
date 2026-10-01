@@ -35,7 +35,12 @@ whether anything needs them at all.
 3. **What I need from you.** Each item is a **question**, never a statement,
    with concrete options labelled A, B, C, what each one costs, and one line of
    recommendation. Blocking questions are marked. Questions are numbered, so
-   the whole reply can be `1A 2B 3A`.
+   the whole reply can be `1A 2B 3A`. When the target wants descriptions in
+   the author's own words and `submission.json` still blocks on
+   `policy-requires-own-words`, a **Before you file** section follows the
+   questions on the run page (**Rewrite before filing** on the packet). It
+   names the rewrite as the human's step. The handoff withholds the publish
+   command and `handoff-check` refuses until the rewrite is done.
 4. **What is still open.** Every gap carries the reason it is open and what
    closing it would cost. An item with neither is not a gap; it is work that
    was skipped, and it belongs in the questions or in the patch.
