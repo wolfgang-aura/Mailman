@@ -528,6 +528,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="check the ask-first offer comment's handoff instead of the PR's",
     )
+    handoff_check.add_argument(
+        "--comment",
+        action="store_true",
+        help="check an issue comment's handoff, such as a closing reply",
+    )
     handoff_check.add_argument("--data-root", type=Path)
 
     prior_art = subparsers.add_parser(
@@ -1972,7 +1977,9 @@ def _handoff(arguments: argparse.Namespace) -> int:
 
 def _handoff_check(arguments: argparse.Namespace) -> int:
     _, run_directory = load_run(arguments.run_id, arguments.data_root)
-    result = check_handoff(run_directory, offer=arguments.offer)
+    result = check_handoff(
+        run_directory, offer=arguments.offer, comment=arguments.comment
+    )
     print(json.dumps(result, indent=2))
     return 0 if result["ok"] else 1
 
