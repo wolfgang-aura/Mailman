@@ -1,6 +1,6 @@
 # Source of truth
 
-Last verified: 2026-09-30 in `Asia/Singapore`.
+Last verified: 2026-10-01 in `Asia/Singapore`.
 
 ## Luna work-order checkpoint
 
@@ -409,6 +409,31 @@ opening the local packet URL during this session; visual state is unverified.
   now that it carries no open PR. Deleted by the operator 2026-10-01.
   - Mailman CI went red on `9128ca7`: `28734a8` (#276) left `_stream`'s pipes open, and two
     orchestrator CLI tests saw a `ResourceWarning` on stderr. Fixed in `c819de6` (#281).
+- Re-read 2026-10-01 15:20 UTC (`mailman hunt watch`, `mailman contributions --refresh`, each
+  change checked with `gh`; first run of the `pr-followup` skill): 37 filed. Merged 10, closed
+  unmerged 7, open 20: beets#7065, fonttools#4212, ipython#15408, openalgo#2021, openalgo#2022,
+  schwifty#318, pdm#3883, py-shiny#2511, prefect#23237, pretix#6564, xarray#11637, pylint#11517,
+  pymc#8442, poetry#11052, typeshed#16461, anndata#2666, sqlmesh#6105, tqdm#1837, solara#1215,
+  nox#1191. New filings since the morning: beets#7065, pylint#11517, typeshed#16461,
+  solara#1215, schwifty#318.
+  - Tenth merge: PyPSA#1958, merged by FabianHofmann 2026-10-01 12:33 UTC as `e62ae04` after he
+    merged master into the branch (`1894116`) and approved. Provenance re-recorded `MERGED` with
+    that commit under `maintainer_commits`. Run record 0021. Fork `wolfgang-aura/PyPSA` deleted by
+    the operator 2026-10-02.
+  - biopython#5336 closed by us 2026-10-01 09:44 UTC after peterjc put it on hold under the
+    draft no-AI policy (biopython#5241). The gate already landed as `ea9e6e0` (#220). Run record
+    0022. Nothing further to post.
+  - Competitors: the beets row was a false positive, a merged PR that had not closed the issue;
+    fixed in `27d60d6` (#363). typeshed#16461 supersedes a stale PR that has had changes
+    requested since 2026-03-20 and no activity since, and says so in its body. pylint#11518 by
+    another contributor was opened 15 minutes after ours. Ours stand in both repos; nothing
+    posted on either.
+  - pymc#8442 and ipython#15408 read `unknown` on network errors; both are red only on
+    inherited failures (pymc's external-sampler `test_step_args` fails on pymc main too;
+    ipython's downstream ipykernel step). openalgo#2021 fails an untouched timing test on
+    windows-latest; the operator asked for a re-run at 09:44 UTC. xarray#11637 fails only the
+    Windows `test_distributed` timeout; waiting on the maintainer after our 2026-09-30 reply.
+    pretix#6564 stays parked on the CLA.
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
   It still exists and now carries the #1370 PR.
 
