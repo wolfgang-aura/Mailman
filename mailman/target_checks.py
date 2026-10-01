@@ -580,7 +580,7 @@ _YAML_KEY = re.compile(r"^(\s*)(-\s+)?([\w-]+):(?:\s+(.*))?$")
 
 
 def _yaml_scalar(
-    value: str, lines: list[str], index: int, indent: int, anchors: dict[str, str]
+    value: str, lines: list[str], index: int, indent: int, anchors: dict[str, str | list[str]]
 ) -> tuple[str | None, int]:
     """One scalar of a pre-commit config and the index of the line after it.
 
@@ -592,7 +592,8 @@ def _yaml_scalar(
         anchor, _, value = value.partition(" ")
         anchor, value = anchor[1:], value.strip()
     if value.startswith("*"):
-        return anchors.get(value[1:].strip()), index
+        found = anchors.get(value[1:].strip())
+        return (found if isinstance(found, str) else None), index
     if value[:1] in ("|", ">"):
         body: list[str] = []
         while index < len(lines) and (
@@ -628,24 +629,84 @@ def _yaml_scalar(
     return text, index
 
 
+def _flow_list(text: str, lines: list[str], index: int) -> tuple[list[str], int]:
+    """A `[a, "b,c"]` flow list from just past its `[`, over as many lines as it runs.
+
+    A comma or `]` inside quotes belongs to the item: `"--extend-ignore=E203,W503"`
+    and `"--ignore-words-list=[a]"` are one argument each. Mailman #358.
+    """
+    items: list[str] = []
+    token = ""
+    quote = ""
+    quoted = closed = False
+    while True:
+        position = 0
+        while position < len(text):
+            char = text[position]
+            position += 1
+            if quote:
+                if char == quote and quote == "'" and text[position : position + 1] == "'":
+                    token += "'"
+                    position += 1
+                elif char == quote:
+                    quote, closed = "", True
+                elif char == chr(92) and quote == '"' and text[position : position + 1] in ('"', chr(92)):
+                    token += text[position]
+                    position += 1
+                else:
+                    token += char
+            elif char in ",]":
+                if quoted or token.strip():
+                    items.append(token if quoted else token.strip())
+                token, quoted, closed = "", False, False
+                if char == "]":
+                    return items, index
+            elif char == "#" and (position == 1 or text[position - 2].isspace()):
+                break
+            elif char in ("'", '"') and not token.strip() and not quoted:
+                quote, quoted, token = char, True, ""
+            elif not closed:
+                token += char
+        if index >= len(lines):
+            break
+        # A line break inside an item folds to a space.
+        token += " " if (quote or token.strip()) and not closed else ""
+        text = lines[index]
+        index += 1
+    if quoted or token.strip():
+        items.append(token if quoted else token.strip())
+    return items, index
+
+
 def _yaml_list(
-    value: str, lines: list[str], index: int, indent: int
-) -> tuple[list[str], int]:
-    """A hook's `args`: a flow list on its line, or `- item` lines below it."""
+    value: str, lines: list[str], index: int, indent: int, anchors: dict[str, str | list[str]]
+) -> tuple[list[str] | None, int]:
+    """A hook's `args`: a flow list on its line, or `- item` lines below it.
+
+    `&name` records the list for a later `*name`. An alias whose anchor is not
+    in this file is None, not an empty list: the hook has args nobody read.
+    """
     def unquote(item: str) -> str:
         item = item.strip()
         if len(item) > 1 and item[0] == item[-1] and item[0] in ("'", '"'):
             return item[1:-1]
         return item
 
-    value = re.sub(r"\s+#.*$", "", value).strip()
+    value = value.strip()
+    anchor = None
+    if value.startswith("&"):
+        anchor, _, value = value.partition(" ")
+        anchor, value = anchor[1:], value.strip()
+    if value.startswith("*"):
+        found = anchors.get(re.sub(r"\s+#.*$", "", value)[1:].strip())
+        if isinstance(found, str):
+            found = _flow_list(found[1:], [], 0)[0] if found.startswith("[") else [found]
+        return found, index
     if value.startswith("["):
-        # A flow list may run over several lines; read up to its `]`.
-        while "]" not in value and index < len(lines):
-            value += " " + re.sub(r"\s+#.*$", "", lines[index]).strip()
-            index += 1
-        inner = value[1:value.rfind("]")] if "]" in value else value[1:]
-        return [unquote(item) for item in inner.split(",") if item.strip()], index
+        items, index = _flow_list(value[1:], lines, index)
+        if anchor:
+            anchors[anchor] = items
+        return items, index
     items: list[str] = []
     while index < len(lines):
         line = lines[index]
@@ -657,6 +718,8 @@ def _yaml_list(
         elif stripped and not stripped.startswith("#"):
             break
         index += 1
+    if anchor:
+        anchors[anchor] = items
     return items, index
 
 
@@ -666,7 +729,7 @@ def _pre_commit_scopes(workspace: Path) -> tuple[dict, list[dict]] | None:
     if not path.is_file():
         return None
     lines = _read(path).splitlines()
-    anchors: dict[str, str] = {}
+    anchors: dict[str, str | list[str]] = {}
     top: dict[str, str | None] = {"files": None, "exclude": None}
     hooks: list[dict[str, str | None]] = []
     repo = ""
@@ -690,7 +753,7 @@ def _pre_commit_scopes(workspace: Path) -> tuple[dict, list[dict]] | None:
             hooks.append(hook)
             key_indent = indent
         if key == "args" and hook is not None and indent == key_indent:
-            hook["args"], index = _yaml_list(value, lines, index, indent)
+            hook["args"], index = _yaml_list(value, lines, index, indent, anchors)
             continue
         if key not in ("files", "exclude", "id") and not value.startswith("&"):
             continue
@@ -706,6 +769,44 @@ def _pre_commit_scopes(workspace: Path) -> tuple[dict, list[dict]] | None:
 # Hook args that only set how a tool judges code. A `--fix` or `--write`
 # would rewrite the candidate, so ruff's and mypy's hook args are not taken.
 _HOOK_ARGUMENT_TOOLS = ("black", "isort", "flake8")
+
+# Options of those tools that take no value, from each tool's --help. A bare
+# token after one of these is a path, not a value. Any other option keeps the
+# token after it: a flake8 plugin's `--docstring-convention google` would
+# otherwise read the changed file as its value. Mailman #358.
+_COMMON_FLAGS = frozenset({"-h", "--help", "--version", "-v", "--verbose", "-q", "--quiet"})
+_FLAGS: dict[str, frozenset[str]] = {
+    "black": _COMMON_FLAGS | {
+        "--check", "--diff", "--color", "--no-color", "--fast", "--safe", "--preview",
+        "--unstable", "--pyi", "--ipynb", "-S", "--skip-string-normalization", "-C",
+        "--skip-magic-trailing-comma", "-x", "--skip-source-first-line",
+        "--experimental-string-processing",
+    },
+    "isort": _COMMON_FLAGS | {
+        "-c", "--check", "--check-only", "-d", "--diff", "--filter-files", "--atomic",
+        "--stdout", "--show-config", "--show-files", "--overwrite-in-place",
+        "--dont-follow-links", "--gitignore", "--skip-gitignore", "--float-to-top",
+        "--dont-float-to-top", "--ca", "--combine-as", "--combine-star",
+        "--fss", "--force-sort-within-sections", "--fas", "--force-alphabetical-sort",
+        "--fass", "--force-alphabetical-sort-within-sections", "--sl",
+        "--force-single-line-imports", "--force-adds", "--ot", "--order-by-type",
+        "--dt", "--dont-order-by-type", "--case-sensitive",
+        "--honor-case-in-force-sorted-sections", "--up", "--use-parentheses",
+        "--tc", "--trailing-comma", "--reverse-relative", "--reverse-sort",
+        "--sort-reexports", "--star-first", "-e", "--balanced",
+        "--remove-redundant-aliases", "--os", "--only-sections", "--om",
+        "--only-modified", "--csi", "--combine-straight-imports", "--ls",
+        "--length-sort", "--lss", "--length-sort-straight",
+        "--no-sections", "--no-inline-sort", "--ensure-newline-before-comments",
+        "--group-by-package", "--treat-all-comment-as-code", "--honor-noqa",
+        "--ignore-whitespace", "--append-only", "--resolve-all-configs",
+    },
+    "flake8": _COMMON_FLAGS | {
+        "--count", "--show-source", "--no-show-source", "--statistics", "--exit-zero",
+        "--tee", "--benchmark", "--bug-report", "--isolated", "--hang-closing",
+        "--disable-noqa", "--doctests",
+    },
+}
 
 
 def _own_hooks(hooks: list[dict], tool: LintTool) -> list[dict]:
@@ -732,24 +833,25 @@ def _pre_commit_arguments(workspace: Path, tool: LintTool) -> list[str]:
         return []
     for hook in _own_hooks(scopes[1], tool):
         if hook.get("args"):
-            return _options(hook["args"])
+            return _options(hook["args"], tool.name)
     return []
 
 
-def _options(arguments: list[str]) -> list[str]:
+def _options(arguments: list[str], tool: str) -> list[str]:
     """A hook's options, each with its value; positional paths stay out.
 
     isort's documented hook is `args: ["--profile", "black"]`. Keeping only
     dashed tokens ran `isort --profile pkg/mod.py`, which read the file as
     the profile. A bare token right after an option without `=` is that
-    option's value.
+    option's value, unless the option is one of the tool's flags:
+    `--filter-files src` names a path, and isort ran on all of src (#358).
     """
     options: list[str] = []
     expects_value = False
     for argument in arguments:
         if argument.startswith("-"):
             options.append(argument)
-            expects_value = "=" not in argument
+            expects_value = "=" not in argument and argument not in _FLAGS.get(tool, ())
         elif expects_value:
             options.append(argument)
             expects_value = False

@@ -62,8 +62,12 @@ _BARE_VERSION = re.compile(r"(?<![\w.])v?(\d+\.\d+(?:\.\d+)?(?:[-.]?(?:post|rc|a
 _HEADING_LINES = 6
 
 
-def _heading_versions(body: str) -> list[str]:
-    """Numbers under an issue form's version heading, up to the next heading."""
+def _heading_versions(body: str, wanted: set[str]) -> list[str]:
+    """Numbers under an issue form's version heading, up to the next heading.
+
+    A pin for some other package is skipped here too: numpy==2.1.0 under
+    "### Environment versions" is not the release the reporter ran.
+    """
     found: list[str] = []
     lines = body.splitlines()
     for index, line in enumerate(lines):
@@ -72,6 +76,9 @@ def _heading_versions(body: str) -> list[str]:
         for below in lines[index + 1 : index + 1 + _HEADING_LINES]:
             if below.lstrip().startswith("#"):
                 break
+            below = _PINNED.sub(
+                lambda pin: pin.group(0) if _is_target(pin.group(1), wanted) else "", below
+            )
             found.extend(_BARE_VERSION.findall(below))
     return found
 
@@ -79,6 +86,28 @@ def _heading_versions(body: str) -> list[str]:
 def _distribution(name: str) -> str:
     """A package name as PEP 503 compares it."""
     return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _spellings(name: str) -> set[str]:
+    """The ways a repository and its distribution spell one name.
+
+    dateutil/dateutil ships python-dateutil; encode/django-rest-framework
+    ships djangorestframework. Separators go, then one `python`/`py` prefix
+    or `python` suffix. Mailman #336.
+    """
+    core = re.sub(r"[-_.]+", "", name).lower()
+    forms = {core}
+    for prefix in ("python", "py"):
+        if core.startswith(prefix) and len(core) > len(prefix):
+            forms.add(core[len(prefix) :])
+            break
+    if core.endswith("python") and len(core) > len("python"):
+        forms.add(core[: -len("python")])
+    return forms
+
+
+def _is_target(name: str, wanted: set[str]) -> bool:
+    return not wanted or any(_spellings(name) & _spellings(other) for other in wanted)
 
 
 def reported_versions(markdown: str, names: Iterable[str] = ()) -> list[str]:
@@ -94,20 +123,18 @@ def reported_versions(markdown: str, names: Iterable[str] = ()) -> list[str]:
     body = _issue_body(markdown)
     heading = _HEADING_REPOSITORY.match(markdown.splitlines()[0] if markdown else "")
     wanted = {_distribution(name) for name in [*names, *(heading.groups() if heading else ())]}
-    pinned = [
-        version for name, version in _PINNED.findall(body)
-        if not wanted or _distribution(name) in wanted
-    ]
-    return list(dict.fromkeys([*_heading_versions(body), *pinned, *_VERSION.findall(body)]))
+    pinned = [version for name, version in _PINNED.findall(body) if _is_target(name, wanted)]
+    return list(dict.fromkeys([*_heading_versions(body, wanted), *pinned, *_VERSION.findall(body)]))
 
 
 def _project_names(tree: Path) -> list[str]:
     """The distribution name the target's own pyproject.toml declares."""
     try:
-        data = tomllib.loads((tree / "pyproject.toml").read_text(encoding="utf-8"))
+        data = tomllib.loads((tree / "pyproject.toml").read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return []
-    name = (data.get("project") or {}).get("name")
+    project = data.get("project")
+    name = project.get("name") if isinstance(project, dict) else None
     return [name] if isinstance(name, str) and name else []
 
 

@@ -134,6 +134,61 @@ class ExecutorTests(unittest.TestCase):
         self.assertTrue(result.timed_out)
         self.assertLess(time.monotonic() - started, 15)
 
+    def test_a_timeout_stops_a_grandchild_after_its_parent_exited(self) -> None:
+        # The direct child exits at once; the grandchild it started inherits
+        # stdout and sleeps. A 2s timeout took 15s, the grandchild's whole
+        # run. Mailman #335.
+        script = (
+            "import subprocess, sys; "
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+            "print('parent exits', flush=True)"
+        )
+        started = time.monotonic()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            result = execute(
+                [sys.executable, "-c", script],
+                working_directory=Path(temporary_directory),
+                timeout_seconds=1,
+            )
+
+        self.assertTrue(result.timed_out)
+        self.assertIn("parent exits", result.stdout)
+        self.assertLess(time.monotonic() - started, 8)
+
+    def test_a_descendant_that_survives_the_kill_does_not_hold_the_read(self) -> None:
+        # Whatever the kill misses, the read stops shortly after the timeout
+        # and the record says a descendant still held the pipe. Mailman #335.
+        import os
+        import signal
+        from unittest import mock
+
+        script = (
+            "import subprocess, sys; "
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+            "print(child.pid, flush=True)"
+        )
+        started = time.monotonic()
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            mock.patch("mailman.executor._kill_tree"),
+        ):
+            result = execute(
+                [sys.executable, "-c", script],
+                working_directory=Path(temporary_directory),
+                timeout_seconds=1,
+            )
+            elapsed = time.monotonic() - started
+            # The survivor's working directory is the temporary one.
+            try:
+                os.kill(int(result.stdout.split()[0]), signal.SIGTERM)
+                time.sleep(0.5)
+            except (OSError, ValueError, IndexError):
+                pass
+
+        self.assertTrue(result.timed_out)
+        self.assertLess(elapsed, 8)
+        self.assertIn("still held the output pipe", result.stderr)
+
 
 class VenvActivationTests(unittest.TestCase):
     def test_a_venv_interpreter_gets_its_scripts_folder_on_path(self) -> None:
@@ -199,6 +254,30 @@ class VenvActivationTests(unittest.TestCase):
             self.assertEqual(
                 _environment_metadata(str(program))["python_version"], "3.12.14"
             )
+
+    def test_a_virtualenv_pre_release_keeps_its_tag(self) -> None:
+        # platform.python_version() reports 3.15.0b1 for this interpreter.
+        # Mailman #357.
+        from mailman.executor import _environment_metadata
+
+        cases = {
+            "3.15.0.alpha.2": "3.15.0a2",
+            "3.15.0.beta.1": "3.15.0b1",
+            "3.15.0.candidate.3": "3.15.0rc3",
+            "3.15.0.final.0": "3.15.0",
+        }
+        for version_info, expected in cases.items():
+            with self.subTest(version_info), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "env" / "Scripts").mkdir(parents=True)
+                (root / "env" / "pyvenv.cfg").write_text(
+                    f"home = /py\nversion_info = {version_info}\n", encoding="utf-8"
+                )
+                program = root / "env" / "Scripts" / "python.exe"
+
+                self.assertEqual(
+                    _environment_metadata(str(program))["python_version"], expected
+                )
 
     def test_a_host_interpreter_leaves_path_alone(self) -> None:
         import os
