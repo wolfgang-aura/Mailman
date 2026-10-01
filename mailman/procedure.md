@@ -200,7 +200,11 @@ a time; a screen costs about 200 GitHub core calls.
    not stale at all: the closing actor is read from the pull request's
    timeline, and a closer who is not its author and carries OWNER, MEMBER or
    COLLABORATOR blocks the issue under `maintainer-closed-attempt`. Somebody
-   who speaks for the project read that change and said no. An attempt its own
+   who speaks for the project read that change and said no. When a
+   maintainer labels the issue confirmed (or bug, accepted, needs-PR) after
+   that closure, the block becomes the warning
+   `maintainer-closed-attempt-reaffirmed`: the closure turned down the
+   change, not the bug. Read why, and do not repeat its approach (#378). An attempt its own
    author closed is the case the stale rule is for, and a closer who cannot be
    determined leaves the attempt stale with that noted in the record. So does
    any open attempt, dormant or

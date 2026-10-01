@@ -61,6 +61,7 @@ from mailman.targeting import (
     CITED_MERGED_IN_BODY,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     MAINTAINER_CLOSED_ATTEMPT,
+    MAINTAINER_CLOSED_ATTEMPT_REAFFIRMED,
     MAINTAINER_OWNED_FIX,
     MAINTAINER_PENDING_FIX,
     NO_MAINTAINER_REPLY,
@@ -2342,6 +2343,45 @@ class MaintainerClosedAttemptTests(StalePriorAttemptTests):
         self.assertEqual(rejected["closed_by"]["association"], "MEMBER")
         self.assertTrue(rejected["closed_by"]["maintainer"])
         self.assertIn("said no", record["next"])
+
+    def _closed_then_labelled(self, labelled_at: str) -> dict:
+        closure = [
+            {"event": "closed", "actor": {"login": "maintainer"},
+             "author_association": "MEMBER", "created_at": "2026-09-29T17:12:38Z"}
+        ]
+        label = [
+            {"event": "labeled", "actor": {"login": "maintainer"},
+             "label": {"name": "confirmed"}, "created_at": labelled_at}
+        ]
+        return prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                self.issue(),
+                timeline=label,
+                pull_requests={"example/project#8": self.closed()},
+                timelines={8: closure},
+            ),
+        )
+
+    def test_a_confirmed_label_after_the_closure_turns_the_block_into_a_warning(
+        self,
+    ) -> None:
+        # waylan closed Python-Markdown#1645 for special-casing `<picture>`,
+        # then labelled #1643 `confirmed` 29 minutes later. Mailman #378.
+        record = self._closed_then_labelled("2026-09-29T17:41:35Z")
+
+        self.assertNotIn(MAINTAINER_CLOSED_ATTEMPT, record["blocking"])
+        self.assertIn(MAINTAINER_CLOSED_ATTEMPT_REAFFIRMED, record["warnings"])
+        self.assertEqual(record["maintainer_closed_attempts"], [])
+        self.assertEqual(record["reaffirmed_closed_attempts"][0]["number"], 8)
+
+    def test_a_label_from_before_the_closure_does_not_reaffirm(self) -> None:
+        record = self._closed_then_labelled("2026-09-29T16:00:00Z")
+
+        self.assertIn(MAINTAINER_CLOSED_ATTEMPT, record["blocking"])
+        self.assertEqual(record["reaffirmed_closed_attempts"], [])
 
     def test_a_closed_attempt_only_the_search_found_is_read_for_its_closer(
         self,

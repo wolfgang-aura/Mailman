@@ -952,6 +952,7 @@ def closing_actor(
         "association": None,
         "maintainer": False,
         "source": None,
+        "at": None,
         "detail": "who closed it could not be determined",
     }
     if not isinstance(number, int):
@@ -992,6 +993,9 @@ def closing_actor(
             login = name
             association = kind or None
             found["source"] = "timeline"
+            # When it was closed, so a later maintainer label can say the
+            # issue still stands. Python-Markdown#1643. Mailman #378.
+            found["at"] = event.get("created_at")
     if not complete:
         # A page went unread or the cap was reached: a closure seen so far may
         # not be the last one. `closed_by` names the last closer; the events
@@ -1010,6 +1014,7 @@ def closing_actor(
         if isinstance(closed_by, dict) and closed_by.get("login"):
             login = str(closed_by["login"])
             found["source"] = "closed_by"
+            found["at"] = issue.get("closed_at")
     if login is None:
         return found
     association = association or associations.get(login)

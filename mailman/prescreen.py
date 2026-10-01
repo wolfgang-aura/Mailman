@@ -49,6 +49,7 @@ from mailman.submission import (
     related_duplicates,
 )
 from mailman.targeting import (
+    attempt_is_reaffirmed,
     ALREADY_FIXED_UPSTREAM,
     CITED_MERGED_BEFORE_ISSUE,
     CITED_MERGED_ELSEWHERE,
@@ -56,6 +57,7 @@ from mailman.targeting import (
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     ISSUE_ASSIGNED,
     MAINTAINER_CLOSED_ATTEMPT,
+    MAINTAINER_CLOSED_ATTEMPT_REAFFIRMED,
     MAINTAINER_OWNED_FIX,
     MAINTAINER_PENDING_FIX,
     MAINTAINER_REMARK_ELSEWHERE,
@@ -903,7 +905,21 @@ def prescreen_issue(
     # An attempt a maintainer closed is a rejection of the change, not a
     # dormant branch. skfolio#307 and wagtail#14384 passed this stage as
     # supersedable stale attempts and were neither.
-    record["maintainer_closed_attempts"] = list(cited["maintainer_closed"])
+    # Unless a maintainer confirmed the issue after closing it: then the
+    # closure turned down that change, not the bug. Python-Markdown#1643.
+    # Mailman #378.
+    record["reaffirmed_closed_attempts"] = [
+        row
+        for row in cited["maintainer_closed"]
+        if attempt_is_reaffirmed(row, claims.get("maintainer_labelled"))
+    ]
+    record["maintainer_closed_attempts"] = [
+        row
+        for row in cited["maintainer_closed"]
+        if row not in record["reaffirmed_closed_attempts"]
+    ]
+    if record["reaffirmed_closed_attempts"]:
+        warnings.append(MAINTAINER_CLOSED_ATTEMPT_REAFFIRMED)
     # A maintainer's own closed fix for this issue is parked work, not an
     # abandoned attempt. marimo#9862. Mailman #203.
     record["maintainer_owned_attempts"] = list(cited["maintainer_owned"])

@@ -9,6 +9,7 @@ turns out to be, and that is knowable before anything is cloned.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -104,6 +105,17 @@ DUPLICATE_FORBIDDEN_OPEN_ATTEMPT = "duplicate-forbidden-open-attempt"
 #: maintainers rejecting the change. tqdm#1816 and #1818 were closed by their
 #: own authors, which is the shape the stale rule is for.
 MAINTAINER_CLOSED_ATTEMPT = "maintainer-closed-attempt"
+#: A maintainer closed an earlier attempt, then confirmed the issue with a
+#: label. The closure turned down that change, not the bug: waylan closed
+#: Python-Markdown#1645 for special-casing `<picture>` and labelled #1643
+#: `confirmed` 29 minutes later. A warning, and the rejected attempt still
+#: travels as prior art so the run does not repeat it. Mailman #378.
+MAINTAINER_CLOSED_ATTEMPT_REAFFIRMED = "maintainer-closed-attempt-reaffirmed"
+#: A label that says the project still wants the defect fixed.
+_REAFFIRM_LABEL = re.compile(
+    r"(?i)\bconfirmed\b|\bbug\b|\baccepted\b|\btriaged\b|needs[ -]pr\b"
+    r"|help[ -]wanted|ready[ -]for[ -](?:dev|development|pr|work)"
+)
 #: A maintainer's own closed, unmerged pull request that says it fixes this
 #: issue. Not a stale attempt to supersede: the project's own fix is parked,
 #: and a second pull request over it races the maintainer. marimo#9862 was
@@ -270,6 +282,30 @@ def attempt_is_maintainer_closed(row: dict[str, Any]) -> bool:
     return bool(row.get("maintainer_closed"))
 
 
+def attempt_is_reaffirmed(
+    row: dict[str, Any], maintainer_labelled: Any
+) -> bool:
+    """Whether a maintainer confirmed the issue after closing this attempt.
+
+    `maintainer_labelled` is the claims record's list of triage acts, each
+    `{"labels", "actor", "at"}`. Only a label applied strictly after the
+    recorded closure counts; a closure with no time is not reaffirmed.
+    """
+    closed_by = row.get("closed_by") if isinstance(row, dict) else None
+    closed_at = _timestamp(closed_by.get("at")) if isinstance(closed_by, dict) else None
+    if closed_at is None or not isinstance(maintainer_labelled, list):
+        return False
+    for act in maintainer_labelled:
+        if not isinstance(act, dict):
+            continue
+        at = _timestamp(act.get("at"))
+        if at is None or at <= closed_at:
+            continue
+        if any(_REAFFIRM_LABEL.search(str(name)) for name in act.get("labels") or []):
+            return True
+    return False
+
+
 def attempt_is_project_voice(row: dict[str, Any]) -> bool:
     """Whether the attempt's author speaks for the project.
 
@@ -397,6 +433,7 @@ class TargetAssessment:
     stale_attempts: list[dict[str, Any]] = field(default_factory=list)
     duplicate_blocked_attempts: list[dict[str, Any]] = field(default_factory=list)
     maintainer_closed_attempts: list[dict[str, Any]] = field(default_factory=list)
+    reaffirmed_closed_attempts: list[dict[str, Any]] = field(default_factory=list)
     maintainer_pending_attempts: list[dict[str, Any]] = field(default_factory=list)
     blocking: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -421,6 +458,7 @@ class TargetAssessment:
             "stale_attempts": self.stale_attempts,
             "duplicate_blocked_attempts": self.duplicate_blocked_attempts,
             "maintainer_closed_attempts": self.maintainer_closed_attempts,
+            "reaffirmed_closed_attempts": self.reaffirmed_closed_attempts,
             "maintainer_pending_attempts": self.maintainer_pending_attempts,
             "blocking": self.blocking,
             "warnings": self.warnings,
@@ -586,6 +624,18 @@ class TargetAssessment:
                 f"rejected  #{attempt.get('number')} {attempt.get('title', '')} "
                 f"({closer.get('detail', 'closed by the project')}) "
                 f"{attempt.get('url', '')}"
+            )
+        for attempt in self.reaffirmed_closed_attempts:
+            closer = attempt.get("closed_by") or {}
+            lines.append(
+                f"rejected  #{attempt.get('number')} {attempt.get('title', '')} "
+                f"({closer.get('detail', 'closed by the project')}; the issue "
+                f"was labelled confirmed afterwards) {attempt.get('url', '')}"
+            )
+        if self.reaffirmed_closed_attempts:
+            lines.append(
+                "A maintainer closed that attempt and then confirmed the issue. "
+                "Read why the change was turned down; do not repeat its approach."
             )
         if self.maintainer_closed_attempts:
             lines.append(
@@ -839,6 +889,13 @@ def assess_target(
         and not attempt_is_merged(attempt)
     ]
     rejected_numbers = {row["number"] for row in maintainer_closed}
+    # A maintainer who labelled the issue confirmed after closing the attempt
+    # rejected that change, not the bug. Mailman #378.
+    labelled = claims.get("maintainer_labelled") if isinstance(claims, dict) else None
+    reaffirmed_closed = [
+        row for row in maintainer_closed if attempt_is_reaffirmed(row, labelled)
+    ]
+    maintainer_closed = [row for row in maintainer_closed if row not in reaffirmed_closed]
     # A project voice's closed fix that no maintainer rejected is parked work,
     # not an abandoned attempt. Read before the stale rule, which excludes it.
     # Mailman #199.
@@ -962,6 +1019,8 @@ def assess_target(
         # merging, has stopped claiming the issue. It is still prior art, so
         # it travels into both prompts and into the pull request body.
         warnings.append(STALE_PRIOR_ATTEMPT)
+    if reaffirmed_closed:
+        warnings.append(MAINTAINER_CLOSED_ATTEMPT_REAFFIRMED)
     if maintainer_closed:
         # Deliberately not overridable, and not the same question as
         # `--acknowledge-prior-attempts`: that flag answers "an attempt was
@@ -1019,6 +1078,7 @@ def assess_target(
         stale_attempts=stale_attempts,
         duplicate_blocked_attempts=duplicate_blocked,
         maintainer_closed_attempts=maintainer_closed,
+        reaffirmed_closed_attempts=reaffirmed_closed,
         maintainer_pending_attempts=maintainer_pending,
         blocking=blocking,
         warnings=warnings,
