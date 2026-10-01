@@ -731,6 +731,70 @@ class OtherLinterTests(_Fixture):
         self.assertTrue(findings[0]["blocking"])
 
 
+class HookArgumentTests(_Fixture):
+    """How a pre-commit hook's `args` are read. Mailman #358."""
+
+    def _args(self, hooks: str) -> list:
+        from mailman.target_checks import _pre_commit_scopes
+
+        self.write(".pre-commit-config.yaml", "repos:\n  - repo: local\n    hooks:\n" + hooks)
+        return [hook["args"] for hook in _pre_commit_scopes(self.workspace)[1]]
+
+    def test_a_comma_inside_quotes_stays_in_its_argument(self) -> None:
+        self.assertEqual(
+            self._args(
+                "      - id: flake8\n"
+                "        args: [\"--extend-ignore=E203,W503\", '--select=E,W', --max-line-length=100]\n"
+            ),
+            [["--extend-ignore=E203,W503", "--select=E,W", "--max-line-length=100"]],
+        )
+
+    def test_a_multi_line_list_does_not_end_at_a_quoted_bracket(self) -> None:
+        self.assertEqual(
+            self._args(
+                "      - id: codespell\n"
+                "        args: [\n"
+                "          \"--ignore-words-list=[a]\",  # a comment, with a comma\n"
+                "          --quiet,\n"
+                "        ]\n"
+                "      - id: black\n"
+                "        args: [--safe]\n"
+            ),
+            [["--ignore-words-list=[a]", "--quiet"], ["--safe"]],
+        )
+
+    def test_an_alias_reads_its_anchor_and_an_unknown_one_is_not_empty(self) -> None:
+        self.assertEqual(
+            self._args(
+                "      - id: black\n"
+                "        args: &style [--line-length=79, --safe]\n"
+                "      - id: blacken-docs\n"
+                "        args: *style\n"
+                "      - id: flake8\n"
+                "        args: *elsewhere\n"
+            ),
+            [["--line-length=79", "--safe"], ["--line-length=79", "--safe"], None],
+        )
+
+    def test_a_positional_after_a_flag_stays_out(self) -> None:
+        from mailman.target_checks import _options
+
+        # `--filter-files` takes no value, so `src` is a path for isort.
+        self.assertEqual(_options(["--filter-files", "src"], "isort"), ["--filter-files"])
+        self.assertEqual(_options(["--check", "src"], "black"), ["--check"])
+        self.assertEqual(_options(["--count", "src"], "flake8"), ["--count"])
+        # An option that takes a value keeps it (#320), plugin options too.
+        self.assertEqual(
+            _options(["--profile", "black", "--filter-files"], "isort"),
+            ["--profile", "black", "--filter-files"],
+        )
+        self.assertEqual(
+            _options(["--max-line-length", "100", "--docstring-convention", "google", "src"], "flake8"),
+            ["--max-line-length", "100", "--docstring-convention", "google"],
+        )
+        self.assertEqual(_options(["--config", "setup.cfg"], "black"), ["--config", "setup.cfg"])
+
+
 class BaselineExecutor:
     """Makes the base worktree on `git worktree add`; answers by directory."""
 
