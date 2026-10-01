@@ -1118,6 +1118,9 @@ class _Orchestration:
             if (
                 self.run_time_budget_seconds > previous_budget
                 and not self.budget_override_reason
+                # The hunt's deadline replaces the budget of a run started
+                # outside it; the CLI forbids a reason there. Mailman #350.
+                and self.time_budget_name != "hunt"
             ):
                 raise ValueError(
                     "increasing a run time budget requires --time-budget-override-reason"
