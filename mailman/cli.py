@@ -2034,10 +2034,9 @@ def _package(arguments: argparse.Namespace) -> int:
             raise ValueError("no commit identity is configured: run `mailman identity`")
         workspace = run_directory / "workspace"
         check_signoff(message, identity, signoff_requirement(workspace))
-        diff =(run_directory / "export" / "changes.diff").read_text(encoding="utf-8")
         head = commit_candidate(
-            run_directory / "workspace", base_commit=run.base_commit, branch=branch,
-            message=message, identity=identity, paths=changed_paths(diff),
+            workspace, base_commit=run.base_commit, branch=branch, message=message,
+            identity=identity, paths=changed_paths(workspace, run.base_commit),
         )
         print(json.dumps({"branch": branch, "commit": head}, indent=2))
         return 0

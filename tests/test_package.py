@@ -27,17 +27,6 @@ def git(workspace: Path, *arguments: str) -> str:
     ).stdout.strip()
 
 
-class ChangedPathsTests(unittest.TestCase):
-    def test_every_path_in_the_diff_is_named_once(self) -> None:
-        diff = (
-            "diff --git a/pkg/mod.py b/pkg/mod.py\n--- a/pkg/mod.py\n"
-            "diff --git a/old.py b/new.py\nrename from old.py\n"
-            "diff --git a/pkg/mod.py b/pkg/mod.py\n"
-        )
-
-        self.assertEqual(changed_paths(diff), ["pkg/mod.py", "old.py", "new.py"])
-
-
 class CommitCandidateTests(unittest.TestCase):
     def setUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
@@ -84,6 +73,40 @@ class CommitCandidateTests(unittest.TestCase):
 
     def test_nothing_to_commit_is_refused(self) -> None:
         with self.assertRaisesRegex(ValueError, "no commit on top"):
+            self.commit()
+
+    def test_quoted_and_ambiguous_paths_are_listed_and_committed(self) -> None:
+        """A diff header C-quotes `café.py` and cannot be split for `x b/y.py`. #338"""
+        for name in ("café.py", "x b/y.py", "old.py"):
+            (self.workspace / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.workspace / name).write_text("a = 1\n", encoding="utf-8")
+        git(self.workspace, "add", ".")
+        git(self.workspace, "-c", "user.name=Base", "-c", "user.email=base@example.com",
+            "commit", "-q", "-m", "more")
+        self.base = git(self.workspace, "rev-parse", "HEAD")
+        (self.workspace / "café.py").write_text("a = 2\n", encoding="utf-8")
+        (self.workspace / "x b" / "y.py").write_text("a = 2\n", encoding="utf-8")
+        git(self.workspace, "mv", "old.py", "new.py")
+
+        paths = changed_paths(self.workspace, self.base)
+        head = commit_candidate(
+            self.workspace, base_commit=self.base, branch="mailman/issue-7",
+            message="Fix the thing", identity=IDENTITY, paths=paths,
+        )
+
+        self.assertEqual(sorted(paths), ["café.py", "new.py", "old.py", "x b/y.py"])
+        committed = subprocess.run(
+            ["git", "-C", str(self.workspace), "diff", "--name-only", "--no-renames", "-z",
+             self.base, head], check=True, capture_output=True, encoding="utf-8",
+        ).stdout.split("\0")
+        self.assertEqual(sorted(path for path in committed if path), sorted(paths))
+
+    def test_a_changed_path_left_out_of_the_commit_is_refused(self) -> None:
+        (self.workspace / "mod.py").write_text("x = 2\n", encoding="utf-8")
+        (self.workspace / "café.py").write_text("a = 1\n", encoding="utf-8")
+        git(self.workspace, "add", "--intent-to-add", "café.py")
+
+        with self.assertRaisesRegex(ValueError, "café.py"):
             self.commit()
 
 
@@ -177,13 +200,11 @@ class PackageCommandTests(unittest.TestCase):
                 head="fork:mailman/issue-7", base="main", commit_message=None, affirm=[],
             )
             (data_root / run.run_id / "decision.json").write_text("{}", encoding="utf-8")
-            export = data_root / run.run_id / "export"
-            export.mkdir(parents=True, exist_ok=True)
-            (export / "changes.diff").write_text("diff --git a/m.py b/m.py\n", encoding="utf-8")
             calls = []
             with (
                 patch.object(cli, "main", side_effect=lambda argv: calls.append(argv[0]) or 0),
                 patch("mailman.cli.resolve_identity", return_value=IDENTITY),
+                patch("mailman.package.changed_paths", return_value=["m.py"]),
                 patch("mailman.package.commit_candidate", return_value="b" * 40) as committed,
                 patch("sys.stdout", StringIO()), patch("sys.stderr", StringIO()),
             ):
@@ -218,13 +239,11 @@ class PackageCommandTests(unittest.TestCase):
                 affirm=[5],
             )
             (data_root / run.run_id / "decision.json").write_text("{}", encoding="utf-8")
-            export = data_root / run.run_id / "export"
-            export.mkdir(parents=True, exist_ok=True)
-            (export / "changes.diff").write_text("diff --git a/m.py b/m.py\n", encoding="utf-8")
             calls = {}
             with (
                 patch.object(cli, "main", side_effect=lambda argv: calls.setdefault(argv[0], argv) and 0),
                 patch("mailman.cli.resolve_identity", return_value=IDENTITY),
+                patch("mailman.package.changed_paths", return_value=["m.py"]),
                 patch("mailman.package.commit_candidate", return_value="b" * 40),
                 patch("sys.stdout", StringIO()), patch("sys.stderr", StringIO()),
             ):
@@ -303,9 +322,6 @@ class PackageCommandTests(unittest.TestCase):
                 )
                 directory = data_root / run.run_id
                 (directory / "decision.json").write_text("{}", encoding="utf-8")
-                export = directory / "export"
-                export.mkdir(parents=True, exist_ok=True)
-                (export / "changes.diff").write_text("diff --git a/m.py b/m.py\n", encoding="utf-8")
                 (directory / "submission").mkdir()
                 (directory / "submission" / "submission.json").write_text(
                     json.dumps({"ready": False, "blocking_codes": codes}), encoding="utf-8")
@@ -318,6 +334,7 @@ class PackageCommandTests(unittest.TestCase):
                 with (
                     patch.object(cli, "main", side_effect=stage),
                     patch("mailman.cli.resolve_identity", return_value=IDENTITY),
+                    patch("mailman.package.changed_paths", return_value=["m.py"]),
                     patch("mailman.package.commit_candidate", return_value="b" * 40),
                     patch("sys.stdout", StringIO()), patch("sys.stderr", StringIO()),
                 ):
