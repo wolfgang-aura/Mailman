@@ -1419,6 +1419,20 @@ class MaintainerDisputeTests(unittest.TestCase):
             "a bit of work, but that's where we manage translations."
         )]))
 
+    def test_the_behavior_i_would_expect_is_a_dispute(self):
+        # Arelle#2399, verbatim. Mailman #319.
+        from mailman.claims import maintainer_dispute
+
+        self.assertIsNotNone(maintainer_dispute([self._comment(
+            "I may be missing something, but this is the behavior I'd expect "
+            "rather than a bug. Eliminating those candidates is what implicit "
+            "filtering is meant to do, and as I read it, it's required by the "
+            "spec."
+        )]))
+        self.assertIsNotNone(maintainer_dispute([self._comment(
+            "That looks like a configuration problem rather than a bug."
+        )]))
+
     def test_a_format_limitation_and_a_request_to_show_state_are_disputes(self):
         # biopython#5101 and s3fs#999, verbatim. Mailman #195.
         from mailman.claims import maintainer_dispute

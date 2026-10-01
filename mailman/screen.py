@@ -90,6 +90,13 @@ PATTERN_DAYS = 90
 PROVENANCE_MINIMUM_AGE_DAYS = 365
 PROVENANCE_MINIMUM_STARS = 500
 
+#: A third way through: years of public history stand in for stars.
+#: `jupyter/jupyter_client` (479 stars, 11 years) and `celery/billiard` (434,
+#: 16 years) failed the 500-star floor, and nothing about them is a stranger's
+#: unread `setup.py`. Mailman #318.
+PROVENANCE_LONG_STANDING_AGE_DAYS = 1095
+PROVENANCE_LONG_STANDING_STARS = 150
+
 #: The other way through. A young project with a broad contributor base has also
 #: been read widely, and `pydantic/pydantic-ai` is that shape. `pmorissette/ffn`
 #: passes the age route with 11 authors and would fail this one, which is why
@@ -782,6 +789,7 @@ def _provenance_gate(meta: dict[str, Any], freshness: dict[str, Any]) -> dict[st
             age_days = None
     stars = meta.get("stargazers_count")
     authors = freshness.get("data", {}).get("distinct_outside_authors", 0)
+    pattern_days = freshness.get("data", {}).get("pattern_days", PATTERN_DAYS)
     forked = bool(meta.get("fork"))
     data = {
         "created_at": created or None,
@@ -792,6 +800,8 @@ def _provenance_gate(meta: dict[str, Any], freshness: dict[str, Any]) -> dict[st
         "minimum_age_days": PROVENANCE_MINIMUM_AGE_DAYS,
         "minimum_stars": PROVENANCE_MINIMUM_STARS,
         "minimum_authors": PROVENANCE_MINIMUM_AUTHORS,
+        "long_standing_age_days": PROVENANCE_LONG_STANDING_AGE_DAYS,
+        "long_standing_stars": PROVENANCE_LONG_STANDING_STARS,
     }
     if forked:
         return _gate(
@@ -806,14 +816,18 @@ def _provenance_gate(meta: dict[str, Any], freshness: dict[str, Any]) -> dict[st
         )
     established = (
         age_days is not None
-        and age_days >= PROVENANCE_MINIMUM_AGE_DAYS
         and isinstance(stars, int)
-        and stars >= PROVENANCE_MINIMUM_STARS
+        and (
+            (age_days >= PROVENANCE_MINIMUM_AGE_DAYS
+             and stars >= PROVENANCE_MINIMUM_STARS)
+            or (age_days >= PROVENANCE_LONG_STANDING_AGE_DAYS
+                and stars >= PROVENANCE_LONG_STANDING_STARS)
+        )
     )
     broad = authors >= PROVENANCE_MINIMUM_AUTHORS
     if established or broad:
         reason = (
-            f"{authors} outside author(s) in {PATTERN_DAYS} days"
+            f"{authors} outside author(s) in {pattern_days} days"
             if broad
             else f"{stars} star(s) over {age_days} day(s)"
         )
@@ -832,7 +846,7 @@ def _provenance_gate(meta: dict[str, Any], freshness: dict[str, Any]) -> dict[st
         blocking=True,
         detail=(
             f"{stars} star(s), {age_days} day(s) old, {authors} outside author(s) "
-            f"in {PATTERN_DAYS} days. Too few people have read this code to run "
+            f"in {pattern_days} days. Too few people have read this code to run "
             "its build back end and its test suite on this machine."
         ),
         data=data,
@@ -868,7 +882,11 @@ def _freshness_gate(
     )
     now = datetime.now(UTC)
     window = (now - timedelta(days=window_days)).date().isoformat()
-    pattern = (now - timedelta(days=PATTERN_DAYS)).date().isoformat()
+    # The pattern window is never shorter than the freshness window: a merge
+    # 120 days old passed a 180-day window and then found no authors in 90
+    # days. Mailman #317.
+    pattern_days = max(PATTERN_DAYS, window_days)
+    pattern = (now - timedelta(days=pattern_days)).date().isoformat()
 
     merged_human = [
         row for row in closed if row.get("merged_at") and is_outside_human(row)
@@ -928,7 +946,7 @@ def _freshness_gate(
         "latest_outside_merge": latest,
         "pull_requests_scanned": len(closed),
         "window_days": window_days,
-        "pattern_days": PATTERN_DAYS,
+        "pattern_days": pattern_days,
         "closed_pulls_unread": unread,
     }
     if unread and not recent:
@@ -965,7 +983,7 @@ def _freshness_gate(
             blocking=True,
             detail=(
                 f"{len(recent)} merge(s) in {window_days} days, but every outside "
-                f"merge in {PATTERN_DAYS} days is by {data['top_author']}. One "
+                f"merge in {pattern_days} days is by {data['top_author']}. One "
                 "recurring collaborator is not an open door."
             ),
             data=data,
@@ -981,7 +999,7 @@ def _freshness_gate(
             blocking=True,
             detail=(
                 f"{data['top_author']} wrote {share:.0%} of the {len(longer)} "
-                f"outside merge(s) in {PATTERN_DAYS} days. The other "
+                f"outside merge(s) in {pattern_days} days. The other "
                 f"{distinct - 1} author(s) are a trickle around one collaborator."
             ),
             data=data,
@@ -1003,7 +1021,7 @@ def _freshness_gate(
             detail=(
                 f"every one of the {len(recent)} merge(s) in {window_days} days "
                 f"is by {sole[0]}, who wrote {sole_share:.0%} of the {len(longer)} "
-                f"outside merge(s) in {PATTERN_DAYS} days. That is a recurring "
+                f"outside merge(s) in {pattern_days} days. That is a recurring "
                 "collaborator, not evidence a stranger's pull request lands."
             ),
             data=data,
@@ -1016,7 +1034,7 @@ def _freshness_gate(
         detail=(
             f"{len(recent)} outside human merge(s) in {window_days} days by "
             f"{len(window_authors)} author(s) ({named}), {distinct} distinct "
-            f"author(s) in {PATTERN_DAYS} days, top author {share:.0%}"
+            f"author(s) in {pattern_days} days, top author {share:.0%}"
             + (f"; excluded {', '.join(excluded_bots)}" if excluded_bots else "")
             + (
                 f"; excluded staff {', '.join(excluded_staff)}"

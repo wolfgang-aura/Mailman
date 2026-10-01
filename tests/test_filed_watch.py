@@ -648,6 +648,40 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(row["status"], "inherited")
         self.assertIn("base branch main", row["inherited"]["alternative_backends"])
 
+    def test_project_coverage_is_inherited_when_patch_coverage_passes(self) -> None:
+        """pymc#8442: 100% of the diff hit, project -1.56% from missing uploads.
+
+        https://github.com/wolfgang-aura/Mailman/issues/316
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "pymc-devs/pymc", 8442)
+            gh = FakeGitHub({"pymc-devs/pymc#8442": {"checks": [
+                _check("codecov/patch"), _check("codecov/project", "failure"),
+            ]}})
+
+            result = self._watch(root, gh)
+
+        self.assertTrue(result["ok"])
+        (row,) = result["rows"]
+        self.assertEqual(row["status"], "inherited")
+        self.assertIn("codecov/patch", row["inherited"]["codecov/project"])
+
+    def test_project_coverage_counts_against_us_when_patch_coverage_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "pymc-devs/pymc", 8442)
+            gh = FakeGitHub({"pymc-devs/pymc#8442": {"checks": [
+                _check("codecov/patch", "failure"), _check("codecov/project", "failure"),
+            ]}})
+
+            result = self._watch(root, gh)
+
+        self.assertFalse(result["ok"])
+        (row,) = result["rows"]
+        self.assertEqual(row["status"], "attention")
+        self.assertEqual(row["reasons"], ["failing check: codecov/patch, codecov/project"])
+
     def test_an_approved_pull_request_with_a_red_check_still_needs_work(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _Root(temporary)
