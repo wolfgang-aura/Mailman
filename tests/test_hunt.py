@@ -1013,6 +1013,20 @@ class PreFilingRefreshTests(HuntTests):
         result = refresh(self.data_root, record, include_ready=True)
         self.assertEqual([row["run_id"] for row in result["refreshed"]], [directory.name])
 
+    def test_a_filed_run_is_not_refreshed(self):
+        # finish's pre-filing pass reran a filed run's search, which then found
+        # our own pull request and overwrote the evidence it was filed on.
+        # Mailman #343.
+        record = self.new_hunt(2)
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        record_filing(self.data_root, record, directory.name,
+                      pr_url="https://github.com/example/project/pull/7")
+        before = (directory / "duplicate-search.json").read_bytes()
+        result = refresh(self.data_root, record, include_ready=True)
+        self.assertEqual(result["refreshed"], [])
+        self.assertEqual((directory / "duplicate-search.json").read_bytes(), before)
+
     def test_the_repeated_search_keeps_its_limit_and_issue_symbols(self):
         # The pre-filing repeat dropped the symbols read out of the issue
         # body and the recorded limit, so it searched less. Mailman #355.

@@ -1524,7 +1524,9 @@ def refresh(root: Path, record: dict, *, include_ready: bool = False) -> dict:
     before = status(root, record)
     refreshed: list[dict] = []
     for row in before["runs"]:
-        if row.get("dropped"):
+        # A filed run's evidence is what it was filed on; a repeat would find
+        # our own pull request and overwrite it. Mailman #343.
+        if row.get("dropped") or row.get("filed"):
             continue
         run, directory = load_run(row["run_id"], root)
         # A candidate that never reached a handoff has an earlier problem than
