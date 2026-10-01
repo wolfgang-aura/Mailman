@@ -136,6 +136,13 @@ class AnalyzeDiffTests(unittest.TestCase):
         self.assertIn("newline-only-change", codes)
         self.assertTrue(report["blocking"])
 
+    def test_a_typeshed_test_case_is_a_test_change(self) -> None:
+        # python/typeshed#15495 (#311): stub test cases live in @tests/test_cases.
+        from mailman.submission import _is_test_path
+        self.assertTrue(_is_test_path("stubs/grpcio/@tests/test_cases/check_server_interceptor.py"))
+        self.assertTrue(_is_test_path("stdlib/@tests/test_cases/check_re.py"))
+        self.assertFalse(_is_test_path("stubs/grpcio/grpc/aio/__init__.pyi"))
+
     def test_a_source_change_with_no_test_blocks(self) -> None:
         source_only = SOURCE_DIFF.split("diff --git a/tests")[0]
         report = analyze_diff(source_only)

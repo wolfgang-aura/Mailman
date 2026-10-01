@@ -160,7 +160,9 @@ def _is_test_path(path: str) -> bool:
     """
     segments = path.replace("\\", "/").lower().split("/")
     name = segments[-1]
-    if any(segment in {"test", "tests", "testing"} for segment in segments[:-1]):
+    # typeshed keeps its stub test cases in `@tests/test_cases` (#311).
+    if any(segment in {"test", "tests", "testing", "@tests", "test_cases"}
+           for segment in segments[:-1]):
         return True
     return name.startswith("test_") or name.endswith(("_test.py", "_tests.py"))
 
