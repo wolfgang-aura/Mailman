@@ -432,7 +432,11 @@ sign-off in the filing approval request, because it certifies the DCO.
     exact local branch and final body. Run `handoff-check`; it refuses with
     `touched-tests-failed` or `touched-tests-not-run` until the touched-tests
     record in `submission.json` matches the exported diff and passed. Keep
-    all filings and upstream writes pending. For a self-sourced defect,
+    every upstream write pending until the operator approves it, but ask
+    for that approval per run, as soon as `handoff-check` passes, not when
+    the quota is met: a SEND-ready pandas-stubs run waited 1h40m for a third
+    candidate and an outside pull request took the issue in that time
+    (#315). Record `hunt file` for each run as it is filed. For a self-sourced defect,
     prepare any required issue text alongside the PR and ask for approval of
     the ordered filings.
     A closed issue is refused; an issue with no maintainer reply is flagged
