@@ -105,6 +105,14 @@ class ModuleNameTests(unittest.TestCase):
     def test_a_non_python_file_has_no_module(self) -> None:
         self.assertEqual(module_names("docs/notes.md"), [])
 
+    def test_a_stub_package_is_imported_under_its_runtime_name(self) -> None:
+        # PEP 561: `pandas-stubs/` provides `pandas`. Mailman #307.
+        self.assertEqual(
+            module_names("pandas-stubs/core/series.pyi"),
+            ["pandas.core.series", "pandas.core", "series"],
+        )
+        self.assertEqual(module_names("mypkg/helpers.pyi"), ["mypkg.helpers", "helpers"])
+
 
 class SelectionTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -140,6 +148,16 @@ class SelectionTests(unittest.TestCase):
         self.assertIn("edgar.xbrl.xbrl", selection["selected"][0]["matched"])
         self.assertIn("edgar.xbrl.xbrl", selection["selected"][0]["reason"])
         self.assertFalse(selection["capped"])
+
+    def test_a_stub_only_change_picks_the_tests_importing_its_module(self) -> None:
+        self._test_file("pandas-stubs/core/series.pyi", "class Series: ...\n")
+        self._test_file("tests/series/test_series.py", "from pandas.core.series import Series\n")
+        self._test_file("tests/test_other.py", "import os\n")
+        selection = select_test_files(self.workspace, ["pandas-stubs/core/series.pyi"])
+        self.assertEqual(
+            [entry["path"] for entry in selection["selected"]],
+            ["tests/series/test_series.py"],
+        )
 
     def test_the_pytest_pythonpath_decides_the_import_path(self) -> None:
         (self.workspace / "pytest.ini").write_text(

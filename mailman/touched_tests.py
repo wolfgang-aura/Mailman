@@ -61,6 +61,8 @@ _SKIPPED_DIRECTORIES = frozenset(
 )
 #: Nothing-to-run outcomes. The stage ran and has nothing to report on, which
 #: is not the same as never having run.
+# Source a test can reach; `.pyi` stubs are what stub packages ship.
+_SOURCE_SUFFIXES = (".py", ".pyi")
 _NOTHING_TO_RUN = frozenset({"no-source-change", "no-matching-tests"})
 
 
@@ -126,15 +128,18 @@ def module_names(path: str, roots: tuple[str, ...] = ()) -> list[str]:
     A pytest `pythonpath` root in `roots` is not part of the import path.
     """
     normalized = path.replace("\\", "/")
-    if not normalized.endswith(".py"):
+    if not normalized.endswith(_SOURCE_SUFFIXES):
         return []
     for root in roots:
         if normalized.startswith(root + "/"):
             normalized = normalized[len(root) + 1:]
             break
-    segments = normalized[: -len(".py")].split("/")
+    segments = normalized.rsplit(".", 1)[0].split("/")
     while len(segments) > 1 and segments[0] in _LAYOUT_PREFIXES:
         segments = segments[1:]
+    # PEP 561: a `pandas-stubs` directory provides `pandas`. Mailman #307.
+    if len(segments) > 1 and segments[0].endswith("-stubs"):
+        segments[0] = segments[0][: -len("-stubs")]
     if segments[-1] == "__init__":
         segments = segments[:-1]
     if not segments or not all(re.fullmatch(r"\w+", segment) for segment in segments):
@@ -327,7 +332,7 @@ def select_test_files(
     source_files = [
         path
         for path in changed_paths
-        if not _is_test_path(path) and path.replace("\\", "/").endswith(".py")
+        if not _is_test_path(path) and path.replace("\\", "/").endswith(_SOURCE_SUFFIXES)
     ]
     roots = pytest_import_roots(workspace)
     python_files = pytest_python_files(workspace)
