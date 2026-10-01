@@ -540,12 +540,17 @@ def untriaged_problem(run_directory: Path, decision: Decision) -> str | None:
     warning = triage_warning(run_directory)
     if warning is None:
         return None
-    if any(question.gate == UNTRIAGED_GATE for question in decision.questions):
+    # Blocking, or the run counts as ready with the question unanswered (#333).
+    if any(
+        question.gate == UNTRIAGED_GATE and question.blocking
+        for question in decision.questions
+    ):
         return None
     return (
         f"the claims record says {warning} Nobody who decides has been asked. "
         f"Keep the question `mailman decision --init` seeds (gate "
-        f"{UNTRIAGED_GATE!r}), or write one with that gate."
+        f"{UNTRIAGED_GATE!r}, blocking true), or write one with that gate that "
+        "is blocking."
     )
 
 

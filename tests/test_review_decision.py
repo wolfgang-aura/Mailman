@@ -276,6 +276,24 @@ class UntriagedIssueGateTests(unittest.TestCase):
         self.assertEqual(decision.questions[0].gate, UNTRIAGED_GATE)
         self.assertEqual(len(decision.blocking_questions), 1)
 
+    def test_a_non_blocking_triage_question_does_not_satisfy_the_gate(self) -> None:
+        # Mailman #333: flipping the seeded question to blocking false made the
+        # run READY with nobody having to answer it.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            _write_untriaged_claims(directory)
+            seeded = blank_decision(directory)["questions"][0]
+            seeded["blocking"] = False
+            data = copy.deepcopy(VALID)
+            data["questions"] = [seeded]
+            (directory / DECISION_FILENAME).write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaises(DecisionError) as caught:
+                load_decision(directory)
+
+        problems = " ".join(caught.exception.problems)
+        self.assertIn(UNTRIAGED_GATE, problems)
+        self.assertIn("blocking", problems)
+
     def test_a_tool_comparison_seeds_a_non_blocking_question(self) -> None:
         quote = "Poppler, mutool and pdf.js all keep the first /Outlines entry."
         with tempfile.TemporaryDirectory() as temporary_directory:
