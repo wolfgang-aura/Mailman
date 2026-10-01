@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from html.parser import HTMLParser
 
 from mailman.markdown_lite import render_markdown
 
@@ -57,6 +58,29 @@ class MarkdownTests(unittest.TestCase):
         self.assertIn(
             '<a href="https://example.invalid/2">https://example.invalid/2</a>', rendered
         )
+
+    def test_a_quote_in_a_link_url_cannot_add_an_attribute(self) -> None:
+        # The URL sits inside href="..."; a raw quote would close the attribute.
+        written = render_markdown('[x](https://example.invalid/"onmouseover="alert(1))')
+        bare = render_markdown('see https://example.invalid/"onclick="alert(1)')
+
+        for rendered in (written, bare):
+            anchors: list[list[tuple[str, str | None]]] = []
+
+            class Anchors(HTMLParser):
+                def handle_starttag(self, tag, attrs) -> None:
+                    if tag == "a":
+                        anchors.append(attrs)
+
+            Anchors().feed(rendered)
+            self.assertEqual(len(anchors), 1, rendered)
+            self.assertEqual([name for name, _ in anchors[0]], ["href"], rendered)
+            self.assertIn('"', anchors[0][0][1] or "")
+
+    def test_only_web_links_become_anchors(self) -> None:
+        rendered = render_markdown("[x](javascript:alert(1)) and [y](data:text/html,hi)")
+
+        self.assertNotIn("<a ", rendered)
 
     def test_markup_in_a_report_is_escaped_before_anything_else(self) -> None:
         rendered = render_markdown("<script>alert('x')</script> and `<b>literal</b>`")
