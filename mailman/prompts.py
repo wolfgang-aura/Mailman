@@ -418,8 +418,43 @@ def _reproduction_section(run_directory: Path) -> str:
             "and put `MAILMAN-REPRODUCTION-MISMATCH: REASON` on its own line in your "
             "report. Otherwise, use it as the observed before-state. Do not spend "
             f"time recreating or rerunning the baseline.\n{artifact_text}"
+            f"{_data_files_text(run_directory)}"
         )
     return ""
+
+
+#: Reproducer scripts; anything else in repro/ is data the issue supplied.
+_SCRIPT_SUFFIXES = {".py", ".sh", ".ps1", ".bat", ".cmd"}
+
+
+def _data_files_text(run_directory: Path) -> str:
+    """Name the issue's data files the reproducer reads, and how to copy one.
+
+    uproot5#1529 attached a .root file. The primary wrote a test that needed it
+    in the workspace and could not copy it out of repro/, so the run blocked
+    after the fix was verified. `python` is already permitted. Mailman #375.
+    """
+    repro = run_directory / "repro"
+    if not repro.is_dir():
+        return ""
+    files = sorted(
+        path.resolve()
+        for path in repro.iterdir()
+        if path.is_file() and path.suffix.lower() not in _SCRIPT_SUFFIXES
+    )
+    if not files:
+        return ""
+    listed = "\n".join(f"- `{path}`" for path in files)
+    return (
+        "\n## Issue data files\n\n"
+        "The reproducer reads these files, which came with the issue. They are "
+        "outside the workspace. If a regression test needs one, copy it to the "
+        "place the repository keeps test data and commit it with the test:\n\n"
+        f"{listed}\n\n"
+        "```text\n"
+        "python -c \"import shutil; shutil.copy(r'SOURCE', r'DESTINATION')\"\n"
+        "```\n"
+    )
 
 
 def _reproduction_artifact_text(

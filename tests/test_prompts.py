@@ -425,6 +425,39 @@ class TaskPromptTests(unittest.TestCase):
             self.assertIn("MAILMAN-REPRODUCTION-MISMATCH:", prompt)
             self.assertIn("Before running any command", prompt)
 
+    def test_prompt_hands_over_the_issues_data_files_from_repro(self) -> None:
+        # uproot5#1529: the reproducer read an attached .root file from
+        # repro/, and the primary could not get it into the workspace. #375.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, run_directory = make_run(Path(temporary_directory) / "runs")
+            (run_directory / "issue.md").write_text("# Issue\n\nBody.\n", encoding="utf-8")
+            repro = run_directory / "repro"
+            repro.mkdir()
+            (repro / "repro_1529.py").write_text("import uproot\n", encoding="utf-8")
+            (repro / "test_1529.root").write_bytes(b"root\x00")
+            (run_directory / "reproduction.json").write_text(
+                json.dumps(
+                    {
+                        "success": True,
+                        "reproduced": True,
+                        "command": ["python", str(repro / "repro_1529.py")],
+                        "exit_code": 1,
+                        "timed_out": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            primary_path, _ = write_task_prompts(
+                run, run_directory, verification_command=["python", "-m", "pytest"]
+            )
+            prompt = primary_path.read_text(encoding="utf-8")
+
+            self.assertIn(str((repro / "test_1529.root").resolve()), prompt)
+            self.assertIn("shutil.copy", prompt)
+            section = prompt.split("## Issue data files", 1)[1]
+            self.assertNotIn("repro_1529.py", section)
+
     def test_prompts_state_the_evidence_rule_without_a_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             run, run_directory = make_run(Path(temporary_directory) / "runs")
