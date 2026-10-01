@@ -190,9 +190,14 @@ def branch_commits(workspace: Path, base_commit: str) -> list[dict[str, str]]:
         entry = entry.strip("\n")
         if not entry.strip():
             continue
-        parts = entry.split(separator)
+        # The message is the last field and may itself hold a separator, so
+        # split off the five fixed fields only. An entry that still does not
+        # parse is an error: skipping it would pass a commit nobody checked.
+        parts = entry.split(separator, 5)
         if len(parts) != 6:
-            continue
+            raise IdentityError(
+                f"could not parse a commit on {workspace}: {entry[:80]!r}"
+            )
         commits.append(
             {
                 "sha": parts[0].strip(),
@@ -206,16 +211,24 @@ def branch_commits(workspace: Path, base_commit: str) -> list[dict[str, str]]:
     return commits
 
 
-#: `Co-authored-by: Name <address>`, the trailer that publishes a second
-#: address without ever touching `git config`.
-CO_AUTHOR = re.compile(
-    r"(?im)^\s*co-authored-by\s*:\s*.*?<([^>]+)>\s*$",
+#: `Token: Name <address>`, any trailer that publishes an address without
+#: ever touching `git config`: Co-authored-by, Signed-off-by, Reviewed-by...
+TRAILER = re.compile(
+    r"(?im)^\s*([a-z][a-z0-9-]*)\s*:\s*.*?<([^<>\s@]+@[^<>\s]+)>\s*$",
 )
 
 
-def co_author_emails(message: str) -> list[str]:
-    """Every address a commit message credits as a co-author."""
-    return [match.strip() for match in CO_AUTHOR.findall(message or "")]
+def trailer_emails(message: str) -> list[tuple[str, str]]:
+    """Every (role, address) a commit message's trailers publish.
+
+    The role is the trailer's name in lower case, except Co-authored-by,
+    which keeps the name the reports already use for it.
+    """
+    found = []
+    for token, address in TRAILER.findall(message or ""):
+        role = token.lower()
+        found.append(("co-author" if role == "co-authored-by" else role, address.strip()))
+    return found
 
 
 def author_violations(
@@ -227,9 +240,10 @@ def author_violations(
     it is already the address a person chose to be seen under. Everything else
     has to match the configured identity exactly.
 
-    A `Co-authored-by:` trailer publishes an address the same way the author
-    field does, without ever touching `git config`, so it is held to the same
-    rule. See https://github.com/wolfgang-aura/Mailman/issues/57.
+    A `Co-authored-by:` or `Signed-off-by:` trailer publishes an address the
+    same way the author field does, without ever touching `git config`, so
+    every trailer that carries one is held to the same rule.
+    See https://github.com/wolfgang-aura/Mailman/issues/57 and /issues/349.
     """
     allowed = {identity.email.strip().lower()} if identity else set()
     violations: list[dict[str, Any]] = []
@@ -238,10 +252,7 @@ def author_violations(
         roles = [
             ("author", commit.get("author_email", "")),
             ("committer", commit.get("committer_email", "")),
-            *(
-                ("co-author", address)
-                for address in co_author_emails(commit.get("message", ""))
-            ),
+            *trailer_emails(commit.get("message", "")),
         ]
         for role, raw in roles:
             email = raw.strip()

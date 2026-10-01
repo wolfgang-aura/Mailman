@@ -166,6 +166,59 @@ class ViolationTests(unittest.TestCase):
                 violations[0]["emails"], [{"role": "co-author", "email": PERSONAL}]
             )
 
+    def test_every_trailer_that_carries_an_address_is_checked(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/349
+
+        `git commit -s` adds Signed-off-by with whatever address is at hand.
+        """
+        with TemporaryDirectory() as name:
+            repository = _repository(Path(name))
+            _git(repository, "config", "user.email", PRIVATE)
+            base = _git(repository, "rev-parse", "HEAD")
+            (repository / "file.txt").write_text("changed\n", encoding="utf-8")
+            _git(
+                repository,
+                "commit",
+                "-am",
+                f"change\n\nSigned-off-by: Someone Real <{PERSONAL}>\n"
+                f"Reviewed-by: Claude <{OTHER_PRIVATE}>\n",
+            )
+
+            violations = author_violations(
+                branch_commits(repository, base),
+                Identity(name="wolfgang-aura", email=PRIVATE),
+            )
+
+            self.assertEqual(len(violations), 1)
+            self.assertEqual(
+                violations[0]["emails"], [{"role": "signed-off-by", "email": PERSONAL}]
+            )
+
+    def test_a_message_the_log_format_cannot_split_is_not_skipped(self) -> None:
+        # A unit separator inside the message used to make the entry unparseable,
+        # and an unparseable entry was dropped, author and trailers and all.
+        with TemporaryDirectory() as name:
+            repository = _repository(Path(name))
+            _git(repository, "config", "user.email", PRIVATE)
+            base = _git(repository, "rev-parse", "HEAD")
+            (repository / "file.txt").write_text("changed\n", encoding="utf-8")
+            message = Path(name) / "message.txt"
+            message.write_text(
+                f"change \x1f here\n\nCo-authored-by: Someone Real <{PERSONAL}>\n",
+                encoding="utf-8",
+            )
+            _git(repository, "commit", "-a", "-F", str(message))
+
+            commits = branch_commits(repository, base)
+            violations = author_violations(
+                commits, Identity(name="wolfgang-aura", email=PRIVATE)
+            )
+
+            self.assertEqual(len(commits), 1)
+            self.assertEqual(
+                violations[0]["emails"], [{"role": "co-author", "email": PERSONAL}]
+            )
+
     def test_a_vendor_no_reply_co_author_trailer_passes(self) -> None:
         """The trailer this repository's own commits carry identifies nobody.
 
