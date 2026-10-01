@@ -3429,6 +3429,29 @@ class PullRequestBaseTests(unittest.TestCase):
             )
         )
 
+    def test_pushing_to_the_related_branch_is_not_a_base(self) -> None:
+        """Python-Markdown's guide. Mailman #379."""
+        from mailman.screen import _pull_request_base
+
+        self.assertIsNone(
+            _pull_request_base(
+                [
+                    "Remember that if you have an outstanding pull request, "
+                    "pushing new commits to the related branch of your GitHub "
+                    "repository will also automatically update the pull request."
+                ]
+            )
+        )
+        self.assertIsNone(
+            _pull_request_base(["Open a pull request to the appropriate branch."])
+        )
+        self.assertEqual(
+            _pull_request_base(["Please submit pull requests to the develop branch."])[
+                "branch"
+            ],
+            "develop",
+        )
+
     def test_the_default_branch_named_is_no_constraint(self) -> None:
         from mailman.screen import pull_request_base
 

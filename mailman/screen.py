@@ -1667,6 +1667,17 @@ _PULL_REQUEST_BASE = re.compile(
 _NEGATED = re.compile(
     r"\b(?:cannot|can't|not|never|don't|do not|won't)\b", re.IGNORECASE
 )
+#: Python-Markdown: "an outstanding pull request, pushing new commits to the
+#: related branch" names the contributor's own branch, not a base, and
+#: "related" is no branch name. Mailman #379.
+_PUSHED = re.compile(r"\b(?:push\w*|commit\w*)\b", re.IGNORECASE)
+_NOT_A_BRANCH_NAME = frozenset(
+    {
+        "related", "relevant", "same", "appropriate", "correct", "right",
+        "proper", "corresponding", "your", "own", "feature", "topic", "new",
+        "this", "that", "a", "an", "their", "my", "upstream", "target",
+    }
+)
 
 
 def _pull_request_base(texts: Sequence[str]) -> dict[str, Any] | None:
@@ -1675,6 +1686,10 @@ def _pull_request_base(texts: Sequence[str]) -> dict[str, Any] | None:
         flat = " ".join(text.split())
         for match in _PULL_REQUEST_BASE.finditer(flat):
             if _NEGATED.search(flat[max(0, match.start() - 30) : match.end()]):
+                continue
+            if _PUSHED.search(match.group(0)):
+                continue
+            if match.group(1).lower() in _NOT_A_BRANCH_NAME:
                 continue
             return {
                 "branch": match.group(1),
