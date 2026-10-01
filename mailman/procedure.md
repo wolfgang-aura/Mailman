@@ -405,6 +405,19 @@ sign-off in the filing approval request, because it certifies the DCO.
     `tests/xbrl/test_statement_drilldown.py`, a file that imports the changed
     module, that the primary never ran, and that fails locally in under a
     second. Pass `--workspace PATH` when the export did not record one.
+    When a `.github/workflows/*.yml` step runs pytest with `-m EXPR`
+    (edgartools' `pytest -n auto -m 'fast'`), the stage also runs that lane
+    with the run interpreter, ten minutes per run at most
+    (`MAILMAN_MARKER_LANE_CAP_SECONDS` overrides it), with the frozen
+    verification marker and deselects and `-n` only when pytest-xdist is
+    installed. If it fails, the same lane runs on the base commit; a test
+    failing only with the patch, and again on a rerun, is listed under
+    `marker_lane.regressions` and is `touched-tests-failed`. No lane, no
+    base commit, a lane past the cap or one that cannot be collected falls
+    back to the direct importers alone, with the reason in
+    `marker_lane.reason` and a non-blocking `touched-tests-lane-fallback`
+    when the target has a lane. edgartools#1386 failed 18 CI tests that
+    reach the changed parser only through `Filing` (#302).
     When the target ships `scripts/check_offline_audit.py`, `prepare-submission`
     also runs it on the changed test files with the run interpreter; a
     non-zero exit is `offline-audit-failed` and blocks (recorded under

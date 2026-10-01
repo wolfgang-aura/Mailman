@@ -26,6 +26,7 @@ from mailman.touched_tests import (
     TOUCHED_TESTS_CODE_VERSION,
     deselects_for,
     load_touched_tests,
+    marker_lanes,
     resolve_workspace,
     run_touched_tests,
     select_test_files,
@@ -655,6 +656,21 @@ def _touched_tests_findings(record: dict[str, Any] | None) -> list[Finding]:
                 ),
             )
         )
+    lane = (record or {}).get("marker_lane")
+    if isinstance(lane, dict) and lane.get("status") == "fallback" and lane.get("lanes"):
+        # The target has a CI marker lane and it did not run here: only the
+        # direct importers vouch for the patch (#302).
+        findings.append(
+            Finding(
+                code="touched-tests-lane-fallback",
+                blocking=False,
+                detail=(
+                    f"CI marker lane `-m {(lane.get('lane') or {}).get('marker')}` "
+                    f"not used ({lane.get('reason')}): {lane.get('detail')}; only "
+                    "the tests that import the changed modules were run"
+                ),
+            )
+        )
     return findings
 
 
@@ -1054,6 +1070,12 @@ def prepare_submission(
         )
         or _touched_selection_changed(touched_tests, touched_workspace, changed_paths)
         or _touched_deselects_changed(touched_tests, run_directory)
+        # A record made before the CI marker lane ran, for a target that has
+        # one (#302).
+        or (
+            "marker_lane" not in touched_tests
+            and bool(marker_lanes(touched_workspace))
+        )
         # A failure recorded before failures were compared with the base
         # commit (#180), or past the old 50-node limit that skipped the
         # comparison (#202), is run again so it gets that comparison.
