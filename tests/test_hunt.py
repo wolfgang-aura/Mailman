@@ -1539,6 +1539,46 @@ class SweepTests(OrchestratorHarness):
         self.assertEqual([row["target"] for row in result["rows"]], ["acme/a#2"])
         self.assertEqual(result["claimed"], [{"target": "acme/a#1", "pull_requests": [12]}])
 
+    def test_a_rival_past_the_first_hundred_events_still_claims(self):
+        # One `per_page=100` read missed a cross-reference on page 2.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        filler = [{"event": "subscribed"}] * 100
+        rival = {"event": "cross-referenced", "source": {"issue": {
+            "number": 12, "state": "open", "pull_request": {"merged_at": None}}}}
+
+        class PagedGh(_SearchGh):
+            def json(self, path):
+                if "/timeline" in path:
+                    return [rival] if path.endswith("&page=2") else filler
+                return super().json(path)
+
+        gh = PagedGh([[_item("acme/a", 1)]])
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(result["claimed"], [{"target": "acme/a#1", "pull_requests": [12]}])
+
+    def test_a_pull_request_in_another_repository_does_not_claim(self):
+        # A downstream workaround PR names the issue from its own repository.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        downstream = {"event": "cross-referenced", "source": {"issue": {
+            "number": 40, "state": "open", "pull_request": {"merged_at": None},
+            "repository_url": "https://api.github.com/repos/other/app"}}}
+        gh = _SearchGh(
+            [[_item("acme/a", 1)]],
+            timelines={"repos/acme/a/issues/1/timeline": [downstream]})
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual([row["target"] for row in result["rows"]], ["acme/a#1"])
+        self.assertEqual(result["rows"][0]["prior_attempts"], [])
+        self.assertEqual(result["claimed"], [])
+
     def test_a_dormant_outside_pull_request_is_a_prior_attempt_not_a_claim(self):
         # typeshed#15495 sat behind typeshed#15497, untouched for 195 days by
         # an outside author; prescreen took it as stale. A maintainer's

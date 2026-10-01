@@ -781,6 +781,37 @@ def sweep_labels_admit(labels: list[str]) -> bool:
             and not any(_REQUEST_LABEL.search(label) for label in labels))
 
 
+# A busy issue's cross-reference can sit past the first hundred events.
+SWEEP_TIMELINE_PAGES = 5
+
+
+def _read_timeline(gh, path: str) -> list | None:
+    """Every page of one issue timeline, or None if any page went unread.
+
+    A single `per_page=100` read missed a rival cross-referenced after the
+    hundredth event, and the row was offered as unclaimed.
+    """
+    events: list = []
+    for page in range(1, SWEEP_TIMELINE_PAGES + 1):
+        got = gh.json(f"{path}?per_page=100&page={page}")
+        if not isinstance(got, list):
+            return None
+        events += got
+        if len(got) < 100:
+            break
+    return events
+
+
+def _same_repository(source: dict, slug: str) -> bool:
+    """Whether a cross-referencing issue lives in `slug`; unknown counts as yes."""
+    url = str(source.get("repository_url") or "")
+    if not url:
+        repository = source.get("repository")
+        name = repository.get("full_name") if isinstance(repository, dict) else None
+        return not name or str(name).lower() == slug.lower()
+    return url.lower().rstrip("/").endswith(f"/repos/{slug.lower()}")
+
+
 def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = None,
                        since_days: int = SWEEP_SINCE_DAYS,
                        pause_seconds: float = SWEEP_PAUSE_SECONDS,
@@ -878,7 +909,7 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
     def timeline(row: dict) -> object:
         nonlocal done
         slug, number = row["target"].rsplit("#", 1)
-        events = gh.json(f"repos/{slug}/issues/{number}/timeline?per_page=100")
+        events = _read_timeline(gh, f"repos/{slug}/issues/{number}/timeline")
         with lock:
             done += 1
             if progress and (done == len(rows) or done % 10 == 0):
@@ -901,6 +932,9 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
             )
             if source.get("pull_request") is not None
             and isinstance(source.get("number"), int)
+            # A downstream project's workaround PR names the issue from its
+            # own repository; it fixes nothing here.
+            and _same_repository(source, row["target"].rsplit("#", 1)[0])
         ]
         # An open pull request an outsider left for 60 days is prior art, as
         # prescreen and check-target judge it, not a claim: typeshed#15495
