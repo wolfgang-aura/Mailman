@@ -47,6 +47,20 @@ HOST_BLOCKED_RELEASES = (
 )
 HOST_CONSTRAINTS_FILENAME = "host-constraints.txt"
 
+#: pip always builds a direct reference (`name @ git+https://...`) from source,
+#: and `--no-build-isolation` gives that build only what the environment holds.
+#: spikeinterface's `probeinterface @ git+...` failed with `Cannot import
+#: 'hatchling.build'`. These are pure Python; an unused one costs nothing.
+#: https://github.com/wolfgang-aura/Mailman/issues/364
+DIRECT_REFERENCE_BACKENDS = ("hatchling", "hatch-vcs", "setuptools-scm", "flit-core", "poetry-core")
+
+
+def _declares_direct_reference(metadata: dict, groups: dict) -> bool:
+    declared = [*metadata.get("dependencies", []),
+                *(entry for entries in metadata.get("optional-dependencies", {}).values() for entry in entries),
+                *(entry for entries in groups.values() for entry in entries)]
+    return any(isinstance(entry, str) and re.match(r"^[A-Za-z0-9._\[\], -]+@", entry) for entry in declared)
+
 
 def _builds_compiled_extensions(workspace: Path) -> bool:
     """Whether the target's setup.py compiles extension modules."""
@@ -157,6 +171,8 @@ def draft_plan(workspace: Path, destination: Path, *, python: str = sys.executab
     # Without build isolation a dependency that ships only an sdist builds with
     # whatever the environment holds, and a fresh venv holds no setuptools.
     dependencies = list(dict.fromkeys([*dependencies, "setuptools"]))
+    if _declares_direct_reference(metadata, groups):
+        dependencies = list(dict.fromkeys([*dependencies, *DIRECT_REFERENCE_BACKENDS]))
     if "--no-build-isolation" in install and "-e" in install and _builds_editables_by_import(project):
         dependencies = list(dict.fromkeys([*dependencies, "editables"]))
     review = "Read CI and contributing instructions before execution. This draft does not reproduce uv or poetry lock resolution. Adjust the interpreter to requires-python and the supported CI matrix."

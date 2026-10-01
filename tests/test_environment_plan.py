@@ -120,6 +120,38 @@ test = ["pytest"]
             plan = draft_plan(root, root / "plan.json")
             self.assertIn("editables", plan["steps"][1]["command"])
 
+    def test_a_direct_reference_dependency_gets_the_common_build_backends(self):
+        """spikeinterface builds neo and probeinterface from git with hatchling (#364)."""
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "pyproject.toml").write_text('''
+[project]
+name = "fixture"
+dependencies = ["numpy", "probeinterface @ git+https://github.com/SpikeInterface/probeinterface.git"]
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+''', encoding="utf-8")
+            build = draft_plan(root, root / "plan.json")["steps"][1]["command"]
+            for backend in ("hatchling", "hatch-vcs", "setuptools-scm", "flit-core", "poetry-core"):
+                self.assertIn(backend, build)
+
+    def test_registry_dependencies_add_no_extra_build_backends(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "pyproject.toml").write_text('''
+[project]
+name = "fixture"
+dependencies = ["numpy>=2"]
+[project.optional-dependencies]
+test = ["pytest"]
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+''', encoding="utf-8")
+            build = draft_plan(root, root / "plan.json")["steps"][1]["command"]
+            self.assertNotIn("hatchling", build)
+
     def test_hatch_test_environments_supply_test_dependencies(self):
         """edgartools declares its test tools only in hatch's default env (#133)."""
         with tempfile.TemporaryDirectory() as name:
