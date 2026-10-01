@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import signal
 import subprocess
 import threading
@@ -95,8 +96,11 @@ def _environment_metadata(program: str | None = None) -> dict[str, str]:
         if Path(program).is_absolute() and configuration.is_file():
             for line in configuration.read_text(encoding="utf-8", errors="replace").splitlines():
                 key, _, value = line.partition("=")
-                if key.strip() in ("version", "version_info") and value.strip():
-                    python_version = value.strip()
+                # virtualenv writes "version_info = 3.12.14.final.0"; keep
+                # the release platform.python_version() would report.
+                release = re.match(r"\d+\.\d+(?:\.\d+)?", value.strip())
+                if key.strip() in ("version", "version_info") and release:
+                    python_version = release.group()
                     break
     return {
         "operating_system": platform.system(),

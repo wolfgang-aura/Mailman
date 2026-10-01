@@ -184,6 +184,22 @@ class VenvActivationTests(unittest.TestCase):
                 __import__("platform").python_version(),
             )
 
+    def test_a_virtualenv_version_info_keeps_only_the_release(self) -> None:
+        # virtualenv writes the full sys.version_info tuple.
+        from mailman.executor import _environment_metadata
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "env" / "Scripts").mkdir(parents=True)
+            (root / "env" / "pyvenv.cfg").write_text(
+                "home = /py\nversion_info = 3.12.14.final.0\n", encoding="utf-8"
+            )
+            program = root / "env" / "Scripts" / "python.exe"
+
+            self.assertEqual(
+                _environment_metadata(str(program))["python_version"], "3.12.14"
+            )
+
     def test_a_host_interpreter_leaves_path_alone(self) -> None:
         import os
 
