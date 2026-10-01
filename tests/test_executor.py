@@ -178,16 +178,149 @@ class ExecutorTests(unittest.TestCase):
                 timeout_seconds=1,
             )
             elapsed = time.monotonic() - started
-            # The survivor's working directory is the temporary one.
+            # The survivor's working directory is the temporary one. Closing
+            # the job may already be ending it, so the kill can fail; wait
+            # for it either way before the directory is removed.
             try:
-                os.kill(int(result.stdout.split()[0]), signal.SIGTERM)
-                time.sleep(0.5)
-            except (OSError, ValueError, IndexError):
+                survivor = int(result.stdout.split()[0])
+                try:
+                    os.kill(survivor, signal.SIGTERM)
+                except OSError:
+                    pass
+                if sys.platform == "win32":
+                    _still_running(survivor, wait_seconds=5)
+                else:
+                    time.sleep(0.5)
+            except (ValueError, IndexError):
                 pass
 
         self.assertTrue(result.timed_out)
         self.assertLess(elapsed, 8)
         self.assertIn("still held the output pipe", result.stderr)
+
+
+def _still_running(pid: int, wait_seconds: float = 0) -> bool:
+    """Whether a Windows process is alive, waiting up to `wait_seconds` for it to end.
+
+    os.kill(pid, 0) on Windows terminates the process, so ask the kernel.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    synchronize, query_limited = 0x00100000, 0x1000
+    handle = kernel32.OpenProcess(synchronize | query_limited, False, pid)
+    if not handle:
+        return False
+    try:
+        return kernel32.WaitForSingleObject(handle, int(wait_seconds * 1000)) != 0
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _stop(pid: int) -> None:
+    import subprocess
+
+    subprocess.run(
+        ["taskkill", "/PID", str(pid), "/F"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+    )
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows job objects")
+class JobObjectTests(unittest.TestCase):
+    """Mailman #277: a run's background processes outlived it by ten hours."""
+
+    def test_a_detached_grandchild_does_not_outlive_a_step_that_exited_normally(
+        self,
+    ) -> None:
+        # The prefect run left `prefect server start` running from its
+        # environment after the verification step that launched it had
+        # exited. taskkill /T found no tree: the launching parent was gone.
+        script = (
+            "import subprocess, sys\n"
+            "child = subprocess.Popen(\n"
+            "    [sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+            "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,\n"
+            "    stderr=subprocess.DEVNULL,\n"
+            "    creationflags=subprocess.DETACHED_PROCESS\n"
+            "    | subprocess.CREATE_NEW_PROCESS_GROUP,\n"
+            ")\n"
+            "print(child.pid, flush=True)\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            result = execute(
+                [sys.executable, "-c", script],
+                working_directory=Path(temporary_directory),
+                timeout_seconds=30,
+            )
+            grandchild = int(result.stdout.split()[0])
+            try:
+                self.assertEqual(result.exit_code, 0, result.stderr)
+                self.assertFalse(result.timed_out)
+                self.assertFalse(
+                    _still_running(grandchild, wait_seconds=5),
+                    "the grandchild outlived the step",
+                )
+            finally:
+                _stop(grandchild)
+
+    def test_a_grandchild_holding_the_pipe_ends_with_its_exited_parent(self) -> None:
+        # A background server that inherited stdout kept the read open until
+        # the step's whole timeout ran out, long after its parent finished.
+        script = (
+            "import subprocess, sys\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            "print(child.pid, flush=True)\n"
+        )
+        started = time.monotonic()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            result = execute(
+                [sys.executable, "-c", script],
+                working_directory=Path(temporary_directory),
+                timeout_seconds=30,
+            )
+            elapsed = time.monotonic() - started
+            grandchild = int(result.stdout.split()[0])
+            try:
+                self.assertEqual(result.exit_code, 0, result.stderr)
+                self.assertFalse(result.timed_out)
+                self.assertLess(elapsed, 10)
+                self.assertFalse(_still_running(grandchild, wait_seconds=2))
+            finally:
+                _stop(grandchild)
+
+    def test_a_refused_job_assignment_warns_and_still_runs_the_step(self) -> None:
+        # AssignProcessToJobObject can fail with access denied. The step runs
+        # without a job, falls back to taskkill /T and says so.
+        from unittest import mock
+
+        import mailman.executor as executor_module
+
+        kernel32 = mock.MagicMock()
+        kernel32.CreateJobObjectW.return_value = 4242
+        kernel32.SetInformationJobObject.return_value = 1
+        kernel32.AssignProcessToJobObject.return_value = 0
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            mock.patch.object(executor_module, "_job_kernel32", return_value=kernel32),
+            mock.patch.object(executor_module.ctypes, "get_last_error", return_value=5),
+        ):
+            result = execute(
+                [sys.executable, "-c", "print('ran')"],
+                working_directory=Path(temporary_directory),
+                timeout_seconds=30,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.stdout.strip(), "ran")
+        self.assertIn("could not place the command in a job object", result.stderr)
+        self.assertIn("error 5", result.stderr)
+        kernel32.CloseHandle.assert_called_with(4242)
 
 
 class VenvActivationTests(unittest.TestCase):

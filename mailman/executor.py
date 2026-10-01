@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import platform
 import queue
@@ -122,57 +123,119 @@ def _environment_metadata(program: str | None = None) -> dict[str, str]:
 _PIPE_GRACE_SECONDS = 2.0
 
 
-def _open_job(process: subprocess.Popen) -> int | None:
-    """A Windows job object holding the child, or None where there is none.
-
-    Every process the child starts joins the job, so a timeout can stop a
-    grandchild whose parent already exited. taskkill /T walks the tree from
-    the parent's pid and finds nothing once that parent is gone. Mailman #335.
-    The child joins a moment after it starts; anything it launches in that
-    moment escapes, and the read deadline in _stream covers that case.
-    """
-    if os.name != "nt":
-        return None
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-        kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
-        kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
-        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
-        job = kernel32.CreateJobObjectW(None, None)
-        if not job:
-            return None
-        if not kernel32.AssignProcessToJobObject(job, int(process._handle)):
-            kernel32.CloseHandle(job)
-            return None
-        return job
-    except (AttributeError, OSError, TypeError, ValueError):
-        return None
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 
 
-def _close_job(job: int | None) -> None:
-    if job is None:
-        return
-    import ctypes
+class _BasicLimits(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_int64),
+        ("PerJobUserTimeLimit", ctypes.c_int64),
+        ("LimitFlags", ctypes.c_uint32),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", ctypes.c_uint32),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", ctypes.c_uint32),
+        ("SchedulingClass", ctypes.c_uint32),
+    ]
+
+
+class _ExtendedLimits(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _BasicLimits),
+        ("IoInfo", ctypes.c_uint64 * 6),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+def _job_kernel32():
     from ctypes import wintypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
+    kernel32.SetInformationJobObject.argtypes = (
+        wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+    )
+    kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
     kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    return kernel32
+
+
+def _open_job(process: subprocess.Popen) -> tuple[int | None, str | None]:
+    """A Windows job object holding the child, and a warning when there is none.
+
+    Every process the child starts joins the job, so the step can stop a
+    grandchild whose parent already exited. taskkill /T walks the tree from
+    the parent's pid and finds nothing once that parent is gone. Mailman #335.
+    The job kills its members when its last handle closes, so a background
+    server ends with the step that started it, and with Mailman if Mailman
+    itself dies. Mailman #277.
+
+    The child joins a moment after it starts; anything it launches in that
+    moment escapes, and the read deadline in _stream covers that case. A
+    process started with CREATE_BREAKAWAY_FROM_JOB leaves the job on purpose
+    and is allowed to. A child already inside another job still joins this
+    one: jobs nest on Windows 8 and later.
+    """
+    if os.name != "nt":
+        return None, None
+    try:
+        kernel32 = _job_kernel32()
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None, _job_warning("CreateJobObject", ctypes.get_last_error())
+        limits = _ExtendedLimits()
+        limits.BasicLimitInformation.LimitFlags = (
+            _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | _JOB_OBJECT_LIMIT_BREAKAWAY_OK
+        )
+        # Without the flag, _close_job still terminates the job; only the
+        # cleanup on Mailman's own death is lost, so this is not fatal.
+        kernel32.SetInformationJobObject(
+            job, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(limits), ctypes.sizeof(limits),
+        )
+        if not kernel32.AssignProcessToJobObject(job, int(process._handle)):
+            error = ctypes.get_last_error()
+            kernel32.CloseHandle(job)
+            return None, _job_warning("AssignProcessToJobObject", error)
+        return job, None
+    except (AttributeError, OSError, TypeError, ValueError) as error:
+        return None, f"\n[mailman] could not place the command in a job object: {error}. {_JOB_FALLBACK}\n"
+
+
+_JOB_FALLBACK = (
+    "Stopping it falls back to taskkill /T, which misses a descendant whose"
+    " parent has exited. Mailman #277."
+)
+
+
+def _job_warning(call: str, error: int) -> str:
+    return (
+        f"\n[mailman] could not place the command in a job object: {call}"
+        f" failed with error {error}. {_JOB_FALLBACK}\n"
+    )
+
+
+def _close_job(job: int | None) -> None:
+    """End the step: stop every process still in the job, then drop the job."""
+    if job is None:
+        return
+    kernel32 = _job_kernel32()
+    kernel32.TerminateJobObject(job, 1)
     kernel32.CloseHandle(job)
 
 
 def _kill_tree(process: subprocess.Popen, job: int | None) -> None:
     """Stop the wrapper and every descendant, even when the wrapper has exited."""
     if job is not None:
-        import ctypes
-        from ctypes import wintypes
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
-        kernel32.TerminateJobObject(job, 1)
+        _job_kernel32().TerminateJobObject(job, 1)
     elif os.name == "nt":
         if process.poll() is None:
             try:
@@ -231,7 +294,7 @@ def _stream(
         shell=False,
         **popen_options,
     )
-    job = _open_job(process)
+    job, job_warning = _open_job(process)
     timed_out = threading.Event()
     kill_lock = threading.Lock()
 
@@ -299,6 +362,7 @@ def _stream(
     stopped_reason: str | None = None
     abandoned = False
     give_up_reading_at: float | None = None
+    parent_exited_at: float | None = None
     try:
         while True:
             if give_up_reading_at is None and (
@@ -311,6 +375,17 @@ def _stream(
                 if give_up_reading_at is not None and time.monotonic() >= give_up_reading_at:
                     abandoned = True
                     break
+                if give_up_reading_at is None and process.poll() is not None:
+                    # The command itself has finished, so the step has. A
+                    # descendant still holding the pipe is a background
+                    # process it left behind, and waiting on it would run the
+                    # step to its timeout. Mailman #277.
+                    now = time.monotonic()
+                    if parent_exited_at is None:
+                        parent_exited_at = now
+                    elif now - parent_exited_at >= _PIPE_GRACE_SECONDS:
+                        kill_tree()
+                        give_up_reading_at = now + _PIPE_GRACE_SECONDS
                 continue
             if line is None:
                 break
@@ -336,6 +411,8 @@ def _stream(
             _close_job(job)
             job = None
 
+    if job_warning:
+        stderr_lines.append(job_warning)
     if abandoned:
         stderr_lines.append(
             "\n[mailman] stopped reading: a descendant process still held the"
