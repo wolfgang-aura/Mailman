@@ -513,6 +513,7 @@ class RepositoryTestRulePromptTests(unittest.TestCase):
             source.parent.mkdir(parents=True)
             source.write_text("x = 1\n", encoding="utf-8")
             for name, text in guides.items():
+                (workspace / name).parent.mkdir(parents=True, exist_ok=True)
                 (workspace / name).write_text(text, encoding="utf-8")
             (run_directory / "issue.md").write_text(
                 "# Bug\n\nThe bug is in `src/unionarray.py`.\n", encoding="utf-8"
@@ -550,6 +551,46 @@ class RepositoryTestRulePromptTests(unittest.TestCase):
         start = primary.index("Repository test rules")
         section = primary[start:].split("\n## ", 1)[0]
         self.assertLess(len(section), 2500)
+
+
+# Python-Markdown's docs/contributing.md, abridged.
+MARKDOWN_CONTRIBUTING = """#### Changelog
+
+Any change to the code base which alters the behavior of the code in any way
+must include an entry in the changelog. If a change only alters the
+documentation or tooling for the project, then an entry in the changelog is
+not necessary. The current changelog can be found at `docs/changelog.md`.
+
+#### Commit Message Style Guide
+
+Use the present tense.
+"""
+
+
+class RepositoryChangelogRulePromptTests(unittest.TestCase):
+    """https://github.com/wolfgang-aura/Mailman/issues/380
+
+    Python-Markdown 1643's reviewer approved a behaviour change with no
+    changelog entry; the guide makes one mandatory.
+    """
+
+    def test_both_prompts_quote_the_changelog_rule(self) -> None:
+        primary, reviewer = self._prompts(
+            {"docs/contributing.md": MARKDOWN_CONTRIBUTING}
+        )
+        for prompt in (primary, reviewer):
+            self.assertIn("Repository changelog rule", prompt)
+            self.assertIn("must include an entry in the changelog", prompt)
+            self.assertNotIn("present tense", prompt)
+
+    def test_a_guide_without_a_changelog_rule_adds_no_section(self) -> None:
+        primary, reviewer = self._prompts(
+            {"CONTRIBUTING.md": "# Contributing\n\nSee the changelog for news.\n"}
+        )
+        self.assertNotIn("Repository changelog rule", primary)
+        self.assertNotIn("Repository changelog rule", reviewer)
+
+    _prompts = RepositoryTestRulePromptTests._prompts
 
 
 class StaleAttemptPromptTests(unittest.TestCase):

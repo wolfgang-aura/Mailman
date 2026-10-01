@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -171,6 +172,65 @@ def _repository_test_rules_section(workspace: Path) -> str:
         "The repository's own guides say where tests go. Follow them; a "
         "candidate that breaks them is edited after review and must be "
         "verified and reviewed again.\n\n" + "\n\n".join(quoted) + "\n"
+    )
+
+
+# Python-Markdown 1643's reviewer approved a behaviour change with no
+# changelog entry, which docs/contributing.md makes mandatory. Mailman #380.
+_CHANGELOG_RULE = re.compile(
+    r"\b(?:changelog|change log|news ?fragment|changes\.(?:md|rst))\b",
+    re.IGNORECASE,
+)
+_CHANGELOG_DIRECTIVE = re.compile(
+    r"\b(?:must|should|needs?|required?|include|add)\b", re.IGNORECASE
+)
+_MAX_CHANGELOG_RULES = 2
+
+
+def _guide_paths(workspace: Path) -> list[tuple[str, Path]]:
+    """Each guide once; Windows matches `docs/contributing.md` twice."""
+    seen: set[str] = set()
+    found: list[tuple[str, Path]] = []
+    for name in (*_GUIDE_NAMES, "docs/contributing.md"):
+        path = workspace / name
+        if not path.is_file():
+            continue
+        key = os.path.normcase(str(path.resolve()))
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append((name, path))
+    return found
+
+
+def _repository_changelog_rules_section(workspace: Path) -> str:
+    quoted: list[str] = []
+    for name, path in _guide_paths(workspace):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for paragraph in re.split(r"\n\s*\n", text):
+            paragraph = paragraph.strip()
+            if not paragraph or paragraph.startswith(("#", "```", "..")):
+                continue
+            flat = " ".join(paragraph.split())
+            if not (_CHANGELOG_RULE.search(flat) and _CHANGELOG_DIRECTIVE.search(flat)):
+                continue
+            if len(paragraph) > _MAX_TEST_RULE_CHARS:
+                paragraph = paragraph[:_MAX_TEST_RULE_CHARS].rstrip() + " [...]"
+            quote = "> " + paragraph.replace("\n", "\n> ")
+            quoted.append(f"From `{name}`:\n\n{quote}")
+            if len(quoted) == _MAX_CHANGELOG_RULES:
+                break
+        if len(quoted) == _MAX_CHANGELOG_RULES:
+            break
+    if not quoted:
+        return ""
+    return (
+        "\n## Repository changelog rule\n\n"
+        "The repository's own guide says when a change needs a changelog "
+        "entry. Follow it in the same candidate, in the file and format the "
+        "guide and the existing entries use; the reviewer checks it.\n\n"
+        + "\n\n".join(quoted)
+        + "\n"
     )
 
 
@@ -724,6 +784,7 @@ def write_task_prompts(
         _known_scope_section(run_directory)
         + _remarks_elsewhere_section(run_directory)
         + _repository_test_rules_section(run_directory / "workspace")
+        + _repository_changelog_rules_section(run_directory / "workspace")
     )
     reproduction = _reproduction_section(run_directory)
     work_order, work_order_section = _work_order(
