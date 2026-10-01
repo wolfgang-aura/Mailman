@@ -341,9 +341,19 @@ def competing_pull_requests(
 def competitors_from_timeline(
     events: list[Any], repository: str, *, own_number: int
 ) -> list[dict[str, Any]]:
-    """The competing pull requests in a GitHub issue timeline, oldest first."""
+    """The competing pull requests in a GitHub issue timeline, oldest first.
+
+    A merged pull request competes only if the issue closed after it. One that
+    merged while the issue stayed open did not resolve it: beets#5994 was split
+    off the review of #5979, which merged ten minutes later and left it open
+    (https://github.com/wolfgang-aura/Mailman/issues/363).
+    """
     found: dict[int, dict[str, Any]] = {}
     repository_url = f"https://api.github.com/repos/{repository}".lower()
+    issue_open = True
+    for event in events:
+        if isinstance(event, dict) and event.get("event") in {"closed", "reopened"}:
+            issue_open = event["event"] == "reopened"
     for event in events:
         if not isinstance(event, dict) or event.get("event") != "cross-referenced":
             continue
@@ -359,7 +369,7 @@ def competitors_from_timeline(
         pull_request = issue.get("pull_request")
         merged = isinstance(pull_request, dict) and bool(pull_request.get("merged_at"))
         state = "merged" if merged else str(issue.get("state") or "").lower()
-        if state not in {"open", "merged"}:
+        if state not in {"open", "merged"} or (state == "merged" and issue_open):
             continue
         user = issue.get("user") or {}
         found[number] = {
