@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from mailman.executor import clamp_timeout_seconds
+from mailman.target_intel import _is_bot
 
 PROVENANCE_FILENAME = "provenance.json"
 
@@ -58,6 +59,7 @@ class Contribution:
     patch_path: str | None = None
     checked_at: str | None = None
     competition: dict[str, Any] | None = None
+    closure: dict[str, Any] | None = None
 
     def permalinks(self) -> tuple[str, ...]:
         return tuple(
@@ -77,6 +79,7 @@ class Contribution:
             "patch_path": self.patch_path,
             "checked_at": self.checked_at,
             "competition": self.competition,
+            "closure": self.closure,
         }
 
 
@@ -216,7 +219,7 @@ def pull_request_state(repository: str, number: int) -> dict[str, Any]:
                 "--repo",
                 slug,
                 "--json",
-                "state,mergedAt,mergeCommit,url,title",
+                "state,mergedAt,mergeCommit,url,title,createdAt,closedAt,author",
             ],
             capture_output=True,
             text=True,
@@ -236,6 +239,7 @@ def pull_request_state(repository: str, number: int) -> dict[str, Any]:
     except json.JSONDecodeError as error:
         return {"available": False, "detail": f"unreadable response ({error})"}
     merge_commit = payload.get("mergeCommit") or {}
+    author = payload.get("author") or {}
     return {
         "available": True,
         "state": payload.get("state"),
@@ -245,6 +249,9 @@ def pull_request_state(repository: str, number: int) -> dict[str, Any]:
         else None,
         "url": payload.get("url"),
         "title": payload.get("title"),
+        "created_at": payload.get("createdAt"),
+        "closed_at": payload.get("closedAt"),
+        "author": author.get("login") if isinstance(author, dict) else None,
     }
 
 
@@ -363,6 +370,275 @@ def competitors_from_timeline(
             "created_at": issue.get("created_at"),
         }
     return [found[number] for number in sorted(found)]
+
+
+# Why a filed pull request closed without merging, most specific first. Only a
+# count of these turns "the maintainer fixed it himself" from an anecdote into
+# a targeting rule. See https://github.com/wolfgang-aura/Mailman/issues/79.
+CLOSURE_SUPERSEDED = "superseded-by-pr"
+CLOSURE_DIRECT_COMMIT = "maintainer-direct-commit"
+CLOSURE_REVIEW = "closed-with-review"
+CLOSURE_COMMENT = "closed-with-comment"
+CLOSURE_SILENT = "closed-silently"
+CLOSURE_UNKNOWN = "unknown"
+CLOSURE_REASONS = (
+    CLOSURE_SUPERSEDED,
+    CLOSURE_DIRECT_COMMIT,
+    CLOSURE_REVIEW,
+    CLOSURE_COMMENT,
+    CLOSURE_SILENT,
+    CLOSURE_UNKNOWN,
+)
+MAINTAINER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+# A maintainer can push the fix a little after closing ours; a day either side
+# of the close is the window a direct commit is looked for in.
+DIRECT_COMMIT_SLACK = timedelta(days=1)
+
+
+def _gh_list(path: str) -> tuple[list[Any] | None, str | None]:
+    """Every row of one `gh api` list endpoint, or None and why not.
+
+    A failure is returned, never an empty list: an unread timeline must not
+    read as one in which nothing happened.
+    """
+    if shutil.which("gh") is None:
+        return None, "gh is not installed"
+    try:
+        completed = subprocess.run(
+            ["gh", "api", path, "--paginate", "--slurp"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=clamp_timeout_seconds(60),
+            check=False,
+            shell=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return None, str(error)
+    if completed.returncode != 0:
+        return None, completed.stderr.strip() or completed.stdout.strip() or "gh failed"
+    try:
+        pages = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        return None, f"unreadable response ({error})"
+    rows: list[Any] = []
+    for page in pages if isinstance(pages, list) else []:
+        rows.extend(page if isinstance(page, list) else [])
+    return rows, None
+
+
+def _github_time(moment: datetime) -> str:
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _references_issue(message: str, slug: str, issue_number: int) -> bool:
+    pattern = (
+        rf"(?:(?<![\w/#&])|{re.escape(slug)})#{issue_number}(?!\d)"
+        rf"|github\.com/{re.escape(slug)}/issues/{issue_number}(?!\d)"
+    )
+    return re.search(pattern, message, re.IGNORECASE) is not None
+
+
+def _maintainer_activity(
+    events: list[Any], own_author: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Reviews and comments on our pull request by people who can merge it."""
+    reviews: list[dict[str, Any]] = []
+    comments: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("event")
+        if kind not in {"reviewed", "commented"}:
+            continue
+        user = event.get("user") or event.get("actor")
+        if _is_bot(user) or event.get("author_association") not in MAINTAINER_ASSOCIATIONS:
+            continue
+        login = str(user.get("login") or "")
+        if own_author and login.lower() == own_author.lower():
+            continue
+        entry = {
+            "login": login,
+            "at": event.get("submitted_at") or event.get("created_at"),
+            "url": event.get("html_url"),
+        }
+        if kind == "reviewed":
+            reviews.append({**entry, "state": str(event.get("state") or "").lower()})
+        else:
+            comments.append(entry)
+    return reviews, comments
+
+
+def _commit_verdict(
+    slug: str,
+    number: int,
+    sha: str,
+    why: str,
+    api: Any,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """A direct commit, or the merged pull request that carried it."""
+    pulls, detail = api(f"repos/{slug}/commits/{sha}/pulls")
+    if pulls is None:
+        return None, f"pull requests carrying commit {sha[:12]} unread: {detail}"
+    for pull in pulls:
+        if not isinstance(pull, dict) or pull.get("number") == number:
+            continue
+        if pull.get("merged_at"):
+            return {
+                "reason": CLOSURE_SUPERSEDED,
+                "detail": f"#{pull.get('number')} merged and carried {why}",
+                "pull_request": pull.get("number"),
+                "url": pull.get("html_url"),
+            }, None
+    if pulls:
+        return None, None
+    return {
+        "reason": CLOSURE_DIRECT_COMMIT,
+        "detail": f"{why}, and no pull request carried it",
+        "commit": sha,
+        "url": f"https://github.com/{slug}/commit/{sha}",
+    }, None
+
+
+def _direct_commit(
+    slug: str,
+    number: int,
+    issue_number: int,
+    issue_events: list[Any],
+    filed_at: datetime,
+    closed_at: datetime | None,
+    api: Any,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """A commit that fixed the issue without a pull request, or why unread."""
+    own_repository = f"/repos/{slug}/".lower()
+    closers = [
+        event
+        for event in issue_events
+        if isinstance(event, dict)
+        and event.get("event") == "closed"
+        and event.get("commit_id")
+        and own_repository in str(event.get("commit_url") or own_repository).lower()
+    ]
+    for event in reversed(closers):
+        sha = str(event["commit_id"])
+        verdict, detail = _commit_verdict(
+            slug, number, sha, f"issue #{issue_number} was closed by commit {sha[:12]}", api
+        )
+        if detail or verdict:
+            return verdict, detail
+    window = f"repos/{slug}/commits?since={_github_time(filed_at)}"
+    if closed_at is not None:
+        window += f"&until={_github_time(closed_at + DIRECT_COMMIT_SLACK)}"
+    commits, detail = api(window + "&per_page=100")
+    if commits is None:
+        return None, f"default-branch commits since filing unread: {detail}"
+    for commit in commits:
+        if not isinstance(commit, dict):
+            continue
+        message = str((commit.get("commit") or {}).get("message") or "")
+        sha = str(commit.get("sha") or "")
+        if not sha or not _references_issue(message, slug, issue_number):
+            continue
+        verdict, detail = _commit_verdict(
+            slug,
+            number,
+            sha,
+            f"default-branch commit {sha[:12]}, made after filing, references "
+            f"issue #{issue_number}",
+            api,
+        )
+        if detail or verdict:
+            return verdict, detail
+    return None, None
+
+
+def classify_closure(
+    repository: str,
+    number: int,
+    *,
+    issue_number: int | None,
+    pull: dict[str, Any],
+    api: Any = _gh_list,
+) -> dict[str, Any]:
+    """Why a pull request closed without merging, from read-only GitHub data.
+
+    The first that holds wins: a merged pull request on the same issue; a
+    commit that closed or references the issue with no pull request behind it,
+    unless a maintainer asked for changes on ours; a maintainer review; a
+    maintainer comment; nothing. Any read that fails makes the answer
+    `unknown`, never `closed-silently`: an unread thread is not a quiet one.
+    pdm-project/pdm#3884 closed after the maintainer committed `dc4e314`.
+    See https://github.com/wolfgang-aura/Mailman/issues/79.
+    """
+    slug = repository_slug(repository)
+
+    def unknown(detail: str) -> dict[str, Any]:
+        return {"reason": CLOSURE_UNKNOWN, "detail": detail}
+
+    if issue_number is None:
+        return unknown(
+            "run.json names no issue in this repository, so a superseding pull "
+            "request or a direct commit cannot be ruled out"
+        )
+    filed_at = _read_timestamp(pull.get("created_at"))
+    if filed_at is None:
+        return unknown("the pull request's filing time was not read")
+    closed_at = _read_timestamp(pull.get("closed_at"))
+    own_author = str(pull.get("author") or "")
+
+    issue_events, detail = api(f"repos/{slug}/issues/{issue_number}/timeline")
+    if issue_events is None:
+        return unknown(f"issue #{issue_number} timeline unread: {detail}")
+    merged = [
+        item
+        for item in competitors_from_timeline(issue_events, slug, own_number=number)
+        if item.get("state") == "merged"
+    ]
+    if merged:
+        winner = merged[0]
+        return {
+            "reason": CLOSURE_SUPERSEDED,
+            "detail": f"#{winner.get('number')} by {winner.get('author')} merged "
+            f"and references issue #{issue_number}",
+            "pull_request": winner.get("number"),
+            "url": winner.get("url"),
+        }
+
+    pull_events, detail = api(f"repos/{slug}/issues/{number}/timeline")
+    if pull_events is None:
+        return unknown(f"pull request #{number} timeline unread: {detail}")
+    reviews, comments = _maintainer_activity(pull_events, own_author)
+    rejected = [review for review in reviews if review["state"] == "changes_requested"]
+
+    if not rejected:
+        verdict, detail = _direct_commit(
+            slug, number, issue_number, issue_events, filed_at, closed_at, api
+        )
+        if detail:
+            return unknown(detail)
+        if verdict:
+            return verdict
+
+    if reviews:
+        last = (rejected or reviews)[-1]
+        return {
+            "reason": CLOSURE_REVIEW,
+            "detail": f"{last['login']} reviewed ({last['state']})",
+            "url": last.get("url"),
+        }
+    if comments:
+        last = comments[-1]
+        return {
+            "reason": CLOSURE_COMMENT,
+            "detail": f"{last['login']} commented",
+            "url": last.get("url"),
+        }
+    return {
+        "reason": CLOSURE_SILENT,
+        "detail": "no superseding pull request, no direct commit, and no "
+        "maintainer review or comment",
+    }
 
 
 def submission_directory(run_directory: Path) -> Path:
@@ -502,6 +778,7 @@ def contribution_from_record(record: dict[str, Any]) -> Contribution:
         competition=record.get("competition")
         if isinstance(record.get("competition"), dict)
         else None,
+        closure=record.get("closure") if isinstance(record.get("closure"), dict) else None,
     )
 
 
@@ -533,6 +810,7 @@ def refresh_state(
     *,
     state_lookup: Any = pull_request_state,
     competitor_lookup: Any = competing_pull_requests,
+    closure_lookup: Any = classify_closure,
     now: datetime | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Re-read one run's pull request state from GitHub and store the answer.
@@ -567,13 +845,52 @@ def refresh_state(
     record["competition"] = _read_competition(
         run_directory, slug, int(number), record["state"], competitor_lookup, now=now
     )
+    record["closure"] = _read_closure(
+        run_directory, record, slug, int(number), lookup, closure_lookup, now=now
+    )
     path = provenance_path(run_directory)
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n")
     competition = record["competition"]
     if competition.get("detail"):
         detail = competition["detail"]
         return record, f"{slug}#{number}: competitors unchecked: {detail}"
+    closure = record["closure"] or {}
+    if closure.get("reason") == CLOSURE_UNKNOWN:
+        return record, f"{slug}#{number}: closure reason unknown: {closure.get('detail')}"
     return record, None
+
+
+def _read_closure(
+    run_directory: Path,
+    record: dict[str, Any],
+    slug: str,
+    number: int,
+    lookup: dict[str, Any],
+    closure_lookup: Any,
+    *,
+    now: datetime | None,
+) -> dict[str, Any] | None:
+    """Why a closed, unmerged pull request closed, read once and then kept.
+
+    A settled reason is not re-read: what closed the pull request does not
+    change, and each reading costs several API calls. An `unknown` one is
+    read again on every refresh until it settles.
+    """
+    if (record.get("state") or "").upper() != "CLOSED":
+        return None
+    existing = record.get("closure")
+    if isinstance(existing, dict) and existing.get("reason") not in {None, CLOSURE_UNKNOWN}:
+        return existing
+    closure = dict(
+        closure_lookup(
+            slug,
+            number,
+            issue_number=upstream_issue_number(run_directory, slug),
+            pull=lookup,
+        )
+    )
+    closure["checked_at"] = (now or datetime.now(UTC)).isoformat()
+    return closure
 
 
 def _read_competition(
@@ -618,6 +935,7 @@ def refresh_contributions(
     *,
     state_lookup: Any = pull_request_state,
     competitor_lookup: Any = competing_pull_requests,
+    closure_lookup: Any = classify_closure,
     now: datetime | None = None,
 ) -> tuple[list[Contribution], list[str]]:
     """Every recorded run, re-read from GitHub, with whatever could not be."""
@@ -630,6 +948,7 @@ def refresh_contributions(
             directory,
             state_lookup=state_lookup,
             competitor_lookup=competitor_lookup,
+            closure_lookup=closure_lookup,
             now=now,
         )
         if record is None:
@@ -791,6 +1110,7 @@ def render_contributions(
         if entry.pull_request:
             lines.append(f"    {_reading_age(entry, now=now)}")
             lines.extend(f"    {line}" for line in _competition_lines(entry))
+            lines.extend(f"    {line}" for line in _closure_lines(entry))
         for link in entry.permalinks():
             lines.append(f"    {link}")
         if entry.merge_commit:
@@ -805,7 +1125,54 @@ def render_contributions(
             )
         if entry.patch_path:
             lines.append(f"    patch {entry.patch_path}")
+    counts = closure_counts(contributions)
+    if counts:
+        lines.append("")
+        lines.append(
+            "closed unmerged, by reason: "
+            + ", ".join(f"{reason} {count}" for reason, count in counts.items())
+        )
     return "\n".join(lines)
+
+
+CLOSURE_UNREAD = "unread"
+
+
+def closure_counts(contributions: list[Contribution]) -> dict[str, int]:
+    """How many closed, unmerged pull requests closed for each reason.
+
+    One `maintainer-direct-commit` is a race; three is a targeting rule. A
+    closed pull request whose reason was never read counts as `unread`, so
+    the total always matches the closed rows above it.
+    """
+    counts: dict[str, int] = {}
+    for entry in contributions:
+        if (entry.state or "").upper() != "CLOSED":
+            continue
+        reason = str((entry.closure or {}).get("reason") or CLOSURE_UNREAD)
+        counts[reason] = counts.get(reason, 0) + 1
+    order = [*CLOSURE_REASONS, CLOSURE_UNREAD]
+    return {
+        reason: counts[reason]
+        for reason in sorted(
+            counts, key=lambda name: order.index(name) if name in order else len(order)
+        )
+    }
+
+
+def _closure_lines(entry: Contribution) -> list[str]:
+    """Why a closed pull request closed, or that nobody has read why yet."""
+    if (entry.state or "").upper() != "CLOSED":
+        return []
+    closure = entry.closure
+    if not closure or not closure.get("reason"):
+        return ["closure reason never read -- run `mailman contributions --refresh`"]
+    line = f"closed: {closure['reason']}"
+    if closure.get("detail"):
+        line += f" -- {closure['detail']}"
+    if closure.get("url"):
+        line += f" {closure['url']}"
+    return [line]
 
 
 def competitors(entry: Contribution) -> list[dict[str, Any]]:

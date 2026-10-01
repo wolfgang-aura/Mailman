@@ -76,6 +76,7 @@ from mailman.prior_art import collect_prior_art
 from mailman.prompts import load_recorded_verification, write_task_prompts
 from mailman.provenance import (
     ProvenanceError,
+    closure_counts,
     collect_contributions,
     competitors,
     deletion_is_safe,
@@ -2621,6 +2622,7 @@ def _contributions(arguments: argparse.Namespace) -> int:
             json.dumps(
                 {
                     "contributions": [entry.to_dict() for entry in found],
+                    "closure_counts": closure_counts(found),
                     "unrecorded_submissions": unrecorded,
                     "offered_submissions": offered,
                 },
