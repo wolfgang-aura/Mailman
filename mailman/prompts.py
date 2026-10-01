@@ -112,6 +112,68 @@ def _read_json(path: Path) -> dict:
     return loaded if isinstance(loaded, dict) else {}
 
 
+# Guides a target keeps its test-placement rules in. awkward 4228's primary
+# appended tests to an existing file against AGENTS.md's "new test file" rule;
+# the operator's move cost a second review cycle. Mailman #370.
+_GUIDE_NAMES = (
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CONTRIBUTING.md",
+    "CONTRIBUTING.rst",
+    ".github/CONTRIBUTING.md",
+    "docs/CONTRIBUTING.md",
+)
+# A line quotes only when it names where tests live and says what to do.
+# Kernel notes about "test data" and commit-type lists ("test files") are not
+# placement rules.
+_TEST_PLACE = re.compile(
+    r"\btest[ _-]?(?:files?|modules?|director(?:y|ies)|folders?)\b"
+    r"|\btests?/|\btest_[A-Za-z0-9X*{<]",
+    re.IGNORECASE,
+)
+_DIRECTIVE = re.compile(
+    r"\b(?:must|should|needs?|named|naming|put|place[ds]?|go(?:es)? (?:in|into)"
+    r"|add|new|create)\b",
+    re.IGNORECASE,
+)
+_MAX_TEST_RULES = 3
+_MAX_TEST_RULE_CHARS = 600
+
+
+def _repository_test_rules_section(workspace: Path) -> str:
+    quoted: list[str] = []
+    for name in _GUIDE_NAMES:
+        path = workspace / name
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for paragraph in re.split(r"\n\s*\n", text):
+            paragraph = paragraph.strip()
+            if not paragraph or paragraph.startswith(("#", "```", "..")):
+                continue
+            if not any(
+                _TEST_PLACE.search(line) and _DIRECTIVE.search(line)
+                for line in paragraph.splitlines()
+            ):
+                continue
+            if len(paragraph) > _MAX_TEST_RULE_CHARS:
+                paragraph = paragraph[:_MAX_TEST_RULE_CHARS].rstrip() + " [...]"
+            quote = "> " + paragraph.replace("\n", "\n> ")
+            quoted.append(f"From `{name}`:\n\n{quote}")
+            if len(quoted) == _MAX_TEST_RULES:
+                break
+        if len(quoted) == _MAX_TEST_RULES:
+            break
+    if not quoted:
+        return ""
+    return (
+        "\n## Repository test rules\n\n"
+        "The repository's own guides say where tests go. Follow them; a "
+        "candidate that breaks them is edited after review and must be "
+        "verified and reviewed again.\n\n" + "\n\n".join(quoted) + "\n"
+    )
+
+
 def _known_scope_section(run_directory: Path) -> str:
     prescreen = _read_json(run_directory / "prescreen.json")
     symbols = [str(item) for item in prescreen.get("symbols") or [] if str(item)]
@@ -623,8 +685,10 @@ def write_task_prompts(
         )
     prior_art = load_prior_art_markdown(run_directory)
     maintainer_review = load_review_markdown(run_directory)
-    scope = _known_scope_section(run_directory) + _remarks_elsewhere_section(
-        run_directory
+    scope = (
+        _known_scope_section(run_directory)
+        + _remarks_elsewhere_section(run_directory)
+        + _repository_test_rules_section(run_directory / "workspace")
     )
     reproduction = _reproduction_section(run_directory)
     work_order, work_order_section = _work_order(

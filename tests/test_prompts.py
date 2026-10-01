@@ -438,8 +438,85 @@ class TaskPromptTests(unittest.TestCase):
             )
 
 
-if __name__ == "__main__":
-    unittest.main()
+
+# scikit-hep/awkward AGENTS.md at bb124c12, cut to the testing section.
+AWKWARD_AGENTS_TESTING = """\
+# AGENTS.md
+
+## Testing
+
+```bash
+python -m pytest -n auto tests                      # main test suite
+```
+
+Test files are named `tests/test_XXXX-description.py` where `XXXX` is the GitHub issue or PR number (enforced by `dev/validate-test-names.py`). New code needs a new test file following this convention.
+
+Warnings are errors in pytest (`filterwarnings = ["error", ...]`).
+
+The hand-written C++ implementations live in `awkward-cpp/src/cpu-kernels/` (one file per kernel) and must match the spec. Adding/changing a kernel means touching the YAML spec, the C++ implementation, and (sometimes) test data.
+
+  * test: adding missing tests or correcting existing tests
+  * chore: other changes that don't modify src or test files
+
+## Docs
+
+Build the docs with nox.
+"""
+
+
+class RepositoryTestRulePromptTests(unittest.TestCase):
+    """https://github.com/wolfgang-aura/Mailman/issues/370
+
+    awkward 4228's primary appended tests to an existing file because the
+    prompt never quoted AGENTS.md's new-test-file rule; the operator's move
+    cost a second verification and review cycle.
+    """
+
+    def _prompts(self, guides: dict[str, str]) -> tuple[str, str]:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, run_directory = make_run(Path(temporary_directory) / "runs")
+            workspace = run_directory / "workspace"
+            source = workspace / "src" / "unionarray.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("x = 1\n", encoding="utf-8")
+            for name, text in guides.items():
+                (workspace / name).write_text(text, encoding="utf-8")
+            (run_directory / "issue.md").write_text(
+                "# Bug\n\nThe bug is in `src/unionarray.py`.\n", encoding="utf-8"
+            )
+            primary_path, reviewer_path = write_task_prompts(
+                run, run_directory, verification_command=["python", "-m", "pytest"]
+            )
+            return (
+                primary_path.read_text(encoding="utf-8"),
+                reviewer_path.read_text(encoding="utf-8"),
+            )
+
+    def test_both_prompts_quote_the_test_file_rule_from_agents_md(self) -> None:
+        primary, reviewer = self._prompts({"AGENTS.md": AWKWARD_AGENTS_TESTING})
+        rule = "New code needs a new test file following this convention."
+        for prompt in (primary, reviewer):
+            self.assertIn("Repository test rules", prompt)
+            self.assertIn("AGENTS.md", prompt)
+            self.assertIn(rule, prompt)
+            self.assertNotIn("Build the docs with nox.", prompt)
+            self.assertNotIn("one file per kernel", prompt)
+            self.assertNotIn("don't modify src or test files", prompt)
+
+    def test_a_guide_without_test_rules_adds_no_section(self) -> None:
+        primary, reviewer = self._prompts(
+            {"CONTRIBUTING.md": "# Contributing\n\nBe kind. Open a pull request.\n"}
+        )
+        self.assertNotIn("Repository test rules", primary)
+        self.assertNotIn("Repository test rules", reviewer)
+
+    def test_the_quoted_rules_are_bounded(self) -> None:
+        paragraph = "Each new test file must be named test_N.py. " * 40
+        guide = "\n\n".join([paragraph] * 10)
+        primary, _ = self._prompts({"CONTRIBUTING.md": guide})
+        start = primary.index("Repository test rules")
+        section = primary[start:].split("\n## ", 1)[0]
+        self.assertLess(len(section), 2500)
 
 
 class StaleAttemptPromptTests(unittest.TestCase):
@@ -517,3 +594,7 @@ class StaleAttemptPromptTests(unittest.TestCase):
             primary = primary_path.read_text(encoding="utf-8")
 
         self.assertNotIn("no longer claim this issue", primary)
+
+
+if __name__ == "__main__":
+    unittest.main()
