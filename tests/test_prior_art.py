@@ -451,6 +451,83 @@ class CitedPullRequestReadTests(unittest.TestCase):
         self.assertIn("could not be read", record["detail"])
 
 
+class CitedTestOnlyMergeTests(unittest.TestCase):
+    """A merged pull request that only adds tests naming the issue is not its
+    fix. scikit-hep/awkward#4231 added `_has_issue_4228`, a property-test skip
+    predicate, and #4228 was refused as already fixed. Mailman #368."""
+
+    def _resolve(self, payload: dict) -> dict:
+        from mailman.prior_art import resolve_cited_pull_requests
+
+        def fake_execute(command, **_):
+            return CommandResult(
+                command, ".", "", 0.0, 0, json.dumps(payload), "", False, 60, {}
+            )
+
+        with TemporaryDirectory() as directory, patch(
+            "mailman.prior_art.execute", fake_execute
+        ):
+            return resolve_cited_pull_requests(
+                Path(directory),
+                references=[
+                    {"repository": "scikit-hep/awkward", "number": 4231,
+                     "text": "#4231", "in": "timeline"}
+                ],
+                executable="gh",
+                repository="scikit-hep/awkward",
+                issue_number=4228,
+            )
+
+    def _merged(self, files: list[str], body: str = "property tests") -> dict:
+        return dict(
+            MERGED_PULL_REQUEST,
+            number=4231,
+            title="test: add property-based roundtrip tests for `to_arrow`",
+            url="https://github.com/scikit-hep/awkward/pull/4231",
+            body=body,
+            files=[{"path": path} for path in files],
+            closingIssuesReferences=[],
+        )
+
+    def test_a_merged_test_only_pull_request_is_not_the_fix(self) -> None:
+        record = self._resolve(
+            self._merged(
+                [
+                    "tests/properties/operations/test_to_from_arrow.py",
+                    "tests/conftest.py",
+                ]
+            )
+        )
+        self.assertEqual(record["merged"], [])
+        self.assertEqual([row["number"] for row in record["test_only"]], [4231])
+        self.assertIsNone(record["decided_by"])
+
+    def test_a_merged_pull_request_that_touches_source_still_blocks(self) -> None:
+        record = self._resolve(
+            self._merged(
+                [
+                    "src/awkward/contents/unionarray.py",
+                    "tests/test_4228.py",
+                ]
+            )
+        )
+        self.assertEqual([row["number"] for row in record["merged"]], [4231])
+        self.assertEqual(record["test_only"], [])
+
+    def test_a_test_only_pull_request_that_closes_the_issue_still_blocks(self) -> None:
+        # The project said this is the resolution; the issue is not ours to argue.
+        record = self._resolve(
+            self._merged(["tests/test_4228.py"], body="Closes #4228")
+        )
+        self.assertEqual([row["number"] for row in record["merged"]], [4231])
+
+    def test_a_pull_request_with_no_file_list_still_blocks(self) -> None:
+        payload = self._merged([])
+        payload.pop("files")
+        record = self._resolve(payload)
+        self.assertEqual([row["number"] for row in record["merged"]], [4231])
+
+
 class PriorArtMaintainerSetTests(unittest.TestCase):
     """`collect_prior_art` reads closures against the screen's maintainer
     logins, as `resolve_cited_pull_requests` does. Mailman #345."""

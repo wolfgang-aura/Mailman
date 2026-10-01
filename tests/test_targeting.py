@@ -357,6 +357,46 @@ class AssessTargetTests(unittest.TestCase):
         self.assertEqual(assessment.merged_attempts, [_MERGED])
         self.assertEqual(assessment.closed_attempts, [])
 
+    @staticmethod
+    def _numbered(root: Path) -> Path:
+        (root / "duplicate-search.json").write_text(
+            json.dumps({"success": True, "matches": [], "issue_number": 4775}),
+            encoding="utf-8",
+        )
+        return root
+
+    def test_a_merged_test_only_attempt_is_not_the_fix(self) -> None:
+        # scikit-hep/awkward#4231 only added a skip predicate naming #4228.
+        # Mailman #368.
+        test_only = dict(_MERGED, test_only=True, closes=[])
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(
+                self._numbered(_record(Path(temporary), attempts=[test_only]))
+            )
+
+        self.assertNotIn(ALREADY_FIXED_UPSTREAM, assessment.blocking)
+        self.assertEqual(assessment.merged_attempts, [])
+
+    def test_a_merged_test_only_attempt_that_closes_the_issue_still_blocks(
+        self,
+    ) -> None:
+        closing = dict(_MERGED, test_only=True, closes=["pytest-dev/pytest#4775"])
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(
+                self._numbered(_record(Path(temporary), attempts=[closing]))
+            )
+
+        self.assertIn(ALREADY_FIXED_UPSTREAM, assessment.blocking)
+
+    def test_a_test_only_attempt_blocks_when_the_issue_number_is_unknown(
+        self,
+    ) -> None:
+        test_only = dict(_MERGED, test_only=True, closes=[])
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(_record(Path(temporary), attempts=[test_only]))
+
+        self.assertIn(ALREADY_FIXED_UPSTREAM, assessment.blocking)
+
     def test_a_merged_attempt_refuses_even_when_acknowledged(self) -> None:
         # `--acknowledge-prior-attempts` answers "someone tried and the
         # maintainers said no". It has no answer for "upstream already ships

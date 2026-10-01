@@ -37,12 +37,35 @@ CITED_PULL_REQUESTS_FILENAME = "cited-pull-requests.json"
 #: rather than abandoned; see `awaits_maintainer`.
 _CITED_FIELDS = (
     "number,state,mergedAt,mergeCommit,title,url,createdAt,updatedAt,isDraft,author,"
-    "comments,reviews,body,closingIssuesReferences"
+    "comments,reviews,body,closingIssuesReferences,files"
 )
+
+
+def _is_test_path(path: str) -> bool:
+    """A file a test suite owns: under a tests directory, or named as a test."""
+    parts = [part.lower() for part in path.replace("\\", "/").split("/") if part]
+    if not parts:
+        return False
+    name = parts[-1]
+    return (
+        any(part in {"test", "tests", "testing"} for part in parts[:-1])
+        or name.startswith("test_")
+        or name.endswith(("_test.py", "_tests.py"))
+        or name == "conftest.py"
+    )
+
+
+def _touches_only_tests(payload: dict[str, Any]) -> bool:
+    """True only when GitHub listed the files and every one is a test file."""
+    files = payload.get("files")
+    if not isinstance(files, list) or not files:
+        return False
+    paths = [str(row.get("path") or "") for row in files if isinstance(row, dict)]
+    return len(paths) == len(files) and all(_is_test_path(path) for path in paths)
 
 _PULL_REQUEST_FIELDS = (
     "number,title,state,url,body,author,createdAt,updatedAt,closedAt,mergedAt,"
-    "mergeCommit,headRefOid,isDraft,files,comments,reviews"
+    "mergeCommit,headRefOid,isDraft,files,comments,reviews,closingIssuesReferences"
 )
 
 # GitHub's author association for someone who can merge. A comment from one of
@@ -317,6 +340,11 @@ def summarize_pull_request(payload: dict[str, Any]) -> dict[str, Any]:
         # A rewritten history drops the merge sha but keeps the branch head.
         # Mailman #298.
         summary["head_sha"] = payload.get("headRefOid")
+        # Whether it only added tests, and what GitHub says it closed: a
+        # skip predicate naming the issue is not its fix. The paths stay
+        # withheld; only the verdict is kept. Mailman #368.
+        summary["test_only"] = _touches_only_tests(payload)
+        summary["closes"] = _closing_references(payload.get("closingIssuesReferences"))
         return summary
     summary["body"] = _trim(payload.get("body"), _BODY_CHARACTER_LIMIT)
     summary["changed_files"] = changed
@@ -645,6 +673,9 @@ def resolve_cited_pull_requests(
         "unread": [],
         "open": [],
         "merged": [],
+        # Merged, but only tests that name the issue, and not closing it: a
+        # skip predicate or an xfail, not the fix. Mailman #368.
+        "test_only": [],
         "stale": [],
         "maintainer_closed": [],
         "maintainer_owned": [],
@@ -733,6 +764,7 @@ def resolve_cited_pull_requests(
             # A sibling repository's merge fixes the issue only if it is one.
             # Mailman #206.
             "closes": _closing_references(payload.get("closingIssuesReferences")),
+            "test_only": _touches_only_tests(payload),
         }
         if attempt_is_dormant(row, now=now):
             # Only now, and only for an attempt that has already stopped
@@ -781,6 +813,14 @@ def resolve_cited_pull_requests(
             record["stale"].append(stale_attempt_row(row, now=now))
         elif row["state"] == "OPEN":
             record["open"].append(row)
+        elif (
+            row["state"] == "MERGED"
+            and row["test_only"]
+            and not row["closes_issue"]
+            and f"{str(repository or '').lower()}#{issue_number}"
+            not in [str(ref).lower() for ref in row["closes"]]
+        ):
+            record["test_only"].append(row)
         elif row["state"] == "MERGED":
             record["merged"].append(row)
     decided = (record["open"] or record["merged"] or [None])[0]

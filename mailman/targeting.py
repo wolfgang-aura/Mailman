@@ -867,10 +867,24 @@ def assess_target(
         and attempt.get("outcome") == "open"
         and attempt.get("number") not in stale_numbers
     ]
+    def _test_only(attempt: dict[str, Any]) -> bool:
+        # A merged pull request that only added tests naming this issue and
+        # did not close it: scikit-hep/awkward#4231 skipped #4228's crash in
+        # its property tests. Mailman #368.
+        # An issue number that cannot be read keeps the block.
+        if not isinstance(issue_number, int):
+            return False
+        closes = [str(ref) for ref in attempt.get("closes") or []]
+        return attempt.get("test_only") is True and not any(
+            ref.endswith(f"#{issue_number}") for ref in closes
+        )
+
     all_merged = [
         attempt
         for attempt in attempts
-        if isinstance(attempt, dict) and attempt.get("outcome") == "merged"
+        if isinstance(attempt, dict)
+        and attempt.get("outcome") == "merged"
+        and not _test_only(attempt)
     ]
     superseded_attempts = [
         attempt
