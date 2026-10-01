@@ -326,11 +326,12 @@ def export_patch(
     names = _git(
         git_executable,
         workspace_path,
-        ["diff", "--no-color", "--name-only", run.base_commit],
+        # -z: without it git C-quotes a non-ASCII path (#338).
+        ["diff", "--no-color", "--name-only", "-z", run.base_commit],
         timeout_seconds=timeout_seconds,
         detail="could not list the changed files",
     )
-    changed_files = [line for line in names.splitlines() if line.strip()]
+    changed_files = [name for name in names.split("\0") if name.strip()]
     if not diff.strip():
         raise ValueError(
             f"the workspace has no change against base commit {run.base_commit}"

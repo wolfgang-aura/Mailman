@@ -316,6 +316,19 @@ class ExportTests(unittest.TestCase):
             )
             self.assertEqual(record["changed_files"], ["changelog/7.bugfix.rst"])
 
+    def test_lists_a_non_ascii_path_as_written(self) -> None:
+        # #338: git quotes "café.py" as "caf\303\251.py" unless asked for -z.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workspace, base_commit = make_workspace(root)
+            run, run_directory = make_ready_run(root, base_commit)
+            (workspace / "café.py").write_text("x = 1\n", encoding="utf-8")
+
+            record = export_patch(
+                run, run_directory, workspace=workspace, destination=root / "export"
+            )
+            self.assertEqual(record["changed_files"], ["café.py"])
+
 
 if __name__ == "__main__":
     unittest.main()
