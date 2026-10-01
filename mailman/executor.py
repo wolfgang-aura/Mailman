@@ -353,6 +353,7 @@ def _stream(
         stopped_reason,
     )
 
+
 def venv_activation(program: str, base: Mapping[str, str]) -> dict[str, str]:
     """PATH and VIRTUAL_ENV as activation would set them for a venv program.
 
