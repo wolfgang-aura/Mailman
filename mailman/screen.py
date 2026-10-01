@@ -2034,9 +2034,14 @@ def _age_in_days(row: dict[str, Any], now: datetime) -> int | None:
         return None
 
 
+#: Comment pages read per thread. A claim can sit past comment 100 (#344); a
+#: thread past 1,000 reads as unread rather than as one with nothing more.
+_THREAD_PAGES = 10
+
+
 def _read_thread(
     gh: _Gh, slug: str, number: str, maintainers: Collection[str] = ()
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """Read one issue's thread for a claim, and for what ranks it.
 
     The claim is the form GitHub itself does not track: a comment saying
@@ -2046,10 +2051,15 @@ def _read_thread(
     says whether a maintainer asked for the pull request, when a maintainer
     last wrote, and which pull requests the thread cites, and the shortlist
     ranks on those. One read answers all four.
+
+    None when the thread could not all be read: an unread thread is not an
+    empty one, and the row then carries `thread_read` False (#344).
     """
-    comments = gh.pages(
-        f"repos/{slug}/issues/{number}/comments?per_page=100", pages=1
+    comments = gh.every_page(
+        f"repos/{slug}/issues/{number}/comments", pages=_THREAD_PAGES
     )
+    if comments is None:
+        return None
     return {
         "comments": comments,
         "claimed": any(
@@ -2122,6 +2132,11 @@ def _shortlist_row(
     }
 
 
+#: Timeline pages read per shortlist row. A rival cross-reference can sit
+#: past event 100 on a long thread (#339); one past 1,000 reads as unknown.
+_TIMELINE_PAGES = 10
+
+
 def _read_timelines(
     gh: _Gh, slug: str, shortlist: list[dict[str, Any]], issues: list[dict[str, Any]]
 ) -> None:
@@ -2141,9 +2156,9 @@ def _read_timelines(
     }
     rows = [row for row in shortlist if row.get("thread_read")][:_COMMENT_THREAD_LIMIT]
 
-    def read(row: dict[str, Any]) -> list[Any]:
-        return gh.pages(
-            f"repos/{slug}/issues/{row['number']}/timeline?per_page=100", pages=1
+    def read(row: dict[str, Any]) -> list[Any] | None:
+        return gh.every_page(
+            f"repos/{slug}/issues/{row['number']}/timeline", pages=_TIMELINE_PAGES
         )
 
     with ThreadPoolExecutor(max_workers=RESPONSIVENESS_WORKERS) as pool:
@@ -2152,6 +2167,11 @@ def _read_timelines(
         row.setdefault("maintainer_labelled", None)
         row.setdefault("rival_pull_requests", None)
     for row, timeline in zip(rows, timelines):
+        # A timeline that could not be read is no answer about rivals, and
+        # `hunt targets` does not offer the row. Mailman #339.
+        row["timeline_read"] = timeline is not None
+        if timeline is None:
+            continue
         row["maintainer_labelled"] = bool(
             maintainer_labels(timeline, reporter=reporters.get(str(row["number"])))
         )
@@ -2201,10 +2221,15 @@ def _saturation_gate(
     ]
     threads_capped = max(0, len(candidates) - _COMMENT_THREAD_LIMIT)
     threads: dict[str, dict[str, Any]] = {}
+    threads_unread = 0
     for row in candidates[:_COMMENT_THREAD_LIMIT]:
         number = str(row["number"])
-        threads[number] = _read_thread(gh, slug, number, maintainers)
-        if threads[number]["claimed"]:
+        thread = _read_thread(gh, slug, number, maintainers)
+        if thread is None:
+            threads_unread += 1
+            continue
+        threads[number] = thread
+        if thread["claimed"]:
             claimed_by_comment.add(number)
     claimed |= claimed_by_comment
 
@@ -2269,6 +2294,7 @@ def _saturation_gate(
         ),
         "comment_threads_read": min(len(candidates), _COMMENT_THREAD_LIMIT),
         "comment_threads_capped": threads_capped,
+        "comment_threads_unread": threads_unread,
         "claimed_share": (
             round(1 - len(unclaimed) / len(unassigned), 2) if unassigned else None
         ),

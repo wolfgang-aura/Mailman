@@ -1195,6 +1195,47 @@ class ReferenceRecordTests(unittest.TestCase):
             [(row["repository"], row["number"]) for row in record["references"]],
         )
 
+    def test_a_cross_reference_on_the_second_timeline_page_is_read(self) -> None:
+        # Mailman #339: one timeline page missed a rival past event 100.
+        filler = [{"event": "subscribed"}] * 100
+        rival = _cross_reference(
+            "https://github.com/openai/openai-agents-python/pull/4801"
+        )
+        gh = _FakeGh({"number": 4775, "assignees": [], "body": ""}, [])
+
+        def paged(arguments, **keywords):
+            if "/timeline" in arguments[2]:
+                gh.asked.append(arguments[2])
+                page = 2 if "page=2" in arguments else 1
+                return _Result(json.dumps(filler if page == 1 else [rival]))
+            return gh(arguments, **keywords)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._run(Path(temporary))
+            record = read_claims(root, executable="gh", execute=paged)
+
+        self.assertTrue(record["success"])
+        self.assertIn(
+            ("openai/openai-agents-python", 4801),
+            [(row["repository"], row["number"]) for row in record["references"]],
+        )
+
+    def test_a_failed_timeline_read_is_not_an_empty_one(self) -> None:
+        # Mailman #339: a failed read recorded no rivals and the issue passed.
+        gh = _FakeGh({"number": 4775, "assignees": [], "body": ""}, [])
+
+        def broken(arguments, **keywords):
+            if "/timeline" in arguments[2]:
+                return _Result("", exit_code=1)
+            return gh(arguments, **keywords)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._run(Path(temporary))
+            record = read_claims(root, executable="gh", execute=broken)
+
+        self.assertFalse(record["success"])
+        self.assertIn("timeline", record["detail"])
+
 
 class ReportedFixedTests(unittest.TestCase):
     """Mailman #236: anyone saying the bug is gone on main is worth a warning."""

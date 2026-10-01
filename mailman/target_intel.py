@@ -62,11 +62,18 @@ _MARKER = re.compile(r"<!--\s*([a-z0-9][a-z0-9:._-]{2,60})\s*-->", re.IGNORECASE
 _HASH_TAIL = re.compile(r"[:._-][0-9a-f]{12,}$")
 _LAYOUT_ENDS = ("_start", "_end")
 
-_ISSUE_REFERENCE = re.compile(r"#(\d{2,7})")
-_ISSUE_URL_REFERENCE = re.compile(r"issues/(\d{2,7})")
+#: `#7`, `#4321`, or `owner/repo#7`. The repository, when written, is kept so
+#: another repository's issue is not read as this one's (#346).
+_ISSUE_REFERENCE = re.compile(
+    r"(?:(?<![\w.-])([\w.-]+/[\w.-]+)|(?<![\w/&]))#(\d{1,7})\b"
+)
+#: `github.com/owner/repo/issues/7`; a bare `issues/7` names no repository.
+_ISSUE_URL_REFERENCE = re.compile(
+    r"(?:github\.com/([\w.-]+/[\w.-]+)/)?issues/(\d{1,7})\b"
+)
 #: Branch names carry the reference when the body forgets to: `fix/issue-104`,
 #: `issue_104`. Mailman's own convention, `mailman/issue-3497`, is one of these.
-_BRANCH_REFERENCE = re.compile(r"issue[-_]?(\d{2,7})", re.IGNORECASE)
+_BRANCH_REFERENCE = re.compile(r"issue[-_]?(\d{1,7})", re.IGNORECASE)
 
 
 #: Tools an issue thread names when it says how everybody else behaves. The
@@ -189,21 +196,35 @@ def is_outside_human(row: dict[str, Any]) -> bool:
     )
 
 
-def referenced_issues(row: dict[str, Any]) -> set[str]:
-    """Every issue number a pull request's text points at."""
+def referenced_issues(
+    row: dict[str, Any], repository: str | None = None
+) -> set[str]:
+    """Every issue number of `repository` a pull request's text points at.
+
+    `repository` defaults to the pull request's own base repository. A
+    reference that names another repository is not counted; one that names
+    none is. The whole body is read and `#7` counts (#346).
+    """
     head = row.get("head") or {}
+    if repository is None:
+        base = row.get("base") or {}
+        repo = base.get("repo") if isinstance(base, dict) else None
+        repository = (repo or {}).get("full_name") if isinstance(repo, dict) else None
+    own = (repository or "").lower()
     text = " ".join(
         [
             row.get("title") or "",
-            (row.get("body") or "")[:2000],
+            row.get("body") or "",
             head.get("ref") or "" if isinstance(head, dict) else "",
         ]
     )
-    return (
-        set(_ISSUE_REFERENCE.findall(text))
-        | set(_ISSUE_URL_REFERENCE.findall(text))
-        | set(_BRANCH_REFERENCE.findall(text))
-    )
+    found = {
+        number
+        for pattern in (_ISSUE_REFERENCE, _ISSUE_URL_REFERENCE)
+        for named, number in pattern.findall(text)
+        if not named or not own or named.lower() == own
+    }
+    return found | set(_BRANCH_REFERENCE.findall(text))
 
 
 def classify_claims(pull_requests: list[dict[str, Any]]) -> dict[str, set[str]]:
@@ -418,6 +439,25 @@ class _Gh:
             if len(got) < 100:
                 break
         return rows
+
+    def every_page(self, path: str, *, pages: int) -> list[dict[str, Any]] | None:
+        """Every row behind `path`, or None when it could not all be read.
+
+        `pages` reads a failed page as the end of the list, which is right for
+        a sample and wrong for evidence: a thread or timeline cut short reads
+        as one with nothing more in it. A failed page, or a list still full at
+        the cap, is None here (#339, #344).
+        """
+        rows: list[dict[str, Any]] = []
+        joiner = "&" if "?" in path else "?"
+        for page in range(1, pages + 1):
+            got = self.json(f"{path}{joiner}per_page=100&page={page}")
+            if not isinstance(got, list):
+                return None
+            rows += got
+            if len(got) < 100:
+                return rows
+        return None
 
 
 def _merge_path_rows(

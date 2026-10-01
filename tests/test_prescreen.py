@@ -206,7 +206,18 @@ if ARGUMENTS[:2] == ["search", "prs"] and "--merged" in ARGUMENTS:
     raise SystemExit(0)
 if ARGUMENTS[:2] == ["pr", "view"]:
     slug = ARGUMENTS[ARGUMENTS.index("--repo") + 1] if "--repo" in ARGUMENTS else ""
-    emit("pr-" + slug.replace("/", "__") + "-" + ARGUMENTS[2] + ".json")
+    name = "pr-" + slug.replace("/", "__") + "-" + ARGUMENTS[2] + ".json"
+    if (HERE / "pr-view-fails.txt").is_file():
+        sys.stderr.write((HERE / "pr-view-fails.txt").read_text(encoding="utf-8"))
+        raise SystemExit(1)
+    if not (HERE / name).is_file():
+        # What GitHub answers for an issue number or a heading anchor.
+        sys.stderr.write(
+            "GraphQL: Could not resolve to a PullRequest with the number of "
+            + ARGUMENTS[2] + ". (repository.pullRequest)\\n"
+        )
+        raise SystemExit(1)
+    emit(name)
 if ARGUMENTS[:1] == ["api"]:
     path = ARGUMENTS[1]
     if path == "graphql":
@@ -2886,6 +2897,140 @@ class PullRequestBaseTests(unittest.TestCase):
                 executable="no-such-gh",
             )
         )
+
+
+class ScopedLabelTests(unittest.TestCase):
+    def test_a_scoped_label_is_read_by_its_name(self) -> None:
+        # pypdf#4105: `status: needs discussion`, `type: enhancement` and
+        # `kind/feature` matched no exact name and nothing later caught them.
+        # Mailman #334.
+        from mailman.prescreen import _issue_blocking
+
+        def blocking(*labels: str) -> list[str]:
+            return _issue_blocking(
+                {"success": True, "state": "OPEN", "labels": list(labels)}
+            )
+
+        for label, code in (
+            ("status: needs discussion", "issue-under-discussion"),
+            ("Status: Needs-Discussion", "issue-under-discussion"),
+            ("needs_discussion", "issue-under-discussion"),
+            ("type: enhancement", ISSUE_NOT_BOUNDED_FIX),
+            ("kind/feature", ISSUE_NOT_BOUNDED_FIX),
+            ("Type: Feature Request", ISSUE_NOT_BOUNDED_FIX),
+        ):
+            with self.subTest(label=label):
+                self.assertIn(code, blocking(label))
+        for label in (
+            "type: bug",
+            "kind/bug",
+            "area/design",
+            "component: project",
+            "topic: discussion forum",
+        ):
+            with self.subTest(label=label):
+                self.assertEqual(blocking(label), [])
+
+
+
+class UnreadCitedPullRequestTests(unittest.TestCase):
+    """A cited pull request `gh` could not read may be an open rival. Mailman
+    #344. Not a `PrescreenTests` subclass, so its base tests do not run again."""
+
+    setUp = PrescreenTests.setUp
+    stub = PrescreenTests.stub
+
+    def test_an_unread_cited_pull_request_holds_the_issue(self) -> None:
+        executable = self.stub(
+            "[]",
+            comments=[
+                {
+                    "id": 1,
+                    "user": {"login": "someone", "type": "User"},
+                    "author_association": "NONE",
+                    "body": "There is a fix for this in #12.",
+                    "created_at": "2026-09-02T00:00:00Z",
+                }
+            ],
+        )
+        (Path(executable).parent / "pr-view-fails.txt").write_text(
+            "HTTP 403: API rate limit exceeded\n", encoding="utf-8"
+        )
+
+        record = prescreen_issue(self.root, "example/project#7", executable=executable)
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertIn("cited-pull-request-unread", record["blocking"])
+        self.assertIn("could not be read", record["next"])
+
+    def test_an_issue_number_cited_in_the_thread_does_not_hold_it(self) -> None:
+        executable = self.stub(
+            "[]",
+            comments=[
+                {
+                    "id": 1,
+                    "user": {"login": "someone", "type": "User"},
+                    "author_association": "NONE",
+                    "body": "Same as #12.",
+                    "created_at": "2026-09-02T00:00:00Z",
+                }
+            ],
+        )
+
+        record = prescreen_issue(self.root, "example/project#7", executable=executable)
+
+        self.assertNotIn("cited-pull-request-unread", record["blocking"])
+        self.assertEqual(
+            [row["number"] for row in record["cited_pull_requests"]["skipped"]], [12]
+        )
+
+
+class ReporterIsMaintainerTests(unittest.TestCase):
+    """A reporter the screen knows as a maintainer is the project speaking,
+    whatever association GitHub shows on the issue. Mailman #345."""
+
+    def test_a_maintainer_reporter_is_neither_unacknowledged_nor_untriaged(
+        self,
+    ) -> None:
+        from mailman.prescreen import _acknowledgement
+
+        found = _acknowledgement(
+            {
+                "success": True,
+                "reporter_association": "NONE",
+                "reporter_is_maintainer": True,
+                "maintainer_replied": False,
+                "maintainer_labelled": False,
+                "invitations": [],
+                "issue_created_at": "2026-01-01T00:00:00Z",
+            }
+        )
+
+        self.assertFalse(found["unacknowledged"])
+        self.assertFalse(found["untriaged"])
+
+
+class FailedClaimCheckTests(unittest.TestCase):
+    """A claim check that never ran is no evidence the issue is free. It
+    passed, with no ask-first, and orchestrate later failed on the missing
+    claims.json. Mailman #342. Not a `PrescreenTests` subclass, so its base
+    tests do not run again."""
+
+    setUp = PrescreenTests.setUp
+    stub = PrescreenTests.stub
+
+    def test_a_failed_claim_check_holds_the_issue(self) -> None:
+        from unittest.mock import patch
+
+        failed = {"success": False, "detail": "API rate limit exceeded"}
+        with patch("mailman.prescreen.read_claims", return_value=failed):
+            record = prescreen_issue(
+                self.root, "example/project#7", executable=self.stub("[]")
+            )
+
+        self.assertNotEqual(record["verdict"], "pass")
+        self.assertIn("no-claim-check", record["blocking"])
+        self.assertIn("prescreen example/project#7", record["next"])
 
 
 if __name__ == "__main__":

@@ -59,6 +59,7 @@ from mailman.targeting import (
     MAINTAINER_OWNED_FIX,
     MAINTAINER_REMARK_ELSEWHERE,
     MERGED_BEFORE_ISSUE_DAYS,
+    NO_CLAIM_CHECK,
     NO_DUPLICATE_SEARCH,
     NO_MAINTAINER_REPLY,
     OPEN_PULL_REQUEST,
@@ -96,6 +97,10 @@ ISSUE_SCREENS = "issue-screens"
 #: shortlist in the morning and work it in the afternoon.
 PRESCREEN_HOURS = 24
 ISSUE_UNREADABLE = "issue-unreadable"
+#: A pull request the thread cites that `gh` could not read, for a reason
+#: other than GitHub saying it is not one. It may be the open rival, so the
+#: issue is held until it can be read. Mailman #344.
+CITED_UNREAD = "cited-pull-request-unread"
 ISSUE_NOT_OPEN = "issue-not-open"
 ISSUE_NOT_BOUNDED_FIX = "issue-not-bounded-fix"
 #: The maintainers have said the design is not settled. A patch on such an
@@ -282,6 +287,9 @@ _DISCUSSION_DESCRIPTION = re.compile(
 #: Reproduction needs a clone, and target intel comes from `screen-target`.
 DECIDABLE = (
     NO_DUPLICATE_SEARCH,
+    # A claim check that could not run is no evidence the issue is free; a
+    # rate-limited batch passed issues with none. Mailman #342.
+    NO_CLAIM_CHECK,
     NO_MAINTAINER_REPLY,
     OPEN_PULL_REQUEST,
     ALREADY_FIXED_UPSTREAM,
@@ -350,11 +358,34 @@ def _store_prescreen(
     temporary.replace(path)
 
 
+#: A classification scope in front of a label name: `status: needs
+#: discussion`, `type: enhancement`, `kind/feature`. pypdf#4105 got past an
+#: exact-name check this way (#334). Only these scopes: `area/design` names a
+#: subject, not a decision still open.
+_LABEL_SCOPE = re.compile(
+    r"^(?:type|kind|status|state|stage|triage|category|resolution)\s*[:/]\s*"
+)
+
+
+def _label_name(label: object) -> str:
+    """A label with its scope dropped and its separators read as spaces."""
+    name = _LABEL_SCOPE.sub("", str(label).strip().lower())
+    return re.sub(r"[\s_-]+", " ", name).strip()
+
+
+def _label_names(captured: dict[str, Any]) -> set[str]:
+    return {_label_name(label) for label in captured.get("labels") or []}
+
+
+def _named(labels: frozenset[str]) -> frozenset[str]:
+    return frozenset(_label_name(label) for label in labels)
+
+
 def _feature_only(captured: dict[str, Any]) -> bool:
     """Say whether the issue's only non-fix labels are feature labels."""
-    labels = {str(label).strip().lower() for label in captured.get("labels") or []}
-    return bool(labels & _FEATURE_LABELS) and not (
-        labels & (_NON_FIX_LABELS - _FEATURE_LABELS)
+    labels = _label_names(captured)
+    return bool(labels & _named(_FEATURE_LABELS)) and not (
+        labels & _named(_NON_FIX_LABELS - _FEATURE_LABELS)
     )
 
 
@@ -365,10 +396,10 @@ def _issue_blocking(captured: dict[str, Any]) -> list[str]:
     elif str(captured.get("state") or "").upper() != "OPEN":
         blocking.append(ISSUE_NOT_OPEN)
     labels = {str(label).strip().lower() for label in captured.get("labels") or []}
-    if labels & _NON_FIX_LABELS:
+    if _label_names(captured) & _named(_NON_FIX_LABELS):
         blocking.append(ISSUE_NOT_BOUNDED_FIX)
     descriptions = (captured.get("label_descriptions") or {}).values()
-    if labels & _DISCUSSION_LABELS or any(
+    if _label_names(captured) & _named(_DISCUSSION_LABELS) or any(
         _DISCUSSION_DESCRIPTION.search(str(text)) for text in descriptions
     ):
         blocking.append(ISSUE_UNDER_DISCUSSION)
@@ -547,6 +578,7 @@ def _acknowledgement(
             or claims.get("invitations")
         ),
         created_at=claims.get("issue_created_at"),
+        reporter_is_maintainer=bool(claims.get("reporter_is_maintainer")),
     )
     # The same question with no grace window: a fresh report nobody answered
     # is not yet overdue, but it is still untriaged. Mailman #287.
@@ -563,6 +595,7 @@ def _acknowledgement(
             ),
             created_at=claims.get("issue_created_at"),
             days=0,
+            reporter_is_maintainer=bool(claims.get("reporter_is_maintainer")),
         )
     )
     return {
@@ -918,6 +951,8 @@ def prescreen_issue(
 
     if any(_here(row) for row in cited["open"]):
         thread_blocking.append(OPEN_PULL_REQUEST)
+    if cited.get("success") is not True:
+        thread_blocking.append(CITED_UNREAD)
     # A merged pull request the reporter names in the body is the cause or
     # the context of the report, not its fix: zauberzeug/nicegui#6339 was
     # "found while reviewing #6294, where it is out of scope", and #6331 says
@@ -1069,6 +1104,11 @@ def prescreen_issue(
                 "it is labelled as a feature request and no maintainer in the "
                 "thread asked for a pull request"
             )
+        if CITED_UNREAD in thread_blocking:
+            details.append(
+                f"{cited['detail']}; `mailman prescreen {slug}#{number}` again "
+                "once GitHub answers"
+            )
         # The cited pull request is the reason only when it is what blocked.
         if cited["decided_by"] and (
             OPEN_PULL_REQUEST in thread_blocking
@@ -1157,6 +1197,7 @@ def prescreen_issue(
             numbers=numbers,
             executable=executable,
             timeout_seconds=timeout_seconds,
+            maintainers=maintainers,
         )
         record["prior_art"] = {
             "success": prior["success"],
@@ -1221,6 +1262,11 @@ def prescreen_issue(
     record["verdict"] = "reject" if blocking else "pass"
     if blocking:
         record["next"] = f"Do not open a run on {slug}#{number}: " + "; ".join(blocking)
+        if NO_CLAIM_CHECK in blocking:
+            record["next"] += (
+                f". The issue thread could not be read ({claims.get('detail')}); "
+                f"`mailman prescreen {slug}#{number}` again once GitHub answers"
+            )
     else:
         record["next"] = (
             f"mailman init-run --repository https://github.com/{slug}.git "

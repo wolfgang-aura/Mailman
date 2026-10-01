@@ -3095,6 +3095,94 @@ class ShortlistTests(unittest.TestCase):
         )
         self.assertFalse(by_number[12]["maintainer_labelled"])
 
+    def test_a_rival_on_the_second_timeline_page_is_found(self) -> None:
+        # Mailman #339: one timeline page hid a rival past event 100.
+        class PagedTimeline(FakeGitHub):
+            def _payload(self, path: str):
+                if path.split("?", 1)[0].endswith("/11/timeline"):
+                    if "page=2" in path:
+                        return [_cross_reference(20, state="open")]
+                    return [{"event": "subscribed"}] * 100
+                return super()._payload(path)
+
+        _, rows = self._shortlist(
+            PagedTimeline(
+                issues=[_issue(10, days_old=5), _issue(11, days_old=5)],
+                issue_comments={10: [], 11: []},
+            )
+        )
+        by_number = {row["number"]: row for row in rows}
+
+        self.assertEqual(by_number[11]["rival_pull_requests"], ["example/project#20"])
+        self.assertIs(by_number[11]["timeline_read"], True)
+
+    def test_a_failed_timeline_read_records_no_rival_answer(self) -> None:
+        # Mailman #339: a failed read was recorded as `[]`, no rivals.
+        class BrokenTimeline(FakeGitHub):
+            def __call__(self, arguments, **keywords):
+                if "/11/timeline" in arguments[-1]:
+                    self.asked.append(arguments[-1])
+                    return _Result("", exit_code=1)
+                return super().__call__(arguments, **keywords)
+
+        _, rows = self._shortlist(
+            BrokenTimeline(
+                issues=[_issue(10, days_old=5), _issue(11, days_old=5)],
+                issue_comments={10: [], 11: []},
+            )
+        )
+        by_number = {row["number"]: row for row in rows}
+
+        self.assertEqual(by_number[10]["rival_pull_requests"], [])
+        self.assertIs(by_number[10]["timeline_read"], True)
+        self.assertIsNone(by_number[11]["rival_pull_requests"])
+        self.assertIsNone(by_number[11]["maintainer_labelled"])
+        self.assertIs(by_number[11]["timeline_read"], False)
+
+    def test_a_claim_on_the_second_comment_page_is_read(self) -> None:
+        # Mailman #344: one page of comments hid a claim past comment 100.
+        class PagedComments(FakeGitHub):
+            def _payload(self, path: str):
+                if path.split("?", 1)[0].endswith("/issues/11/comments"):
+                    if "page=2" in path:
+                        return [_reply("I'd like to work on this issue.")]
+                    return [_reply("Same here.")] * 100
+                return super()._payload(path)
+
+        record, rows = self._shortlist(
+            PagedComments(
+                issues=[_issue(10, days_old=5), _issue(11, days_old=5)],
+                issue_comments={10: []},
+            )
+        )
+
+        self.assertEqual([row["number"] for row in rows], [10])
+        self.assertEqual(_named(record, "saturation")["data"]["claimed_by_comment"], 1)
+
+    def test_a_failed_thread_read_is_not_an_empty_thread(self) -> None:
+        # Mailman #344: a failed read gave an empty thread, read as unclaimed.
+        class BrokenThread(FakeGitHub):
+            def __call__(self, arguments, **keywords):
+                if "/issues/11/comments" in arguments[-1]:
+                    self.asked.append(arguments[-1])
+                    return _Result("", exit_code=1)
+                return super().__call__(arguments, **keywords)
+
+        record, rows = self._shortlist(
+            BrokenThread(
+                issues=[_issue(10, days_old=5), _issue(11, days_old=5)],
+                issue_comments={10: []},
+            )
+        )
+        by_number = {row["number"]: row for row in rows}
+
+        self.assertIs(by_number[10]["thread_read"], True)
+        self.assertIs(by_number[11]["thread_read"], False)
+        self.assertIsNone(by_number[11]["maintainer_replied"])
+        self.assertEqual(
+            _named(record, "saturation")["data"]["comment_threads_unread"], 1
+        )
+
     def test_a_maintainer_engaged_issue_outranks_a_recent_silent_one(self) -> None:
         _, rows = self._shortlist(
             FakeGitHub(

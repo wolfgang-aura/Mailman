@@ -1367,6 +1367,7 @@ def record_duplicate_acknowledgement(
     # (pandas-stubs#1900, #306). One that names the issue never can.
     cleared: dict[str, str | None] = {}
     by_key = {_duplicate_key(row): row for row in strong}
+    read_heads = False
     for key in not_duplicates or []:
         row = by_key.get(key)
         if row is None:
@@ -1378,13 +1379,32 @@ def record_duplicate_acknowledgement(
                 f"{key} names the issue or is merged, so no acknowledgement clears it"
             )
         if not row.get("head_sha"):
-            # Only `gh search prs` found it, and that carries no head. A None
-            # pin matched None on every later check, so a push never re-blocked.
-            raise ValueError(
-                f"{key} has no recorded head to pin; rerun `mailman duplicate-search` "
-                "so its head is read"
+            # The index and the compact listing carry no head, and a rerun
+            # skips the same row again, so read it here (#331). A None pin
+            # matched None on every later check, so a push never re-blocked.
+            slug = str(search.get("repository") or "")
+            head = (
+                _read_pull_request_head(
+                    run_directory,
+                    slug=slug,
+                    number=row.get("number"),
+                    executable=resolve_tool(run_directory, "gh"),
+                    timeout_seconds=60,
+                )
+                if slug
+                else None
             )
+            if not head:
+                raise ValueError(
+                    f"{key} has no recorded head to pin and reading it failed; "
+                    "retry once GitHub answers"
+                )
+            row["head_sha"] = head
+            read_heads = True
         cleared[key] = row.get("head_sha")
+    if read_heads:
+        # The gate compares the pin with the searched row's head.
+        _write_json(search_path, search)
     record = {
         "schema_version": 1,
         "acknowledged_at": datetime.now(UTC).isoformat(),
@@ -1781,6 +1801,77 @@ def _read_unlisted_rows(
         _mark_listing_read(
             record, listing, rows=rows, pull_request=True, term_count=term_count
         )
+
+
+def _read_pull_request_head(
+    run_directory: Path,
+    *,
+    slug: str,
+    number: object,
+    executable: str,
+    timeout_seconds: float,
+    record: dict[str, Any] | None = None,
+) -> str | None:
+    """The head of one pull request, or None when it could not be read."""
+    result = execute(
+        [
+            executable, "pr", "view", str(number), "--repo", slug,
+            "--json", "headRefOid",
+        ],
+        working_directory=run_directory,
+        timeout_seconds=timeout_seconds,
+    )
+    if record is not None:
+        record.setdefault("commands", []).append(
+            {"method": "head-read", **result.to_dict()}
+        )
+    if result.timed_out or result.exit_code != 0:
+        return None
+    try:
+        entry = json.loads(result.stdout or "null")
+    except json.JSONDecodeError:
+        return None
+    head = entry.get("headRefOid") if isinstance(entry, dict) else None
+    return head if isinstance(head, str) and head else None
+
+
+def _read_pinned_heads(
+    record: dict[str, Any],
+    run_directory: Path,
+    *,
+    slug: str,
+    executable: str,
+    timeout_seconds: float,
+) -> None:
+    """Read the head of every headless row a human already cleared by name.
+
+    The index and the compact listing carry no head, so without this a fresh
+    search, such as the hunt's pre-filing refresh, undid every such clear
+    (#331). One call per cleared row; a failed read leaves the row blocking.
+    """
+    path = run_directory / DUPLICATE_ACKNOWLEDGEMENT_FILENAME
+    if not path.is_file():
+        return
+    try:
+        pinned = json.loads(path.read_text(encoding="utf-8")).get("not_duplicates")
+    except (json.JSONDecodeError, AttributeError):
+        return
+    if not isinstance(pinned, dict):
+        return
+    for row in record.get("matches") or []:
+        if (
+            row.get("pull_request")
+            and not row.get("head_sha")
+            and pinned.get(_duplicate_key(row)) is not None
+        ):
+            row["head_sha"] = _read_pull_request_head(
+                run_directory,
+                slug=slug,
+                number=row.get("number"),
+                executable=executable,
+                timeout_seconds=timeout_seconds,
+                record=record,
+            )
 
 
 def _add_match(
@@ -2206,6 +2297,13 @@ def record_duplicate_search(
         executable=command_executable,
         query=query,
         issue_number=issue_number,
+        timeout_seconds=timeout_seconds,
+    )
+    _read_pinned_heads(
+        record,
+        run_directory,
+        slug=slug,
+        executable=command_executable,
         timeout_seconds=timeout_seconds,
     )
     record["success"] = True
