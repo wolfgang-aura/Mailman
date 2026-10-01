@@ -801,6 +801,397 @@ def _listed(nodes: list[str], limit: int = 10) -> str:
     return shown + (f" and {len(nodes) - limit} more" if len(nodes) > limit else "")
 
 
+# --- CI marker lane (#302) --------------------------------------------------
+#
+# Direct-importer selection misses a test that reaches the changed module
+# through the library's public API. edgartools#1386 changed a parser internal;
+# 18 tests under `tests/issues/regression/` reached it through `Filing` and
+# failed CI's `pytest -n auto -m 'fast'` lane, and none of them was selected.
+# When the target's CI runs such a lane, it runs here too, on the candidate
+# and, if anything fails, on the base commit; a test that fails only with the
+# patch is a regression and blocks like a touched-test failure.
+
+MARKER_LANE_TIMEOUT_SECONDS = 10 * 60
+#: Overrides the default cap, in seconds, for each lane run.
+MARKER_LANE_CAP_VARIABLE = "MAILMAN_MARKER_LANE_CAP_SECONDS"
+MARKER_LANE_BASE_DIRECTORY = "lane-base"
+_PYTEST_PROGRAM = re.compile(r"(?:^|[/\\])(?:py\.test|pytest)(?:\.exe)?$")
+_SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "(", ")"})
+#: pytest options whose value is the next token, so that token is no path.
+_PYTEST_VALUE_OPTIONS = frozenset(
+    {
+        "-k", "-p", "-c", "-o", "-W", "--deselect", "--ignore", "--ignore-glob",
+        "--rootdir", "--basetemp", "--confcutdir", "--junitxml", "--junit-xml",
+        "--durations", "--maxfail", "--timeout", "--dist", "--cov", "--cov-report",
+        "--cov-config", "--cov-fail-under", "--log-level", "--log-cli-level",
+        "--log-file", "--import-mode", "--tb", "--color", "--reruns",
+        "--reruns-delay", "--splits", "--group", "--randomly-seed", "-r",
+        "--doctest-glob", "--override-ini", "--capture", "--html", "--benchmark-json",
+    }
+)
+
+
+def marker_lane_cap_seconds() -> float:
+    """The per-run cap: the environment's override, or ten minutes."""
+    try:
+        value = float(os.environ.get(MARKER_LANE_CAP_VARIABLE, ""))
+    except ValueError:
+        return MARKER_LANE_TIMEOUT_SECONDS
+    return value if value > 0 else MARKER_LANE_TIMEOUT_SECONDS
+
+
+def _workflow_scripts(text: str) -> list[tuple[int, str]]:
+    """`(line number, script)` for each `run:` step of a workflow file."""
+    from mailman.target_checks import _YAML_KEY, _yaml_scalar
+
+    lines = text.splitlines()
+    anchors: dict[str, str | list[str]] = {}
+    scripts: list[tuple[int, str]] = []
+    index = 0
+    while index < len(lines):
+        found = _YAML_KEY.match(lines[index])
+        index += 1
+        if not found or found.group(3) != "run":
+            continue
+        spaces, dash, _, value = found.groups()
+        line_number = index
+        script, index = _yaml_scalar(
+            (value or "").strip(), lines, index, len(spaces) + len(dash or ""), anchors
+        )
+        if script:
+            scripts.append((line_number, script))
+    return scripts
+
+
+def _pytest_lane(command: str, workspace: Path) -> dict[str, Any] | None:
+    """The marker, xdist value and paths of a `pytest ... -m EXPR` command."""
+    import shlex
+
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    start = next(
+        (position for position, token in enumerate(tokens) if _PYTEST_PROGRAM.search(token)),
+        None,
+    )
+    if start is None:
+        return None
+    marker = xdist = None
+    paths: list[str] = []
+    position = start + 1
+    while position < len(tokens):
+        token = tokens[position]
+        following = tokens[position + 1] if position + 1 < len(tokens) else None
+        position += 1
+        if token in _SHELL_SEPARATORS:
+            break
+        if token == "-m" and following is not None:
+            marker, position = following, position + 1
+        elif token in ("-n", "--numprocesses") and following is not None:
+            xdist, position = following, position + 1
+        elif token.startswith("--numprocesses="):
+            xdist = token.split("=", 1)[1]
+        elif token.startswith("-n") and len(token) > 2 and not token.startswith("--"):
+            xdist = token[2:]
+        elif token in _PYTEST_VALUE_OPTIONS:
+            position += 1
+        elif not token.startswith("-") and (workspace / token.split("::", 1)[0]).exists():
+            paths.append(token.replace("\\", "/"))
+    # A marker from a matrix variable is no expression Mailman can run.
+    if not marker or "$" in marker:
+        return None
+    return {"marker": marker, "xdist": xdist if xdist and "$" not in xdist else None,
+            "paths": paths}
+
+
+def marker_lanes(workspace: Path | None) -> list[dict[str, Any]]:
+    """Every distinct pytest marker lane the target's GitHub workflows run.
+
+    edgartools' `test-fast` job runs `pytest -n auto -m 'fast'`. A lane is the
+    `-m` expression with any test paths after it; the first one found runs.
+    """
+    if workspace is None:
+        return []
+    workflows = workspace / ".github" / "workflows"
+    if not workflows.is_dir():
+        return []
+    lanes: list[dict[str, Any]] = []
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+    for path in sorted(workflows.iterdir()):
+        if path.suffix not in (".yml", ".yaml") or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line_number, script in _workflow_scripts(text):
+            for command in re.sub(r"\\\r?\n", " ", script).splitlines():
+                if "pytest" not in command and "py.test" not in command:
+                    continue
+                lane = _pytest_lane(command, workspace)
+                if lane is None:
+                    continue
+                key = (lane["marker"], tuple(lane["paths"]))
+                if key in seen:
+                    continue
+                seen.add(key)
+                lanes.append(
+                    {
+                        "workflow": f".github/workflows/{path.name}",
+                        "line": line_number,
+                        "command": command.strip(),
+                        **lane,
+                    }
+                )
+    return lanes
+
+
+def _import_path_environment(tree: Path, workspace: Path) -> dict[str, str]:
+    """`PYTHONPATH` naming `tree`'s own source first.
+
+    An editable install points at the candidate workspace; without this a src
+    layout's base run would import the patched code and every regression
+    would read as failing at base too.
+    """
+    entries = [str(tree)]
+    for root in ("src", *pytest_import_roots(workspace)):
+        if (tree / root).is_dir():
+            entries.append(str(tree / root))
+    inherited = os.environ.get("PYTHONPATH")
+    if inherited:
+        entries.append(inherited)
+    return {"PYTHONPATH": os.pathsep.join(dict.fromkeys(entries))}
+
+
+_FIND_ORIGIN = (
+    "import importlib.util, sys\n"
+    "spec = importlib.util.find_spec(sys.argv[1])\n"
+    "locations = list(spec.submodule_search_locations or []) if spec else []\n"
+    "print(spec.origin if spec and spec.origin else (locations[0] if locations else ''))\n"
+)
+
+
+def _top_package(modules: dict[str, list[str]]) -> str | None:
+    for names in modules.values():
+        if names:
+            return names[0].split(".", 1)[0]
+    return None
+
+
+def _inside(path: str, directory: Path) -> bool:
+    try:
+        Path(path).resolve().relative_to(directory.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def run_marker_lane(
+    run_directory: Path,
+    *,
+    workspace: Path,
+    python: str | None,
+    base_commit: str | None,
+    modules: dict[str, list[str]],
+    cap_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Run the target's CI marker lane on the candidate and, on failure, at base.
+
+    The result is `status` `ran`, or `fallback` with a `reason`: direct-importer
+    selection is then the only evidence, and the record says why.
+    """
+    cap = cap_seconds if cap_seconds and cap_seconds > 0 else marker_lane_cap_seconds()
+    lanes = marker_lanes(workspace)
+    record: dict[str, Any] = {
+        "status": "fallback",
+        "reason": None,
+        "detail": "",
+        "lanes": lanes,
+        "lane": None,
+        "cap_seconds": cap,
+        "marker_filter": None,
+        "deselected": [],
+        "command": None,
+        "exit_code": None,
+        "timed_out": False,
+        "duration_seconds": 0.0,
+        "passed": None,
+        "failed": None,
+        "errors": None,
+        "skipped": None,
+        "failing": [],
+        "base_commit": base_commit,
+        "base_command": None,
+        "base_exit_code": None,
+        "base_imports": None,
+        "failing_at_base": [],
+        "regressions": [],
+        "flaky": [],
+        "output_tail": "",
+    }
+
+    def fallback(reason: str, detail: str) -> dict[str, Any]:
+        record["status"], record["reason"], record["detail"] = "fallback", reason, detail
+        return record
+
+    if not lanes:
+        return fallback("no-lane", "no workflow runs pytest with a `-m` marker expression")
+    lane = record["lane"] = lanes[0]
+    if python is None:
+        return fallback("no-environment-python", "the run environment has no interpreter")
+    if not base_commit:
+        return fallback("no-base-commit", "failures cannot be compared without a base commit")
+    expressions = [lane["marker"]]
+    if network_marker_registered(workspace):
+        expressions.append("not network")
+    frozen = verification_marker(run_directory)
+    if frozen:
+        expressions.append(frozen)
+    marker_filter = (
+        " and ".join(f"({expression})" for expression in expressions)
+        if len(expressions) > 1 else expressions[0]
+    )
+    record["marker_filter"] = marker_filter
+    deselected = verification_deselects(run_directory)
+    record["deselected"] = deselected
+    xdist: list[str] = []
+    if lane.get("xdist"):
+        probe = execute(
+            [python, "-c", "import xdist"],
+            working_directory=workspace,
+            timeout_seconds=PROBE_TIMEOUT_SECONDS,
+        )
+        # Left out when the environment lacks pytest-xdist: slower, not wrong.
+        if probe.exit_code == 0 and not probe.timed_out:
+            xdist = ["-n", lane["xdist"]]
+    record["xdist"] = xdist[1] if xdist else None
+    cache = NO_CACHE
+
+    def lane_command() -> list[str]:
+        return [
+            python, "-m", "pytest", *lane["paths"], "-q", *cache, "-rfE",
+            "--continue-on-collection-errors", "-m", marker_filter, *xdist,
+            *(argument for node in deselected for argument in ("--deselect", node)),
+        ]
+
+    while True:
+        command = lane_command()
+        result = execute(
+            command,
+            working_directory=workspace,
+            timeout_seconds=cap,
+            environment=_import_path_environment(workspace, workspace),
+        )
+        output = result.stdout + "\n" + result.stderr
+        if (
+            cache == NO_CACHE and not result.timed_out
+            and result.exit_code == 4 and _UNKNOWN_CACHE_DIR in output
+        ):
+            cache = _scratch_cache(run_directory)
+            continue
+        break
+    record["command"] = command
+    record["exit_code"] = result.exit_code
+    record["timed_out"] = result.timed_out
+    record["duration_seconds"] = result.duration_seconds
+    record.update(parse_counts("pytest", result.stdout, result.stderr))
+    record["output_tail"] = _tail(output)
+    if result.timed_out:
+        return fallback("exceeded-cap", f"the lane ran past the {cap:.0f} s cap")
+    if result.exit_code == 5:
+        return fallback("collected-nothing", "the marker expression selected no test")
+    if result.exit_code not in (0, 1):
+        return fallback(
+            "not-collected", f"pytest exited {result.exit_code} before running the lane"
+        )
+    record["failing"] = failing_nodes(output)
+    if result.exit_code == 0 or not record["failing"]:
+        record["status"] = "ran"
+        return record
+
+    from mailman.target_checks import _Baseline
+
+    baseline = _Baseline(
+        run_directory, workspace, base_commit, directory=MARKER_LANE_BASE_DIRECTORY
+    )
+    try:
+        if not baseline.prepare(cap):
+            return fallback(
+                "base-worktree-failed", f"the base worktree could not be made: {baseline.detail}"
+            )
+        environment = _import_path_environment(baseline.path, workspace)
+        package = _top_package(modules)
+        if package:
+            found = execute(
+                [python, "-c", _FIND_ORIGIN, package],
+                working_directory=baseline.path,
+                timeout_seconds=PROBE_TIMEOUT_SECONDS,
+                environment=environment,
+            )
+            origin = found.stdout.strip().splitlines()[-1] if found.stdout.strip() else ""
+            record["base_imports"] = origin
+            if not origin or not _inside(origin, baseline.path):
+                return fallback(
+                    "base-imports-elsewhere",
+                    f"at the base commit `{package}` imports from {origin or 'nowhere'}, "
+                    "not the base tree, so the comparison would prove nothing",
+                )
+        base_command = list(command)
+        record["base_command"] = base_command
+        ran = execute(
+            base_command,
+            working_directory=baseline.path,
+            timeout_seconds=cap,
+            environment=environment,
+        )
+        record["base_exit_code"] = ran.exit_code
+        if ran.timed_out:
+            return fallback("base-exceeded-cap", f"the base run ran past the {cap:.0f} s cap")
+        if ran.exit_code not in (0, 1):
+            return fallback(
+                "base-not-collected", f"pytest exited {ran.exit_code} on the base tree"
+            )
+    finally:
+        baseline.close()
+    at_base = set(failing_nodes(ran.stdout + "\n" + ran.stderr))
+    record["failing_at_base"] = [node for node in record["failing"] if node in at_base]
+    # A test that does not exist at base and fails with the patch counts too.
+    new = [node for node in record["failing"] if node not in at_base]
+    if new and len(new) <= BASELINE_NODE_LIMIT:
+        again = execute(
+            _pytest_targets(python, new, None, None, cache),
+            working_directory=workspace,
+            timeout_seconds=cap,
+            environment=_import_path_environment(workspace, workspace),
+        )
+        if not again.timed_out and again.exit_code in (0, 1):
+            still = set(failing_nodes(again.stdout + "\n" + again.stderr))
+            record["flaky"] = [node for node in new if node not in still]
+            new = [node for node in new if node in still]
+    record["regressions"] = new
+    record["status"] = "ran"
+    return record
+
+
+def _lane_summary(lane: dict[str, Any] | None) -> str:
+    if not lane:
+        return ""
+    if lane.get("status") == "ran":
+        chosen = lane.get("lane") or {}
+        return (
+            f"; CI marker lane `-m {chosen.get('marker')}` passed {lane.get('passed')}"
+            + (
+                f", {len(lane['failing_at_base'])} failing at base too"
+                if lane.get("failing_at_base") else ""
+            )
+            + (f", flaky: {_listed(lane['flaky'])}" if lane.get("flaky") else "")
+        )
+    return f"; CI marker lane not used ({lane.get('reason')}): {lane.get('detail')}"
+
+
 def run_touched_tests(
     run_directory: Path,
     *,
@@ -810,8 +1201,13 @@ def run_touched_tests(
     timeout_seconds: float = TOUCHED_TESTS_TIMEOUT_SECONDS,
     cap: int = TOUCHED_TESTS_CAP,
     base_commit: str | None = None,
+    lane_cap_seconds: float | None = None,
 ) -> dict[str, Any]:
-    """Select, run and record. Every outcome is written, including not running."""
+    """Select, run and record. Every outcome is written, including not running.
+
+    Once the diff changes source, the target's CI marker lane runs too, under
+    `marker_lane` (#302).
+    """
     started = datetime.now(UTC)
     record: dict[str, Any] = {
         "schema_version": TOUCHED_TESTS_SCHEMA_VERSION,
@@ -845,6 +1241,8 @@ def run_touched_tests(
         "output_tail": "",
         # Failures compared with the base commit; None when not compared.
         "baseline": None,
+        # The CI marker lane; None when the diff changes no source.
+        "marker_lane": None,
     }
     if workspace is None or not workspace.is_dir():
         record["reason"] = "no-workspace"
@@ -855,14 +1253,28 @@ def run_touched_tests(
         record["ran"] = True
         record["reason"] = "no-source-change"
         return _write(run_directory, record)
+
+    def with_lane(python: str | None) -> dict[str, Any]:
+        record["marker_lane"] = run_marker_lane(
+            run_directory,
+            workspace=workspace,
+            python=python,
+            base_commit=base_commit,
+            modules=selection["modules"],
+            cap_seconds=lane_cap_seconds,
+        )
+        return _write(run_directory, record)
+
     if not selection["selected"]:
         record["ran"] = True
         record["reason"] = "no-matching-tests"
-        return _write(run_directory, record)
+        # The tests that reach the module only through the public API are the
+        # ones this selection cannot see; the lane is all the evidence there is.
+        return with_lane(environment_python(run_directory))
     python = environment_python(run_directory)
     if python is None:
         record["reason"] = "no-environment-python"
-        return _write(run_directory, record)
+        return with_lane(None)
     record["python"] = python
     probe: CommandResult = execute(
         [python, "-c", "import pytest"],
@@ -938,7 +1350,7 @@ def run_touched_tests(
             record["exit_code"] = result.exit_code
             record["output_tail"] = _tail(result.stdout + "\n" + result.stderr)
             record["reason"] = "all-selected-omitted"
-            return _write(run_directory, record)
+            return with_lane(python)
     # Suites that open data relative to their own directory fail wholesale from
     # the root: biopython's CI runs `cd Tests`. Rerun from the one directory
     # the files share and keep that run only if it fails strictly fewer (#215).
@@ -994,7 +1406,7 @@ def run_touched_tests(
             directory=record["working_directory"],
             cache=cache,
         )
-    return _write(run_directory, record)
+    return with_lane(python)
 
 
 def touched_tests_verdict(
@@ -1037,8 +1449,17 @@ def touched_tests_verdict(
             f"the touched-tests stage did not run ({reason}). It needs the run's "
             "workspace and the interpreter `prepare-environment` registered.",
         )
+    lane = record.get("marker_lane") if isinstance(record.get("marker_lane"), dict) else None
+    if lane and lane.get("regressions"):
+        chosen = lane.get("lane") or {}
+        return (
+            "touched-tests-failed",
+            f"the target's CI marker lane `-m {chosen.get('marker')}` "
+            f"({chosen.get('workflow')}) fails tests that pass at the base commit: "
+            f"{_listed(lane['regressions'])}. Command: {' '.join(lane.get('command') or [])}",
+        )
     if record.get("reason") in _NOTHING_TO_RUN:
-        return None, f"nothing to run: {record['reason']}"
+        return None, f"nothing to run: {record['reason']}" + _lane_summary(lane)
     if record.get("timed_out"):
         return (
             "touched-tests-failed",
@@ -1066,7 +1487,8 @@ def touched_tests_verdict(
         return (
             None,
             f"passed {record.get('passed')}; the patch adds no failure. "
-            + "; ".join(parts),
+            + "; ".join(parts)
+            + _lane_summary(lane),
         )
     if record.get("exit_code") != 0:
         new = (
@@ -1092,7 +1514,8 @@ def touched_tests_verdict(
             f"outside it: {', '.join(indirect)}"
             if indirect
             else ""
-        ),
+        )
+        + _lane_summary(lane),
     )
 
 
@@ -1114,15 +1537,18 @@ def resolve_workspace(run_directory: Path, given: Path | None) -> Path | None:
 
 
 __all__ = [
+    "MARKER_LANE_TIMEOUT_SECONDS",
     "TOUCHED_TESTS_CAP",
     "TOUCHED_TESTS_FILENAME",
     "TOUCHED_TESTS_TIMEOUT_SECONDS",
     "diff_sha256",
     "environment_python",
     "load_touched_tests",
+    "marker_lanes",
     "module_names",
     "parse_counts",
     "resolve_workspace",
+    "run_marker_lane",
     "run_touched_tests",
     "select_test_files",
     "touched_tests_verdict",

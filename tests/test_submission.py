@@ -1500,6 +1500,44 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertEqual(len(self.touched_tests_calls), 1)
         self.assertNotIn("touched-tests-failed", record["blocking_codes"])
 
+    def test_a_stored_pass_from_before_the_marker_lane_is_rerun(self) -> None:
+        # #302: edgartools#1386 passed the touched tests and failed CI's
+        # `-m 'fast'` lane; a record without `marker_lane` never ran it.
+        stored = passing_touched_tests(SOURCE_DIFF)
+        (self.run_directory / TOUCHED_TESTS_FILENAME).write_text(
+            json.dumps(stored), encoding="utf-8"
+        )
+        workflows = self.run_directory / ".github" / "workflows"
+        workflows.mkdir(parents=True)
+        (workflows / "ci.yml").write_text(
+            "jobs:\n  fast:\n    steps:\n      - run: pytest -n auto -m 'fast'\n",
+            encoding="utf-8",
+        )
+        with (
+            patch("mailman.submission.resolve_workspace", return_value=self.run_directory),
+            patch("mailman.submission.select_test_files", return_value=stored),
+        ):
+            self._prepare()
+        self.assertEqual(len(self.touched_tests_calls), 1)
+
+    def test_a_lane_that_fell_back_is_reported_without_blocking(self) -> None:
+        from mailman.submission import _touched_tests_findings
+
+        record = passing_touched_tests(SOURCE_DIFF)
+        record["marker_lane"] = {
+            "status": "fallback",
+            "reason": "exceeded-cap",
+            "detail": "the lane ran past the 600 s cap",
+            "lanes": [{"marker": "fast"}],
+            "lane": {"marker": "fast"},
+        }
+        findings = _touched_tests_findings(record)
+        self.assertEqual([f.code for f in findings], ["touched-tests-lane-fallback"])
+        self.assertFalse(findings[0].blocking)
+        self.assertIn("exceeded-cap", findings[0].detail)
+        record["marker_lane"]["lanes"] = []
+        self.assertEqual(_touched_tests_findings(record), [])
+
     def test_a_stored_failure_from_before_the_base_comparison_is_rerun(self) -> None:
         # #180: a record without the `baseline` field never compared its
         # failures with the base commit.
