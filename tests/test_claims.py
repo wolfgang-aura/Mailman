@@ -1236,6 +1236,25 @@ class ReferenceRecordTests(unittest.TestCase):
         self.assertFalse(record["success"])
         self.assertIn("timeline", record["detail"])
 
+    def test_a_failed_second_comment_page_is_not_the_end_of_the_thread(self) -> None:
+        # A claim past comment 100 went unread when page 2 failed. #344.
+        filler = [
+            {"body": "same here", "user": {"login": "x"}, "author_association": "NONE"}
+        ] * 100
+        gh = _FakeGh({"number": 4775, "assignees": [], "body": ""}, filler)
+
+        def broken(arguments, **keywords):
+            if "/comments" in arguments[2] and "page=2" in arguments:
+                return _Result("", exit_code=1)
+            return gh(arguments, **keywords)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._run(Path(temporary))
+            record = read_claims(root, executable="gh", execute=broken)
+
+        self.assertFalse(record["success"])
+        self.assertIn("comments", record["detail"])
+
 
 class ReportedFixedTests(unittest.TestCase):
     """Mailman #236: anyone saying the bug is gone on main is worth a warning."""

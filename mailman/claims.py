@@ -923,14 +923,14 @@ def read_claims(
         got = api(
             f"repos/{slug}/issues/{number}/comments", per_page=100, page=page
         )
+        # A failed later page is no end of the thread: a claim past comment
+        # 100 read as none. Mailman #344.
         if not isinstance(got, list):
-            if page == 1:
-                record["detail"] = (
-                    f"the comments on {slug}#{number} could not be read"
-                )
-                _write(run_directory, record)
-                return record
-            break
+            record["detail"] = (
+                f"the comments on {slug}#{number} could not be read (page {page})"
+            )
+            _write(run_directory, record)
+            return record
         comments += got
         if len(got) < 100:
             break
