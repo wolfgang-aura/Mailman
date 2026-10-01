@@ -451,5 +451,53 @@ class CitedPullRequestReadTests(unittest.TestCase):
         self.assertIn("could not be read", record["detail"])
 
 
+class PriorArtMaintainerSetTests(unittest.TestCase):
+    """`collect_prior_art` reads closures against the screen's maintainer
+    logins, as `resolve_cited_pull_requests` does. Mailman #345."""
+
+    def _collect(self, payload: dict, closer: str, maintainers) -> dict:
+        def fake_execute(command, **_):
+            return CommandResult(
+                command, ".", "", 0.0, 0, json.dumps(payload), "", False, 60, {}
+            )
+
+        def api(_directory, *, path, query=None, **_):
+            if path.endswith("/timeline"):
+                return [{"event": "closed", "actor": {"login": closer}}]
+            return []
+
+        with TemporaryDirectory() as directory, patch(
+            "mailman.prior_art.execute", fake_execute
+        ), patch("mailman.prior_art._api", side_effect=api):
+            record = collect_prior_art(
+                Path(directory), repository="acme/a", numbers=[14502],
+                executable="gh", maintainers=maintainers,
+            )
+        return record["attempts"][0]
+
+    def test_a_silent_close_by_a_screened_maintainer_is_a_maintainer_close(
+        self,
+    ) -> None:
+        payload = dict(CLOSED_PULL_REQUEST, comments=[])
+        attempt = self._collect(payload, "keeper", frozenset({"keeper"}))
+        self.assertTrue(attempt["maintainer_closed"])
+        self.assertEqual(attempt["closed_by"]["login"], "keeper")
+
+    def test_ai_doubt_from_a_screened_maintainer_counts(self) -> None:
+        payload = dict(
+            CLOSED_PULL_REQUEST,
+            comments=[
+                {
+                    "author": {"login": "keeper"},
+                    "authorAssociation": "CONTRIBUTOR",
+                    "body": "Was this written by AI?",
+                }
+            ],
+        )
+        attempt = self._collect(payload, "GChaucer", frozenset({"keeper"}))
+        self.assertTrue(attempt["maintainer_closed"])
+        self.assertIn("questioned AI authorship", attempt["closed_by"]["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

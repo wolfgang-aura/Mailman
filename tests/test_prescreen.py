@@ -2985,6 +2985,31 @@ class UnreadCitedPullRequestTests(unittest.TestCase):
         )
 
 
+class ReporterIsMaintainerTests(unittest.TestCase):
+    """A reporter the screen knows as a maintainer is the project speaking,
+    whatever association GitHub shows on the issue. Mailman #345."""
+
+    def test_a_maintainer_reporter_is_neither_unacknowledged_nor_untriaged(
+        self,
+    ) -> None:
+        from mailman.prescreen import _acknowledgement
+
+        found = _acknowledgement(
+            {
+                "success": True,
+                "reporter_association": "NONE",
+                "reporter_is_maintainer": True,
+                "maintainer_replied": False,
+                "maintainer_labelled": False,
+                "invitations": [],
+                "issue_created_at": "2026-01-01T00:00:00Z",
+            }
+        )
+
+        self.assertFalse(found["unacknowledged"])
+        self.assertFalse(found["untriaged"])
+
+
 class FailedClaimCheckTests(unittest.TestCase):
     """A claim check that never ran is no evidence the issue is free. It
     passed, with no ask-first, and orchestrate later failed on the missing

@@ -578,6 +578,7 @@ def _acknowledgement(
             or claims.get("invitations")
         ),
         created_at=claims.get("issue_created_at"),
+        reporter_is_maintainer=bool(claims.get("reporter_is_maintainer")),
     )
     # The same question with no grace window: a fresh report nobody answered
     # is not yet overdue, but it is still untriaged. Mailman #287.
@@ -594,6 +595,7 @@ def _acknowledgement(
             ),
             created_at=claims.get("issue_created_at"),
             days=0,
+            reporter_is_maintainer=bool(claims.get("reporter_is_maintainer")),
         )
     )
     return {
@@ -1195,6 +1197,7 @@ def prescreen_issue(
             numbers=numbers,
             executable=executable,
             timeout_seconds=timeout_seconds,
+            maintainers=maintainers,
         )
         record["prior_art"] = {
             "success": prior["success"],

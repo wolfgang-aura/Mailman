@@ -1596,6 +1596,7 @@ def _prior_art(arguments: argparse.Namespace) -> int:
         numbers=numbers,
         executable=arguments.executable,
         timeout_seconds=arguments.timeout,
+        maintainers=_screened_maintainers(run, run_directory),
     )
     print(
         json.dumps(

@@ -454,8 +454,14 @@ def collect_prior_art(
     numbers: list[int],
     executable: str | None = None,
     timeout_seconds: float = 60,
+    maintainers: Collection[str] = (),
 ) -> dict[str, Any]:
-    """Read each earlier pull request and write the prior art record."""
+    """Read each earlier pull request and write the prior art record.
+
+    `maintainers` is the login set the repository screen recorded. A timeline
+    `closed` event carries no association, so without it a silent close by a
+    maintainer reads as an outsider's. Mailman #345.
+    """
     slug = repository.removesuffix(".git").rstrip("/")
     for prefix in ("https://github.com/", "git@github.com:", "ssh://git@github.com/"):
         slug = slug.removeprefix(prefix)
@@ -522,8 +528,11 @@ def collect_prior_art(
                 author=summary["author"],
                 timeout_seconds=timeout_seconds,
                 commands=record["commands"],
+                maintainers=maintainers,
             )
-            summary["closed_by"] = _note_ai_doubt(summary["closed_by"], payload)
+            summary["closed_by"] = _note_ai_doubt(
+                summary["closed_by"], payload, maintainers
+            )
             summary["maintainer_closed"] = bool(summary["closed_by"]["maintainer"])
         record["attempts"].append(summary)
     record["success"] = True
