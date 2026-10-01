@@ -561,6 +561,15 @@ def row_bug_labelled(row: dict) -> bool:
     return False
 
 
+def row_undecided_labelled(row: dict) -> bool:
+    """Whether a label on the row declines the issue or leaves it undecided."""
+    for entry in row.get("labels") or []:
+        name = entry.get("name") if isinstance(entry, dict) else entry
+        if isinstance(name, str) and _UNDECIDED_LABEL.search(name):
+            return True
+    return False
+
+
 def _target_rank(target: dict) -> tuple:
     # Within an engagement group, a maintainer's bug label and then youth:
     # screen order put certbot's 581-day-old test-data chore first on
@@ -1048,6 +1057,10 @@ def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
             # Screens recorded before the not-a-bug filter still hold
             # requests and RFCs. Mailman #188.
             if is_request_row(row):
+                continue
+            # `wontfix`, `duplicate` or `needs discussion`: declined or not
+            # yet decided. pymc-marketing#2659 was offered. Mailman #371.
+            if row_undecided_labelled(row):
                 continue
             engagement = row_engagement(row)
             if engaged_only and engagement != ENGAGED:

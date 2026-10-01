@@ -1306,6 +1306,21 @@ class PrescreenRecordTests(OrchestratorHarness):
 
         self.assertEqual([row["target"] for row in rows], ["acme/requests#6"])
 
+    def test_workable_targets_skip_rows_a_label_declines_or_leaves_undecided(self):
+        # pymc-marketing#2659 carried `bug` and `wontfix` and was offered as
+        # an engaged, bug-labelled target. Mailman #371.
+        self._screen("acme/declined", [1, 2, 3, 4, 5], flags={
+            1: {"title": "Plot crashes", "labels": ["bug", "wontfix"]},
+            2: {"title": "Crash on load", "labels": [{"name": "duplicate"}]},
+            3: {"title": "Crash on save", "labels": ["bug", "needs discussion"]},
+            4: {"title": "Crash on exit", "labels": ["cannot reproduce"]},
+            5: {"title": "Crash on empty input", "labels": ["bug"]},
+        })
+
+        rows = workable_targets(self.data_root, held_repositories=set())
+
+        self.assertEqual([row["target"] for row in rows], ["acme/declined#5"])
+
     def test_workable_targets_skip_issues_a_staff_team_reserves(self):
         # zenml's shortlist was sixteen `core-team` and `planned`/`gtm-team`
         # roadmap items that outside PRs do not take. Mailman #264.
