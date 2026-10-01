@@ -764,12 +764,61 @@ class CompetingPullRequestTests(unittest.TestCase):
                     }
                 },
             },
+            {"event": "closed", "created_at": "2026-09-02T00:00:00Z"},
         ]
 
         found = competitors_from_timeline(events, "pdm-project/pdm", own_number=9)
 
         self.assertEqual([item["number"] for item in found], [7])
         self.assertEqual(found[0]["state"], "merged")
+
+    def test_a_merge_that_left_the_issue_open_does_not_compete(self) -> None:
+        """beets#5994 was split off #5979, which merged and left it open (#363)."""
+        merged_refactor = {
+            "event": "cross-referenced",
+            "source": {
+                "issue": {
+                    "number": 5979,
+                    "state": "closed",
+                    "html_url": "https://github.com/beetbox/beets/pull/5979",
+                    "repository_url": "https://api.github.com/repos/beetbox/beets",
+                    "created_at": "2025-08-30T17:46:23Z",
+                    "user": {"login": "JOJ0"},
+                    "pull_request": {"merged_at": "2025-09-10T06:30:53Z"},
+                }
+            },
+        }
+        open_rival = {
+            "event": "cross-referenced",
+            "source": {
+                "issue": {
+                    "number": 7070,
+                    "state": "open",
+                    "html_url": "https://github.com/beetbox/beets/pull/7070",
+                    "repository_url": "https://api.github.com/repos/beetbox/beets",
+                    "created_at": "2026-10-01T04:00:00Z",
+                    "user": {"login": "other"},
+                    "pull_request": {"merged_at": None},
+                }
+            },
+        }
+
+        found = competitors_from_timeline(
+            [merged_refactor, open_rival], "beetbox/beets", own_number=7065
+        )
+        self.assertEqual([item["number"] for item in found], [7070])
+
+        closed_then_reopened = [
+            merged_refactor,
+            {"event": "closed"},
+            {"event": "reopened"},
+        ]
+        self.assertEqual(
+            competitors_from_timeline(
+                closed_then_reopened, "beetbox/beets", own_number=7065
+            ),
+            [],
+        )
 
     def test_the_issue_number_comes_from_the_run_record(self) -> None:
         with TemporaryDirectory() as name:
