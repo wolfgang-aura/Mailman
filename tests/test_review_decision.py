@@ -211,6 +211,31 @@ class BodyClaimGateTests(unittest.TestCase):
                 "Fixes the hash.\n\nWritten with Claude through the Mailman harness.\n",
             )
 
+    def test_a_line_affirmed_before_handoff_passes(self) -> None:
+        # biopython's template requires a first-person line (#217). package
+        # validates the decision before handoff.json exists, so the
+        # affirmation has to reach the gate directly.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "body.md").write_text(
+                "Fixes the hash.\n\nI have read the CONTRIBUTING file and ran pre-commit.\n",
+                encoding="utf-8",
+            )
+            (directory / DECISION_FILENAME).write_text(json.dumps(VALID), encoding="utf-8")
+            with self.assertRaises(DecisionError):
+                load_decision(directory)
+            load_decision(directory, affirmed_lines=[3])
+
+    def test_a_malformed_handoff_is_a_decision_error(self) -> None:
+        # A JSONDecodeError escaped load_decision, and review pages catch only
+        # DecisionError, so one truncated file crashed the whole packet.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "handoff.json").write_text("{\"affirmed", encoding="utf-8")
+            with self.assertRaises(DecisionError) as caught:
+                self._decide(directory, "Fixes the hash.\n")
+        self.assertIn("handoff.json", " ".join(caught.exception.problems))
+
 
 def _write_untriaged_claims(directory: Path) -> None:
     (directory / CLAIMS_FILENAME).write_text(

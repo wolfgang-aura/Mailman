@@ -174,7 +174,7 @@ class PackageCommandTests(unittest.TestCase):
             arguments = argparse.Namespace(
                 run_id=run.run_id, data_root=data_root, policy=Path("policy.json"),
                 title="Fix it", body=Path("body.md"), repo="example/project",
-                head="fork:mailman/issue-7", base="main", commit_message=None,
+                head="fork:mailman/issue-7", base="main", commit_message=None, affirm=[],
             )
             (data_root / run.run_id / "decision.json").write_text("{}", encoding="utf-8")
             export = data_root / run.run_id / "export"
@@ -197,6 +197,43 @@ class PackageCommandTests(unittest.TestCase):
         self.assertEqual(committed.call_args.kwargs["branch"], "mailman/issue-7")
         self.assertEqual(committed.call_args.kwargs["paths"], ["m.py"])
 
+    def test_an_affirmed_line_reaches_decision_and_handoff(self) -> None:
+        # A template-required first-person line (#217) stopped package at the
+        # decision stage: the gate read affirmations from handoff.json, which
+        # only the later handoff stage writes.
+        from mailman import cli
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run, _ = create_run(
+                repository="https://github.com/example/project.git",
+                issue="https://github.com/example/project/issues/7",
+                base_commit="a" * 40, primary="codex", reviewer="claude",
+                data_root=data_root,
+            )
+            arguments = argparse.Namespace(
+                run_id=run.run_id, data_root=data_root, policy=Path("policy.json"),
+                title="Fix it", body=Path("body.md"), repo="example/project",
+                head="fork:mailman/issue-7", base="main", commit_message=None,
+                affirm=[5],
+            )
+            (data_root / run.run_id / "decision.json").write_text("{}", encoding="utf-8")
+            export = data_root / run.run_id / "export"
+            export.mkdir(parents=True, exist_ok=True)
+            (export / "changes.diff").write_text("diff --git a/m.py b/m.py\n", encoding="utf-8")
+            calls = {}
+            with (
+                patch.object(cli, "main", side_effect=lambda argv: calls.setdefault(argv[0], argv) and 0),
+                patch("mailman.cli.resolve_identity", return_value=IDENTITY),
+                patch("mailman.package.commit_candidate", return_value="b" * 40),
+                patch("sys.stdout", StringIO()), patch("sys.stderr", StringIO()),
+            ):
+                self.assertEqual(cli._package(arguments), 0)
+
+        for stage in ("decision", "handoff"):
+            argv = calls[stage]
+            self.assertEqual(argv[argv.index("--affirm") + 1], "5", stage)
+
     def test_the_recorded_duplicate_search_is_repeated_first(self) -> None:
         # pylint, zarr and nicegui each reached handoff-check on 2026-09-30
         # with a search or claims check over an hour old. Mailman #279.
@@ -215,7 +252,7 @@ class PackageCommandTests(unittest.TestCase):
             arguments = argparse.Namespace(
                 run_id=run.run_id, data_root=data_root, policy=Path("policy.json"),
                 title="Fix it", body=Path("body.md"), repo="example/project",
-                head="fork:mailman/issue-7", base="main", commit_message=None,
+                head="fork:mailman/issue-7", base="main", commit_message=None, affirm=[],
             )
             directory = data_root / run.run_id
             (directory / "decision.json").write_text("{}", encoding="utf-8")
@@ -262,7 +299,7 @@ class PackageCommandTests(unittest.TestCase):
                 arguments = argparse.Namespace(
                     run_id=run.run_id, data_root=data_root, policy=Path("policy.json"),
                     title="Fix it", body=Path("body.md"), repo="example/project",
-                    head="fork:mailman/issue-7", base="main", commit_message=None,
+                    head="fork:mailman/issue-7", base="main", commit_message=None, affirm=[],
                 )
                 directory = data_root / run.run_id
                 (directory / "decision.json").write_text("{}", encoding="utf-8")
@@ -305,7 +342,7 @@ class PackageCommandTests(unittest.TestCase):
             arguments = argparse.Namespace(
                 run_id=run.run_id, data_root=data_root, policy=Path("policy.json"),
                 title="Fix it", body=Path("body.md"), repo="example/project",
-                head="fork:mailman/issue-7", base="main", commit_message=None,
+                head="fork:mailman/issue-7", base="main", commit_message=None, affirm=[],
             )
             calls = []
             with (

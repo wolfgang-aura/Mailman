@@ -22,6 +22,7 @@ import html
 import json
 import re
 from dataclasses import dataclass, field, replace
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -444,8 +445,14 @@ def parse_decision(data: Any) -> Decision:
     return Decision(recommendation, headline, panels, questions, gaps, ledger, offer)
 
 
-def load_decision(run_directory: Path) -> Decision:
-    """Read and validate the run's decision file."""
+def load_decision(
+    run_directory: Path, *, affirmed_lines: Iterable[int] = ()
+) -> Decision:
+    """Read and validate the run's decision file.
+
+    `affirmed_lines` are body.md lines the operator affirms before handoff.json
+    exists, as `package --affirm` does (#217).
+    """
     path = Path(run_directory) / DECISION_FILENAME
     if not path.is_file():
         raise DecisionError(
@@ -464,7 +471,7 @@ def load_decision(run_directory: Path) -> Decision:
     except DecisionError as error:
         raise DecisionError(error.problems, path) from None
     problem = untriaged_problem(Path(run_directory), decision) or body_claim_problem(
-        Path(run_directory), decision
+        Path(run_directory), decision, affirmed_lines=affirmed_lines
     )
     if problem:
         raise DecisionError([problem], path)
@@ -476,11 +483,16 @@ def load_decision(run_directory: Path) -> Decision:
     return decision
 
 
-def body_claim_problem(run_directory: Path, decision: Decision) -> str | None:
+def body_claim_problem(
+    run_directory: Path, decision: Decision, *, affirmed_lines: Iterable[int] = ()
+) -> str | None:
     """Why SEND cannot stand: body.md says something only the human can make true.
 
     The spack run passed with SEND, the operator packaged it, and only then did
-    handoff refuse "I have read and tested every line". Mailman #294.
+    handoff refuse "I have read and tested every line". Mailman #294. A line
+    the operator affirms counts, whether handoff.json recorded it or the
+    affirmation came with `package --affirm`, which validates the decision
+    before handoff.json exists.
     """
     body = run_directory / "body.md"
     if decision.recommendation != "SEND" or not body.is_file():
@@ -490,12 +502,22 @@ def body_claim_problem(run_directory: Path, decision: Decision) -> str | None:
     handoff = run_directory / "handoff.json"
     affirmed: set[str] = set()
     if handoff.is_file():
-        record = json.loads(handoff.read_text(encoding="utf-8"))
-        affirmed = {claim["text"] for claim in record.get("affirmed_claims") or []}
+        try:
+            record = json.loads(handoff.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            return f"handoff.json cannot be read ({error}); run `mailman handoff` again."
+        if not isinstance(record, dict):
+            return "handoff.json is not a handoff record; run `mailman handoff` again."
+        affirmed = {
+            claim.get("text")
+            for claim in record.get("affirmed_claims") or []
+            if isinstance(claim, dict)
+        }
+    lines = set(affirmed_lines)
     claims = [
         claim
         for claim in first_person_claims(body.read_text(encoding="utf-8"))
-        if claim["text"] not in affirmed
+        if claim["text"] not in affirmed and claim["line"] not in lines
     ]
     if not claims:
         return None

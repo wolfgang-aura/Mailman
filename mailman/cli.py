@@ -505,6 +505,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--commit-message", type=Path,
         help="file holding the commit message; defaults to the title",
     )
+    package_parser.add_argument(
+        "--affirm",
+        type=int,
+        action="append",
+        default=[],
+        metavar="LINE",
+        help=(
+            "a first-person body line the operator has made true and approved; "
+            "passed to the decision and handoff stages (#217)"
+        ),
+    )
     package_parser.add_argument("--data-root", type=Path)
 
     handoff_check = subparsers.add_parser(
@@ -995,6 +1006,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     decision.add_argument(
         "--force", action="store_true", help="with --init, overwrite an existing file"
+    )
+    decision.add_argument(
+        "--affirm",
+        type=int,
+        action="append",
+        default=[],
+        metavar="LINE",
+        help="a body.md first-person line the operator affirms, as handoff --affirm (#217)",
     )
     decision.add_argument("--data-root", type=Path)
 
@@ -2027,6 +2046,10 @@ def _package(arguments: argparse.Namespace) -> int:
                arguments.repo, "--head", arguments.head, "--title", arguments.title]
     if arguments.base:
         handoff += ["--base", arguments.base]
+    # A template-required first-person line (#217) is affirmed once, here, and
+    # reaches the decision gate before handoff.json exists to record it.
+    affirm = [part for line in arguments.affirm for part in ("--affirm", str(line))]
+    handoff += affirm
     def prepare_submission() -> int:
         code = main([
             "prepare-submission", run_id, "--policy", str(arguments.policy),
@@ -2064,7 +2087,7 @@ def _package(arguments: argparse.Namespace) -> int:
         ("refresh-evidence", refresh_evidence),
         ("export-patch", lambda: main(["export-patch", run_id, *root])),
         ("prepare-submission", prepare_submission),
-        ("decision", lambda: main(["decision", run_id, *root])),
+        ("decision", lambda: main(["decision", run_id, *affirm, *root])),
         ("finalize-review", lambda: main(["finalize-review", run_id, *root])),
         ("commit", commit),
         ("check-authors", lambda: main(["check-authors", run_id, *root])),
@@ -2861,7 +2884,7 @@ def _decision(arguments: argparse.Namespace) -> int:
         )
         return 0
     try:
-        decision = load_decision(run_directory)
+        decision = load_decision(run_directory, affirmed_lines=arguments.affirm)
     except DecisionError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
