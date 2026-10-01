@@ -95,6 +95,12 @@ def _offline(repository: str, number: int) -> dict[str, object]:
     return {"available": False, "detail": "gh is not installed"}
 
 
+def _silent_closure(
+    repository: str, number: int, *, issue_number: int | None, pull: dict[str, object]
+) -> dict[str, object]:
+    return {"reason": "closed-silently", "detail": "nothing said"}
+
+
 class RepositorySlugTests(unittest.TestCase):
     def test_a_clone_url_becomes_a_slug(self) -> None:
         self.assertEqual(
@@ -830,7 +836,10 @@ class CompetingPullRequestTests(unittest.TestCase):
                 raise AssertionError("a closed pull request cannot be overtaken")
 
             record, failure = refresh_state(
-                run_directory, state_lookup=_closed, competitor_lookup=_never
+                run_directory,
+                state_lookup=_closed,
+                competitor_lookup=_never,
+                closure_lookup=_silent_closure,
             )
 
             self.assertIsNone(failure)
@@ -929,7 +938,10 @@ class RefreshTests(unittest.TestCase):
 
             now = datetime(2026, 9, 9, 8, 44, tzinfo=UTC)
             record, failure = refresh_state(
-                run_directory, state_lookup=_closed, now=now
+                run_directory,
+                state_lookup=_closed,
+                closure_lookup=_silent_closure,
+                now=now,
             )
 
             self.assertIsNone(failure)
