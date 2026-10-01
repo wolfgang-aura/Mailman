@@ -52,6 +52,25 @@ class CommandVersionTests(unittest.TestCase):
         self.assertIn("codex.CMD", version)
         self.assertIn("no answer", version)
 
+    def test_a_blocked_executable_is_a_failed_check_not_an_abort(self) -> None:
+        """Application Control refuses to start a blocked tool with an OSError. #356"""
+        def blocked(*args, **kwargs):
+            raise OSError(4551, "An Application Control policy has blocked this file")
+
+        with (
+            mock.patch.object(doctor, "find_executable", return_value="C:/tools/codex.exe"),
+            mock.patch.object(doctor, "_base_interpreter_reachable_by_codex",
+                              return_value=(True, "fine")),
+            mock.patch.object(doctor, "describe_commit_identity", return_value=(True, "id")),
+            mock.patch.object(doctor.subprocess, "run", side_effect=blocked),
+        ):
+            checks = {check.name: check for check in run_checks()}
+
+        self.assertFalse(checks["codex"].ok)
+        self.assertIn("Application Control", checks["codex"].detail)
+        self.assertFalse(checks["git"].ok)
+        self.assertTrue(checks["git"].required)
+
 
 if __name__ == "__main__":
     unittest.main()

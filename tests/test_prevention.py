@@ -159,6 +159,26 @@ class HealthTests(unittest.TestCase):
     def test_an_ordinary_test_failure_is_neither(self):
         self.assertIsNone(health.classify("assert 1 == 2\n1 failed"))
         self.assertIsNone(health.classify(None, ""))
+        self.assertIsNone(health.classify("FAILED tests/test_x.py:1429 - assert 0"))
+
+    def test_only_the_cli_own_error_events_are_read_from_its_stream(self):
+        """A test's output inside the stream read as a usage limit. #353"""
+        command_output = json.dumps({"type": "item.completed", "item": {
+            "type": "command_execution",
+            "aggregated_output": "test_rate_limit.py:12: HTTP 429\n[Errno 13] denied",
+        }})
+        failed = json.dumps({"type": "turn.failed",
+                             "error": {"message": "You've hit your usage limit."}})
+        claude_result = json.dumps({"type": "result", "is_error": True,
+                                    "result": "Claude AI usage limit reached|1700000000"})
+
+        self.assertIsNone(health.classify(health.agent_errors(command_output)))
+        self.assertEqual(health.classify(health.agent_errors(f"{command_output}\n{failed}")),
+                         health.USAGE_LIMIT)
+        self.assertEqual(health.classify(health.agent_errors(claude_result)),
+                         health.USAGE_LIMIT)
+        self.assertEqual(health.classify(health.agent_errors("[1, 2]\nplain CLI rate limit")),
+                         health.USAGE_LIMIT)
 
     def test_the_record_carries_the_exact_resume_command(self):
         with TemporaryDirectory() as temporary:

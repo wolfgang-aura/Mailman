@@ -50,6 +50,17 @@ def _command_version(command: str, arguments: list[str]) -> str | None:
     return output[0] if output else executable
 
 
+def _command_check(command: str, required: bool) -> Check:
+    try:
+        version = _command_version(command, ["--version"])
+    except OSError as error:
+        # Application Control refuses to start a blocked executable; that is
+        # one failed check, not a doctor that cannot report. Mailman #356.
+        return Check(command, False, f"{find_executable(command)} could not start: {error}",
+                     required)
+    return Check(command, version is not None, version or "not found", required)
+
+
 def _base_interpreter_reachable_by_codex() -> tuple[bool, str]:
     """Say whether a sandboxed agent could execute this interpreter.
 
@@ -104,10 +115,6 @@ def describe_commit_identity() -> tuple[bool, str]:
 
 def run_checks() -> list[Check]:
     python_ok = sys.version_info >= (3, 12)
-    git_version = _command_version("git", ["--version"])
-    gh_version = _command_version("gh", ["--version"])
-    codex_version = _command_version("codex", ["--version"])
-    claude_version = _command_version("claude", ["--version"])
     return [
         Check("commit identity", *describe_commit_identity(), True),
         Check(
@@ -117,8 +124,8 @@ def run_checks() -> list[Check]:
             True,
         ),
         Check("agent-runnable python", *_base_interpreter_reachable_by_codex(), False),
-        Check("git", git_version is not None, git_version or "not found", True),
-        Check("gh", gh_version is not None, gh_version or "not found", False),
-        Check("codex", codex_version is not None, codex_version or "not found", False),
-        Check("claude", claude_version is not None, claude_version or "not found", False),
+        _command_check("git", True),
+        _command_check("gh", False),
+        _command_check("codex", False),
+        _command_check("claude", False),
     ]

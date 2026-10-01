@@ -162,6 +162,47 @@ class WorkspacePreparationTests(unittest.TestCase):
                     timeout_seconds=30,
                 )
 
+    def test_a_failed_clone_leaves_nothing_that_blocks_a_retry(self) -> None:
+        """A clone killed part-way left its directory, and every retry refused it. #352"""
+        from dataclasses import replace
+        from unittest.mock import patch
+
+        from mailman import workspace
+
+        real_execute = workspace.execute
+
+        def clone_then_time_out(command, **kwargs):
+            result = real_execute(command, **kwargs)
+            if "clone" in command:
+                return replace(result, exit_code=None, timed_out=True)
+            return result
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "source"
+            source.mkdir()
+            git(source, "init", "--initial-branch=main")
+            git(source, "config", "user.name", "Fixture")
+            git(source, "config", "user.email", "fixture@example.invalid")
+            (source / "code.txt").write_text("base\n", encoding="utf-8")
+            git(source, "add", "--", "code.txt")
+            git(source, "commit", "-m", "base")
+            base_commit = git(source, "rev-parse", "HEAD")
+            run_directory = root / "run"
+            run_directory.mkdir()
+            prepare = lambda: prepare_workspace(  # noqa: E731
+                repository=str(source), base_commit=base_commit,
+                run_directory=run_directory, timeout_seconds=30,
+            )
+
+            with patch.object(workspace, "execute", side_effect=clone_then_time_out):
+                failed = prepare()
+            retried = prepare()
+
+            self.assertFalse(failed["success"])
+            self.assertTrue(retried["success"], retried.get("detail"))
+            self.assertFalse(retried["reused"])
+
     def test_seeds_the_local_exclude_with_run_scratch(self) -> None:
         """Scratch the run writes must not read as target work.
 

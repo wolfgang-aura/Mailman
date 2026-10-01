@@ -753,6 +753,31 @@ class OrchestrationTests(OrchestratorHarness):
                 run_time_budget_seconds=DEFAULT_RUN_TIME_BUDGET_SECONDS * 2,
             )
 
+    def test_a_standalone_run_added_to_a_hunt_resumes_under_the_hunt_clock(self) -> None:
+        """The CLI forbids an override reason under a hunt deadline, so the
+        resume check left a run started outside the hunt stuck. Mailman #350.
+        """
+        run, directory = self.make_run()
+        primary = self._blocked_after_one_review(run, directory)
+        resumed = ScriptedAgent("claude", [{"report": APPROVED}])
+        agents = {"codex": primary, "claude": resumed}
+
+        outcome = orchestrate(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: agents[name],
+            resume_review=True,
+            run_time_budget_seconds=DEFAULT_RUN_TIME_BUDGET_SECONDS * 2,
+            time_budget_name="hunt",
+        )
+
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
+        self.assertIsNone(outcome.budget_override_reason)
+
     def test_the_run_deadline_survives_a_resume_review(self) -> None:
         """https://github.com/wolfgang-aura/Mailman/issues/81
 

@@ -1955,6 +1955,8 @@ def record_duplicate_search(
         "complete": False,
         "symbols": list(symbols),
         "issue_symbols": list(issue_symbols),
+        # Kept so a repeat of this search is the same search. Mailman #355.
+        "limit": limit,
         "decided_by": None,
         "compact_terms": [],
         "matches": [],

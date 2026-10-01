@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 import platform
+import shutil
+import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -171,6 +173,16 @@ def seed_local_exclude(workspace: Path) -> list[str]:
     return added
 
 
+def _remove_partial_clone(destination: Path) -> None:
+    """Delete an unfinished clone; git writes its pack files read-only."""
+    def writable_then_retry(function, path, _error) -> None:
+        os.chmod(path, stat.S_IWRITE)
+        function(path)
+
+    if destination.exists():
+        shutil.rmtree(destination, onexc=writable_then_retry)
+
+
 def prepare_workspace(
     *,
     repository: str,
@@ -259,6 +271,9 @@ def prepare_workspace(
         "success": False,
     }
     if clone.timed_out or clone.exit_code != 0:
+        # A partial clone left behind is an existing non-workspace directory
+        # that every retry refuses. Mailman #352.
+        _remove_partial_clone(destination)
         _write_workspace_record(record_path, record)
         return record
 
@@ -279,6 +294,7 @@ def prepare_workspace(
     )
     record["checkout"] = checkout.to_dict()
     if checkout.timed_out or checkout.exit_code != 0:
+        _remove_partial_clone(destination)
         _write_workspace_record(record_path, record)
         return record
 

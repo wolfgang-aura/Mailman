@@ -785,31 +785,54 @@ def sweep_labels_admit(labels: list[str]) -> bool:
 SWEEP_TIMELINE_PAGES = 5
 
 
-def _read_timeline(gh, path: str) -> list | None:
-    """Every page of one issue timeline, or None if any page went unread.
+def _read_timeline(gh, path: str) -> tuple[list, bool]:
+    """The pages of one issue timeline read, and whether that was all of it.
 
     A single `per_page=100` read missed a rival cross-referenced after the
-    hundredth event, and the row was offered as unclaimed.
+    hundredth event, and the row was offered as unclaimed. The events read
+    before a failed page, or before the page cap, are still returned: a rival
+    among them claims the row whatever the rest says. Mailman #340.
     """
     events: list = []
     for page in range(1, SWEEP_TIMELINE_PAGES + 1):
         got = gh.json(f"{path}?per_page=100&page={page}")
         if not isinstance(got, list):
-            return None
+            return events, False
         events += got
         if len(got) < 100:
-            break
-    return events
+            return events, True
+    return events, False
 
 
-def _same_repository(source: dict, slug: str) -> bool:
-    """Whether a cross-referencing issue lives in `slug`; unknown counts as yes."""
-    url = str(source.get("repository_url") or "")
-    if not url:
-        repository = source.get("repository")
-        name = repository.get("full_name") if isinstance(repository, dict) else None
-        return not name or str(name).lower() == slug.lower()
-    return url.lower().rstrip("/").endswith(f"/repos/{slug.lower()}")
+def _source_repository(source: dict, slug: str) -> str:
+    """The `owner/repo` a cross-referencing issue lives in; unknown is `slug`."""
+    url = str(source.get("repository_url") or "").rstrip("/")
+    if "/repos/" in url:
+        return url.split("/repos/", 1)[1].lower()
+    repository = source.get("repository")
+    name = repository.get("full_name") if isinstance(repository, dict) else None
+    return str(name or slug).lower()
+
+
+def _same_owner(source: dict, slug: str) -> bool:
+    """Whether a cross-referencing issue is in `slug` or a sibling under its owner.
+
+    The prescreen rule: another owner's PR is a downstream workaround, but a
+    sibling's is a fix, as jsonschema#1497's is in python-jsonschema/referencing.
+    Mailman #172, #340.
+    """
+    return _source_repository(source, slug).split("/")[0] == slug.split("/")[0].lower()
+
+
+def _pull_name(source: dict, slug: str) -> int | str:
+    """A pull request's number here, or `owner/repo#N` in a sibling repository."""
+    repository = _source_repository(source, slug)
+    number = source["number"]
+    return number if repository == slug.lower() else f"{repository}#{number}"
+
+
+def _by_name(name: int | str) -> tuple:
+    return (isinstance(name, str), name if isinstance(name, int) else 0, str(name))
 
 
 def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = None,
@@ -918,13 +941,9 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
 
     with ThreadPoolExecutor(max_workers=SWEEP_TIMELINE_WORKERS) as pool:
         timelines = list(pool.map(timeline, rows.values()))
-    for row, events in zip(rows.values(), timelines):
+    for row, (events, complete) in zip(rows.values(), timelines):
         author = row.pop("_author")
-        if not isinstance(events, list):
-            # Unread, a rival pull request goes unseen: 13 such rows all had
-            # one at prescreen. Sweep again once the limit resets. Mailman #283.
-            unverified.append(row["target"])
-            continue
+        slug = row["target"].rsplit("#", 1)[0]
         sources = [
             source for source in (
                 ((event.get("source") or {}).get("issue") or {}) for event in events
@@ -933,33 +952,39 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
             if source.get("pull_request") is not None
             and isinstance(source.get("number"), int)
             # A downstream project's workaround PR names the issue from its
-            # own repository; it fixes nothing here.
-            and _same_repository(source, row["target"].rsplit("#", 1)[0])
+            # own repository; it fixes nothing here. A sibling's still does.
+            and _same_owner(source, slug)
         ]
         # An open pull request an outsider left for 60 days is prior art, as
         # prescreen and check-target judge it, not a claim: typeshed#15495
         # was hidden behind one 195 days old. Mailman #309.
         dormant = {
-            source["number"] for source in sources
+            _pull_name(source, slug) for source in sources
             if source.get("state") == "open" and is_stale_attempt(source, now=moment)
         }
         rivals = sorted({
-            source["number"] for source in sources
-            if source["number"] not in dormant
+            _pull_name(source, slug) for source in sources
+            if _pull_name(source, slug) not in dormant
             and (source.get("state") == "open"
                  or (source.get("pull_request") or {}).get("merged_at"))
-        })
+        }, key=_by_name)
         if rivals:
+            # A rival read before a failed page claims the row. #340.
             claimed_rows.append({"target": row["target"], "pull_requests": rivals})
+            continue
+        if not complete:
+            # Unread, a rival pull request goes unseen: 13 such rows all had
+            # one at prescreen. Sweep again once the limit resets. Mailman #283.
+            unverified.append(row["target"])
             continue
         # A closed, unmerged attempt is often one a maintainer turned down,
         # which prescreen rejects; a self-closed one can still be superseded,
         # so the row stays but ranks after clean ones. Mailman #266.
         row["prior_attempts"] = sorted(dormant | {
-            source["number"] for source in sources
+            _pull_name(source, slug) for source in sources
             if source.get("state") == "closed"
             and not (source.get("pull_request") or {}).get("merged_at")
-        })
+        }, key=_by_name)
         row["engaged"] = any(
             (event.get("event") == "commented"
              and event.get("author_association") in MAINTAINER_ASSOCIATIONS)
@@ -1524,7 +1549,9 @@ def refresh(root: Path, record: dict, *, include_ready: bool = False) -> dict:
     before = status(root, record)
     refreshed: list[dict] = []
     for row in before["runs"]:
-        if row.get("dropped"):
+        # A filed run's evidence is what it was filed on; a repeat would find
+        # our own pull request and overwrite it. Mailman #343.
+        if row.get("dropped") or row.get("filed"):
             continue
         run, directory = load_run(row["run_id"], root)
         # A candidate that never reached a handoff has an earlier problem than
@@ -1552,6 +1579,9 @@ def refresh(root: Path, record: dict, *, include_ready: bool = False) -> dict:
                 query=search["query"],
                 issue_number=search.get("issue_number"),
                 symbols=search.get("symbols") or (),
+                # The same search, not a narrower one. Mailman #355.
+                issue_symbols=search.get("issue_symbols") or (),
+                limit=search.get("limit") or 30,
             )
             outcome["duplicate_search"] = {
                 "success": fresh["success"], "complete": fresh["complete"],
@@ -1591,8 +1621,10 @@ def finish(root: Path, record: dict) -> dict:
     # A filed row satisfies its slot without joining the packet. The packet is
     # what the operator approves for filing, and its pull request is already
     # open. https://github.com/wolfgang-aura/Mailman/issues/97
+    # It also took its slot, so the packet offers only the slots left. #351.
     directories = [root / row["run_id"] for row in result["runs"]
-                   if row["ready"] and not row.get("filed")][:record["requested"]]
+                   if row["ready"] and not row.get("filed")
+                   ][:max(record["requested"] - result["filed"], 0)]
     if not directories:
         # Every requested slot is filled by a pull request that is already
         # open. `hunt file` moves a hunt to FILED once the last requested

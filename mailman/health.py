@@ -29,7 +29,7 @@ _USAGE_PATTERNS = (
     r"insufficient (?:credit|quota)",
     r"upgrade your plan",
     r"try again at\b",
-    r"429\b",
+    r"\b429\b",
 )
 
 #: The host, not the code under test, failed. A temporary directory that
@@ -44,6 +44,31 @@ _INFRASTRUCTURE_PATTERNS = (
 
 _USAGE = re.compile("|".join(_USAGE_PATTERNS), re.IGNORECASE)
 _INFRASTRUCTURE = re.compile("|".join(_INFRASTRUCTURE_PATTERNS), re.IGNORECASE)
+
+
+def agent_errors(stdout: str | None) -> str:
+    """The agent CLI's own error lines from its JSON stream.
+
+    The stream also carries every command the agent ran and its output, so a
+    `test_x.py:1429` or a target test's `[Errno 13]` anywhere in it read as a
+    usage limit or a host failure. Only error events and the lines the CLI
+    printed outside the stream are kept. Mailman #353.
+    """
+    kept: list[str] = []
+    for line in (stdout or "").splitlines():
+        stripped = line.strip()
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            kept.append(stripped)
+            continue
+        if not isinstance(payload, dict):
+            continue
+        kind = payload.get("type")
+        if (kind in {"error", "turn.failed"} or payload.get("error")
+                or (kind == "result" and payload.get("is_error"))):
+            kept.append(stripped)
+    return "\n".join(kept)
 
 
 def classify(*texts: str | None) -> str | None:

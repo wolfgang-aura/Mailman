@@ -20,25 +20,29 @@ from pathlib import Path
 
 from mailman.identity import Identity
 
-DIFF_HEADER = re.compile(r"^diff --git a/(.+?) b/(.+)$", re.MULTILINE)
-
-
-def changed_paths(diff: str) -> list[str]:
-    """Every path the exported diff touches, deletions included."""
-    paths: list[str] = []
-    for old, new in DIFF_HEADER.findall(diff):
-        for path in (old, new):
-            if path not in paths:
-                paths.append(path)
-    return paths
-
-
 def _git(workspace: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(workspace), *arguments],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=120, check=False,
     )
+
+
+def _listed(workspace: Path, *arguments: str) -> list[str]:
+    listed = _git(workspace, arguments[0], "-z", *arguments[1:])
+    if listed.returncode:
+        raise ValueError(f"git {arguments[0]} failed: {listed.stderr.strip()}")
+    return list(dict.fromkeys(path for path in listed.stdout.split("\0") if path))
+
+
+def changed_paths(workspace: Path, base_commit: str) -> list[str]:
+    """Every path the workspace changes against the base, deletions included.
+
+    Read from git's NUL-separated listing, not from the exported diff's
+    headers: a header C-quotes `café.py` and cannot be split reliably for
+    `x b/y.py`, and those files were left out of the commit. Mailman #338.
+    """
+    return _listed(workspace, "diff", "--name-only", "--no-renames", base_commit)
 
 
 def commit_candidate(workspace: Path, *, base_commit: str, branch: str,
@@ -59,9 +63,8 @@ def commit_candidate(workspace: Path, *, base_commit: str, branch: str,
             raise ValueError(f"git switch {branch} failed: {switched.stderr.strip()}")
     # A path named in the diff but absent from both the tree and the index
     # makes `git add` fatal, so stage only what git reports as changed.
-    listed = _git(workspace, "ls-files", "--modified", "--deleted", "--others",
-                  "--exclude-standard", "--", *paths)
-    pending = sorted({line for line in listed.stdout.splitlines() if line})
+    pending = sorted(_listed(workspace, "ls-files", "--modified", "--deleted", "--others",
+                             "--exclude-standard", "--", *paths))
     if pending:
         added = _git(workspace, "add", "-A", "--", *pending)
         if added.returncode:
@@ -80,6 +83,10 @@ def commit_candidate(workspace: Path, *, base_commit: str, branch: str,
     leftover = _git(workspace, "status", "--porcelain", "--", *paths).stdout.strip()
     if leftover:
         raise ValueError(f"exported paths still differ from the commit:\n{leftover}")
+    committed = set(_listed(workspace, "diff", "--name-only", "--no-renames", base_commit, "HEAD"))
+    left_out = [path for path in changed_paths(workspace, base_commit) if path not in committed]
+    if left_out:
+        raise ValueError("changed paths were left out of the commit: " + ", ".join(left_out))
     return _git(workspace, "rev-parse", "HEAD").stdout.strip()
 
 
@@ -132,8 +139,10 @@ def run_stages(stages: Sequence[tuple[str, Callable[[], int]]],
         started = time.monotonic()
         try:
             code = stage()
-        except ValueError as error:
-            print(f"error: {error}", file=stream)
+        except (Exception, SystemExit) as error:
+            # A timeout or an argparse exit is a failed stage too; escaping
+            # here left no stage record. Mailman #356.
+            print(f"error: {error or type(error).__name__}", file=stream)
             code = 2
         record.append({"stage": name, "exit_code": code,
                        "seconds": round(time.monotonic() - started, 1)})

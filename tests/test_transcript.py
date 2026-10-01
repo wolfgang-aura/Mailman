@@ -61,6 +61,19 @@ class CodexStreamTests(unittest.TestCase):
             },
         )
 
+    def test_a_non_object_json_line_is_skipped_not_fatal(self) -> None:
+        """An array or string line raised AttributeError and lost the record. #353"""
+        stdout = "\n".join([
+            "[1, 2]", '"text"', "7",
+            json.dumps({"type": "turn.completed", "usage": ["not", "a", "dict"]}),
+            json.dumps({"type": "turn.completed", "usage": {"input_tokens": 5}}),
+        ])
+
+        self.assertEqual(
+            token_usage(stdout, "codex"),
+            {"input_tokens": 5, "cached_input_tokens": 0, "output_tokens": 0},
+        )
+
     def test_reports_a_command_and_its_outcome(self) -> None:
         started = json.dumps(
             {

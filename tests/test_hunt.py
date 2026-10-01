@@ -679,6 +679,29 @@ class FilingRecordTests(HuntTests):
         self.assertNotIn("filed", stored["runs"][0])
         self.assertEqual(stored["status"], "RUNNING")
 
+    def test_the_packet_offers_only_the_slots_still_open(self):
+        # Two requested, one filed: the packet offered two more runs, so the
+        # operator was asked to approve three PRs for a hunt of two. #351.
+        record = self.new_hunt(2)
+        result = {"remaining": 0, "filed": 1, "runs": [
+            {"run_id": "a", "ready": True, "filed": "https://github.com/example/project/pull/7"},
+            {"run_id": "b", "ready": True},
+            {"run_id": "c", "ready": True},
+        ]}
+
+        def packet(directories, path, **_):
+            path.write_text("packet", encoding="utf-8")
+
+        with (
+            mock.patch("mailman.hunt.status", return_value=result),
+            mock.patch("mailman.review_page.write_run_page"),
+            mock.patch("mailman.review_packet.write_packet_page",
+                       side_effect=packet) as written,
+        ):
+            finish(self.data_root, record)
+
+        self.assertEqual(written.call_args.args[0], [self.data_root / "b"])
+
     def test_a_partly_filed_hunt_is_not_terminal(self):
         record = self.new_hunt(2)
         directory = self.ready_run()
@@ -1012,6 +1035,39 @@ class PreFilingRefreshTests(HuntTests):
         self.assertEqual(status(self.data_root, record)["ready"], 1)
         result = refresh(self.data_root, record, include_ready=True)
         self.assertEqual([row["run_id"] for row in result["refreshed"]], [directory.name])
+
+    def test_a_filed_run_is_not_refreshed(self):
+        # finish's pre-filing pass reran a filed run's search, which then found
+        # our own pull request and overwrote the evidence it was filed on.
+        # Mailman #343.
+        record = self.new_hunt(2)
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        record_filing(self.data_root, record, directory.name,
+                      pr_url="https://github.com/example/project/pull/7")
+        before = (directory / "duplicate-search.json").read_bytes()
+        result = refresh(self.data_root, record, include_ready=True)
+        self.assertEqual(result["refreshed"], [])
+        self.assertEqual((directory / "duplicate-search.json").read_bytes(), before)
+
+    def test_the_repeated_search_keeps_its_limit_and_issue_symbols(self):
+        # The pre-filing repeat dropped the symbols read out of the issue
+        # body and the recorded limit, so it searched less. Mailman #355.
+        record = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        path = directory / "duplicate-search.json"
+        search = json.loads(path.read_text(encoding="utf-8"))
+        search.update(query="fixture defect", issue_number=1, symbols=["fix"],
+                      issue_symbols=["_handle_upserts"], limit=80)
+        path.write_text(json.dumps(search), encoding="utf-8")
+        fresh = {"success": True, "complete": True, "match_count": 0, "decided_by": "broad"}
+        with mock.patch("mailman.submission.record_duplicate_search",
+                        return_value=fresh) as searched:
+            refresh(self.data_root, record, include_ready=True)
+
+        self.assertEqual(searched.call_args.kwargs["issue_symbols"], ["_handle_upserts"])
+        self.assertEqual(searched.call_args.kwargs["limit"], 80)
 
 
 class PrescreenRecordTests(OrchestratorHarness):
@@ -1578,6 +1634,70 @@ class SweepTests(OrchestratorHarness):
         self.assertEqual([row["target"] for row in result["rows"]], ["acme/a#1"])
         self.assertEqual(result["rows"][0]["prior_attempts"], [])
         self.assertEqual(result["claimed"], [])
+
+    def test_a_sibling_repository_pull_request_claims_as_prescreen_counts_it(self):
+        # prescreen blocks on an open fix PR under the same owner
+        # (jsonschema#1497's is in python-jsonschema/referencing); the sweep
+        # dropped it and offered the row. Mailman #340.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        sibling = {"event": "cross-referenced", "source": {"issue": {
+            "number": 40, "state": "open", "pull_request": {"merged_at": None},
+            "repository_url": "https://api.github.com/repos/acme/core"}}}
+        gh = _SearchGh(
+            [[_item("acme/a", 1)]],
+            timelines={"repos/acme/a/issues/1/timeline": [sibling]})
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(result["claimed"],
+                         [{"target": "acme/a#1", "pull_requests": ["acme/core#40"]}])
+
+    def test_a_timeline_past_the_page_cap_is_unverified(self):
+        # Five full pages were returned as the whole timeline, so a rival on
+        # the sixth went unseen and the row was offered. Mailman #340.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        filler = [{"event": "subscribed"}] * 100
+
+        class EndlessGh(_SearchGh):
+            def json(self, path):
+                if "/timeline" in path:
+                    return filler
+                return super().json(path)
+
+        gh = EndlessGh([[_item("acme/a", 1)]])
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(result["unverified"], ["acme/a#1"])
+
+    def test_a_rival_found_before_a_later_page_fails_still_claims(self):
+        # A failed second page threw away the rival read on the first, and
+        # the row became unverified instead of claimed. Mailman #340.
+        from mailman.hunt import sweep_fresh_issues
+        self._screen("acme/a", [])
+        rival = {"event": "cross-referenced", "source": {"issue": {
+            "number": 12, "state": "open", "pull_request": {"merged_at": None}}}}
+        first = [rival] + [{"event": "subscribed"}] * 99
+
+        class FailingGh(_SearchGh):
+            def json(self, path):
+                if "/timeline" in path:
+                    return None if path.endswith("page=2") else first
+                return super().json(path)
+
+        gh = FailingGh([[_item("acme/a", 1)]])
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=datetime(2026, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(result["unverified"], [])
+        self.assertEqual(result["claimed"], [{"target": "acme/a#1", "pull_requests": [12]}])
 
     def test_a_dormant_outside_pull_request_is_a_prior_attempt_not_a_claim(self):
         # typeshed#15495 sat behind typeshed#15497, untouched for 195 days by
