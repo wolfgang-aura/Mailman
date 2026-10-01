@@ -206,6 +206,8 @@ dependencies = ["mkdocs"]
             self.assertIn("scikit-learn!=1.9.1", constraints)
             # PyPSA#1938: pyproj 3.8.0's `_network` DLL is blocked. #197.
             self.assertIn("pyproj!=3.8.0", constraints)
+            # awkward#4228: pyarrow 25.0.1's `_fs` DLL is blocked. #369.
+            self.assertIn("pyarrow!=25.0.1", constraints)
             for step in plan["steps"][1:]:
                 command = step["command"]
                 self.assertEqual(
