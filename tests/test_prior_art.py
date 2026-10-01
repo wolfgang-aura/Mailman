@@ -483,6 +483,38 @@ class PriorArtMaintainerSetTests(unittest.TestCase):
         self.assertTrue(attempt["maintainer_closed"])
         self.assertEqual(attempt["closed_by"]["login"], "keeper")
 
+    def test_each_unmerged_attempt_records_its_author_association(self) -> None:
+        # `gh pr view` has no association; the REST read supplies it, and the
+        # screened set makes a private member a project voice. Mailman #199.
+        payload = dict(CLOSED_PULL_REQUEST, comments=[])
+        payload.pop("authorAssociation", None)
+        author = payload["author"]["login"]
+
+        def fake_execute(command, **_):
+            if command[1] == "api" and command[-1] == ".author_association":
+                stdout = '"CONTRIBUTOR"'
+            else:
+                stdout = json.dumps(payload)
+            return CommandResult(command, ".", "", 0.0, 0, stdout, "", False, 60, {})
+
+        def api(_directory, *, path, query=None, **_):
+            if path.endswith("/timeline"):
+                return [{"event": "closed", "actor": {"login": "github-actions[bot]"}}]
+            return []
+
+        for maintainers, voice in ((frozenset(), False), (frozenset({author}), True)):
+            with self.subTest(maintainers=maintainers), TemporaryDirectory() as directory, patch(
+                "mailman.prior_art.execute", fake_execute
+            ), patch("mailman.prior_art._api", side_effect=api):
+                record = collect_prior_art(
+                    Path(directory), repository="acme/a", numbers=[14502],
+                    executable="gh", maintainers=maintainers,
+                )
+            attempt = record["attempts"][0]
+            self.assertEqual(attempt["author_association"], "CONTRIBUTOR")
+            self.assertIs(attempt["author_is_project_voice"], voice)
+            self.assertFalse(attempt["maintainer_closed"])
+
     def test_ai_doubt_from_a_screened_maintainer_counts(self) -> None:
         payload = dict(
             CLOSED_PULL_REQUEST,

@@ -51,6 +51,9 @@ DROP_CODES = {
     "issue-assigned", "work-handed-over", "open-pull-request",
     "already-fixed-upstream", "bug-not-reproduced", "fails-freshness-bar",
     "reproduction-not-machine-checked", "no-maintainer-reply",
+    # The project's own fix is parked; no repair makes the target ours.
+    # Mailman #199.
+    "maintainer-pending-fix",
 }
 #: Codes a target's assessment raises as a warning. They neither replace the
 #: candidate nor send the coordinator back to a stage; they travel with the run

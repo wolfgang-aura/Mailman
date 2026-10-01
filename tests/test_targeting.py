@@ -15,6 +15,7 @@ from mailman.targeting import (
     BUG_NOT_REPRODUCED,
     DUPLICATE_FORBIDDEN_OPEN_ATTEMPT,
     MAINTAINER_CLOSED_ATTEMPT,
+    MAINTAINER_PENDING_FIX,
     ISSUE_ASSIGNED,
     MERGED_FIX_ALREADY_IN_BASE,
     NO_CLAIM_CHECK,
@@ -298,6 +299,41 @@ class AssessTargetTests(unittest.TestCase):
         self.assertTrue(assessment.may_start)
         self.assertIn(UNACKNOWLEDGED_ATTEMPTS, assessment.warnings)
         self.assertEqual(len(assessment.closed_attempts), 1)
+
+    def test_a_project_voices_parked_fix_blocks_even_when_acknowledged(
+        self,
+    ) -> None:
+        # Mailman #199: a collaborator's fix closed by a stale bot is the
+        # project's own work parked, not an outsider's abandoned attempt.
+        parked = {
+            **_CLOSED,
+            "author": "voice",
+            "author_association": "COLLABORATOR",
+            "closed_by": {"login": "stale[bot]", "maintainer": False},
+            "maintainer_closed": False,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(
+                _record(Path(temporary), attempts=[parked]), acknowledged=True
+            )
+
+        self.assertFalse(assessment.may_start)
+        self.assertEqual(assessment.blocking, [MAINTAINER_PENDING_FIX])
+        self.assertNotIn(STALE_PRIOR_ATTEMPT, assessment.warnings)
+        self.assertEqual(
+            [row["number"] for row in assessment.maintainer_pending_attempts],
+            [14502],
+        )
+        self.assertIn("parked    #14502", assessment.summary())
+
+    def test_an_unread_closer_is_not_called_a_parked_fix(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            assessment = assess_target(
+                _record(Path(temporary), attempts=[_CLOSED_BY_MAINTAINER])
+            )
+
+        self.assertNotIn(MAINTAINER_PENDING_FIX, assessment.blocking)
+        self.assertEqual(assessment.maintainer_pending_attempts, [])
 
     def test_the_pytest_case_that_cost_three_runs_is_refused(self) -> None:
         # pytest-dev/pytest #14324: three closed attempts and one open since

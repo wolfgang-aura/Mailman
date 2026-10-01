@@ -190,7 +190,13 @@ a time; a screen costs about 200 GitHub core calls.
    being merged, is a stale prior attempt rather than a claim: it lands in
    `stale_attempts` with the warning `stale-prior-attempt`, and the target
    passes. A dormant attempt by an OWNER or MEMBER still blocks, because that
-   is a maintainer's own work in progress. An attempt a maintainer closed is
+   is a maintainer's own work in progress. Each attempt the search finds
+   records its author's association; a closed unmerged attempt written by an
+   OWNER, MEMBER, COLLABORATOR or a login in the screen's maintainer set, and
+   closed by no other maintainer (its author, a stale bot, inactivity), blocks
+   under `maintainer-pending-fix`. That is the project's own fix parked, not
+   an outsider's abandoned one. When the closer could not be read, the
+   attempt keeps the older handling. An attempt a maintainer closed is
    not stale at all: the closing actor is read from the pull request's
    timeline, and a closer who is not its author and carries OWNER, MEMBER or
    COLLABORATOR blocks the issue under `maintainer-closed-attempt`. Somebody
