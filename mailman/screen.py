@@ -2122,6 +2122,11 @@ def _shortlist_row(
     }
 
 
+#: Timeline pages read per shortlist row. A rival cross-reference can sit
+#: past event 100 on a long thread (#339); one past 1,000 reads as unknown.
+_TIMELINE_PAGES = 10
+
+
 def _read_timelines(
     gh: _Gh, slug: str, shortlist: list[dict[str, Any]], issues: list[dict[str, Any]]
 ) -> None:
@@ -2141,9 +2146,9 @@ def _read_timelines(
     }
     rows = [row for row in shortlist if row.get("thread_read")][:_COMMENT_THREAD_LIMIT]
 
-    def read(row: dict[str, Any]) -> list[Any]:
-        return gh.pages(
-            f"repos/{slug}/issues/{row['number']}/timeline?per_page=100", pages=1
+    def read(row: dict[str, Any]) -> list[Any] | None:
+        return gh.every_page(
+            f"repos/{slug}/issues/{row['number']}/timeline", pages=_TIMELINE_PAGES
         )
 
     with ThreadPoolExecutor(max_workers=RESPONSIVENESS_WORKERS) as pool:
@@ -2152,6 +2157,11 @@ def _read_timelines(
         row.setdefault("maintainer_labelled", None)
         row.setdefault("rival_pull_requests", None)
     for row, timeline in zip(rows, timelines):
+        # A timeline that could not be read is no answer about rivals, and
+        # `hunt targets` does not offer the row. Mailman #339.
+        row["timeline_read"] = timeline is not None
+        if timeline is None:
+            continue
         row["maintainer_labelled"] = bool(
             maintainer_labels(timeline, reporter=reporters.get(str(row["number"])))
         )

@@ -1010,6 +1010,9 @@ def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
             # is how 24 of 55 confirmed bugs were lost on 2026-09-28.
             if row.get("rival_pull_requests"):
                 continue
+            # A timeline that could not be read may hide one. Mailman #339.
+            if row.get("timeline_read") is False:
+                continue
             # Screens recorded before the not-a-bug filter still hold
             # requests and RFCs. Mailman #188.
             if is_request_row(row):

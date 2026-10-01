@@ -440,6 +440,25 @@ class _Gh:
                 break
         return rows
 
+    def every_page(self, path: str, *, pages: int) -> list[dict[str, Any]] | None:
+        """Every row behind `path`, or None when it could not all be read.
+
+        `pages` reads a failed page as the end of the list, which is right for
+        a sample and wrong for evidence: a thread or timeline cut short reads
+        as one with nothing more in it. A failed page, or a list still full at
+        the cap, is None here (#339, #344).
+        """
+        rows: list[dict[str, Any]] = []
+        joiner = "&" if "?" in path else "?"
+        for page in range(1, pages + 1):
+            got = self.json(f"{path}{joiner}per_page=100&page={page}")
+            if not isinstance(got, list):
+                return None
+            rows += got
+            if len(got) < 100:
+                return rows
+        return None
+
 
 def _merge_path_rows(
     gh: _Gh, slug: str, merged: list[dict[str, Any]], limit: int

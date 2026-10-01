@@ -980,7 +980,23 @@ def read_claims(
     # is costs a `gh pr view` per reference, so the read stops at collecting
     # them and `prescreen` pays for the ones it wants.
     # https://github.com/wolfgang-aura/Mailman/issues/98
-    timeline = api(f"repos/{slug}/issues/{number}/timeline", per_page=100)
+    # Every page, and a failed page is no timeline at all: a rival pull
+    # request is a cross-reference here, and a missing one reads as no rival.
+    # Mailman #339.
+    timeline: list[Any] = []
+    for page in range(1, pages + 1):
+        got = api(
+            f"repos/{slug}/issues/{number}/timeline", per_page=100, page=page
+        )
+        if not isinstance(got, list):
+            record["detail"] = (
+                f"the timeline of {slug}#{number} could not be read (page {page})"
+            )
+            _write(run_directory, record)
+            return record
+        timeline += got
+        if len(got) < 100:
+            break
     comment_bodies = [
         comment.get("body") for comment in comments if isinstance(comment, dict)
     ]

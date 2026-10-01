@@ -1155,6 +1155,19 @@ class PrescreenRecordTests(OrchestratorHarness):
         self.assertEqual([row["target"] for row in rows], ["acme/labels#6"])
         self.assertTrue(rows[0]["maintainer_labelled"])
 
+    def test_workable_targets_skip_a_row_whose_timeline_failed(self):
+        # Mailman #339: a failed timeline read is no answer about rivals.
+        self._screen("acme/unread", [6, 7], flags={
+            6: {"maintainer_filed": True, "rival_pull_requests": [],
+                "timeline_read": True},
+            7: {"maintainer_filed": True, "rival_pull_requests": None,
+                "timeline_read": False},
+        })
+
+        rows = workable_targets(self.data_root, held_repositories=set())
+
+        self.assertEqual([row["target"] for row in rows], ["acme/unread#6"])
+
     def test_workable_targets_rank_a_young_bug_label_first_within_a_group(self):
         # certbot's 581-day-old chore led the engaged list on 2026-09-29 while
         # two-day-old bug-labelled issues sat far below. Mailman #189.
