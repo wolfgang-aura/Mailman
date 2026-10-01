@@ -2399,6 +2399,74 @@ class MaintainerClosedAttemptTests(StalePriorAttemptTests):
             record["stale_attempts"][0]["closed_by"]["login"], "outsider"
         )
 
+    def test_a_withdrawal_after_maintainers_questioned_ai_authorship_is_a_rejection(
+        self,
+    ) -> None:
+        # towncrier#756: members asked whether an LLM wrote it and cited
+        # GPTZero; the author then closed it. Mailman #304.
+        attempt = {
+            **self.closed(author="outsider"),
+            "comments": [
+                {
+                    "author": {"login": "glyph"},
+                    "authorAssociation": "MEMBER",
+                    "body": "Hi - was any LLM used to generate this PR or its description?",
+                },
+                {
+                    "author": {"login": "outsider"},
+                    "authorAssociation": "NONE",
+                    "body": "Closing this one out.",
+                },
+            ],
+        }
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                self.issue(),
+                pull_requests={"example/project#8": attempt},
+                timelines={
+                    8: self.closing_event(actor="outsider", association="CONTRIBUTOR")
+                },
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "reject")
+        self.assertIn(MAINTAINER_CLOSED_ATTEMPT, record["blocking"])
+        self.assertNotIn(STALE_PRIOR_ATTEMPT, record["warnings"])
+        rejected = record["maintainer_closed_attempts"][0]
+        self.assertIn("AI authorship", rejected["closed_by"]["detail"])
+
+    def test_a_maintainer_comment_without_ai_doubt_leaves_a_withdrawal_stale(
+        self,
+    ) -> None:
+        attempt = {
+            **self.closed(author="outsider"),
+            "comments": [
+                {
+                    "author": {"login": "glyph"},
+                    "authorAssociation": "MEMBER",
+                    "body": "Could you add a test for the create command?",
+                }
+            ],
+        }
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub(
+                "[]",
+                self.issue(),
+                pull_requests={"example/project#8": attempt},
+                timelines={
+                    8: self.closing_event(actor="outsider", association="CONTRIBUTOR")
+                },
+            ),
+        )
+
+        self.assertEqual(record["verdict"], "pass")
+        self.assertIn(STALE_PRIOR_ATTEMPT, record["warnings"])
+
     def test_an_unreadable_closure_keeps_the_old_behaviour_and_says_so(self) -> None:
         record = prescreen_issue(
             self.root,

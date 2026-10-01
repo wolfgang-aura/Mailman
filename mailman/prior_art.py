@@ -92,6 +92,60 @@ def _comment_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+#: A project voice doubting that a person wrote the attempt. towncrier#756 was
+#: closed by its own author, but only after two members asked "was any LLM
+#: used to generate this PR" and quoted GPTZero. Another agent-written pull
+#: request on the same issue is the pattern they named. Mailman #304.
+_AI_AUTHORSHIP_DOUBT = re.compile(
+    r"\b(?:"
+    r"(?:was|were|is|did you use) (?:any |an |the )?(?:llms?|ai|chatgpt|copilot|claude)\b"
+    r"|(?:ai|llm|chatgpt|machine)[- ](?:generated|written|authored)"
+    r"|(?:generated|written) (?:by|with|using) (?:an? )?(?:llms?|ai|chatgpt|copilot)\b"
+    r"|gptzero|pangram"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def ai_authorship_doubt(
+    payload: dict[str, Any], maintainers: Collection[str] = ()
+) -> str | None:
+    """The login of a project voice who questioned AI authorship, if any."""
+    for source in ("comments", "reviews"):
+        entries = payload.get(source)
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            who = entry.get("author")
+            login = who.get("login") if isinstance(who, dict) else None
+            association = (entry.get("authorAssociation") or "").upper()
+            if not is_maintainer(
+                {"association": association, "login": login}, maintainers
+            ):
+                continue
+            if _AI_AUTHORSHIP_DOUBT.search(str(entry.get("body") or "")):
+                return login or association.lower()
+    return None
+
+
+def _note_ai_doubt(
+    closed_by: dict[str, Any],
+    payload: dict[str, Any],
+    maintainers: Collection[str] = (),
+) -> dict[str, Any]:
+    """Count a withdrawal under AI-authorship doubt as the project saying no."""
+    if closed_by.get("maintainer"):
+        return closed_by
+    doubter = ai_authorship_doubt(payload, maintainers)
+    if not doubter:
+        return closed_by
+    return {
+        **closed_by,
+        "maintainer": True,
+        "detail": f"{doubter} questioned AI authorship before it was closed",
+    }
+
+
 def awaits_maintainer(
     payload: dict[str, Any], maintainers: Collection[str] = ()
 ) -> bool:
@@ -403,6 +457,7 @@ def collect_prior_art(
                 timeout_seconds=timeout_seconds,
                 commands=record["commands"],
             )
+            summary["closed_by"] = _note_ai_doubt(summary["closed_by"], payload)
             summary["maintainer_closed"] = bool(summary["closed_by"]["maintainer"])
         record["attempts"].append(summary)
     record["success"] = True
@@ -588,6 +643,7 @@ def resolve_cited_pull_requests(
                     commands=record["commands"],
                     maintainers=known,
                 )
+                row["closed_by"] = _note_ai_doubt(row["closed_by"], payload, known)
                 row["maintainer_closed"] = bool(row["closed_by"]["maintainer"])
         record["resolved"].append(row)
         if row["maintainer_closed"]:
