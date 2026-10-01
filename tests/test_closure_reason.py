@@ -70,6 +70,10 @@ def _closed_by(sha: str) -> dict[str, Any]:
     }
 
 
+def _issue_closed() -> dict[str, Any]:
+    return {"event": "closed", "commit_id": None, "commit_url": None}
+
+
 def _merged_reference(number: int) -> dict[str, Any]:
     return {
         "event": "cross-referenced",
@@ -106,11 +110,19 @@ def _classify(answers: dict[str, Any], **overrides: Any) -> tuple[dict[str, Any]
 
 class ClosureReasonTests(unittest.TestCase):
     def test_a_merged_pull_request_on_the_same_issue_supersedes_ours(self) -> None:
-        closure, gh = _classify({ISSUE: [_merged_reference(3890)]})
+        closure, gh = _classify({ISSUE: [_merged_reference(3890), _issue_closed()]})
 
         self.assertEqual(closure["reason"], "superseded-by-pr")
         self.assertEqual(closure["pull_request"], 3890)
         self.assertEqual(gh.paths, [ISSUE])
+
+    def test_a_merged_pull_request_that_left_the_issue_open_does_not_supersede_ours(
+        self,
+    ) -> None:
+        # Mailman #363: a refactor the issue was split off from merged and left it open.
+        closure, _ = _classify({ISSUE: [_merged_reference(3890)], PULL: [], WINDOW: []})
+
+        self.assertEqual(closure["reason"], "closed-silently")
 
     def test_an_issue_closed_by_a_commit_no_pull_request_carried_is_direct(self) -> None:
         """pdm-project/pdm#3884: the maintainer committed dc4e314 on main."""
