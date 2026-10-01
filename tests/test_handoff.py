@@ -492,6 +492,118 @@ class TouchedTestsGateTests(unittest.TestCase):
             self.assertIn("export changed", result["detail"])
 
 
+class OwnWordsHandoffTests(unittest.TestCase):
+    """https://github.com/wolfgang-aura/Mailman/issues/181
+
+    A target that wants the description in the author's own words gets an
+    agent-written body from Mailman. The run may be packaged and reported
+    ready, but nothing may publish that body: the handoff prints no command
+    and handoff-check refuses until the human has rewritten it.
+    """
+
+    def setUp(self):
+        authors = patch("mailman.handoff.check_authorship", return_value={"ok": True, "head": "fixture"})
+        authors.start()
+        self.addCleanup(authors.stop)
+        foreign = patch("mailman.handoff.foreign_pull_request", return_value=None)
+        foreign.start()
+        self.addCleanup(foreign.stop)
+
+    def _hold(self, directory: Path, codes: list[str]) -> None:
+        path = directory / "submission" / "submission.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record.update(ready=not codes, blocking_codes=codes)
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+    def _handoff(self, directory: Path, body_path: Path) -> tuple[dict, str]:
+        return build_handoff(
+            run_id=directory.name,
+            run_directory=directory,
+            body_path=body_path,
+            kind="pull-request",
+            repository="pmorissette/ffn",
+            title="Cache the rolling window",
+            head="Mailman-Fork:mailman/run-1",
+            base="master",
+        )
+
+    def _prepared(self, root: Path) -> tuple[Path, Path, dict, str]:
+        _, directory = _run_directory(root)
+        _prior_art(directory)
+        self._hold(directory, ["policy-requires-own-words"])
+        body_path = root / "body.md"
+        body_path.write_text(BODY, encoding="utf-8", newline="\n")
+        record, block = self._handoff(directory, body_path)
+        return directory, body_path, record, block
+
+    def test_an_agent_written_body_gets_no_publish_command(self) -> None:
+        with TemporaryDirectory() as name:
+            _, _, record, block = self._prepared(Path(name))
+
+        self.assertIsNone(record["command"])
+        self.assertTrue(record["own_words_pending"])
+        self.assertNotIn("gh pr create", block)
+        self.assertIn("OWN WORDS -- you must rewrite this body before filing", block)
+        self.assertIn("COMMAND -- withheld", block)
+        self.assertIn("own_words_confirmed", block)
+        # The rewrite comes before the body it applies to.
+        self.assertLess(block.index("OWN WORDS"), block.index("BODY"))
+
+    def test_handoff_check_refuses_until_the_rewrite(self) -> None:
+        with TemporaryDirectory() as name:
+            directory, _, _, _ = self._prepared(Path(name))
+            result = check_handoff(directory)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "own-words-pending")
+        self.assertIn("own words", result["detail"])
+
+    def test_any_other_refusal_is_reported_first(self) -> None:
+        with TemporaryDirectory() as name:
+            directory, body_path, _, _ = self._prepared(Path(name))
+            body_path.write_text(BODY + "\nEdited.\n", encoding="utf-8")
+            edited = check_handoff(directory)
+            body_path.write_text(BODY, encoding="utf-8", newline="\n")
+            _prior_art(directory, search_age_minutes=26 * 60)
+            self._hold(directory, ["policy-requires-own-words"])
+            stale = check_handoff(directory)
+
+        self.assertEqual(edited["reason"], "body-changed")
+        self.assertEqual(stale["reason"], "duplicate-search-stale")
+
+    def test_a_handoff_printed_before_the_confirmation_still_refuses(self) -> None:
+        with TemporaryDirectory() as name:
+            directory, _, _, _ = self._prepared(Path(name))
+            self._hold(directory, [])
+            result = check_handoff(directory)
+
+        self.assertEqual(result["reason"], "own-words-pending")
+
+    def test_the_rewritten_and_confirmed_body_gets_its_command(self) -> None:
+        with TemporaryDirectory() as name:
+            directory, body_path, _, _ = self._prepared(Path(name))
+            body_path.write_text("Rewritten by the author.\n", encoding="utf-8")
+            self._hold(directory, [])
+            record, block = self._handoff(directory, body_path)
+            result = check_handoff(directory)
+
+        self.assertFalse(record["own_words_pending"])
+        self.assertIn("gh pr create", block)
+        self.assertNotIn("OWN WORDS", block)
+        self.assertTrue(result["ok"], result)
+
+    def test_own_words_beside_another_code_still_withholds_the_command(self) -> None:
+        with TemporaryDirectory() as name:
+            _, directory = _run_directory(Path(name))
+            _prior_art(directory)
+            self._hold(directory, ["lint-failed", "policy-requires-own-words"])
+            body_path = Path(name) / "body.md"
+            body_path.write_text(BODY, encoding="utf-8", newline="\n")
+            record, _ = self._handoff(directory, body_path)
+
+        self.assertIsNone(record["command"])
+
+
 class HandoffCliTests(unittest.TestCase):
 
     def setUp(self):

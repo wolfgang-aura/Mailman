@@ -2091,15 +2091,27 @@ def _package(arguments: argparse.Namespace) -> int:
         code = main([
             "prepare-submission", run_id, "--policy", str(arguments.policy),
             "--title", arguments.title, "--branch", branch, *root])
-        # An own-words refusal alone leaves the operator's rewrite, which
-        # happens at filing approval; hunt status counts that run ready once
-        # the handoff exists, so stopping here left it unreachable. #272.
-        from mailman.hunt import OWN_WORDS
-        submission = run_directory / "submission" / "submission.json"
-        if code and submission.is_file():
-            record = json.loads(submission.read_text(encoding="utf-8"))
-            if record.get("blocking_codes") == [OWN_WORDS]:
-                return 0
+        # An own-words refusal alone, for the diff exported now, leaves the
+        # operator's rewrite, which happens at filing approval; hunt status
+        # counts that run ready once the handoff exists, so stopping here
+        # left it unreachable. The handoff then withholds the publish
+        # command until the rewrite. #272, #181.
+        from mailman.submission import held_only_for_own_words
+        if code and held_only_for_own_words(run_directory):
+            return 0
+        return code
+
+    def handoff_check() -> int:
+        code = main(["handoff-check", run_id, *root])
+        # handoff-check refuses an agent-written body the target wants in the
+        # human's words, and refuses it last, so that refusal alone means the
+        # rest passed. It still gates the publish; packaging goes on to the
+        # review page that names the rewrite. #181.
+        from mailman.handoff import OWN_WORDS_PENDING, check_handoff
+        from mailman.submission import held_only_for_own_words
+        if (code and held_only_for_own_words(run_directory)
+                and check_handoff(run_directory)["reason"] == OWN_WORDS_PENDING):
+            return 0
         return code
 
     def refresh_evidence() -> int:
@@ -2135,12 +2147,16 @@ def _package(arguments: argparse.Namespace) -> int:
         ("commit", commit),
         ("check-authors", lambda: main(["check-authors", run_id, *root])),
         ("handoff", lambda: main([*handoff, *root])),
-        ("handoff-check", lambda: main(["handoff-check", run_id, *root])),
+        ("handoff-check", handoff_check),
         ("review", lambda: main(["review", run_id, "--no-open", *root])),
     ]
     code, record = run_stages(stages)
-    print(json.dumps({"run_id": run_id, "package": record,
-                      "complete": code == 0}, indent=2))
+    summary = {"run_id": run_id, "package": record, "complete": code == 0}
+    from mailman.submission import own_words_pending
+    if code == 0 and own_words_pending(run_directory):
+        from mailman.handoff import OWN_WORDS_INSTRUCTION
+        summary["human_action"] = f"Before filing, {OWN_WORDS_INSTRUCTION}."
+    print(json.dumps(summary, indent=2))
     return code
 
 

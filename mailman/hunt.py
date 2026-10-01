@@ -16,7 +16,11 @@ from mailman.agents import normalize_agent_name
 from mailman.artifacts import load_run, new_run_id
 from mailman.completion import finalize_review, read_object
 from mailman.claims import is_routing_label, load_claims
-from mailman.handoff import check_handoff, load_handoff, load_offer_handoff
+from mailman.handoff import (
+    OWN_WORDS_INSTRUCTION, OWN_WORDS_PENDING, check_handoff, load_handoff,
+    load_offer_handoff,
+)
+from mailman.submission import OWN_WORDS_CODE
 from mailman.maintainers import MAINTAINER_ASSOCIATIONS, load_maintainer_logins
 from mailman.models import RunStatus, utc_now
 from mailman.orchestrator import orchestration_step_names
@@ -1171,11 +1175,10 @@ def require_lease(record: dict, owner: str | None) -> None:
 #: A candidate that is complete except for a maintainer's answer. It is listed
 #: and packaged with its offer comment, and it never counts as a pull request.
 READY_TO_ASK = "READY_TO_ASK"
-OWN_WORDS = "policy-requires-own-words"
+OWN_WORDS = OWN_WORDS_CODE
 OWN_WORDS_ACTION = (
-    "Include in the final approval packet. Before filing, rewrite the pull "
-    "request body in your own words, set own_words_confirmed in the target "
-    "policy and rerun prepare-submission."
+    f"Include in the final approval packet. Before filing, {OWN_WORDS_INSTRUCTION}. "
+    "The handoff withholds the publish command until then."
 )
 CLA_ACTION = (
     "Include in the final approval packet. Before filing, sign the target's "
@@ -1359,7 +1362,9 @@ def next_action(directory: Path) -> dict:
     if handoff.get("first_person_claims") or handoff.get("head_owner_type") != "User":
         return action("handoff", "Remove unsupported personal claims and use a confirmed personal fork.")
     checked = check_handoff(directory)
-    if not checked["ok"]:
+    # The own-words refusal comes after every other handoff check, so on its
+    # own it leaves only the human's rewrite. Mailman #181.
+    if not checked["ok"] and not (own_words and checked["reason"] == OWN_WORDS_PENDING):
         return action("handoff", f"mailman handoff-check {run.run_id}", checked["detail"])
     ready = {"run_id": run.run_id, "ready": True, "stage": "filing-approval",
              "disposition": "READY", "human_required": False,

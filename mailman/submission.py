@@ -34,6 +34,9 @@ from mailman.touched_tests import (
 
 
 SUBMISSION_SCHEMA_VERSION = 1
+#: The project wants the description in the contributor's own words, and the
+#: draft is model-written. Only the human's rewrite clears it. Mailman #181.
+OWN_WORDS_CODE = "policy-requires-own-words"
 
 _TRAILER_CHOICES = frozenset({"forbidden", "optional", "encouraged", "required"})
 _STANCE_CHOICES = frozenset(
@@ -322,7 +325,7 @@ def _policy_findings(
     if policy.requires_own_words and not policy.own_words_confirmed:
         findings.append(
             Finding(
-                code="policy-requires-own-words",
+                code=OWN_WORDS_CODE,
                 blocking=True,
                 detail=(
                     f"{policy.name} requires issues, comments and pull request "
@@ -1170,6 +1173,43 @@ def prepare_submission(
         json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     return record
+
+
+def load_submission(run_directory: Path) -> dict[str, Any]:
+    """The run's `submission/submission.json`, or {} when it cannot be read."""
+    path = run_directory / "submission" / "submission.json"
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def own_words_pending(run_directory: Path) -> bool:
+    """The prepared body still waits for the human's own-words rewrite.
+
+    True whenever the code is among the blocking ones, alone or not: the body
+    is agent-written until `own_words_confirmed` clears it. Mailman #181.
+    """
+    return OWN_WORDS_CODE in (load_submission(run_directory).get("blocking_codes") or [])
+
+
+def held_only_for_own_words(run_directory: Path) -> bool:
+    """The rewrite is the only thing blocking, for the diff exported now.
+
+    Such a run goes on through decision, finalize and handoff; the rewrite is
+    the human's, at filing approval. Any other blocking code, or a record
+    prepared for an earlier export, still stops it. Mailman #181.
+    """
+    record = load_submission(run_directory)
+    if record.get("blocking_codes") != [OWN_WORDS_CODE]:
+        return False
+    export = run_directory / "export" / "changes.diff"
+    try:
+        diff = export.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return record.get("diff_sha256") == hashlib.sha256(diff.encode("utf-8")).hexdigest()
 
 
 DUPLICATE_SEARCH_FILENAME = "duplicate-search.json"

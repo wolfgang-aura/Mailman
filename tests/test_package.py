@@ -392,15 +392,22 @@ class PackageCommandTests(unittest.TestCase):
         # zarr run 20260930T111012Z-fcf02a stopped at prepare-submission, so
         # commit and handoff never ran and hunt status could only say REPAIR.
         # The rewrite is the operator's at filing approval. Mailman #272.
+        # The handoff then withholds the publish command and handoff-check
+        # refuses with own-words-pending; packaging goes on to the review
+        # page and names the rewrite as the human's step. Mailman #181.
+        import hashlib
         import json
 
         from mailman import cli
 
-        for codes, expected in (
-            (["policy-requires-own-words"], 0),
-            (["policy-requires-own-words", "missing-test"], 1),
+        own_words = ["policy-requires-own-words"]
+        for name, codes, covers_diff, check_reason, expected in (
+            ("own words alone", own_words, True, "own-words-pending", 0),
+            ("beside another code", [*own_words, "missing-test"], True, "own-words-pending", 1),
+            ("for an older diff", own_words, False, "own-words-pending", 1),
+            ("another handoff refusal", own_words, True, "body-changed", 1),
         ):
-            with self.subTest(codes=codes), tempfile.TemporaryDirectory() as temporary_directory:
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary_directory:
                 data_root = Path(temporary_directory) / "runs"
                 run, _ = create_run(
                     repository="https://github.com/example/project.git",
@@ -415,26 +422,45 @@ class PackageCommandTests(unittest.TestCase):
                 )
                 directory = data_root / run.run_id
                 (directory / "decision.json").write_text("{}", encoding="utf-8")
+                diff = "diff --git a/m.py b/m.py\n"
+                (directory / "export").mkdir()
+                (directory / "export" / "changes.diff").write_text(
+                    diff, encoding="utf-8", newline="\n")
+                recorded = diff if covers_diff else diff + "+older\n"
                 (directory / "submission").mkdir()
                 (directory / "submission" / "submission.json").write_text(
-                    json.dumps({"ready": False, "blocking_codes": codes}), encoding="utf-8")
+                    json.dumps({
+                        "ready": False, "blocking_codes": codes,
+                        "diff_sha256": hashlib.sha256(recorded.encode("utf-8")).hexdigest(),
+                    }),
+                    encoding="utf-8",
+                )
                 calls = []
 
                 def stage(argv):
                     calls.append(argv[0])
-                    return 1 if argv[0] == "prepare-submission" else 0
+                    return 1 if argv[0] in ("prepare-submission", "handoff-check") else 0
 
+                printed = StringIO()
                 with (
                     patch.object(cli, "main", side_effect=stage),
                     patch("mailman.cli.resolve_identity", return_value=IDENTITY),
                     patch("mailman.package.changed_paths", return_value=["m.py"]),
                     patch("mailman.package.commit_candidate", return_value="b" * 40),
-                    patch("sys.stdout", StringIO()), patch("sys.stderr", StringIO()),
+                    patch("mailman.handoff.check_handoff",
+                          return_value={"ok": False, "reason": check_reason}),
+                    patch("sys.stdout", printed), patch("sys.stderr", StringIO()),
                 ):
                     code = cli._package(arguments)
 
                 self.assertEqual(code, expected)
+                if name == "another handoff refusal":
+                    self.assertIn("handoff", calls)
+                    self.assertNotIn("review", calls)
+                    continue
                 self.assertEqual("handoff" in calls, expected == 0)
+                self.assertEqual("review" in calls, expected == 0)
+                self.assertEqual("own words" in printed.getvalue(), expected == 0)
 
     def test_a_missing_decision_stops_before_any_stage(self) -> None:
         # pyinstaller run 20260929T022154Z-8fc17e exported and prepared the

@@ -26,7 +26,9 @@ from mailman.completion import check_authorship
 from mailman.executor import clamp_timeout_seconds
 from mailman.provenance import load_provenance, upstream_issue_number
 from mailman.review_decision import Offer, offer_problems
-from mailman.submission import load_duplicate_search, partition_duplicates
+from mailman.submission import (
+    load_duplicate_search, own_words_pending, partition_duplicates,
+)
 from mailman.target_intel import repository_slug
 from mailman.touched_tests import diff_sha256, touched_tests_verdict
 
@@ -48,6 +50,17 @@ COMMENT_HANDOFF_FILENAME = "handoff-comment.json"
 CLOSING_REPLY_FILENAME = "closing-reply.json"
 
 HANDOFF_SCHEMA_VERSION = 1
+
+#: `handoff-check`'s refusal for a body the project wants in the human's own
+#: words, while it is still the agent's. It comes last, after every other
+#: check passed, so `hunt status` and `package` can count the run ready for
+#: the human. Mailman #181.
+OWN_WORDS_PENDING = "own-words-pending"
+OWN_WORDS_INSTRUCTION = (
+    "rewrite the pull request body in your own words, set own_words_confirmed "
+    "in the target policy, rerun prepare-submission, then run handoff again "
+    "on the rewritten body"
+)
 
 #: How old prior-art evidence may be when it is handed over for publishing.
 #:
@@ -535,6 +548,22 @@ def _preamble(record: dict[str, Any], claims: list[dict[str, Any]]) -> list[str]
         f"Digest:    {record['digest']}",
         "",
     ]
+    if record.get("own_words_pending"):
+        lines.extend(
+            [
+                "-" * 72,
+                "OWN WORDS -- you must rewrite this body before filing",
+                "-" * 72,
+                "",
+                f"  {record['repository']} requires pull request descriptions in",
+                "  the author's own words. The body below was written by an agent,",
+                "  so filing it as it is breaks that rule. Before filing:",
+                f"  {OWN_WORDS_INSTRUCTION}.",
+                "  No publish command is printed until then, and handoff-check",
+                "  refuses. You still file it yourself, as with every handoff.",
+                "",
+            ]
+        )
     if record.get("closing_reply"):
         lines.extend(
             [
@@ -637,6 +666,20 @@ def render_handoff(record: dict[str, Any], body: str) -> str:
     lines.extend(
         ["-" * 72, "BODY", "-" * 72, "", body.replace("\r\n", "\n").rstrip(), ""]
     )
+    if record.get("command") is None:
+        # Withheld, not omitted by accident: the body is the agent's and the
+        # project wants the human's. Mailman #181.
+        lines.extend(
+            [
+                "-" * 72,
+                "COMMAND -- withheld until you rewrite the body",
+                "-" * 72,
+                "",
+                f"Before filing, {OWN_WORDS_INSTRUCTION}.",
+                "",
+            ]
+        )
+        return "\n".join(lines)
     lines.extend(
         [
             "-" * 72,
@@ -731,7 +774,7 @@ def build_handoff(
     authorship = (
         check_authorship(run_directory, head=head) if kind == "pull-request" else None
     )
-    command = publish_command(
+    command: str | None = publish_command(
         kind=kind,
         body_path=resolved,
         repository=repository,
@@ -740,6 +783,12 @@ def build_handoff(
         base=base,
         issue_number=issue_number,
     )
+    # The project wants the description in the human's own words and this
+    # body is still the agent's, so there is nothing to publish yet: the
+    # command is withheld rather than printed under a warning. Mailman #181.
+    own_words = kind == "pull-request" and own_words_pending(run_directory)
+    if own_words:
+        command = None
     owner = head_owner(head) if kind == "pull-request" else None
     owner_type = owner_type_lookup(owner) if owner else None
     verify = f"mailman handoff-check {run_id}"
@@ -770,6 +819,7 @@ def build_handoff(
         "head_owner_type": owner_type,
         "maintainer_edit_warning": maintainer_edit_warning(owner, owner_type),
         "command": command,
+        "own_words_pending": own_words,
         "verify_command": verify,
         "authorship": authorship,
         "closure": closure,
@@ -1314,6 +1364,19 @@ def check_handoff(
     )
     unchanged["prior_art"] = freshness
     if freshness["ok"]:
+        # Last, so this refusal means every other check passed and only the
+        # human's rewrite is left. Read live as well as from the record: a
+        # handoff printed before the rewrite carries no command. Mailman #181.
+        if own_words_pending(run_directory) or record.get("own_words_pending"):
+            return {
+                "ok": False,
+                "reason": OWN_WORDS_PENDING,
+                "detail": (
+                    f"the target wants the description in the author's own words "
+                    f"and this body is the agent's. Before filing, {OWN_WORDS_INSTRUCTION}."
+                ),
+                "digest": current,
+            }
         return unchanged
     return {
         "ok": False,

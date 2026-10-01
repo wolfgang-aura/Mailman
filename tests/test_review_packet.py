@@ -87,6 +87,27 @@ class PacketTests(unittest.TestCase):
         self.assertIn("never posts", page)
         self.assertIn("would you like a PR?", run_page)
 
+    def test_a_run_waiting_on_the_own_words_rewrite_is_named_in_the_packet(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/181"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plain = write_named_run(root, "20260101T000000Z-000001", 11)
+            rewrite = write_named_run(root, "20260101T000000Z-000002", 12)
+            write_decision(plain)
+            write_decision(rewrite)
+            (rewrite / "submission").mkdir()
+            (rewrite / "submission" / "submission.json").write_text(
+                json.dumps({"blocking_codes": ["policy-requires-own-words"]}),
+                encoding="utf-8",
+            )
+            page = render_packet_page([plain, rewrite])
+            clean = render_packet_page([plain])
+
+        self.assertIn("Rewrite before filing", page)
+        self.assertIn("Before you file example/project#12", page)
+        self.assertEqual(page.count("Before you file"), 1)
+        self.assertNotIn("Rewrite before filing", clean)
+
     def test_a_run_without_a_decision_is_listed_not_dropped(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
