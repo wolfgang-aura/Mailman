@@ -691,7 +691,7 @@ class _Orchestration:
                 result.stop_reason,
                 stop_reason,
                 result.command_result.stderr,
-                result.command_result.stdout[-20_000:],
+                health.agent_errors(result.command_result.stdout)[-20_000:],
             )
             if state:
                 health.record(

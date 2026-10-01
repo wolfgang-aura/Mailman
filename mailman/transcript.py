@@ -36,10 +36,13 @@ def token_usage(stdout: str, agent: str) -> dict[str, int] | None:
             payload = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if payload.get("type") != "turn.completed":
+        # An array or string line is valid JSON too. Mailman #353.
+        if not isinstance(payload, dict) or payload.get("type") != "turn.completed":
             continue
         reported = True
-        usage = payload.get("usage") or {}
+        usage = payload.get("usage")
+        if not isinstance(usage, dict):
+            continue
         for key in totals:
             value = usage.get(key, 0)
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
