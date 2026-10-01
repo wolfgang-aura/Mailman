@@ -171,6 +171,20 @@ class PublishCommandTests(unittest.TestCase):
         self.assertNotIn("--body ", command)
         self.assertIn("--head Mailman-Fork:mailman/run-1", command)
 
+    def test_a_dollar_in_the_title_is_not_expanded_by_powershell(self) -> None:
+        # Inside "..." PowerShell expands $env:X and runs $(...); '...' does neither.
+        command = publish_command(
+            kind="pull-request",
+            body_path=Path("/tmp/body.md"),
+            repository="pmorissette/ffn",
+            title="Fix $(Get-Date) and the user's $env:PATH",
+            head="Mailman-Fork:mailman/run-1",
+            base="master",
+        )
+        self.assertIn(
+            "--title 'Fix $(Get-Date) and the user''s $env:PATH' --body-file", command
+        )
+
     def test_a_pull_request_without_a_head_is_refused(self) -> None:
         with self.assertRaises(ValueError):
             publish_command(

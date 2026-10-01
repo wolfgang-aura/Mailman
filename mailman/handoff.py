@@ -324,7 +324,7 @@ def publish_command(
         raise ValueError("a pull request needs --title")
     return (
         f"gh pr create --repo {repository} "
-        f'--title "{title}" --body-file "{quoted}" '
+        f'--title {_quoted_argument(title)} --body-file "{quoted}" '
         f"--head {head} --base {base}"
     )
 
