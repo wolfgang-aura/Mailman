@@ -1216,6 +1216,39 @@ class PrepareSubmissionTests(unittest.TestCase):
         record = self._prepare()
         self.assertIn("possible-duplicate", record["blocking_codes"])
 
+    def test_a_rival_with_no_head_cannot_be_pinned(self) -> None:
+        # A row only `gh search prs` found has no head. A None pin matched
+        # None on every later check, so no push could block again.
+        self._whole_query_rival(head_sha=None)
+        with self.assertRaises(ValueError):
+            record_duplicate_acknowledgement(
+                self.run_directory, note="read it", not_duplicates=["pr#1900"]
+            )
+
+    def test_an_old_none_pin_never_clears(self) -> None:
+        self._whole_query_rival(head_sha=None)
+        (self.run_directory / "duplicate-acknowledgement.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "acknowledged_at": "2026-09-03T00:00:00+00:00",
+                    "note": "read it",
+                    "searched_at": "2026-09-03T00:00:00+00:00",
+                    "reviewed": [],
+                    "strong_at_acknowledgement": [],
+                    "not_duplicates": {"pr#1900": None},
+                }
+            ),
+            encoding="utf-8",
+        )
+        record = self._prepare()
+        self.assertIn("possible-duplicate", record["blocking_codes"])
+
+    def test_listing_and_unlisted_reads_ask_for_the_head(self) -> None:
+        from mailman import submission
+
+        self.assertIn("headRefOid", submission._LISTING_FIELDS["pr"])
+
     def test_a_rival_that_names_the_issue_cannot_be_cleared(self) -> None:
         (self.run_directory / "duplicate-search.json").write_text(
             json.dumps(

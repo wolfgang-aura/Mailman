@@ -471,7 +471,7 @@ def _policy_findings(
     named_clear = [
         row
         for row in open_rivals
-        if _duplicate_key(row) in cleared
+        if cleared.get(_duplicate_key(row)) is not None
         and cleared[_duplicate_key(row)] == row.get("head_sha")
         and not row.get("references_issue")
     ]
@@ -1377,6 +1377,13 @@ def record_duplicate_acknowledgement(
             raise ValueError(
                 f"{key} names the issue or is merged, so no acknowledgement clears it"
             )
+        if not row.get("head_sha"):
+            # Only `gh search prs` found it, and that carries no head. A None
+            # pin matched None on every later check, so a push never re-blocked.
+            raise ValueError(
+                f"{key} has no recorded head to pin; rerun `mailman duplicate-search` "
+                "so its head is read"
+            )
         cleared[key] = row.get("head_sha")
     record = {
         "schema_version": 1,
@@ -1413,7 +1420,7 @@ _INDEX_FIELDS = {
 # The unfiltered listing needs the text a local match reads. An issue has no
 # head ref, and asking for one makes `gh issue list` refuse the whole call.
 _LISTING_FIELDS = {
-    "pr": "number,title,state,url,createdAt,updatedAt,isDraft,body,headRefName",
+    "pr": "number,title,state,url,createdAt,updatedAt,isDraft,body,headRefName,headRefOid",
     "issue": "number,title,state,url,createdAt,updatedAt,body",
 }
 _MINIMUM_TERM_LENGTH = 4
@@ -1749,7 +1756,7 @@ def _read_unlisted_rows(
         result = execute(
             [
                 executable, "pr", "view", str(row.get("number")), "--repo", slug,
-                "--json", "number,title,body,headRefName",
+                "--json", "number,title,body,headRefName,headRefOid",
             ],
             working_directory=run_directory,
             timeout_seconds=timeout_seconds,
