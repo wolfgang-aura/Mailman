@@ -434,6 +434,15 @@ opening the local packet URL during this session; visual state is unverified.
     windows-latest; the operator asked for a re-run at 09:44 UTC. xarray#11637 fails only the
     Windows `test_distributed` timeout; waiting on the maintainer after our 2026-09-30 reply.
     pretix#6564 stays parked on the CLA.
+- Re-read 2026-10-02 (`mailman hunt watch`, `mailman contributions --refresh`, each change
+  checked with `gh`; unattended `pr-followup` run): 38 filed (awkward#4398 is newly watched).
+  Merged 10, closed unmerged 7, open 21. No new merge or close since the 2026-10-01 entry.
+  - beets#7065: master moved and `docs/changelog.rst` now conflicts. Merged master in the run
+    workspace (both changelog entries kept), 155 `test_lastgenre.py` tests pass. Push awaits the operator.
+  - xarray#11637: GitHub reports `dirty`; local merge of origin/main is clean, 116 append and
+    datetime zarr tests pass. Push awaits the operator.
+  - pymc#8442: ricardoV94 approved. Red checks are in `test_zarr.py` and `test_mcmc_external.py`,
+    files the PR does not touch. Watch gap filed as #372. No work.
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
   It still exists and now carries the #1370 PR.
 
