@@ -28,6 +28,9 @@ from typing import Any
 
 DECISION_FILENAME = "decision.json"
 DECISION_SCHEMA_VERSION = 1
+# The body `decision --body/--affirm` checked and the lines it affirmed, so
+# finalize-review and hunt status read the same gate package passed (#329).
+AFFIRMATIONS_FILENAME = "affirmations.json"
 
 #: The three panels, in the order a person reads them. Not configurable.
 PANEL_KEYS = ("broken", "did", "fixed")
@@ -370,6 +373,14 @@ def _parse_offer(raw: Any, recommendation: str, problems: list[str]) -> Offer | 
     return Offer(path)
 
 
+def _not_utf8(path: Path, error: UnicodeDecodeError) -> str:
+    """The problem for a file the decision reads that is not UTF-8 (#337)."""
+    return (
+        f"{path.name} is not valid UTF-8 ({error}). Re-save it as UTF-8; "
+        "Windows PowerShell 5.1 writes UTF-16 by default."
+    )
+
+
 def offer_problems(run_directory: Path, offer: Offer) -> tuple[list[str], str]:
     """What is wrong with the offer draft on disk, and its text when nothing is."""
     root = Path(run_directory).resolve()
@@ -378,7 +389,10 @@ def offer_problems(run_directory: Path, offer: Offer) -> tuple[list[str], str]:
         return [f"offer.path {offer.path!r} must stay inside the run directory."], ""
     if not draft.is_file():
         return [f"offer.path {offer.path!r} does not exist; write the draft first."], ""
-    text = draft.read_text(encoding="utf-8").strip()
+    try:
+        text = draft.read_text(encoding="utf-8").strip()
+    except UnicodeDecodeError as error:
+        return [_not_utf8(draft, error)], ""
     problems: list[str] = []
     words = len(text.split())
     if not words:
@@ -396,7 +410,7 @@ def offer_problems(run_directory: Path, offer: Offer) -> tuple[list[str], str]:
         )
     try:
         run = json.loads((root / "run.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         run = {}
     base = str(run.get("base_commit") or "").lower() if isinstance(run, dict) else ""
     if not base:
@@ -445,13 +459,67 @@ def parse_decision(data: Any) -> Decision:
     return Decision(recommendation, headline, panels, questions, gaps, ledger, offer)
 
 
+def _affirmed_claims(body: Path, lines: Iterable[int]) -> list[dict[str, Any]]:
+    """The claims on `lines` of `body`, refused as `handoff --affirm` refuses them."""
+    from mailman.handoff import _split_affirmed, first_person_claims  # handoff imports this module
+
+    wanted = sorted(set(lines))
+    if not wanted:
+        return []
+    try:
+        text = body.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(_not_utf8(body, error)) from error
+    except OSError as error:
+        raise ValueError(f"--affirm needs the body, and {body} cannot be read ({error})") from error
+    return _split_affirmed(first_person_claims(text), wanted)[1]
+
+
+def record_affirmations(
+    run_directory: Path, *, body_path: Path, lines: Iterable[int]
+) -> Path:
+    """Record the body the decision gate checked and the lines affirmed in it.
+
+    `package --affirm` passed the decision stage and then stopped at
+    finalize-review, which read the decision with no affirmations. Each claim
+    is kept by its text, so an edit to the line voids it. Mailman #329.
+    """
+    body = Path(body_path).resolve()
+    record = {
+        "schema_version": 1,
+        "body_path": str(body),
+        "affirmed_claims": _affirmed_claims(body, lines),
+    }
+    path = Path(run_directory) / AFFIRMATIONS_FILENAME
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _recorded_affirmations(run_directory: Path) -> dict[str, Any]:
+    path = run_directory / AFFIRMATIONS_FILENAME
+    if not path.is_file():
+        return {}
+    again = "run `mailman decision RUN_ID --affirm LINE` again."
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise DecisionError([f"{AFFIRMATIONS_FILENAME} cannot be read ({error}); {again}"], path) from None
+    if not isinstance(record, dict):
+        raise DecisionError([f"{AFFIRMATIONS_FILENAME} is not an affirmation record; {again}"], path)
+    return record
+
+
 def load_decision(
-    run_directory: Path, *, affirmed_lines: Iterable[int] = ()
+    run_directory: Path,
+    *,
+    affirmed_lines: Iterable[int] = (),
+    body_path: Path | None = None,
 ) -> Decision:
     """Read and validate the run's decision file.
 
-    `affirmed_lines` are body.md lines the operator affirms before handoff.json
-    exists, as `package --affirm` does (#217).
+    `affirmed_lines` are body lines the operator affirms before handoff.json
+    exists, as `package --affirm` does (#217). Without `body_path`, the body
+    and affirmations `decision` recorded are read, then the run's body.md.
     """
     path = Path(run_directory) / DECISION_FILENAME
     if not path.is_file():
@@ -464,14 +532,27 @@ def load_decision(
         )
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as error:
+        raise DecisionError([_not_utf8(path, error)], path) from error
     except json.JSONDecodeError as error:
         raise DecisionError([f"not valid JSON: {error}"], path) from error
     try:
         decision = parse_decision(data)
     except DecisionError as error:
         raise DecisionError(error.problems, path) from None
+    recorded = _recorded_affirmations(Path(run_directory))
+    body = Path(body_path or recorded.get("body_path") or Path(run_directory) / "body.md")
+    affirmed = {
+        claim.get("text")
+        for claim in recorded.get("affirmed_claims") or []
+        if isinstance(claim, dict)
+    }
+    try:
+        affirmed |= {claim["text"] for claim in _affirmed_claims(body, affirmed_lines)}
+    except ValueError as error:
+        raise DecisionError([str(error)], path) from None
     problem = untriaged_problem(Path(run_directory), decision) or body_claim_problem(
-        Path(run_directory), decision, affirmed_lines=affirmed_lines
+        Path(run_directory), decision, body=body, affirmed=affirmed
     )
     if problem:
         raise DecisionError([problem], path)
@@ -484,7 +565,11 @@ def load_decision(
 
 
 def body_claim_problem(
-    run_directory: Path, decision: Decision, *, affirmed_lines: Iterable[int] = ()
+    run_directory: Path,
+    decision: Decision,
+    *,
+    body: Path | None = None,
+    affirmed: Iterable[str] = (),
 ) -> str | None:
     """Why SEND cannot stand: body.md says something only the human can make true.
 
@@ -494,13 +579,13 @@ def body_claim_problem(
     affirmation came with `package --affirm`, which validates the decision
     before handoff.json exists.
     """
-    body = run_directory / "body.md"
+    body = body or run_directory / "body.md"
     if decision.recommendation != "SEND" or not body.is_file():
         return None
     from mailman.handoff import first_person_claims  # handoff imports this module
 
     handoff = run_directory / "handoff.json"
-    affirmed: set[str] = set()
+    affirmed = set(affirmed)
     if handoff.is_file():
         try:
             record = json.loads(handoff.read_text(encoding="utf-8"))
@@ -508,20 +593,23 @@ def body_claim_problem(
             return f"handoff.json cannot be read ({error}); run `mailman handoff` again."
         if not isinstance(record, dict):
             return "handoff.json is not a handoff record; run `mailman handoff` again."
-        affirmed = {
+        affirmed |= {
             claim.get("text")
             for claim in record.get("affirmed_claims") or []
             if isinstance(claim, dict)
         }
-    lines = set(affirmed_lines)
+    try:
+        text = body.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        return _not_utf8(body, error)
     claims = [
         claim
-        for claim in first_person_claims(body.read_text(encoding="utf-8"))
-        if claim["text"] not in affirmed and claim["line"] not in lines
+        for claim in first_person_claims(text)
+        if claim["text"] not in affirmed
     ]
     if not claims:
         return None
-    where = ", ".join(f"body.md line {claim['line']}" for claim in claims)
+    where = ", ".join(f"{body.name} line {claim['line']}" for claim in claims)
     return (
         f"{where} makes a claim only the human filing it can make true; "
         "handoff will refuse it. Remove it, or recommend something other than SEND."
@@ -540,12 +628,17 @@ def untriaged_problem(run_directory: Path, decision: Decision) -> str | None:
     warning = triage_warning(run_directory)
     if warning is None:
         return None
-    if any(question.gate == UNTRIAGED_GATE for question in decision.questions):
+    # Blocking, or the run counts as ready with the question unanswered (#333).
+    if any(
+        question.gate == UNTRIAGED_GATE and question.blocking
+        for question in decision.questions
+    ):
         return None
     return (
         f"the claims record says {warning} Nobody who decides has been asked. "
         f"Keep the question `mailman decision --init` seeds (gate "
-        f"{UNTRIAGED_GATE!r}), or write one with that gate."
+        f"{UNTRIAGED_GATE!r}, blocking true), or write one with that gate that "
+        "is blocking."
     )
 
 

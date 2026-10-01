@@ -184,6 +184,42 @@ class DecisionFileTests(unittest.TestCase):
         self.assertEqual(decision.recommendation, "SEND")
 
 
+class UndecodableFileTests(unittest.TestCase):
+    """Mailman #337: one file saved by PowerShell 5.1 took down the packet.
+
+    Review pages and hunt status catch DecisionError; a UnicodeDecodeError went
+    past them. Each file the decision reads has to fail as a DecisionError
+    that names it.
+    """
+
+    def problems(self, directory: Path) -> str:
+        with self.assertRaises(DecisionError) as caught:
+            load_decision(directory)
+        return " ".join(caught.exception.problems)
+
+    def test_a_utf16_decision_file_is_a_decision_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / DECISION_FILENAME).write_text(
+                json.dumps(VALID), encoding="utf-16"
+            )
+            self.assertIn(DECISION_FILENAME, self.problems(directory))
+
+    def test_a_cp1252_body_is_a_decision_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / DECISION_FILENAME).write_text(json.dumps(VALID), encoding="utf-8")
+            (directory / "body.md").write_bytes("Fixes the hash \u2014 twice.\n".encode("cp1252"))
+            self.assertIn("body.md", self.problems(directory))
+
+    def test_a_utf16_offer_is_a_decision_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ask_decision(directory, offer_text=None)
+            (directory / "offer-comment.md").write_text(OFFER_TEXT, encoding="utf-16")
+            self.assertIn("offer-comment.md", self.problems(directory))
+
+
 class BodyClaimGateTests(unittest.TestCase):
     """spack run 20260930T180712Z-3af3d7: SEND passed, then handoff refused the body. #294."""
 
@@ -225,6 +261,20 @@ class BodyClaimGateTests(unittest.TestCase):
             with self.assertRaises(DecisionError):
                 load_decision(directory)
             load_decision(directory, affirmed_lines=[3])
+
+    def test_an_affirmed_line_without_a_claim_is_refused(self) -> None:
+        # handoff --affirm 99 was refused while decision --affirm 99 passed. #329.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "body.md").write_text(
+                "Fixes the hash.\n\nI have read the CONTRIBUTING file and ran pre-commit.\n",
+                encoding="utf-8",
+            )
+            (directory / DECISION_FILENAME).write_text(json.dumps(VALID), encoding="utf-8")
+            with self.assertRaises(DecisionError) as caught:
+                load_decision(directory, affirmed_lines=[3, 99])
+
+        self.assertIn("[99]", " ".join(caught.exception.problems))
 
     def test_a_malformed_handoff_is_a_decision_error(self) -> None:
         # A JSONDecodeError escaped load_decision, and review pages catch only
@@ -275,6 +325,24 @@ class UntriagedIssueGateTests(unittest.TestCase):
 
         self.assertEqual(decision.questions[0].gate, UNTRIAGED_GATE)
         self.assertEqual(len(decision.blocking_questions), 1)
+
+    def test_a_non_blocking_triage_question_does_not_satisfy_the_gate(self) -> None:
+        # Mailman #333: flipping the seeded question to blocking false made the
+        # run READY with nobody having to answer it.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            _write_untriaged_claims(directory)
+            seeded = blank_decision(directory)["questions"][0]
+            seeded["blocking"] = False
+            data = copy.deepcopy(VALID)
+            data["questions"] = [seeded]
+            (directory / DECISION_FILENAME).write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaises(DecisionError) as caught:
+                load_decision(directory)
+
+        problems = " ".join(caught.exception.problems)
+        self.assertIn(UNTRIAGED_GATE, problems)
+        self.assertIn("blocking", problems)
 
     def test_a_tool_comparison_seeds_a_non_blocking_question(self) -> None:
         quote = "Poppler, mutool and pdf.js all keep the first /Outlines entry."
@@ -505,6 +573,65 @@ class DecisionGateCliTests(unittest.TestCase):
         self.assertEqual(unfilled, 1)
         self.assertEqual(filled, 0)
         self.assertEqual(json.loads(stdout.getvalue())["blocking"], 1)
+
+    def test_an_affirmation_reaches_every_later_read(self) -> None:
+        # package --affirm passed the decision stage and then stopped at
+        # finalize-review, which reads the decision with no affirmations. #329.
+        from mailman.cli import main
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run_id = self._run(data_root)
+            directory = data_root / run_id
+            (directory / DECISION_FILENAME).write_text(json.dumps(VALID), encoding="utf-8")
+            (directory / "body.md").write_text(
+                "Fixes the hash.\n\nI have read the CONTRIBUTING file and ran pre-commit.\n",
+                encoding="utf-8",
+            )
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                affirmed = main(
+                    ["decision", run_id, "--affirm", "3", "--data-root", str(data_root)]
+                )
+            load_decision(directory)
+            (directory / "body.md").write_text(
+                "Fixes the hash.\n\nI have read the CONTRIBUTING file and ran the tests.\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(DecisionError):
+                load_decision(directory)
+
+        self.assertEqual(affirmed, 0)
+
+    def test_the_decision_checks_the_body_handoff_will_post(self) -> None:
+        # package --body PATH handed handoff one file while the decision gate
+        # read the run's body.md. #329.
+        from mailman.cli import main
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run_id = self._run(data_root)
+            directory = data_root / run_id
+            (directory / DECISION_FILENAME).write_text(json.dumps(VALID), encoding="utf-8")
+            (directory / "body.md").write_text("Fixes the hash.\n", encoding="utf-8")
+            posted = Path(temporary_directory) / "pr-body.md"
+            posted.write_text(
+                "Fixes the hash.\n\nI have read and tested every line.\n", encoding="utf-8"
+            )
+            arguments = ["decision", run_id, "--data-root", str(data_root)]
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                refused = main(arguments + ["--body", str(posted)])
+                affirmed = main(arguments + ["--body", str(posted), "--affirm", "3"])
+            posted.write_text(
+                "Fixes the hash.\n\nI have read and tested every line twice.\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(DecisionError) as caught:
+                load_decision(directory)
+
+        self.assertEqual(refused, 1)
+        self.assertIn("pr-body.md line 3", stderr.getvalue())
+        self.assertEqual(affirmed, 0)
+        self.assertIn("pr-body.md line 3", " ".join(caught.exception.problems))
 
     def test_init_refuses_to_overwrite_a_filled_file(self) -> None:
         from mailman.cli import main

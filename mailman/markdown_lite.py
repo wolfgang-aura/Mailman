@@ -27,6 +27,16 @@ _NUMBERED = re.compile(r"^\s*(\d+)[.)]\s+(.*)$")
 _TABLE_RULE = re.compile(r"^\s*\|?[\s:|-]+\|[\s:|-]*$")
 
 
+def _href(url: str) -> str:
+    """Re-escape an already escaped URL for use inside a quoted attribute.
+
+    The text is escaped without quotes so prose keeps its quotation marks, but a
+    quote inside href="..." would close the attribute and let a report add its
+    own. Only http(s) URLs reach this point; the link patterns require them.
+    """
+    return html.escape(html.unescape(url), quote=True)
+
+
 def _inline(text: str) -> str:
     """Escape first, then add the few spans a report uses."""
     escaped = html.escape(text, quote=False)
@@ -34,9 +44,11 @@ def _inline(text: str) -> str:
     escaped = _BOLD.sub(lambda match: f"<strong>{match.group(1)}</strong>", escaped)
     escaped = _ITALIC.sub(lambda match: f"<em>{match.group(1)}</em>", escaped)
     escaped = _LINK.sub(
-        lambda match: f'<a href="{match.group(2)}">{match.group(1)}</a>', escaped
+        lambda match: f'<a href="{_href(match.group(2))}">{match.group(1)}</a>', escaped
     )
-    return _BARE_LINK.sub(lambda match: f'<a href="{match.group(1)}">{match.group(1)}</a>', escaped)
+    return _BARE_LINK.sub(
+        lambda match: f'<a href="{_href(match.group(1))}">{match.group(1)}</a>', escaped
+    )
 
 
 def _split_row(line: str) -> list[str]:

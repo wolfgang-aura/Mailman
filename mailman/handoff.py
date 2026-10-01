@@ -26,7 +26,7 @@ from mailman.completion import check_authorship
 from mailman.executor import clamp_timeout_seconds
 from mailman.provenance import load_provenance, upstream_issue_number
 from mailman.review_decision import Offer, offer_problems
-from mailman.submission import load_duplicate_search
+from mailman.submission import load_duplicate_search, partition_duplicates
 from mailman.target_intel import repository_slug
 from mailman.touched_tests import diff_sha256, touched_tests_verdict
 
@@ -37,6 +37,11 @@ HANDOFF_FILENAME = "handoff.json"
 #: answers, so one run carries both and neither may overwrite the other.
 #: https://github.com/wolfgang-aura/Mailman/issues/138
 OFFER_HANDOFF_FILENAME = "handoff-offer.json"
+
+#: Any other issue comment, such as a closing reply, has its own record too:
+#: written to handoff.json it replaced the pull request's record, and the PR's
+#: verify command then checked the comment and skipped the PR checks. #347.
+COMMENT_HANDOFF_FILENAME = "handoff-comment.json"
 
 #: Written once, when the single closing reply a closed run may still send is
 #: handed over. Its presence is what makes the second one refuse.
@@ -324,7 +329,7 @@ def publish_command(
         raise ValueError("a pull request needs --title")
     return (
         f"gh pr create --repo {repository} "
-        f'--title "{title}" --body-file "{quoted}" '
+        f'--title {_quoted_argument(title)} --body-file "{quoted}" '
         f"--head {head} --base {base}"
     )
 
@@ -458,31 +463,59 @@ def closure_refusal(
 
 
 def load_closing_reply(run_directory: Path) -> dict[str, Any] | None:
+    """The closing-reply marker, None when there is none.
+
+    A marker that exists but cannot be read raises ValueError: read as absent,
+    it would hand out the one reply again (#347).
+    """
     path = run_directory / CLOSING_REPLY_FILENAME
-    if not path.is_file():
+    if not path.exists():
         return None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{path} cannot be read ({error})") from error
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path} is not a closing-reply record")
+    return payload
 
 
 def closing_reply_refusal(
-    run_directory: Path, *, kind: str, issue_number: int | None
+    run_directory: Path,
+    *,
+    kind: str,
+    issue_number: int | None,
+    digest: str | None = None,
 ) -> str | None:
     """Why the override cannot be used, or None when it still can.
 
     The override covers one reply to one thread. Re-rendering the same reply
-    is fine; a second thread, or a pull request, is not what it is for.
+    is fine; other text, a second thread, or a pull request is not what it is
+    for, and neither is a marker that cannot be read (#347).
     """
     if kind != "issue-comment":
         return "--closing-reply is for one comment, not for a new pull request"
-    earlier = load_closing_reply(run_directory)
-    if earlier is None or earlier.get("issue_number") == issue_number:
+    try:
+        earlier = load_closing_reply(run_directory)
+    except ValueError as error:
+        return (
+            f"{error}. It records the one closing reply this run may send; "
+            "check whether that reply went out before removing it."
+        )
+    if earlier is None:
         return None
+    if earlier.get("issue_number") == issue_number and (
+        digest is None or earlier.get("digest") == digest
+    ):
+        return None
+    if earlier.get("issue_number") == issue_number:
+        return (
+            f"the closing reply for this run already went to #{issue_number} "
+            f"at {earlier.get('prepared_at')}, with other text. There is one, "
+            "and this is a second."
+        )
     return (
-        f"the closing reply for this run already went to #{earlier['issue_number']} "
+        f"the closing reply for this run already went to #{earlier.get('issue_number')} "
         f"at {earlier.get('prepared_at')}. There is one, and this targets "
         f"#{issue_number}."
     )
@@ -670,11 +703,6 @@ def build_handoff(
                 "--closing-reply is for a run whose case is closed, and this "
                 "one is not: nothing here needs overriding."
             )
-        blocked = closing_reply_refusal(
-            run_directory, kind=kind, issue_number=issue_number
-        )
-        if blocked:
-            raise ValueError(blocked)
     resolved = body_path.resolve()
     if not resolved.is_file():
         raise ValueError(f"no body at {resolved}")
@@ -690,6 +718,15 @@ def build_handoff(
         ) from error
     if not body.strip():
         raise ValueError(f"the body at {resolved} is empty")
+    if closing_reply:
+        blocked = closing_reply_refusal(
+            run_directory,
+            kind=kind,
+            issue_number=issue_number,
+            digest=body_digest(body),
+        )
+        if blocked:
+            raise ValueError(blocked)
     claims, affirmed = _split_affirmed(first_person_claims(body), affirmed_lines or [])
     authorship = (
         check_authorship(run_directory, head=head) if kind == "pull-request" else None
@@ -706,6 +743,10 @@ def build_handoff(
     owner = head_owner(head) if kind == "pull-request" else None
     owner_type = owner_type_lookup(owner) if owner else None
     verify = f"mailman handoff-check {run_id}"
+    if offer:
+        verify += " --offer"
+    elif kind == "issue-comment":
+        verify += " --comment"
     if data_root is not None:
         verify += f' --data-root "{data_root}"'
     record = {
@@ -739,7 +780,12 @@ def build_handoff(
         problems = offer_handoff_problems(run_directory, record)
         if problems:
             raise ValueError(" ".join(problems))
-    path = run_directory / (OFFER_HANDOFF_FILENAME if offer else HANDOFF_FILENAME)
+    if offer:
+        path = run_directory / OFFER_HANDOFF_FILENAME
+    elif kind == "issue-comment":
+        path = run_directory / COMMENT_HANDOFF_FILENAME
+    else:
+        path = run_directory / HANDOFF_FILENAME
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n")
     if closing_reply:
         marker = run_directory / CLOSING_REPLY_FILENAME
@@ -831,6 +877,35 @@ def _age_minutes(timestamp: object, now: datetime) -> float | None:
     return max(0.0, (now - recorded).total_seconds() / 60)
 
 
+def _unweighed_strong_matches(
+    run_directory: Path, search: dict[str, Any]
+) -> list[str]:
+    """Strong rows in the search that the prepared submission did not see.
+
+    The run's own filed pull request is no rival to it (#97).
+    """
+    from mailman.targeting import own_pull_request
+
+    own = own_pull_request(run_directory)
+    strong, _ = partition_duplicates(
+        [row for row in search.get("matches") or []
+         if not (isinstance(row, dict) and own is not None and row.get("number") == own)],
+        issue_number=search.get("issue_number"),
+    )
+    path = run_directory / "submission" / "submission.json"
+    try:
+        submission = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        submission = {}
+    candidates = submission.get("duplicate_candidates") if isinstance(submission, dict) else None
+    weighed = set((candidates or {}).get("strong") or []) if isinstance(candidates, dict) else set()
+    keys = [
+        f"{'pr' if row.get('pull_request') else 'issue'}#{row.get('number')}"
+        for row in strong
+    ]
+    return [key for key in keys if key not in weighed]
+
+
 def check_prior_art_freshness(
     run_directory: Path,
     *,
@@ -896,6 +971,24 @@ def check_prior_art_freshness(
             ),
             "evidence": evidence,
         }
+    # A search whose listing failed reports success with nothing found; that
+    # empty result is not evidence (#348).
+    if search.get("complete") is not True:
+        failed = ", ".join(
+            f"{entry.get('kind')} {entry.get('method')}"
+            for entry in search.get("failed_methods") or []
+            if isinstance(entry, dict)
+        )
+        return {
+            "ok": False,
+            "reason": "duplicate-search-incomplete",
+            "detail": (
+                "the recorded duplicate search did not finish the listing it "
+                f"relies on ({failed or 'a method failed'}), so an empty result "
+                f"clears nothing. {refresh}"
+            ),
+            "evidence": evidence,
+        }
     if repository and search.get("repository"):
         wanted = repository_slug(repository).lower()
         searched = repository_slug(str(search["repository"])).lower()
@@ -918,6 +1011,21 @@ def check_prior_art_freshness(
                 f"the limit is {max_age_minutes:g} minutes. An upstream "
                 "duplicate has appeared 94 minutes after a run finished, so "
                 f"evidence this old clears nothing. {refresh}"
+            ),
+            "evidence": evidence,
+        }
+    # A refreshed search can find what the prepared submission never weighed:
+    # its age alone re-armed the run with an open rival in the record (#348).
+    unweighed = _unweighed_strong_matches(run_directory, search)
+    if unweighed:
+        return {
+            "ok": False,
+            "reason": "duplicate-search-new-match",
+            "detail": (
+                "the duplicate search found a strong match the prepared "
+                "submission did not weigh: " + ", ".join(unweighed) + ". Read "
+                f"it, then run `mailman prepare-submission {run_id}` again "
+                "before handing over."
             ),
             "evidence": evidence,
         }
@@ -1044,28 +1152,40 @@ def check_handoff(
     run_directory: Path,
     *,
     offer: bool = False,
+    comment: bool = False,
     now: datetime | None = None,
     max_age_minutes: float = EVIDENCE_MAX_AGE_MINUTES,
 ) -> dict[str, Any]:
     """Say whether the body still matches the text the last handoff showed.
 
     `offer` checks the ask-first offer comment's record instead of the pull
-    request's.
+    request's, and `comment` any other issue comment's.
     """
-    record = load_offer_handoff(run_directory) if offer else load_handoff(run_directory)
+    if offer:
+        record = load_offer_handoff(run_directory)
+    elif comment:
+        record = load_handoff(run_directory, COMMENT_HANDOFF_FILENAME)
+    else:
+        record = load_handoff(run_directory)
     if record is None:
-        return {
-            "ok": False,
-            "reason": "no-offer-handoff" if offer else "no-handoff",
-            "detail": (
+        if offer:
+            reason, detail = "no-offer-handoff", (
                 "no offer handoff was generated for this run. Run `mailman "
                 "handoff --offer --kind issue-comment` and read the comment it "
                 "prints before posting it."
-                if offer
-                else "no handoff was generated for this run. Run `mailman handoff` "
+            )
+        elif comment:
+            reason, detail = "no-comment-handoff", (
+                "no issue comment handoff was generated for this run. Run "
+                "`mailman handoff --kind issue-comment` and read the comment it "
+                "prints before posting it."
+            )
+        else:
+            reason, detail = "no-handoff", (
+                "no handoff was generated for this run. Run `mailman handoff` "
                 "and read the body it prints before publishing anything."
-            ),
-        }
+            )
+        return {"ok": False, "reason": reason, "detail": detail}
     body_path = Path(record.get("body_path", ""))
     if not body_path.is_file():
         return {
@@ -1092,7 +1212,12 @@ def check_handoff(
             "expected_digest": record.get("digest"),
             "actual_digest": current,
         }
-    affirmed_texts = {claim["text"] for claim in record.get("affirmed_claims") or []}
+    # A hand-edited record must not crash `hunt status` (#347).
+    affirmed_texts = {
+        claim.get("text")
+        for claim in record.get("affirmed_claims") or []
+        if isinstance(claim, dict)
+    }
     if any(
         claim["text"] not in affirmed_texts
         for claim in first_person_claims(body_path.read_text(encoding="utf-8"))
@@ -1128,6 +1253,7 @@ def check_handoff(
             run_directory,
             kind=str(record.get("kind")),
             issue_number=record.get("issue_number"),
+            digest=current,
         )
         if blocked:
             return {"ok": False, "reason": "closing-reply-spent", "detail": blocked}

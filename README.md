@@ -570,7 +570,9 @@ SHA-256. The command it emits reads the body with `--body-file`, so the bytes
 that were previewed are the bytes that get posted, and it is prefixed with
 `mailman handoff-check RUN_ID`, which re-hashes the file and exits non-zero once
 it has changed since the preview. An edit made after the last preview cannot
-reach GitHub without a second read.
+reach GitHub without a second read. An issue comment is recorded apart from the
+pull request, so its block names `handoff-check RUN_ID --comment` (or
+`--offer` for an ask-first offer) and never replaces the pull request's record.
 
 `handoff-check` also refuses when the run's prior-art evidence has gone stale.
 `mailman duplicate-search` runs once, at run time; publishing happens whenever a

@@ -61,6 +61,8 @@ def _prior_art(
     repository: str = "pmorissette/ffn",
     success: bool = True,
     self_reported: bool = False,
+    complete: bool = True,
+    matches: list[dict[str, object]] | None = None,
 ) -> None:
     """Write the prior-art evidence a publishable run carries."""
     now = datetime.now(UTC)
@@ -73,8 +75,10 @@ def _prior_art(
                 ).isoformat(),
                 "repository": repository,
                 "query": "rolling window cache",
+                "issue_number": 327,
                 "success": success,
-                "matches": [],
+                "complete": complete,
+                "matches": matches or [],
             }
         ),
         encoding="utf-8",
@@ -171,6 +175,20 @@ class PublishCommandTests(unittest.TestCase):
         self.assertNotIn("--body ", command)
         self.assertIn("--head Mailman-Fork:mailman/run-1", command)
 
+    def test_a_dollar_in_the_title_is_not_expanded_by_powershell(self) -> None:
+        # Inside "..." PowerShell expands $env:X and runs $(...); '...' does neither.
+        command = publish_command(
+            kind="pull-request",
+            body_path=Path("/tmp/body.md"),
+            repository="pmorissette/ffn",
+            title="Fix $(Get-Date) and the user's $env:PATH",
+            head="Mailman-Fork:mailman/run-1",
+            base="master",
+        )
+        self.assertIn(
+            "--title 'Fix $(Get-Date) and the user''s $env:PATH' --body-file", command
+        )
+
     def test_a_pull_request_without_a_head_is_refused(self) -> None:
         with self.assertRaises(ValueError):
             publish_command(
@@ -218,6 +236,68 @@ class BuildHandoffTests(unittest.TestCase):
             self.assertLess(block.index("Nothing was cached"), block.index("gh pr create"))
             self.assertIn(record["verify_command"], block)
             self.assertTrue((directory / HANDOFF_FILENAME).is_file())
+
+    def test_a_hand_edited_affirmed_claim_does_not_crash_the_check(self) -> None:
+        # `hunt status` calls the check; one record without "text" took it
+        # down with a KeyError. Mailman #347.
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            run, directory = _run_directory(root)
+            body_path = root / "body.md"
+            body_path.write_text(BODY, encoding="utf-8", newline="\n")
+            build_handoff(
+                run_id=run.run_id,
+                run_directory=directory,
+                body_path=body_path,
+                kind="pull-request",
+                repository="pmorissette/ffn",
+                title="t",
+                head="Mailman-Fork:mailman/run-1",
+                base="master",
+                owner_type_lookup=lambda _owner: None,
+            )
+            path = directory / HANDOFF_FILENAME
+            record = json.loads(path.read_text(encoding="utf-8"))
+            record["affirmed_claims"] = [{"line": 3}, "I tested this."]
+            path.write_text(json.dumps(record), encoding="utf-8")
+            result = check_handoff(directory)
+            self.assertIn("reason", result)
+
+    def test_an_issue_comment_does_not_replace_the_pull_request_record(self) -> None:
+        # The comment overwrote handoff.json, and the PR's own verify command
+        # then checked the comment and skipped every pull request check.
+        # Mailman #347.
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            run, directory = _run_directory(root)
+            body_path = root / "body.md"
+            body_path.write_text(BODY, encoding="utf-8", newline="\n")
+            build_handoff(
+                run_id=run.run_id,
+                run_directory=directory,
+                body_path=body_path,
+                kind="pull-request",
+                repository="pmorissette/ffn",
+                title="t",
+                head="Mailman-Fork:mailman/run-1",
+                base="master",
+                owner_type_lookup=lambda _owner: None,
+            )
+            reply = root / "reply.md"
+            reply.write_text("Thanks for the report.\n", encoding="utf-8")
+            comment, block = build_handoff(
+                run_id=run.run_id,
+                run_directory=directory,
+                body_path=reply,
+                kind="issue-comment",
+                repository="pmorissette/ffn",
+                issue_number=327,
+                pull_request_lookup=lambda _repository, _number: None,
+            )
+            self.assertEqual(load_handoff(directory)["kind"], "pull-request")
+            self.assertIn("--comment", comment["verify_command"])
+            self.assertIn(comment["verify_command"], block)
+            self.assertTrue(check_handoff(directory, comment=True)["ok"])
 
     def test_a_body_that_is_not_utf8_is_refused_rather_than_repaired(self) -> None:
         with TemporaryDirectory() as name:
@@ -564,6 +644,55 @@ class PriorArtFreshnessTests(unittest.TestCase):
                 check_handoff(directory)["reason"], "duplicate-search-failed"
             )
 
+    # Mailman #348: the refreshed search was read for its age alone, so one
+    # that half failed, or that found an open pull request for this issue,
+    # re-armed the run for filing.
+    RIVAL = {
+        "number": 400,
+        "pull_request": True,
+        "state": "open",
+        "references_issue": True,
+        "title": "Cache the rolling window",
+    }
+
+    def test_an_incomplete_search_clears_nothing(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name), complete=False)
+            result = check_handoff(directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "duplicate-search-incomplete")
+
+    def test_a_strong_match_the_submission_never_weighed_refuses(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name), matches=[self.RIVAL])
+            result = check_handoff(directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "duplicate-search-new-match")
+            self.assertIn("pr#400", result["detail"])
+            self.assertIn("prepare-submission", result["detail"])
+
+    def test_the_runs_own_filed_pull_request_is_no_rival(self) -> None:
+        # A filed run's refreshed search finds its own pull request (#97).
+        from mailman.provenance import provenance_path
+
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name), matches=[self.RIVAL])
+            provenance_path(directory).write_text(
+                json.dumps({"pull_request": 400}), encoding="utf-8"
+            )
+            result = check_handoff(directory)
+            self.assertTrue(result["ok"], result)
+
+    def test_a_strong_match_the_submission_weighed_passes(self) -> None:
+        with TemporaryDirectory() as name:
+            directory = self._prepared(Path(name), matches=[self.RIVAL])
+            path = directory / "submission" / "submission.json"
+            record = json.loads(path.read_text(encoding="utf-8"))
+            record["duplicate_candidates"] = {"strong": ["pr#400"]}
+            path.write_text(json.dumps(record), encoding="utf-8")
+            result = check_handoff(directory)
+            self.assertTrue(result["ok"], result)
+
     def test_a_search_of_another_repository_does_not_count(self) -> None:
         with TemporaryDirectory() as name:
             directory = self._prepared(Path(name), repository="encode/starlette")
@@ -597,7 +726,7 @@ class PriorArtFreshnessTests(unittest.TestCase):
                 repository="pmorissette/ffn",
                 issue_number=327,
             )
-            self.assertTrue(check_handoff(directory)["ok"])
+            self.assertTrue(check_handoff(directory, comment=True)["ok"])
 
     def test_the_age_of_the_evidence_is_reported_with_the_refusal(self) -> None:
         with TemporaryDirectory() as name:
@@ -693,7 +822,7 @@ class SpecificationCitationTests(unittest.TestCase):
                 repository="pmorissette/ffn",
                 issue_number=327,
             )
-            result = check_handoff(directory)
+            result = check_handoff(directory, comment=True)
             self.assertFalse(result["ok"])
             self.assertEqual(result["reason"], "unsourced-specification-claims")
 
@@ -847,21 +976,54 @@ class ClosedRunTests(unittest.TestCase):
             record, block = self._comment(root, directory, 21967, closing_reply=True)
             self.assertTrue(record["closing_reply"])
             self.assertIn("CLOSING REPLY", block)
-            self.assertTrue(check_handoff(directory)["ok"])
+            self.assertTrue(check_handoff(directory, comment=True)["ok"])
             # Re-rendering the same reply is fine; the marker names the thread.
             self._comment(root, directory, 21967, closing_reply=True)
             with self.assertRaises(ValueError) as caught:
                 self._comment(root, directory, 21960, closing_reply=True)
             self.assertIn("already went to #21967", str(caught.exception))
 
+    def test_a_second_reply_to_the_same_thread_is_refused(self) -> None:
+        # The marker named the thread, so any text to that thread passed:
+        # one closing reply could become several. Mailman #347.
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            _close_the_case(directory)
+            self._comment(root, directory, 21967, closing_reply=True)
+            second = root / "second.md"
+            second.write_text("One more thing about the cache.\n", encoding="utf-8")
+            with self.assertRaises(ValueError) as caught:
+                build_handoff(
+                    run_id=directory.name,
+                    run_directory=directory,
+                    body_path=second,
+                    kind="issue-comment",
+                    repository="python/mypy",
+                    issue_number=21967,
+                    closing_reply=True,
+                )
+            self.assertIn("already went to #21967", str(caught.exception))
+
+    def test_an_unreadable_closing_reply_marker_is_refused(self) -> None:
+        # A malformed marker read as "no reply yet". Mailman #347.
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            _, directory = _run_directory(root)
+            _close_the_case(directory)
+            (directory / "closing-reply.json").write_text("{\"issue", encoding="utf-8")
+            with self.assertRaises(ValueError) as caught:
+                self._comment(root, directory, 21967, closing_reply=True)
+            self.assertIn("closing-reply.json", str(caught.exception))
+
     def test_the_case_closing_after_the_handoff_stops_the_publish(self) -> None:
         with TemporaryDirectory() as name:
             root = Path(name)
             _, directory = _run_directory(root)
             record, _ = self._comment(root, directory, 21960)
-            self.assertTrue(check_handoff(directory)["ok"])
+            self.assertTrue(check_handoff(directory, comment=True)["ok"])
             _close_the_case(directory)
-            result = check_handoff(directory)
+            result = check_handoff(directory, comment=True)
             self.assertFalse(result["ok"])
             self.assertEqual(result["reason"], "run-closed")
 

@@ -35,6 +35,7 @@ def _fresh_prior_art(directory: Path) -> None:
                 "repository": "pmorissette/ffn",
                 "query": "scalar path",
                 "success": True,
+                "complete": True,
                 "matches": [],
             }
         ),
