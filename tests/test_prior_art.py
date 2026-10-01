@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 import unittest
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from mailman.executor import CommandResult
 from mailman.models import AgentConfig, RunRecord
-from mailman.prior_art import render_prior_art, summarize_pull_request
+from mailman.prior_art import collect_prior_art, render_prior_art, summarize_pull_request
 from mailman.targeting import is_stale_attempt
 from mailman.prompts import build_primary_prompt, build_reviewer_prompt
 
@@ -116,6 +121,70 @@ class SummarizeTests(unittest.TestCase):
         maintainers = [row for row in summary["comments"] if row["maintainer"]]
         self.assertEqual(len(maintainers), 1)
         self.assertEqual(maintainers[0]["author"], "RonnyPfannschmidt")
+
+    def test_a_maintainers_inline_review_comment_is_kept_with_its_path(self) -> None:
+        # typeshed#15497: the review said "Some notes below." and the design
+        # was in the inline comment. Mailman #308.
+        payload = dict(CLOSED_PULL_REQUEST)
+        payload["reviewComments"] = [
+            {
+                "user": {"login": "srittau"},
+                "author_association": "COLLABORATOR",
+                "path": "stubs/grpcio/grpc/aio/__init__.pyi",
+                "line": 374,
+                "body": "Prefix it with an underscore and mark it @type_check_only.",
+            },
+            {
+                "user": {"login": "passerby"},
+                "author_association": "NONE",
+                "path": "x.py",
+                "body": "bystander-remark",
+            },
+        ]
+        summary = summarize_pull_request(payload)
+        inline = [row for row in summary["comments"] if row["kind"] == "inline"]
+        self.assertEqual([row["author"] for row in inline], ["srittau", "passerby"])
+        self.assertTrue(inline[0]["maintainer"])
+        self.assertEqual(inline[0]["path"], "stubs/grpcio/grpc/aio/__init__.pyi:374")
+        page = render_prior_art(
+            {"repository": "python/typeshed", "attempts": [summary]}
+        )
+        self.assertIn("@type_check_only", page)
+        self.assertIn("`stubs/grpcio/grpc/aio/__init__.pyi:374`", page)
+        self.assertNotIn("bystander-remark", page)
+
+    def test_collecting_an_unmerged_attempt_reads_its_inline_comments(self) -> None:
+        payload = dict(CLOSED_PULL_REQUEST, state="OPEN", closedAt=None)
+        inline = [
+            {
+                "user": {"login": "srittau"},
+                "author_association": "COLLABORATOR",
+                "path": "a.pyi",
+                "line": 3,
+                "body": "Name it _AsyncRpcMethodHandler.",
+            }
+        ]
+        calls: list[list[str]] = []
+
+        def fake_execute(command, **_):
+            calls.append(command)
+            stdout = json.dumps(inline if command[1] == "api" else payload)
+            return CommandResult(command, ".", "", 0.0, 0, stdout, "", False, 60, {})
+
+        with TemporaryDirectory() as directory, patch(
+            "mailman.prior_art.execute", fake_execute
+        ):
+            record = collect_prior_art(
+                Path(directory), repository="python/typeshed", numbers=[14502],
+                executable="gh",
+            )
+            page = (Path(directory) / "prior-art.md").read_text(encoding="utf-8")
+        self.assertIn(
+            ["gh", "api", "repos/python/typeshed/pulls/14502/comments?per_page=100"],
+            calls,
+        )
+        self.assertTrue(record["success"])
+        self.assertIn("_AsyncRpcMethodHandler", page)
 
     def test_a_merged_pull_request_is_withheld(self) -> None:
         # Handing an agent the accepted fix measures nothing. Same rule that

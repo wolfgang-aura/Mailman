@@ -89,6 +89,28 @@ def _comment_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
                     "body": _trim(body, _COMMENT_CHARACTER_LIMIT),
                 }
             )
+    # Inline review comments, in the REST shape `pulls/N/comments` returns. A
+    # review that says "Some notes below." keeps its substance here: on
+    # typeshed#15497 the required design was only inline. Mailman #308.
+    inline = payload.get("reviewComments")
+    for entry in inline if isinstance(inline, list) else []:
+        if not isinstance(entry, dict) or not (entry.get("body") or "").strip():
+            continue
+        user = entry.get("user")
+        association = (entry.get("author_association") or "").upper()
+        line = entry.get("line") or entry.get("original_line")
+        path = entry.get("path") or ""
+        rows.append(
+            {
+                "kind": "inline",
+                "author": user.get("login") if isinstance(user, dict) else None,
+                "association": association,
+                "maintainer": association in _MAINTAINER_ASSOCIATIONS,
+                "state": None,
+                "path": f"{path}:{line}" if path and line else path or None,
+                "body": _trim(entry["body"], _COMMENT_CHARACTER_LIMIT),
+            }
+        )
     return rows
 
 
@@ -344,7 +366,8 @@ def render_prior_art(record: dict[str, Any]) -> str:
             for row in maintainer_comments:
                 label = f"{row['author']} ({row['association'].lower()})"
                 state = f", {row['state'].lower()}" if row.get("state") else ""
-                lines.extend([f"**{label}{state}:**", "", row["body"], ""])
+                where = f" on `{row['path']}`" if row.get("path") else ""
+                lines.extend([f"**{label}{state}{where}:**", "", row["body"], ""])
         if other_comments:
             lines.extend(
                 [
@@ -443,6 +466,18 @@ def collect_prior_art(
             return record
         if not isinstance(payload, dict):
             continue
+        if _outcome(payload) != "merged":
+            # `gh pr view` carries review summaries, not the inline comments
+            # under them. An unreadable list leaves the attempt as it was.
+            inline = _api(
+                run_directory,
+                executable=command_executable,
+                path=f"repos/{slug}/pulls/{number}/comments?per_page=100",
+                timeout_seconds=timeout_seconds,
+                commands=record["commands"],
+            )
+            if isinstance(inline, list):
+                payload["reviewComments"] = inline
         summary = summarize_pull_request(payload)
         if summary["outcome"] == "closed unmerged":
             # A maintainer's closure is a decision about the change; the
