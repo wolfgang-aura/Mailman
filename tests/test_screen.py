@@ -2383,6 +2383,46 @@ class ScreenTests(unittest.TestCase):
         self.assertTrue(gate["passed"])
         self.assertIn("2638 star(s)", gate["detail"])
 
+    def test_a_decade_old_repository_passes_under_the_star_floor(self) -> None:
+        # celery/billiard: 434 stars over sixteen years failed the 500-star
+        # floor. https://github.com/wolfgang-aura/Mailman/issues/318
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    meta={
+                        "full_name": "example/project",
+                        "stargazers_count": 434,
+                        "default_branch": "main",
+                        "archived": False,
+                        "created_at": _days_ago(6161),
+                        "fork": False,
+                    }
+                ),
+            )
+        gate = _named(record, "provenance")
+
+        self.assertTrue(gate["passed"])
+        self.assertIn("434 star(s) over 6161 day(s)", gate["detail"])
+
+    def test_a_two_year_old_repository_under_the_star_floor_still_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    meta={
+                        "full_name": "example/project",
+                        "stargazers_count": 434,
+                        "default_branch": "main",
+                        "archived": False,
+                        "created_at": _days_ago(800),
+                        "fork": False,
+                    }
+                ),
+            )
+
+        self.assertIn("provenance", record["failed_gates"])
+
     def test_a_fork_is_refused_however_popular_the_upstream_is(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(

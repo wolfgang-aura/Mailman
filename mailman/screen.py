@@ -90,6 +90,13 @@ PATTERN_DAYS = 90
 PROVENANCE_MINIMUM_AGE_DAYS = 365
 PROVENANCE_MINIMUM_STARS = 500
 
+#: A third way through: years of public history stand in for stars.
+#: `jupyter/jupyter_client` (479 stars, 11 years) and `celery/billiard` (434,
+#: 16 years) failed the 500-star floor, and nothing about them is a stranger's
+#: unread `setup.py`. Mailman #318.
+PROVENANCE_LONG_STANDING_AGE_DAYS = 1095
+PROVENANCE_LONG_STANDING_STARS = 150
+
 #: The other way through. A young project with a broad contributor base has also
 #: been read widely, and `pydantic/pydantic-ai` is that shape. `pmorissette/ffn`
 #: passes the age route with 11 authors and would fail this one, which is why
@@ -793,6 +800,8 @@ def _provenance_gate(meta: dict[str, Any], freshness: dict[str, Any]) -> dict[st
         "minimum_age_days": PROVENANCE_MINIMUM_AGE_DAYS,
         "minimum_stars": PROVENANCE_MINIMUM_STARS,
         "minimum_authors": PROVENANCE_MINIMUM_AUTHORS,
+        "long_standing_age_days": PROVENANCE_LONG_STANDING_AGE_DAYS,
+        "long_standing_stars": PROVENANCE_LONG_STANDING_STARS,
     }
     if forked:
         return _gate(
@@ -807,9 +816,13 @@ def _provenance_gate(meta: dict[str, Any], freshness: dict[str, Any]) -> dict[st
         )
     established = (
         age_days is not None
-        and age_days >= PROVENANCE_MINIMUM_AGE_DAYS
         and isinstance(stars, int)
-        and stars >= PROVENANCE_MINIMUM_STARS
+        and (
+            (age_days >= PROVENANCE_MINIMUM_AGE_DAYS
+             and stars >= PROVENANCE_MINIMUM_STARS)
+            or (age_days >= PROVENANCE_LONG_STANDING_AGE_DAYS
+                and stars >= PROVENANCE_LONG_STANDING_STARS)
+        )
     )
     broad = authors >= PROVENANCE_MINIMUM_AUTHORS
     if established or broad:
