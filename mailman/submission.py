@@ -987,6 +987,51 @@ def _squash_commit(run_directory: Path, number: int) -> str | None:
     return None
 
 
+def _issue_fixtures(
+    findings: list[Finding], run_directory: Path, workspace: Path | None
+) -> list[Finding]:
+    """Let a test fixture through when its bytes are the issue's own attachment.
+
+    #375 tells the primary to commit a data file from repro/ with its test.
+    uproot5#1529's run did, and `binary-file` then blocked it. A binary under a
+    test path whose hash matches a repro/ file has machine-checked provenance;
+    any other binary still blocks. Mailman #377.
+    """
+    repro = run_directory / "repro"
+    if workspace is None or not repro.is_dir():
+        return findings
+    attachments = {
+        hashlib.sha256(path.read_bytes()).hexdigest(): path.name
+        for path in repro.iterdir()
+        if path.is_file()
+    }
+    kept: list[Finding] = []
+    for finding in findings:
+        target = workspace / finding.path if finding.path else None
+        if (
+            finding.code == "binary-file"
+            and target is not None
+            and _is_test_path(finding.path)
+            and target.is_file()
+        ):
+            source = attachments.get(hashlib.sha256(target.read_bytes()).hexdigest())
+            if source is not None:
+                kept.append(
+                    Finding(
+                        code="binary-test-fixture-from-issue",
+                        blocking=False,
+                        detail=(
+                            "this binary test fixture is byte-identical to "
+                            f"repro/{source}, which came with the issue"
+                        ),
+                        path=finding.path,
+                    )
+                )
+                continue
+        kept.append(finding)
+    return kept
+
+
 def prepare_submission(
     run: RunRecord,
     run_directory: Path,
@@ -1040,7 +1085,11 @@ def prepare_submission(
     # two records. See https://github.com/wolfgang-aura/Mailman/issues/46.
     superseded_numbers = _superseded_merges(run_directory)
 
-    findings = [Finding(**entry) for entry in hygiene["findings"]]
+    findings = _issue_fixtures(
+        [Finding(**entry) for entry in hygiene["findings"]],
+        run_directory,
+        resolve_workspace(run_directory, workspace),
+    )
     findings.extend(
         _policy_findings(
             run,

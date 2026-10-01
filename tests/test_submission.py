@@ -530,6 +530,37 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertIn("Closes #7.", body)
         self.assertIn("python -m pytest -q", body)
 
+    def _fixture_diff(self, workspace_bytes: bytes) -> str:
+        workspace = self.run_directory / "workspace"
+        sample = workspace / "tests" / "samples" / "test_7.root"
+        sample.parent.mkdir(parents=True)
+        sample.write_bytes(workspace_bytes)
+        repro = self.run_directory / "repro"
+        repro.mkdir()
+        (repro / "test_7.root").write_bytes(b"root\x00attachment")
+        (repro / "repro_7.py").write_text("print('x')\n", encoding="utf-8")
+        return SOURCE_DIFF + (
+            "diff --git a/tests/samples/test_7.root b/tests/samples/test_7.root\n"
+            "new file mode 100644\n"
+            "index 0000000..7777777\n"
+            "Binary files /dev/null and b/tests/samples/test_7.root differ\n"
+        )
+
+    def test_a_test_fixture_identical_to_the_issue_attachment_does_not_block(
+        self,
+    ) -> None:
+        # uproot5#1529: the regression test reads the issue's .root file, which
+        # #375 told the primary to commit. Mailman #377.
+        record = self._prepare(diff=self._fixture_diff(b"root\x00attachment"))
+        self.assertNotIn("binary-file", record["blocking_codes"])
+        codes = {finding["code"]: finding for finding in record["findings"]}
+        self.assertFalse(codes["binary-test-fixture-from-issue"]["blocking"])
+        self.assertTrue(record["ready"], record["blocking_codes"])
+
+    def test_a_binary_that_matches_no_attachment_still_blocks(self) -> None:
+        record = self._prepare(diff=self._fixture_diff(b"something else"))
+        self.assertIn("binary-file", record["blocking_codes"])
+
     def test_a_failing_offline_audit_blocks_and_is_recorded(self) -> None:
         # #137: edgartools' CI audits changed test files; a failure there must
         # block before filing, not after.
