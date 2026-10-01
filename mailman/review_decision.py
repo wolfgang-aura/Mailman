@@ -485,10 +485,21 @@ def record_affirmations(
     is kept by its text, so an edit to the line voids it. Mailman #329.
     """
     body = Path(body_path).resolve()
+    claims = _affirmed_claims(body, lines)
+    # A rerun without --affirm keeps what was affirmed in the same body; a
+    # claim is kept by its text, so an edited line still drops out.
+    earlier = _recorded_affirmations(Path(run_directory))
+    if earlier.get("body_path") == str(body):
+        texts = {claim["text"] for claim in claims}
+        claims += [
+            claim
+            for claim in earlier.get("affirmed_claims") or []
+            if isinstance(claim, dict) and claim.get("text") not in texts
+        ]
     record = {
         "schema_version": 1,
         "body_path": str(body),
-        "affirmed_claims": _affirmed_claims(body, lines),
+        "affirmed_claims": claims,
     }
     path = Path(run_directory) / AFFIRMATIONS_FILENAME
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")

@@ -602,6 +602,29 @@ class DecisionGateCliTests(unittest.TestCase):
 
         self.assertEqual(affirmed, 0)
 
+    def test_a_rerun_without_affirm_keeps_the_earlier_affirmation(self) -> None:
+        # A second package run without --affirm passed the decision stage on the
+        # recorded affirmation, then overwrote it with none. #329.
+        from mailman.cli import main
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "runs"
+            run_id = self._run(data_root)
+            directory = data_root / run_id
+            (directory / DECISION_FILENAME).write_text(json.dumps(VALID), encoding="utf-8")
+            body = directory / "body.md"
+            body.write_text(
+                "Fixes the hash.\n\nI have read the CONTRIBUTING file and ran pre-commit.\n",
+                encoding="utf-8",
+            )
+            root = ["--data-root", str(data_root)]
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                first = main(["decision", run_id, "--body", str(body), "--affirm", "3", *root])
+                again = main(["decision", run_id, "--body", str(body), *root])
+            load_decision(directory)
+
+        self.assertEqual((first, again), (0, 0))
+
     def test_the_decision_checks_the_body_handoff_will_post(self) -> None:
         # package --body PATH handed handoff one file while the decision gate
         # read the run's body.md. #329.

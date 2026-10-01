@@ -77,6 +77,7 @@ class CompletionTests(OrchestratorHarness):
             patch.object(cli, "main", side_effect=lambda argv: real(argv) if argv[0] in gated else 0),
             patch("mailman.cli.resolve_identity", return_value=Identity("F", "f@example.com")),
             patch("mailman.package.commit_candidate", return_value="b" * 40),
+            patch("mailman.package.changed_paths", return_value=["fix.txt"]),
             patch("sys.stdout", StringIO()), patch("sys.stderr", stderr),
         ):
             code = cli._package(arguments)
