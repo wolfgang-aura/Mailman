@@ -760,6 +760,12 @@ def _sentence(flat: str, start: int, end: int, *, limit: int = 400) -> str:
     return flat[opening:closing].strip()[:limit]
 
 
+#: A closure for leaving out the AI disclosure enforces disclosure; it does
+#: not refuse the work. Pyomo/pyomo#4026: "deleted a required part of the
+#: template (AI disclosure), so this will be closed by policy". Mailman #391.
+_DISCLOSURE_RULE = re.compile(r"\b(?:un)?disclos\w*", re.IGNORECASE)
+
+
 def _outcome_refusal(flat: str) -> str | None:
     """A refusal stated as what happens to the pull request, about AI work.
 
@@ -774,7 +780,7 @@ def _outcome_refusal(flat: str) -> str | None:
         if _REFUSES_THE_TOOL.match(flat, match.end()):
             continue
         sentence = _sentence(flat, match.start(), match.end())
-        if _AI_SUBJECT.search(sentence):
+        if _AI_SUBJECT.search(sentence) and not _DISCLOSURE_RULE.search(sentence):
             return sentence
     return None
 

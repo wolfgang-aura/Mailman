@@ -2734,6 +2734,31 @@ class ResponsivenessTests(unittest.TestCase):
         self.assertIn("AI generated pull requests", gate["data"]["quote"])
         self.assertIn("/pull/302", gate["detail"])
 
+    def test_a_pull_request_closed_for_deleting_its_ai_disclosure_is_not_a_refusal(
+        self,
+    ) -> None:
+        # Pyomo/pyomo#4026 was closed for removing the template's AI
+        # disclosure. The project requires disclosure; it does not refuse
+        # AI work, and the gate rejected it as if it did. Mailman #391.
+        pulls = [
+            _outside_pull(301, opened_days_ago=30, merged=True),
+            _outside_pull(302, opened_days_ago=20, closed=True),
+            _outside_pull(303, opened_days_ago=10, merged=True),
+        ]
+        closing = _response(18, field="created_at")
+        closing["body"] = (
+            "Hi @someone - The PR description deleted a required part of the "
+            "template (AI disclosure), so this will be closed by policy."
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(all_pulls=pulls, issue_comments={302: [closing]}),
+            )
+
+        self.assertTrue(_named(record, "policy")["passed"])
+        self.assertNotIn("policy", record["failed_gates"])
+
     def test_a_maintainers_open_no_ai_policy_proposal_fails_the_policy_gate(
         self,
     ) -> None:
