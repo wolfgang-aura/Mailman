@@ -2762,8 +2762,9 @@ def _discover(arguments: argparse.Namespace) -> int:
         print(json.dumps(result, indent=2))
     else:
         _emit(render_discovery(result))
-    # A batch that went unanswered is not an empty batch. Mailman #384.
-    return 1 if result["unsearched"] else 0
+    # A batch that went unanswered is not an empty batch (#384), and an unread
+    # timeline is not an unclaimed issue (#390).
+    return 1 if result["unsearched"] or result["unread_timelines"] else 0
 
 
 def _contributions(arguments: argparse.Namespace) -> int:

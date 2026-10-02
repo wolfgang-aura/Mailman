@@ -157,14 +157,20 @@ def discover(
     # `-linked:pr` misses a pull request that only cross-references the
     # issue; one timeline read per hit drops it here. Mailman #385.
     claimed: dict[str, list[str]] = {}
+    # A failed read is not "no rivals"; it stays out of the list. Mailman #390.
+    unread: list[str] = []
     if timeline is not None:
         kept = []
         for index, row in enumerate(rows, 1):
             if index % 25 == 0 or index == len(rows):
                 progress(f"timelines {index}/{len(rows)}")
-            rivals = rival_pull_requests(timeline(row["repository"], row["number"]))
-            if rivals:
-                claimed[f"{row['repository']}#{row['number']}"] = rivals
+            events = timeline(row["repository"], row["number"])
+            name = f"{row['repository']}#{row['number']}"
+            rivals = rival_pull_requests(events)
+            if events is None:
+                unread.append(name)
+            elif rivals:
+                claimed[name] = rivals
             else:
                 kept.append(row)
         rows = kept
@@ -174,6 +180,7 @@ def discover(
         "since": since,
         "searched": len(searched) - len(unsearched),
         "unsearched": unsearched,
+        "unread_timelines": unread,
         "skipped": skipped,
         "issues": rows,
     }
@@ -245,6 +252,11 @@ def render_discovery(result: dict[str, Any]) -> str:
         lines.append(
             "  NOT SEARCHED (rate limit or error; rerun later): "
             + " ".join(result["unsearched"])
+        )
+    if result.get("unread_timelines"):
+        lines.append(
+            "  TIMELINE NOT READ (claim unknown; rerun later): "
+            + " ".join(result["unread_timelines"])
         )
     return "\n".join(lines)
 

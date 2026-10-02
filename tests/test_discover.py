@@ -144,6 +144,19 @@ class DiscoverTests(unittest.TestCase):
         self.assertEqual(sorted(read), [8, 9, 10])
         self.assertEqual([row["number"] for row in result["issues"]], [10, 9, 8])
 
+    def test_an_unread_timeline_is_reported_not_counted_as_unclaimed(self) -> None:
+        # A failed timeline read found no rivals and listed the issue as a
+        # candidate. Mailman #390.
+        result = discover(
+            ["a/one"], data_root=self.root, since="2026-07-01",
+            search=lambda query: [_issue("a/one", 5, "2026-09-01"), _issue("a/one", 9, "2026-09-02")],
+            timeline=lambda slug, number: None if number == 5 else [], spacing_seconds=0,
+        )
+
+        self.assertEqual([row["number"] for row in result["issues"]], [9])
+        self.assertEqual(result["unread_timelines"], ["a/one#5"])
+        self.assertIn("TIMELINE NOT READ", render_discovery(result))
+
     def test_an_unanswered_batch_is_reported_not_counted_as_empty(self) -> None:
         # The scratch search printed "0 from 7 repos" for a batch it could
         # not reach. Mailman #384.
