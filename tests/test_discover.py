@@ -212,6 +212,22 @@ class DiscoverTests(unittest.TestCase):
         self.assertEqual(result["rejected"], {"a/one#5": ["maintainer-disputed"]})
         self.assertIn("rejected a/one#5", render_discovery(result))
 
+    def test_a_rerun_reuses_answered_batches_from_the_cache(self) -> None:
+        # A 126-batch pass was killed at batch 94 and kept nothing. #395.
+        cache = self.root / "discover-cache"
+        first = discover(
+            ["a/one"], data_root=self.root, since="2026-07-01",
+            search=lambda query: [_issue("a/one", 9, "2026-09-02")],
+            spacing_seconds=0, cache_directory=cache,
+        )
+        again = discover(
+            ["a/one"], data_root=self.root, since="2026-07-01",
+            search=lambda query: None, spacing_seconds=0, cache_directory=cache,
+        )
+
+        self.assertEqual(again["issues"], first["issues"])
+        self.assertEqual(again["unsearched"], [])
+
     def test_an_unanswered_batch_is_reported_not_counted_as_empty(self) -> None:
         # The scratch search printed "0 from 7 repos" for a batch it could
         # not reach. Mailman #384.

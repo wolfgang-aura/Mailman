@@ -2757,6 +2757,7 @@ def _discover(arguments: argparse.Namespace) -> int:
         excluded=excluded,
         per_repository=arguments.per_repository,
         progress=stderr_progress,
+        cache_directory=data_root / "discover-cache",
     )
     if arguments.json:
         print(json.dumps(result, indent=2))

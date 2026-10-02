@@ -11,6 +11,7 @@ from the last N days with no linked pull request. Mailman #384.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -40,6 +41,9 @@ BUG_LABELS = 'bug,"type: bug","type:bug","T: bug","type/bug","kind/bug","C-bug",
 PER_REPOSITORY = 5
 #: Seconds between searches. Eight still met the secondary rate limit.
 SEARCH_SPACING_SECONDS = 15.0
+#: An answered batch is reused this long, so a stopped pass resumes instead
+#: of starting over. Mailman #395.
+CACHE_SECONDS = 6 * 3600
 
 Search = Callable[[str], "list[dict[str, Any]] | None"]
 Timeline = Callable[[str, int], "list[dict[str, Any]] | None"]
@@ -118,6 +122,31 @@ def _row(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _cache_file(cache_directory: Path, query: str) -> Path:
+    return cache_directory / f"{hashlib.sha1(query.encode('utf-8')).hexdigest()}.json"
+
+
+def _cached(cache_directory: Path | None, query: str) -> list[dict[str, Any]] | None:
+    """A batch's items answered within CACHE_SECONDS, else None."""
+    if cache_directory is None:
+        return None
+    path = _cache_file(cache_directory, query)
+    try:
+        if time.time() - path.stat().st_mtime > CACHE_SECONDS:
+            return None
+        items = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return items if isinstance(items, list) else None
+
+
+def _store(cache_directory: Path | None, query: str, items: list[dict[str, Any]]) -> None:
+    if cache_directory is None:
+        return
+    cache_directory.mkdir(parents=True, exist_ok=True)
+    _cache_file(cache_directory, query).write_text(json.dumps(items), encoding="utf-8")
+
+
 def discover(
     slugs: Sequence[str],
     *,
@@ -129,6 +158,7 @@ def discover(
     per_repository: int = PER_REPOSITORY,
     spacing_seconds: float = SEARCH_SPACING_SECONDS,
     progress: Callable[[str], None] = lambda line: None,
+    cache_directory: Path | None = None,
 ) -> dict[str, Any]:
     """Search the listed repositories batch by batch and rank what comes back.
 
@@ -140,10 +170,20 @@ def discover(
     rows: list[dict[str, Any]] = []
     unsearched: list[str] = []
     batches = query_batches(searched)
+    searched_before = False
     for index, batch in enumerate(batches, 1):
-        if index > 1 and spacing_seconds:
+        query = build_query(batch, since)
+        items = _cached(cache_directory, query)
+        if items is not None:
+            progress(f"[{index}/{len(batches)}] {len(items)} from cache")
+            rows.extend(_row(item) for item in items)
+            continue
+        if searched_before and spacing_seconds:
             time.sleep(spacing_seconds)
-        items = search(build_query(batch, since))
+        searched_before = True
+        items = search(query)
+        if items is not None:
+            _store(cache_directory, query, items)
         if items is None:
             unsearched.extend(batch)
             progress(f"[{index}/{len(batches)}] not answered: {' '.join(batch)}")
