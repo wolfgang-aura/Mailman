@@ -1449,14 +1449,15 @@ def _pyproject_requirements(pyproject: str) -> tuple[set[str], set[str], bool]:
     required = {
         _requirement_name(item)
         for item in (project.get("dependencies") or [])
-        if isinstance(item, str)
+        if isinstance(item, str) and _installs_here(item)
     }
     optional: set[str] = set()
     extras = project.get("optional-dependencies")
     if isinstance(extras, dict):
         for items in extras.values():
             optional |= {
-                _requirement_name(item) for item in (items or []) if isinstance(item, str)
+                _requirement_name(item) for item in (items or [])
+                if isinstance(item, str) and _installs_here(item)
             }
     tool = table.get("tool") if isinstance(table.get("tool"), dict) else {}
     return required - {""}, optional - {""}, "bench" in tool
@@ -1472,6 +1473,12 @@ def _project_name(pyproject: str) -> str:
     return _requirement_name(name) if isinstance(name, str) else ""
 
 
+def _installs_here(requirement: str) -> bool:
+    """False for a requirement whose platform marker excludes Windows. Mailman #382."""
+    marker = requirement.split(";", 1)[1] if ";" in requirement else ""
+    return not (_PLATFORM_MARKER.search(marker) and not _WINDOWS_MARKER.search(marker))
+
+
 def _requirement_lines(text: str) -> set[str]:
     """Names a requirements file installs on Windows, options and comments skipped."""
     names: set[str] = set()
@@ -1479,8 +1486,7 @@ def _requirement_lines(text: str) -> set[str]:
         line = raw.split(" #", 1)[0].strip()
         if not line or line.startswith(("#", "-")):
             continue
-        marker = line.split(";", 1)[1] if ";" in line else ""
-        if _PLATFORM_MARKER.search(marker) and not _WINDOWS_MARKER.search(marker):
+        if not _installs_here(line):
             continue
         names.add(_requirement_name(line))
     return names - {""}

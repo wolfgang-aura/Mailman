@@ -1204,6 +1204,37 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(gate["data"]["pypi_unchecked"], ["unlisted"])
         self.assertIn("sdistonly", gate["detail"])
 
+    def test_a_macos_only_pyproject_dependency_is_not_required_here(self) -> None:
+        # pyvista lists pyobjc-framework-Cocoa for darwin only; the host gate
+        # failed it for having no Windows wheel. Mailman #382.
+        pages = FakePages(
+            {
+                "https://pypi.org/pypi/maconly/json": json.dumps(
+                    {"urls": [{"filename": "maconly-1.0-cp314-cp314-macosx_11_0_arm64.whl"}]}
+                ),
+                "https://pypi.org/pypi/pure/json": json.dumps(
+                    {"urls": [{"filename": "pure-2.0-py3-none-any.whl"}]}
+                ),
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "pyproject.toml": (
+                            '[project]\nname = "p"\n'
+                            'dependencies = [\'maconly; sys_platform == "darwin"\', "pure"]\n'
+                        )
+                    }
+                ),
+                pages,
+            )
+        gate = _named(record, "host")
+
+        self.assertNotIn("host", record["failed_gates"])
+        self.assertEqual(gate["data"]["no_wheel"], [])
+
     def test_required_packages_with_usable_wheels_pass_the_host_gate(self) -> None:
         pages = FakePages(
             {
