@@ -653,7 +653,7 @@ def assignment_problem(run_directory: Path, decision: Decision) -> str | None:
     if not assessment.get("assignment_looks_required"):
         return None
     claims = load_claims(run_directory) or {}
-    if claims.get("assignees"):
+    if claims.get("assignees") or claims.get("own_assignment"):
         return None
     held = assessment.get("merges_whose_author_held_the_assignment", 0)
     read = assessment.get("merge_path_rows_read", 0)

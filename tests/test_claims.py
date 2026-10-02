@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from mailman.identity import Identity, github_login
 from mailman.claims import (
     CLAIMS_FILENAME,
     classify_comment,
@@ -636,6 +637,31 @@ class ReadClaimsTests(unittest.TestCase):
         self.assertEqual(record["assignments"], [])
         self.assertEqual(record["assignees"], [])
         self.assertIn("work on this issue", record["claims"][0]["quote"])
+
+    def test_an_assignment_to_the_operator_is_ours_not_a_holder(self) -> None:
+        # semantica#1846: the maintainer answered our offer by assigning it to
+        # us, and check-target refused the run as held by someone. Mailman #404.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._run(Path(temporary))
+            record = read_claims(
+                root,
+                executable="gh",
+                own_login="Wolfgang-Aura",
+                execute=_FakeGh(
+                    {"number": 4775, "assignees": [{"login": "wolfgang-aura"}]},
+                    [_comment("Could you assign it to me? I'll open the PR once "
+                              "it's assigned.", login="wolfgang-aura")],
+                ),
+            )
+        self.assertTrue(record["own_assignment"])
+        self.assertEqual(record["assignees"], [])
+        self.assertEqual(record["claims"], [])
+
+    def test_the_operator_login_comes_from_the_noreply_address(self) -> None:
+        self.assertEqual(github_login(Identity(
+            "Anyone", "169568318+wolfgang-aura@users.noreply.github.com")),
+            "wolfgang-aura")
+        self.assertIsNone(github_login(Identity("x", "noreply@anthropic.com")))
 
     def test_a_claim_in_the_issue_body_is_recorded(self) -> None:
         # domokane/FinancePy#267: the report carries the diff and nobody has

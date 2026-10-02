@@ -826,8 +826,14 @@ def read_claims(
     execute: Callable[..., CommandResult] = execute,
     pages: int = 4,
     maintainers: Collection[str] = (),
+    own_login: str | None = None,
 ) -> dict[str, Any]:
     """Record who has claimed the run's target issue, from its own thread.
+
+    `own_login` is the operator's GitHub account, by default the one the data
+    root's identity names. An assignment to it is `own_assignment`, the answer
+    an ask-first offer asked for, and neither it nor the operator's own offer
+    comment counts as somebody else holding the issue. Mailman #404.
 
     `maintainers` is the login set the repository screen recorded; a comment
     by one of them counts as a maintainer's whatever GitHub's association
@@ -909,11 +915,23 @@ def read_claims(
         record["detail"] = f"{slug}#{number} could not be read"
         _write(run_directory, record)
         return record
-    record["assignees"] = [
+    if own_login is None:
+        from mailman.identity import IdentityError, github_login, resolve_identity
+
+        try:
+            own_login = github_login(resolve_identity(run_directory.parent))
+        except IdentityError:
+            own_login = None
+    own = (own_login or "").lower()
+    assignees = [
         entry.get("login")
         for entry in payload.get("assignees") or []
         if isinstance(entry, dict) and entry.get("login")
     ]
+    record["own_assignment"] = bool(own) and any(
+        login.lower() == own for login in assignees
+    )
+    record["assignees"] = [login for login in assignees if login.lower() != own]
     record["issue_state"] = payload.get("state")
     record["issue_closed_at"] = payload.get("closed_at")
     # Who reported it, and whether anyone who can speak for the project has
@@ -963,7 +981,8 @@ def read_claims(
     for comment, kind in zip(
         thread, classify_thread(thread, maintainers=maintainers)
     ):
-        if kind == "claim":
+        author = (comment.get("user") or {}).get("login") or ""
+        if kind == "claim" and not (own and author.lower() == own):
             record["claims"].append(_row(comment, maintainers))
         elif kind == "assignment":
             record["assignments"].append(_row(comment, maintainers))

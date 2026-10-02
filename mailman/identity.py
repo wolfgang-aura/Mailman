@@ -75,6 +75,21 @@ def _validate(name: str, email: str, *, source: str) -> Identity:
     return Identity(name=name, email=email)
 
 
+def github_login(identity: Identity | None) -> str | None:
+    """The GitHub login a noreply address names, or None for any other address.
+
+    `ID+login@users.noreply.github.com` and the older `login@users.noreply...`
+    both carry it. Mailman #404 needs it to tell our own assignment apart.
+    """
+    if identity is None:
+        return None
+    address = identity.email.strip().lower()
+    if not address.endswith(NOREPLY_SUFFIX):
+        return None
+    local = address[: -len(NOREPLY_SUFFIX)]
+    return local.split("+", 1)[-1] or None
+
+
 def identity_path(data_root: Path) -> Path:
     return data_root / IDENTITY_FILENAME
 

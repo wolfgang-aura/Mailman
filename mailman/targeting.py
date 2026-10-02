@@ -548,6 +548,8 @@ class TargetAssessment:
             lines.append(
                 "assigned  this issue is assigned to " + ", ".join(assignees)
             )
+        if self.claims.get("own_assignment"):
+            lines.append("assigned  this issue is assigned to us (Mailman #404)")
         for row in self.claims.get("claims") or []:
             lines.append(
                 f"claimed   {row.get('author')} ({row.get('association')}, "
