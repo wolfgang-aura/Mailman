@@ -2861,6 +2861,20 @@ def screen_is_current(
     )
 
 
+#: Gates that read no time window: a refusal on one stands whatever the
+#: windows were. python/mypy's policy refusal was waved through once the
+#: windows moved. Mailman #387.
+WINDOW_INDEPENDENT_GATES = frozenset({"policy", "pure-python", "host", "archived"})
+
+
+def refusal_stands(record: dict[str, Any]) -> bool:
+    """Whether a failed screen still refuses: read with today's windows, or
+    failed on a gate no window affects."""
+    return screen_is_current(record) or bool(
+        WINDOW_INDEPENDENT_GATES & set(record.get("failed_gates") or [])
+    )
+
+
 def _write(data_root: Path, record: dict[str, Any]) -> Path:
     destination = screen_path(data_root, record["repository"])
     destination.parent.mkdir(parents=True, exist_ok=True)

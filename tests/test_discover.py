@@ -39,7 +39,9 @@ class DiscoverTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def write_screen(self, slug: str, verdict: str, current: bool) -> None:
+    def write_screen(
+        self, slug: str, verdict: str, current: bool, failed: list[str] | None = None
+    ) -> None:
         path = screen_path(self.root, slug)
         path.parent.mkdir(parents=True, exist_ok=True)
         windows = {
@@ -49,7 +51,7 @@ class DiscoverTests(unittest.TestCase):
         } if current else {}
         path.write_text(json.dumps({
             "repository": slug, "success": True, "verdict": verdict,
-            "failed_gates": ["responsiveness"] if verdict != "pass" else [], **windows,
+            "failed_gates": failed or (["responsiveness"] if verdict != "pass" else []), **windows,
         }), encoding="utf-8")
 
     def test_the_tracked_list_reads_without_duplicates(self) -> None:
@@ -90,6 +92,17 @@ class DiscoverTests(unittest.TestCase):
         self.assertEqual(result["skipped"]["a/ours"], "excluded")
         self.assertIn("responsiveness", result["skipped"]["a/refused"])
         self.assertEqual([row["number"] for row in result["issues"]], [9, 5])
+
+    def test_a_policy_refusal_under_older_windows_is_not_searched(self) -> None:
+        # python/mypy refused AI-assisted work; discover listed it anyway.
+        # Mailman #387.
+        self.write_screen("a/policy", "fail", current=False, failed=["policy"])
+        result = discover(
+            ["a/policy"], data_root=self.root, since="2026-07-01",
+            search=lambda query: [], spacing_seconds=0,
+        )
+
+        self.assertIn("policy", result["skipped"]["a/policy"])
 
     def test_an_issue_with_an_open_pull_request_on_its_timeline_is_dropped(self) -> None:
         # -linked:pr missed sqlfluff#8605 and sphinx#14666: both only

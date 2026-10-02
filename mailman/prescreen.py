@@ -32,6 +32,7 @@ from mailman.screen import (
     load_screen,
     pull_request_base,
     requires_prior_discussion,
+    refusal_stands,
     screen_is_current,
     screen_shortlist,
 )
@@ -760,8 +761,9 @@ def prescreen_issue(
     if screen and screen.get("success") and screen.get("verdict") != "pass":
         # A refusal read under older windows may not stand, and the hunt
         # re-reads it before a run counts. The issue checks are cheaper than
-        # a re-screen, so they go first. Mailman #383.
-        if screen_is_current(screen):
+        # a re-screen, so they go first. Mailman #383. A refusal on a gate
+        # no window reads, such as policy, stands regardless. Mailman #387.
+        if refusal_stands(screen):
             issue_blocking.append(REPOSITORY_SCREEN_FAILED)
         else:
             warnings.append(

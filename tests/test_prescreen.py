@@ -585,7 +585,8 @@ class PrescreenTests(unittest.TestCase):
         self.assertNotIn("issue-under-discussion", record.get("blocking", []))
 
     def record_direct_push_share(
-        self, share: float, verdict: str = "pass", current: bool = True
+        self, share: float, verdict: str = "pass", current: bool = True,
+        failed_gates: list[str] | None = None,
     ) -> None:
         """Write the screen record the pre-screen reads the habit out of."""
         path = screen_path(self.root, "example/project")
@@ -601,6 +602,7 @@ class PrescreenTests(unittest.TestCase):
                     "repository": "example/project",
                     "success": True,
                     "verdict": verdict,
+                    "failed_gates": failed_gates or [],
                     **windows,
                     "gates": [
                         {
@@ -696,6 +698,20 @@ class PrescreenTests(unittest.TestCase):
             any("screen-target example/project --refresh" in warning
                 for warning in record["warnings"])
         )
+
+    def test_a_policy_refusal_under_older_windows_still_blocks(self) -> None:
+        # python/mypy refused AI-assisted work on 2026-09-17; no window
+        # change re-opens that. Mailman #387.
+        self.record_direct_push_share(
+            0.05, verdict="fail", current=False, failed_gates=["policy", "responsiveness"]
+        )
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub("[]", self.typo_issue()),
+        )
+
+        self.assertIn(REPOSITORY_SCREEN_FAILED, record["blocking"])
 
     def test_a_trivial_fix_in_a_reviewed_repository_is_only_a_warning(self) -> None:
         self.record_direct_push_share(0.05)

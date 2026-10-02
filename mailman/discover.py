@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from mailman.claims import rival_pull_requests
-from mailman.screen import load_screen, screen_is_current
+from mailman.screen import load_screen, refusal_stands
 
 #: The tracked list of recognizable Python repositories, one slug per line.
 REPOSITORIES_FILE = Path(__file__).with_name("discover-repos.txt")
@@ -66,7 +66,7 @@ def skipped_repositories(
             isinstance(screen, dict)
             and screen.get("success")
             and screen.get("verdict") != "pass"
-            and screen_is_current(screen)
+            and refusal_stands(screen)
         ):
             failed = ", ".join(screen.get("failed_gates") or []) or "a gate"
             skipped[slug] = f"current screen failed on {failed}"
