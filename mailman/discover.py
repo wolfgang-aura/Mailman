@@ -145,7 +145,9 @@ def discover(
     claimed: dict[str, list[str]] = {}
     if timeline is not None:
         kept = []
-        for row in rows:
+        for index, row in enumerate(rows, 1):
+            if index % 25 == 0 or index == len(rows):
+                progress(f"timelines {index}/{len(rows)}")
             rivals = rival_pull_requests(timeline(row["repository"], row["number"]))
             if rivals:
                 claimed[f"{row['repository']}#{row['number']}"] = rivals
