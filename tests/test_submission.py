@@ -1381,6 +1381,16 @@ class PrepareSubmissionTests(unittest.TestCase):
         record = self._prepare(policy=_policy(requires_maintainer_assignment=True))
         self.assertIn("needs-maintainer-assignment", record["blocking_codes"])
 
+    def test_an_issue_assigned_to_us_clears_the_assignment_requirement(self) -> None:
+        # semantica#1846 was assigned to us after the offer and still blocked
+        # here, so the ask-first path could never ship. Mailman #404.
+        (self.run_directory / "claims.json").write_text(
+            json.dumps({"success": True, "own_assignment": True, "assignees": []}),
+            encoding="utf-8",
+        )
+        record = self._prepare(policy=_policy(requires_maintainer_assignment=True))
+        self.assertNotIn("needs-maintainer-assignment", record["blocking_codes"])
+
     def test_a_forbidden_trailer_is_spelled_out_in_the_draft(self) -> None:
         self._prepare(policy=_policy(ai_trailer="forbidden"))
         body = (self.run_directory / "submission" / "pull-request.md").read_text(

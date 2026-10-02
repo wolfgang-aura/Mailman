@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from mailman.claims import load_claims
 from mailman.executor import CommandResult, execute
 from mailman.issue import issue_opened_at, load_issue_record, predates_issue
 from mailman.models import RunRecord, RunStatus
@@ -310,6 +311,7 @@ def _policy_findings(
     acknowledgement: dict[str, Any] | None = None,
     superseded_numbers: frozenset[int] = frozenset(),
     issue_opened: datetime | None = None,
+    own_assignment: bool = False,
 ) -> list[Finding]:
     findings: list[Finding] = []
     if policy.stance == "unknown":
@@ -369,7 +371,9 @@ def _policy_findings(
                 ),
             )
         )
-    if policy.requires_maintainer_assignment:
+    # Assigned to us, the requirement is met: that is what the ask-first offer
+    # asked for. Mailman #404.
+    if policy.requires_maintainer_assignment and not own_assignment:
         findings.append(
             Finding(
                 code="needs-maintainer-assignment",
@@ -1100,6 +1104,7 @@ def prepare_submission(
             acknowledgement=acknowledgement,
             superseded_numbers=superseded_numbers,
             issue_opened=issue_opened_at(run_directory),
+            own_assignment=bool((load_claims(run_directory) or {}).get("own_assignment")),
         )
     )
     findings.extend(_evidence_findings(run, verifications))
