@@ -197,6 +197,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "recorded, and write nothing",
     )
     hunt.add_argument(
+        "--answer-review",
+        action="store_true",
+        help="for hunt ship: you will answer review comments yourself, so runs "
+        "whose target requires that are filed too",
+    )
+    hunt.add_argument(
         "--since-days",
         type=int,
         default=60,
@@ -1339,6 +1345,7 @@ def _hunt(arguments: argparse.Namespace) -> int:
             refresh_evidence=not arguments.no_refresh,
             only=arguments.run_id,
             data_root=arguments.data_root,
+            answer_review=arguments.answer_review,
         )
         if arguments.json:
             print(json.dumps(shipped, indent=2))

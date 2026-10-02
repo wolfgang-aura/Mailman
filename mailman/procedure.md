@@ -568,7 +568,9 @@ skips one of the maintainer's points costs a second review round.
 
 Hand the operator one command per batch, not a script of blocks:
 `mailman hunt ship HUNT_ID --owner TOKEN`. Running it is his approval for that
-batch, so give it to him with the packet and do not run it for him. For every
+batch, so give it to him with the packet and do not run it for him. Add
+`--answer-review` when a run's target requires the submitter to answer review
+personally, and say so beside the command: passing it is that commitment. For every
 run at filing approval (`hunt status` reads it `ready` at stage
 `filing-approval`, not yet filed, within the hunt's open slots) it confirms the
 run is packaged, forks the upstream into the account the handoff's `--head`

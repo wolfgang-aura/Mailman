@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from mailman.cli import main
-from mailman.hunt import OWN_WORDS_ACTION, add_run, load_hunt
+from mailman.hunt import OWN_WORDS_ACTION, PERSONAL_REVIEW_ACTION, add_run, load_hunt
 from mailman.ship import Completed, ShipFailure, ship
 from tests import test_hunt
 from tests.test_orchestrator import OrchestratorHarness, git
@@ -205,6 +205,27 @@ class ShipGateTests(unittest.TestCase):
         self.assertIn("body-changed", reasons["b"])
         self.assertIn("ask-first", reasons["c"])
         self.assertTrue(all(row["outcome"] == "skipped" for row in result["runs"]))
+
+    def test_answer_review_files_a_personal_review_run_and_nothing_else(self):
+        # Python-Markdown#1643 (#402): the personal-review gate had no answer,
+        # so ship skipped the run forever.
+        answers = {
+            "a": {"ready": True, "stage": "filing-approval", "disposition": "READY",
+                  "human_required": True, "action": PERSONAL_REVIEW_ACTION},
+            "b": {"ready": True, "stage": "filing-approval", "disposition": "READY",
+                  "human_required": True, "action": OWN_WORDS_ACTION},
+            "c": {"ready": True, "stage": "filing-approval", "disposition": "READY",
+                  "human_required": True, "action": PERSONAL_REVIEW_ACTION},
+        }
+        self.record["runs"][2]["dropped"] = True
+        with mock.patch("mailman.ship.ship_run") as shipped:
+            skipped = self.ship(lambda directory: answers[directory.name], dry_run=True)
+        self.assertIn("--answer-review", skipped["runs"][0]["reason"])
+        with mock.patch("mailman.ship.ship_run") as shipped:
+            result = self.ship(lambda directory: answers[directory.name],
+                               answer_review=True)
+        self.assertEqual([call.args[2]["run_id"] for call in shipped.call_args_list], ["a"])
+        self.assertEqual(result["runs"][1]["outcome"], "skipped")
 
     def test_the_first_failure_stops_the_batch(self):
         ready = {"ready": True, "stage": "filing-approval", "disposition": "READY",

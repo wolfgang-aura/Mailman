@@ -101,7 +101,8 @@ def _row_key(root: Path, run_id: str) -> tuple[str, Any] | None:
 
 
 def plan(root: Path, record: dict, *, login: str | None,
-         readiness: Callable[[Path], dict], only: str | None = None) -> list[dict]:
+         readiness: Callable[[Path], dict], only: str | None = None,
+         answer_review: bool = False) -> list[dict]:
     """Every live run, with what `ship` would do to it and why.
 
     Readiness is the hunt's own gate (`next_action`): decision, finalize,
@@ -109,7 +110,7 @@ def plan(root: Path, record: dict, *, login: str | None,
     ready at filing approval is skipped with the gate's reason, and a run that
     still needs the operator (own-words rewrite, CLA) is never filed.
     """
-    from mailman.hunt import READY_TO_ASK
+    from mailman.hunt import PERSONAL_REVIEW_ACTION, READY_TO_ASK
 
     rows: list[dict] = []
     filed = sum(1 for row in record["runs"] if row.get("filed"))
@@ -138,8 +139,14 @@ def plan(root: Path, record: dict, *, login: str | None,
                 checked.get("detail") or "", checked.get("action") or "") if part)
             row.update(outcome="skipped", reason=reason)
             continue
-        if checked.get("human_required"):
-            row.update(outcome="skipped", reason="needs you before filing: " + checked["action"])
+        # Passing --answer-review is the commitment the personal-review gate
+        # asks for; own-words and CLA still need work done first (#402).
+        personal = checked.get("action") == PERSONAL_REVIEW_ACTION
+        if checked.get("human_required") and not (personal and answer_review):
+            reason = "needs you before filing: " + checked["action"]
+            if personal:
+                reason += " Pass --answer-review to commit to that and file it."
+            row.update(outcome="skipped", reason=reason)
             continue
         key = _row_key(root, run_id)
         if key is not None and key in counted:
@@ -305,10 +312,13 @@ def ship_run(root: Path, record: dict, row: dict, *, run: Runner, dry_run: bool,
     row["outcome"] = "filed"
 
 
-def resume_command(record: dict, *, lease_owner: str | None, data_root: Path | None) -> str:
+def resume_command(record: dict, *, lease_owner: str | None, data_root: Path | None,
+                   answer_review: bool = False) -> str:
     command = f"mailman hunt ship {record['hunt_id']}"
     if lease_owner:
         command += f" --owner {lease_owner}"
+    if answer_review:
+        command += " --answer-review"
     if data_root is not None:
         command += f' --data-root "{data_root}"'
     return command
@@ -320,7 +330,8 @@ def ship(root: Path, record: dict, *, lease_owner: str | None = None, dry_run: b
          readiness: Callable[[Path], dict] | None = None,
          refresher: Callable[..., Any] | None = None,
          provenance_recorder=None, progress: Callable[[str], None] | None = None,
-         sleep: Callable[[float], None] = time.sleep) -> dict:
+         sleep: Callable[[float], None] = time.sleep,
+         answer_review: bool = False) -> dict:
     from mailman import hunt
 
     if hunt.is_terminal(record):
@@ -342,10 +353,12 @@ def ship(root: Path, record: dict, *, lease_owner: str | None = None, dry_run: b
         login = signed_in_login(run)
     except ShipFailure as failure:
         result["failure"] = {"run_id": None, "stage": failure.stage, "detail": failure.detail}
-        result["resume"] = resume_command(record, lease_owner=lease_owner, data_root=data_root)
+        result["resume"] = resume_command(record, lease_owner=lease_owner, data_root=data_root,
+                                          answer_review=answer_review)
         return result
     result["login"] = login
-    rows = plan(root, record, login=login, readiness=readiness, only=only)
+    rows = plan(root, record, login=login, readiness=readiness, only=only,
+                answer_review=answer_review)
     result["runs"] = rows
     if only and not rows:
         raise ValueError(f"run {only} is not a live run in hunt {record['hunt_id']}")
@@ -363,7 +376,8 @@ def ship(root: Path, record: dict, *, lease_owner: str | None = None, dry_run: b
             result["failure"] = {"run_id": row["run_id"], "stage": failure.stage,
                                  "detail": failure.detail}
     if result["failure"]:
-        result["resume"] = resume_command(record, lease_owner=lease_owner, data_root=data_root)
+        result["resume"] = resume_command(record, lease_owner=lease_owner, data_root=data_root,
+                                          answer_review=answer_review)
     result["filed"] = sum(row["outcome"] == "filed" for row in rows)
     return result
 
