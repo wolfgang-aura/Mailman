@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from mailman.claims import rival_pull_requests
 from mailman.screen import load_screen, screen_is_current
 
 #: The tracked list of recognizable Python repositories, one slug per line.
@@ -34,6 +35,7 @@ BUG_LABELS = 'bug,"type: bug","type:bug","T: bug","type/bug","kind/bug","C-bug",
 SEARCH_SPACING_SECONDS = 15.0
 
 Search = Callable[[str], "list[dict[str, Any]] | None"]
+Timeline = Callable[[str, int], "list[dict[str, Any]] | None"]
 
 
 def read_repository_list(path: Path) -> list[str]:
@@ -113,6 +115,7 @@ def discover(
     data_root: Path,
     since: str,
     search: Search,
+    timeline: Timeline | None = None,
     excluded: Iterable[str] = (),
     spacing_seconds: float = SEARCH_SPACING_SECONDS,
     progress: Callable[[str], None] = lambda line: None,
@@ -137,8 +140,21 @@ def discover(
             continue
         progress(f"[{index}/{len(batches)}] {len(items)} from {len(batch)} repositories")
         rows.extend(_row(item) for item in items)
+    # `-linked:pr` misses a pull request that only cross-references the
+    # issue; one timeline read per hit drops it here. Mailman #385.
+    claimed: dict[str, list[str]] = {}
+    if timeline is not None:
+        kept = []
+        for row in rows:
+            rivals = rival_pull_requests(timeline(row["repository"], row["number"]))
+            if rivals:
+                claimed[f"{row['repository']}#{row['number']}"] = rivals
+            else:
+                kept.append(row)
+        rows = kept
     rows.sort(key=lambda row: row["created_at"], reverse=True)
     return {
+        "claimed": claimed,
         "since": since,
         "searched": len(searched) - len(unsearched),
         "unsearched": unsearched,
@@ -171,6 +187,23 @@ def gh_search(executable: str = "gh", timeout_seconds: float = 60, retries: int 
     return search
 
 
+def gh_timeline(executable: str = "gh", timeout_seconds: float = 60) -> Timeline:
+    """One page of an issue's timeline, None when it cannot be read."""
+
+    def timeline(slug: str, number: int) -> list[dict[str, Any]] | None:
+        try:
+            result = subprocess.run(
+                [executable, "api", f"repos/{slug}/issues/{number}/timeline?per_page=100"],
+                capture_output=True, text=True, encoding="utf-8", timeout=timeout_seconds,
+            )
+            data = json.loads(result.stdout or "null")
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+            return None
+        return data if isinstance(data, list) else None
+
+    return timeline
+
+
 def default_since(days: int, now: datetime | None = None) -> str:
     return ((now or datetime.now(UTC)) - timedelta(days=days)).strftime("%Y-%m-%d")
 
@@ -187,6 +220,8 @@ def render_discovery(result: dict[str, Any]) -> str:
         f"  {len(result['issues'])} issue(s) from {result['searched']} repositories searched; "
         f"{len(result['skipped'])} skipped"
     )
+    for name, rivals in sorted(result.get("claimed", {}).items()):
+        lines.append(f"  claimed {name}: {', '.join(rivals)}")
     for slug, reason in sorted(result["skipped"].items()):
         if reason != "excluded":
             lines.append(f"  skipped {slug}: {reason}")

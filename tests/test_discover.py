@@ -91,6 +91,27 @@ class DiscoverTests(unittest.TestCase):
         self.assertIn("responsiveness", result["skipped"]["a/refused"])
         self.assertEqual([row["number"] for row in result["issues"]], [9, 5])
 
+    def test_an_issue_with_an_open_pull_request_on_its_timeline_is_dropped(self) -> None:
+        # -linked:pr missed sqlfluff#8605 and sphinx#14666: both only
+        # cross-referenced their issue. Mailman #385.
+        def timeline(slug: str, number: int) -> list[dict]:
+            if number != 5:
+                return []
+            return [{"event": "cross-referenced", "source": {"issue": {
+                "html_url": f"https://github.com/{slug}/pull/6", "state": "open",
+                "pull_request": {"merged_at": None},
+            }}}]
+
+        result = discover(
+            ["a/one"], data_root=self.root, since="2026-07-01",
+            search=lambda query: [_issue("a/one", 5, "2026-09-01"), _issue("a/one", 9, "2026-09-02")],
+            timeline=timeline, spacing_seconds=0,
+        )
+
+        self.assertEqual([row["number"] for row in result["issues"]], [9])
+        self.assertEqual(result["claimed"], {"a/one#5": ["a/one#6"]})
+        self.assertIn("a/one#5", render_discovery(result))
+
     def test_an_unanswered_batch_is_reported_not_counted_as_empty(self) -> None:
         # The scratch search printed "0 from 7 repos" for a batch it could
         # not reach. Mailman #384.

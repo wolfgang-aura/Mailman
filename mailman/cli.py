@@ -2735,7 +2735,7 @@ def _provenance(arguments: argparse.Namespace) -> int:
 def _discover(arguments: argparse.Namespace) -> int:
     from mailman.discover import (
         OPEN_PR_REPOSITORIES, REPOSITORIES_FILE, default_since, discover,
-        gh_search, read_repository_list, render_discovery, stderr_progress,
+        gh_search, gh_timeline, read_repository_list, render_discovery, stderr_progress,
     )
 
     data_root = (arguments.data_root or default_data_root()).resolve()
@@ -2751,6 +2751,7 @@ def _discover(arguments: argparse.Namespace) -> int:
         data_root=data_root,
         since=default_since(arguments.days),
         search=gh_search(),
+        timeline=gh_timeline(),
         excluded=excluded,
         progress=stderr_progress,
     )
