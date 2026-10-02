@@ -816,6 +816,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     contributions_parser.add_argument("--data-root", type=Path)
 
+    discover_parser = subparsers.add_parser(
+        "discover",
+        help="search a curated repository list for fresh, unclaimed bug reports",
+    )
+    discover_parser.add_argument("--days", type=int, default=90,
+                                 help="only reports opened in the last N days (default 90)")
+    discover_parser.add_argument("--repositories", type=Path,
+                                 help="a slug list to search instead of the tracked one")
+    discover_parser.add_argument("--exclude", action="append", default=[],
+                                 help="a slug to skip; repeatable")
+    discover_parser.add_argument("--json", action="store_true")
+    discover_parser.add_argument("--data-root", type=Path)
+
     identity_parser = subparsers.add_parser(
         "identity",
         help="show or set the author every run's commits are made under",
@@ -2719,6 +2732,36 @@ def _provenance(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _discover(arguments: argparse.Namespace) -> int:
+    from mailman.discover import (
+        OPEN_PR_REPOSITORIES, REPOSITORIES_FILE, default_since, discover,
+        gh_search, read_repository_list, render_discovery, stderr_progress,
+    )
+
+    data_root = (arguments.data_root or default_data_root()).resolve()
+    slugs = read_repository_list(arguments.repositories or REPOSITORIES_FILE)
+    excluded = list(arguments.exclude)
+    open_prs = data_root.parent / OPEN_PR_REPOSITORIES.name
+    if not open_prs.is_file():
+        open_prs = OPEN_PR_REPOSITORIES
+    if open_prs.is_file():
+        excluded += read_repository_list(open_prs)
+    result = discover(
+        slugs,
+        data_root=data_root,
+        since=default_since(arguments.days),
+        search=gh_search(),
+        excluded=excluded,
+        progress=stderr_progress,
+    )
+    if arguments.json:
+        print(json.dumps(result, indent=2))
+    else:
+        _emit(render_discovery(result))
+    # A batch that went unanswered is not an empty batch. Mailman #384.
+    return 1 if result["unsearched"] else 0
+
+
 def _contributions(arguments: argparse.Namespace) -> int:
     data_root = (arguments.data_root or default_data_root()).resolve()
     failures: list[str] = []
@@ -3659,6 +3702,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _provenance(parsed)
         if parsed.subcommand == "contributions":
             return _contributions(parsed)
+        if parsed.subcommand == "discover":
+            return _discover(parsed)
         if parsed.subcommand == "identity":
             return _identity(parsed)
         if parsed.subcommand == "check-authors":

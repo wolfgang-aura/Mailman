@@ -1,0 +1,36 @@
+# Recognizable Python repositories `mailman discover` searches for fresh bug
+# reports. One slug per line or several per line; `#` starts a comment.
+# Repositories with our open pull request are skipped from
+# .mailman/open-pr-repos.txt, and a current failed screen skips one too.
+pallets/click pallets/flask pallets/jinja pallets/werkzeug pallets/itsdangerous
+pytest-dev/pytest pytest-dev/pytest-xdist pytest-dev/pytest-mock pytest-dev/pluggy pytest-dev/pytest-cov
+sphinx-doc/sphinx Textualize/rich Textualize/textual pygments/pygments fsspec/filesystem_spec
+celery/kombu celery/celery python-attrs/attrs python-attrs/cattrs more-itertools/more-itertools
+encode/httpx encode/starlette fastapi/typer pydantic/pydantic sqlalchemy/alembic
+PyCQA/isort PyCQA/flake8 psf/black executablebooks/markdown-it-py executablebooks/MyST-Parser
+mkdocs/mkdocs mkdocstrings/mkdocstrings jupyter/nbconvert jupyter/nbformat
+networkx/networkx sympy/sympy python-jsonschema/jsonschema yaml/pyyaml tox-dev/tox
+pypa/pip pypa/setuptools pypa/packaging pypa/build pypa/hatch pypa/pipx
+joke2k/faker getmoto/moto urllib3/urllib3 psf/requests Delgan/loguru hynek/structlog
+python-babel/babel marshmallow-code/marshmallow
+geopandas/geopandas python-visualization/folium altair-viz/altair holoviz/panel bokeh/bokeh
+dask/dask dask/distributed fsspec/s3fs arrow-py/arrow dateutil/dateutil
+jazzband/pip-tools django-extensions/django-extensions
+Pylons/pyramid falconry/falcon bottlepy/bottle tornadoweb/tornado
+benoitc/gunicorn encode/uvicorn python-websockets/websockets aio-libs/aiosqlite
+mwaskom/seaborn statsmodels/statsmodels scikit-learn/scikit-learn scikit-image/scikit-image
+matplotlib/matplotlib pyvista/pyvista Unidata/MetPy pvlib/pvlib-python
+python-pillow/Pillow wagtail/wagtail
+cookiecutter/cookiecutter copier-org/copier commitizen-tools/commitizen
+pre-commit/pre-commit platformdirs/platformdirs tox-dev/filelock
+python-trio/trio agronholm/anyio litestar-org/litestar
+Python-Markdown/markdown pypdf/pypdf python-poetry/poetry-core jazzband/tablib
+Pyomo/pyomo HypothesisWorks/hypothesis python-jsonschema/check-jsonschema
+scrapy/scrapy scrapy/parsel pyca/pyopenssl paramiko/paramiko fabric/fabric
+SciTools/cartopy Toblerity/Shapely pyproj4/pyproj rasterio/rasterio
+python-gitlab/python-gitlab PyGithub/PyGithub googleapis/python-storage
+boto/boto3 aws/aws-cli jmespath/jmespath.py python-jsonpath/python-jsonpath
+pallets-eco/flask-sqlalchemy pallets-eco/wtforms pallets/quart
+sqlfluff/sqlfluff tobymao/sqlglot ibis-project/ibis
+asottile/pyupgrade asottile/reorder-python-imports regebro/tzlocal
+python-humanize/humanize jd/tenacity grantjenks/python-diskcache

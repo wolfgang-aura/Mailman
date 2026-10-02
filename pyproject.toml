@@ -25,4 +25,4 @@ mailman = "mailman.cli:main"
 include = ["mailman*"]
 
 [tool.setuptools.package-data]
-mailman = ["procedure.md"]
+mailman = ["procedure.md", "discover-repos.txt"]
