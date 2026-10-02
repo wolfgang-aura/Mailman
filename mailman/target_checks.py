@@ -995,7 +995,9 @@ def _without_missing_imports(output: str, modules: set[str]) -> str:
     return "\n".join(kept)
 
 
-def _signatures(output: str, roots: tuple[Path, ...]) -> Counter[str]:
+def _signatures(
+    output: str, roots: tuple[Path, ...], *, blank_numbers: bool = True
+) -> Counter[str]:
     """Output lines with paths made relative and every number blanked.
 
     Line numbers shift when a patch adds lines above a finding, and summary
@@ -1026,7 +1028,9 @@ def _signatures(output: str, roots: tuple[Path, ...]) -> Counter[str]:
         for root in roots:
             prefix = re.escape(str(root).replace("\\", "/"))
             line = re.sub(prefix, "<root>", line, flags=re.IGNORECASE)
-        line = _DIGITS.sub("#", line).rstrip()
+        if blank_numbers:
+            line = _DIGITS.sub("#", line)
+        line = line.rstrip()
         if line:
             lines[line] += 1
     return lines
@@ -1122,12 +1126,22 @@ def _new_findings(
     if ran.exit_code == 0:
         return list(patched.elements()) or ["(output unchanged)"], "the base commit passes"
     new = patched - _signatures(base_output, roots)
-    lines = []
-    for line in output.splitlines():
-        signature = next(iter(_signatures(line, roots)), None)
-        if signature is not None and new[signature] > 0:
+    # A patch that repeats a base finding adds one more of the same signature;
+    # name the line the base does not print verbatim, not the base's own (#400).
+    base_exact = _signatures(base_output, roots, blank_numbers=False)
+    chosen: set[int] = set()
+    for verbatim_ok in (False, True):
+        for index, line in enumerate(output.splitlines()):
+            signature = next(iter(_signatures(line, roots)), None)
+            if signature is None or new[signature] <= 0 or index in chosen:
+                continue
+            exact = next(iter(_signatures(line, roots, blank_numbers=False)), None)
+            if not verbatim_ok and base_exact[exact] > 0:
+                continue
             new[signature] -= 1
-            lines.append(line.rstrip())
+            chosen.add(index)
+    output_lines = output.splitlines()
+    lines = [output_lines[index].rstrip() for index in sorted(chosen)]
     # mypy prints each missing-stubs hint once, beside whichever import it
     # checks first, so the hint moves between the two runs. A note only
     # elaborates on an error; a new error is caught on its own line (#179).

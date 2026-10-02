@@ -989,6 +989,16 @@ class LintBaselineTests(_Fixture):
         self.assertNotIn("E501", findings[0]["detail"])
         self.assertEqual(record["reason"], "failed")
 
+    def test_a_repeated_finding_names_the_patch_line_not_the_base_line(self) -> None:
+        # semantica#1846 (#400): the base had one 89-character line; the patch
+        # added another, and the finding named the base's line.
+        old = "pkg/mod.py:97:89: E501 line too long (89 > 88 characters)\n"
+        added = "pkg/mod.py:1755:89: E501 line too long (89 > 88 characters)\n"
+        _, findings = self._run(BaselineExecutor(old + added, old))
+        self.assertEqual([f["code"] for f in findings], ["lint-failed"])
+        self.assertIn(":1755:", findings[0]["detail"])
+        self.assertNotIn(":97:", findings[0]["detail"])
+
     def test_a_base_that_passes_leaves_the_failure_blocking(self) -> None:
         executor = BaselineExecutor("pkg/mod.py:1:1: F401 'os' imported but unused\n", None)
         _, findings = self._run(executor)
