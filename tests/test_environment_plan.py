@@ -1,3 +1,5 @@
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -5,7 +7,7 @@ from pathlib import Path
 from mailman.environment import load_plan
 from unittest import mock
 
-from mailman.environment_plan import HOST_CONSTRAINTS_FILENAME, draft_plan
+from mailman.environment_plan import _COPY_COMPILED, HOST_CONSTRAINTS_FILENAME, draft_plan
 
 
 class DraftEnvironmentTests(unittest.TestCase):
@@ -254,3 +256,18 @@ dependencies = ["mkdocs"]
             with mock.patch("mailman.environment_plan.sys.platform", "linux"):
                 plan = draft_plan(root, root / "run" / "plan.json")
             self.assertEqual(plan["steps"][-1]["name"], "install-target")
+
+
+class CopyCompiledTests(unittest.TestCase):
+    def test_a_pure_release_wheel_copies_nothing_and_succeeds(self) -> None:
+        # Pyomo ships py3-none-any: its extension is optional, the copy found
+        # no module and failed the plan the screen had cleared. Mailman #392.
+        with tempfile.TemporaryDirectory() as temporary:
+            result = subprocess.run(
+                [sys.executable, "-c", _COPY_COMPILED, "pytest"],
+                cwd=temporary, capture_output=True, text=True, timeout=60,
+            )
+            copied = list(Path(temporary).rglob("*"))
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(copied, [])

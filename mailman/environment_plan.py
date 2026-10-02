@@ -194,7 +194,8 @@ def _builds_compiled_extensions(workspace: Path) -> bool:
 
 #: Copies the installed release's compiled modules into the workspace (the
 #: step's working directory) at the same relative paths. Targets gitignore
-#: them, so the tree stays clean. Mailman #213.
+#: them, so the tree stays clean. Mailman #213. A pure release wheel means the
+#: extension is optional; copying nothing is then success. Mailman #392.
 _COPY_COMPILED = (
     "import importlib.metadata as m,os,shutil,sys\n"
     "d=m.distribution(sys.argv[1]);n=0\n"
@@ -202,7 +203,9 @@ _COPY_COMPILED = (
     " if f.suffix in ('.pyd','.so'):\n"
     "  dst=os.path.join(os.getcwd(),str(f));os.makedirs(os.path.dirname(dst),exist_ok=True)\n"
     "  shutil.copy2(f.locate(),dst);n+=1\n"
-    "print('copied',n,'compiled module(s)');sys.exit(0 if n else 1)"
+    "pure='root-is-purelib: true' in (d.read_text('WHEEL') or '').lower()\n"
+    "print('copied',n,'compiled module(s)'+(' from a pure release' if pure else ''))\n"
+    "sys.exit(0 if n or pure else 1)"
 )
 _WORKSPACE_ON_PATH = (
     "import os,sys,sysconfig,pathlib\n"
