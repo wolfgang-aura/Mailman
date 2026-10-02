@@ -31,6 +31,10 @@ OPEN_PR_REPOSITORIES = Path(".mailman") / "open-pr-repos.txt"
 QUERY_REPOSITORY_CHARACTERS = 170
 #: Repositories label bug reports differently; a comma is an OR.
 BUG_LABELS = 'bug,"type: bug","type:bug","T: bug","type/bug","kind/bug","C-bug","Type: Bug"'
+#: Hits kept per repository, freshest first, before any timeline is read.
+#: A repository with a hundred open bugs needs only its newest few looked
+#: at. Mailman #389.
+PER_REPOSITORY = 5
 #: Seconds between searches. Eight still met the secondary rate limit.
 SEARCH_SPACING_SECONDS = 15.0
 
@@ -117,6 +121,7 @@ def discover(
     search: Search,
     timeline: Timeline | None = None,
     excluded: Iterable[str] = (),
+    per_repository: int = PER_REPOSITORY,
     spacing_seconds: float = SEARCH_SPACING_SECONDS,
     progress: Callable[[str], None] = lambda line: None,
 ) -> dict[str, Any]:
@@ -140,6 +145,15 @@ def discover(
             continue
         progress(f"[{index}/{len(batches)}] {len(items)} from {len(batch)} repositories")
         rows.extend(_row(item) for item in items)
+    rows.sort(key=lambda row: row["created_at"], reverse=True)
+    kept_per: dict[str, int] = {}
+    capped = []
+    for row in rows:
+        count = kept_per.get(row["repository"], 0)
+        if count < per_repository:
+            kept_per[row["repository"]] = count + 1
+            capped.append(row)
+    rows = capped
     # `-linked:pr` misses a pull request that only cross-references the
     # issue; one timeline read per hit drops it here. Mailman #385.
     claimed: dict[str, list[str]] = {}

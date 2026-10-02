@@ -826,6 +826,8 @@ def _build_parser() -> argparse.ArgumentParser:
                                  help="a slug list to search instead of the tracked one")
     discover_parser.add_argument("--exclude", action="append", default=[],
                                  help="a slug to skip; repeatable")
+    discover_parser.add_argument("--per-repository", type=int, default=5,
+                                 help="freshest hits kept per repository (default 5)")
     discover_parser.add_argument("--json", action="store_true")
     discover_parser.add_argument("--data-root", type=Path)
 
@@ -2753,6 +2755,7 @@ def _discover(arguments: argparse.Namespace) -> int:
         search=gh_search(),
         timeline=gh_timeline(),
         excluded=excluded,
+        per_repository=arguments.per_repository,
         progress=stderr_progress,
     )
     if arguments.json:

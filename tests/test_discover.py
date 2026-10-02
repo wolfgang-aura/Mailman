@@ -125,6 +125,25 @@ class DiscoverTests(unittest.TestCase):
         self.assertEqual(result["claimed"], {"a/one#5": ["a/one#6"]})
         self.assertIn("a/one#5", render_discovery(result))
 
+    def test_only_the_freshest_hits_per_repository_read_a_timeline(self) -> None:
+        # Single batches returned 97 and 100 hits; reading every timeline
+        # outlasted a 50-minute budget. Mailman #389.
+        read: list[int] = []
+
+        def timeline(slug: str, number: int) -> list[dict]:
+            read.append(number)
+            return []
+
+        hits = [_issue("a/big", n, f"2026-09-{n:02d}") for n in range(1, 11)]
+        result = discover(
+            ["a/big"], data_root=self.root, since="2026-07-01",
+            search=lambda query: hits, timeline=timeline,
+            per_repository=3, spacing_seconds=0,
+        )
+
+        self.assertEqual(sorted(read), [8, 9, 10])
+        self.assertEqual([row["number"] for row in result["issues"]], [10, 9, 8])
+
     def test_an_unanswered_batch_is_reported_not_counted_as_empty(self) -> None:
         # The scratch search printed "0 from 7 repos" for a batch it could
         # not reach. Mailman #384.
