@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 
 from mailman.discover import (
@@ -144,6 +145,48 @@ class DiscoverTests(unittest.TestCase):
 
         self.assertEqual(sorted(read), [8, 9, 10])
         self.assertEqual([row["number"] for row in result["issues"]], [10, 9, 8])
+
+    def test_an_issue_claimed_in_a_comment_is_dropped(self) -> None:
+        # streamlit#17216 and deepagents#6401 were listed, then refused by
+        # prescreen as unacknowledged-claim. Mailman #396.
+        def timeline(slug: str, number: int) -> list[dict]:
+            if number == 5:
+                return [{"event": "commented", "author_association": "NONE",
+                         "user": {"login": "someone", "type": "User"},
+                         "created_at": datetime.now(UTC).isoformat(),
+                         "body": "I'd like to work on this, can I take it?"}]
+            if number == 7:
+                return [{"event": "commented", "author_association": "NONE",
+                         "user": {"login": "old", "type": "User"},
+                         "created_at": "2025-01-01T00:00:00Z",
+                         "body": "I'll work on this."}]
+            return []
+
+        result = discover(
+            ["a/one"], data_root=self.root, since="2026-07-01",
+            search=lambda query: [_issue("a/one", 5, "2026-09-01"), _issue("a/one", 7, "2026-09-02")],
+            timeline=timeline, spacing_seconds=0,
+        )
+
+        self.assertEqual([row["number"] for row in result["issues"]], [7])
+        self.assertEqual(result["claimed"], {"a/one#5": ["comment by @someone"]})
+
+    def test_a_reporter_offering_a_fix_in_the_report_has_claimed_it(self) -> None:
+        # streamlit#17216's only claim was in the report. Mailman #396.
+        offered = _issue("a/one", 5, "2026-09-01") | {
+            "author_association": "NONE",
+            "user": {"login": "reporter", "type": "User"},
+            "created_at": datetime.now(UTC).isoformat(),
+            "body": "Steps to reproduce below. I'm happy to submit a PR for this.",
+        }
+        result = discover(
+            ["a/one"], data_root=self.root, since="2026-07-01",
+            search=lambda query: [offered, _issue("a/one", 9, "2026-09-02")],
+            timeline=lambda slug, number: [], spacing_seconds=0,
+        )
+
+        self.assertEqual([row["number"] for row in result["issues"]], [9])
+        self.assertEqual(result["claimed"], {"a/one#5": ["comment by @reporter"]})
 
     def test_an_unread_timeline_is_reported_not_counted_as_unclaimed(self) -> None:
         # A failed timeline read found no rivals and listed the issue as a

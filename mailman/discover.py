@@ -21,11 +21,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from mailman.claims import rival_pull_requests
+from mailman.claims import _row as claim_row
+from mailman.claims import classify_thread, rival_pull_requests
 from mailman.hunt import maintainer_engaged
 from mailman.maintainers import MAINTAINER_ASSOCIATIONS
 from mailman.prescreen import load_prescreen
 from mailman.screen import load_screen, refusal_stands
+from mailman.targeting import claim_is_stale
 
 #: The tracked list of recognizable Python repositories, one slug per line.
 REPOSITORIES_FILE = Path(__file__).with_name("discover-repos.txt")
@@ -119,6 +121,15 @@ def _row(item: dict[str, Any]) -> dict[str, Any]:
         "labels": [label.get("name", "") for label in item.get("labels") or []],
         "engaged": item.get("author_association") in MAINTAINER_ASSOCIATIONS,
         "_author": (item.get("user") or {}).get("login"),
+        # The report is the reporter's first comment: "I can send a PR" in
+        # the body claims the work as a later comment would. Mailman #396.
+        "_report": {
+            "event": "commented",
+            "user": item.get("user"),
+            "author_association": item.get("author_association"),
+            "body": item.get("body"),
+            "created_at": item.get("created_at"),
+        },
     }
 
 
@@ -222,7 +233,7 @@ def discover(
                 progress(f"timelines {index}/{len(rows)}")
             events = timeline(row["repository"], row["number"])
             name = f"{row['repository']}#{row['number']}"
-            rivals = rival_pull_requests(events)
+            rivals = rival_pull_requests(events) + comment_claims([row["_report"], *(events or [])])
             if events is None:
                 unread.append(name)
             elif rivals:
@@ -235,6 +246,7 @@ def discover(
     # answered or labelled comes first. Mailman #393.
     for row in rows:
         row.pop("_author", None)
+        row.pop("_report", None)
     rows.sort(key=lambda row: row["created_at"], reverse=True)
     rows.sort(key=lambda row: not row["engaged"])
     return {
@@ -271,6 +283,26 @@ def gh_search(executable: str = "gh", timeout_seconds: float = 60, retries: int 
         return None
 
     return search
+
+
+def comment_claims(events: list[dict[str, Any]] | None) -> list[str]:
+    """Live "I'll take this" comments and maintainer handovers on a timeline.
+
+    The same rules prescreen's claims stage blocks on: a stale outsider claim
+    no longer holds the issue. Mailman #396.
+    """
+    comments = [
+        event for event in events or []
+        if isinstance(event, dict) and event.get("event") == "commented"
+    ]
+    holders: list[str] = []
+    for comment, kind in zip(comments, classify_thread(comments)):
+        if kind == "assignment" or (
+            kind == "claim" and not claim_is_stale(claim_row(comment))
+        ):
+            login = (comment.get("user") or comment.get("actor") or {}).get("login")
+            holders.append(f"comment by @{login}")
+    return holders
 
 
 def gh_timeline(executable: str = "gh", timeout_seconds: float = 60) -> Timeline:
