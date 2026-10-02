@@ -434,6 +434,11 @@ opening the local packet URL during this session; visual state is unverified.
     windows-latest; the operator asked for a re-run at 09:44 UTC. xarray#11637 fails only the
     Windows `test_distributed` timeout; waiting on the maintainer after our 2026-09-30 reply.
     pretix#6564 stays parked on the CLA.
+- Re-read 2026-10-02 (`mailman hunt watch`, `mailman contributions --refresh`): counts unchanged
+  from the 2026-10-01 15:20 UTC entry (37 filed, 10 merged, 7 closed unmerged, 20 open).
+  - beets#7065 and xarray#11637 went `attention` -> `ok`: the merges of the base branch (`3a935d6`,
+    `f5e7bfa`) are on the PR heads and both read `blocked` (awaiting review), no longer `dirty`.
+    xarray's Windows `test_distributed` and `Test Results` checks no longer fail.
 - Re-read 2026-10-02 (`mailman hunt watch`, `mailman contributions --refresh`, each change
   checked with `gh`; unattended `pr-followup` run): 38 filed (awkward#4398 is newly watched).
   Merged 10, closed unmerged 7, open 21. No new merge or close since the 2026-10-01 entry.
