@@ -294,6 +294,53 @@ def _write_untriaged_claims(directory: Path) -> None:
     )
 
 
+def _write_assignment_record(directory: Path, assignees: list[str]) -> None:
+    (directory / TARGET_INTEL_FILENAME).write_text(
+        json.dumps({"success": True, "assessment": {
+            "merge_path_rows_read": 3,
+            "merges_whose_author_held_the_assignment": 3,
+            "assignment_looks_required": True,
+        }}),
+        encoding="utf-8",
+    )
+    (directory / CLAIMS_FILENAME).write_text(
+        json.dumps({"assignees": assignees}), encoding="utf-8"
+    )
+
+
+class AssignmentGateTests(unittest.TestCase):
+    """semantica#1846: every outside merge held the assignment; SEND still passed. #399"""
+
+    def _load(self, directory: Path, recommendation: str):
+        data = copy.deepcopy(VALID)
+        data["recommendation"] = recommendation
+        (directory / DECISION_FILENAME).write_text(json.dumps(data), encoding="utf-8")
+        return load_decision(directory)
+
+    def test_send_on_an_unassigned_issue_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            _write_assignment_record(directory, [])
+            with self.assertRaises(DecisionError) as caught:
+                self._load(directory, "SEND")
+
+        problems = " ".join(caught.exception.problems)
+        self.assertIn("3 of 3", problems)
+        self.assertIn("ASK", problems)
+
+    def test_hold_on_an_unassigned_issue_stands(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            _write_assignment_record(directory, [])
+            self.assertEqual(self._load(directory, "HOLD").recommendation, "HOLD")
+
+    def test_send_once_the_issue_is_assigned_stands(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            _write_assignment_record(directory, ["wolfgang-aura"])
+            self.assertEqual(self._load(directory, "SEND").recommendation, "SEND")
+
+
 class UntriagedIssueGateTests(unittest.TestCase):
     """skfolio#316: the warning went to a terminal; the page said zero questions."""
 

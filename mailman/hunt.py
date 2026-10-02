@@ -1211,6 +1211,16 @@ PERSONAL_REVIEW_ACTION = (
 )
 
 
+ASSIGNMENT_CODE = "needs-maintainer-assignment"
+
+
+def _recommends(directory: Path) -> str | None:
+    try:
+        return load_decision(directory).recommendation
+    except DecisionError:
+        return None
+
+
 def ask_ready(run, directory: Path, decision, action, warnings: list) -> dict:
     """Readiness for an ask-first candidate: verified, with an offer to approve.
 
@@ -1356,7 +1366,14 @@ def next_action(directory: Path) -> dict:
     # is checked; it counts as ready and names the rewrite.
     # https://github.com/wolfgang-aura/Mailman/issues/181
     own_words = submission.get("blocking_codes") == [OWN_WORDS]
-    if ((not submission.get("ready") and not own_words)
+    # The ask-first offer is how an unassigned issue gets assigned; the block
+    # it would clear cannot also stop it. Mailman #399.
+    asks_for_assignment = (
+        set(submission.get("blocking_codes") or []) <= {ASSIGNMENT_CODE, OWN_WORDS}
+        and ASSIGNMENT_CODE in (submission.get("blocking_codes") or [])
+        and _recommends(directory) == "ASK"
+    )
+    if ((not submission.get("ready") and not own_words and not asks_for_assignment)
             or submission.get("diff_sha256") != hashlib.sha256(exported_diff.read_text(encoding="utf-8").encode("utf-8")).hexdigest()):
         return action("submission", f"mailman prepare-submission {run.run_id} --policy POLICY.json",
                       "; ".join(submission.get("blocking_codes", [])))

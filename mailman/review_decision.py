@@ -73,7 +73,7 @@ _COMMIT_WORD = re.compile(r"\b[0-9a-f]{7,40}\b")
 #: the choice he is picking.
 OPTION_LABELS = "ABCDEFGH"
 
-from mailman.claims import triage_warning
+from mailman.claims import load_claims, triage_warning
 from mailman.target_intel import load_target_intel
 
 UNTRIAGED_GATE = "untriaged-issue"
@@ -570,8 +570,12 @@ def load_decision(
         affirmed |= {claim["text"] for claim in _affirmed_claims(body, affirmed_lines)}
     except ValueError as error:
         raise DecisionError([str(error)], path) from None
-    problem = untriaged_problem(Path(run_directory), decision) or body_claim_problem(
-        Path(run_directory), decision, body=body, affirmed=affirmed
+    problem = (
+        untriaged_problem(Path(run_directory), decision)
+        or assignment_problem(Path(run_directory), decision)
+        or body_claim_problem(
+            Path(run_directory), decision, body=body, affirmed=affirmed
+        )
     )
     if problem:
         raise DecisionError([problem], path)
@@ -632,6 +636,32 @@ def body_claim_problem(
     return (
         f"{where} makes a claim only the human filing it can make true; "
         "handoff will refuse it. Remove it, or recommend something other than SEND."
+    )
+
+
+def assignment_problem(run_directory: Path, decision: Decision) -> str | None:
+    """Why SEND cannot stand: the target merges only assigned work and nobody holds this issue.
+
+    semantica#1846: target-intel said every outside merge held the issue's
+    assignment first and CONTRIBUTING said to wait for it, yet SEND validated
+    on an unassigned issue. Mailman #399. Not seeded as a question: a blocking
+    question would also stop the ASK path, which is the way through.
+    """
+    if decision.recommendation != "SEND":
+        return None
+    assessment = (load_target_intel(run_directory) or {}).get("assessment") or {}
+    if not assessment.get("assignment_looks_required"):
+        return None
+    claims = load_claims(run_directory) or {}
+    if claims.get("assignees"):
+        return None
+    held = assessment.get("merges_whose_author_held_the_assignment", 0)
+    read = assessment.get("merge_path_rows_read", 0)
+    return (
+        f"target-intel: {held} of {read} outside merge(s) read held the linked "
+        "issue's assignment first, and this issue has no assignee. A pull request "
+        "opened now is closed as unassigned. Recommend ASK with an offer comment "
+        "asking to be assigned, or HOLD."
     )
 
 

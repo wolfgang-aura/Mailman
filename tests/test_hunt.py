@@ -227,6 +227,20 @@ class HuntTests(OrchestratorHarness):
         self.assertFalse(finished["complete"])
         self.assertEqual(finished["ready_to_ask"], 1)
 
+    def test_an_assignment_block_does_not_stop_the_ask_that_clears_it(self):
+        """Mailman #399: semantica merges only assigned work, so the offer asks for it."""
+        hunt = self.new_hunt()
+        directory = self.ask_ready_run()
+        path = directory / "submission" / "submission.json"
+        submission = json.loads(path.read_text(encoding="utf-8"))
+        submission.update(ready=False, blocking_codes=["needs-maintainer-assignment"])
+        path.write_text(json.dumps(submission), encoding="utf-8")
+        add_run(self.data_root, hunt, directory.name)
+
+        row = status(self.data_root, hunt)["runs"][0]
+
+        self.assertEqual(row["disposition"], "READY_TO_ASK")
+
     def test_no_checkpoint_is_written_when_nothing_is_ready(self):
         hunt = self.new_hunt(2)
         run, _ = self.make_run()
