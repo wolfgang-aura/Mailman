@@ -434,6 +434,16 @@ opening the local packet URL during this session; visual state is unverified.
     windows-latest; the operator asked for a re-run at 09:44 UTC. xarray#11637 fails only the
     Windows `test_distributed` timeout; waiting on the maintainer after our 2026-09-30 reply.
     pretix#6564 stays parked on the CLA.
+- Re-read 2026-10-02 afternoon (`mailman hunt watch`, `mailman contributions --refresh`, heads
+  checked with `gh pr view`): nothing new upstream since 03:10 UTC; counts unchanged.
+  - sqlmesh#6105: revision `d9cae3b5` and the review reply went out 2026-10-02 03:10 UTC. Waiting on
+    mday-io.
+  - solara#1215: `widgetti/solara` PR 1221 by another contributor opened 2026-10-01 23:44 UTC, nine
+    hours after ours, for the same issue. Ours stands; nothing posted.
+  - openalgo#2021 (same Windows timing run, no re-run yet) and pymc#8442 (approved, red only in
+    untouched files, #372) still read `attention`; neither needs work from us.
+  - `contributions --refresh` exited 1 on every run because ffn#328 read `unknown` despite a
+    recorded `superseded_by`. Fixed by #388.
 - Re-read 2026-10-02 later (`mailman hunt watch`, `mailman contributions --refresh`; unattended
   `pr-followup` run): counts unchanged. One row moved.
   - sqlmesh#6105: mday-io reviewed (commented) and merged main into the branch (`2291c5d`). He asked
