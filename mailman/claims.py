@@ -225,6 +225,10 @@ _DECLINED = re.compile(
     # Mailman #319.
     r"|(?:the )?behaviou?r (?:i'd|i would|we'd|we would) expect\b"
     r"|rather than a bug\b"
+    # Pyomo#3998: "is not being actively maintained or developed ... has been
+    # superseded by". Mailman #386.
+    r"|(?:is|are) (?:no longer|not) (?:being )?(?:actively )?(?:maintained|developed)"
+    r"|(?:has|have) been superseded by"
     r")",
     re.IGNORECASE,
 )

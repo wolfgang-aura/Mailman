@@ -1493,6 +1493,18 @@ class MaintainerDisputeTests(unittest.TestCase):
             maintainer_dispute([self._comment("This works as designed.")])
         )
 
+    def test_an_unmaintained_superseded_component_is_a_decline(self):
+        # Pyomo#3998, blnicho (MEMBER), verbatim. Mailman #386.
+        from mailman.claims import maintainer_declines
+
+        self.assertTrue(maintainer_declines([self._comment(
+            "Thank you for the detailed bug report. Unfortunately, this issue "
+            "isn't surprising as `pyomo.kernel` is not being actively "
+            "maintained or developed and the `appsi_highs` solver interface "
+            "has been superseded by the `highs` solver available in the new "
+            "solver interfaces in `contrib.solver`."
+        )]))
+
     def test_a_stated_reason_for_not_doing_it_is_a_decline(self):
         # docling#3528, cau-git (MEMBER). Mailman #234.
         from mailman.claims import maintainer_declines

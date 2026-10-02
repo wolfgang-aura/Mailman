@@ -34,3 +34,23 @@ pallets-eco/flask-sqlalchemy pallets-eco/wtforms pallets/quart
 sqlfluff/sqlfluff tobymao/sqlglot ibis-project/ibis
 asottile/pyupgrade asottile/reorder-python-imports regebro/tzlocal
 python-humanize/humanize jd/tenacity grantjenks/python-diskcache
+
+# Added 2026-10-02 (Mailman #384 follow-up)
+python-poetry/poetry
+Kludex/starlette
+fastapi/fastapi
+pydata/xarray
+vega/altair
+wntrblm/nox
+fastapi/sqlmodel
+ipython/ipython
+iterative/dvc
+unionai-oss/pandera
+tqdm/tqdm
+pexpect/pexpect
+jazzband/django-debug-toolbar
+encode/django-rest-framework
+getsentry/sentry-python
+python/mypy
+executablebooks/jupyter-book
+pydantic/pydantic-settings
