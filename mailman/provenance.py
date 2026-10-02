@@ -884,13 +884,25 @@ def _read_closure(
 
     A settled reason is not re-read: what closed the pull request does not
     change, and each reading costs several API calls. An `unknown` one is
-    read again on every refresh until it settles.
+    read again on every refresh until it settles. A superseding pull request
+    the operator recorded settles it without a reading: a run that names no
+    issue can never be classified any other way.
+    https://github.com/wolfgang-aura/Mailman/issues/388
     """
     if (record.get("state") or "").upper() != "CLOSED":
         return None
     existing = record.get("closure")
     if isinstance(existing, dict) and existing.get("reason") not in {None, CLOSURE_UNKNOWN}:
         return existing
+    superseded_by = record.get("superseded_by")
+    if superseded_by:
+        return {
+            "reason": CLOSURE_SUPERSEDED,
+            "detail": f"the operator recorded #{superseded_by} as superseding it",
+            "pull_request": superseded_by,
+            "url": f"https://github.com/{slug}/pull/{superseded_by}",
+            "checked_at": (now or datetime.now(UTC)).isoformat(),
+        }
     closure = dict(
         closure_lookup(
             slug,

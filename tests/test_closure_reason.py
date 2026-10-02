@@ -21,6 +21,7 @@ from mailman.provenance import (
     closure_counts,
     contribution_from_record,
     load_provenance,
+    provenance_path,
     refresh_state,
     render_contributions,
 )
@@ -306,6 +307,28 @@ class ClosureRefreshTests(unittest.TestCase):
             self.assertEqual(
                 load_provenance(run_directory)["closure"]["reason"], "closed-silently"
             )
+
+    def test_a_recorded_superseding_pull_request_settles_the_closure(self) -> None:
+        # pmorissette/ffn#328 names no issue, so the lookup can only answer
+        # unknown; the operator's superseded_by is the answer.
+        # https://github.com/wolfgang-aura/Mailman/issues/388
+        with TemporaryDirectory() as name:
+            run_directory = _filed_run(Path(name), "20260907T173348Z-003915", 3884)
+            path = provenance_path(run_directory)
+            record = json.loads(path.read_text(encoding="utf-8"))
+            record["superseded_by"] = 330
+            path.write_text(json.dumps(record), encoding="utf-8")
+            never = _Lookup("unknown")
+
+            _, failure = refresh_state(
+                run_directory, state_lookup=_pdm_closed, closure_lookup=never
+            )
+
+            self.assertIsNone(failure)
+            self.assertEqual(never.calls, [])
+            closure = load_provenance(run_directory)["closure"]
+            self.assertEqual(closure["reason"], "superseded-by-pr")
+            self.assertEqual(closure["pull_request"], 330)
 
     def test_an_open_pull_request_has_no_closure(self) -> None:
         with TemporaryDirectory() as name:
