@@ -62,6 +62,14 @@ class DiscoverTests(unittest.TestCase):
         self.assertEqual(len(slugs), len({slug.lower() for slug in slugs}))
         self.assertTrue(all(slug.count("/") == 1 for slug in slugs))
 
+    def test_the_option_takes_a_slug_list_as_well_as_a_file(self) -> None:
+        # The help says "a slug list"; a comma list crashed as a missing file. #403
+        self.assertEqual(read_repository_list("a/b, c/d,A/B"), ["a/b", "c/d"])
+        with tempfile.TemporaryDirectory() as directory:
+            listed = Path(directory) / "repos.txt"
+            listed.write_text("e/f  # comment\n\ng/h\n", encoding="utf-8")
+            self.assertEqual(read_repository_list(str(listed)), ["e/f", "g/h"])
+
     def test_batches_fit_the_query_limit(self) -> None:
         slugs = [f"owner{index}/repository{index}" for index in range(30)]
         batches = query_batches(slugs)

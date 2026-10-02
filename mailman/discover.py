@@ -51,11 +51,17 @@ Search = Callable[[str], "list[dict[str, Any]] | None"]
 Timeline = Callable[[str, int], "list[dict[str, Any]] | None"]
 
 
-def read_repository_list(path: Path) -> list[str]:
-    """Slugs from a list file, comments and blank lines skipped, order kept."""
+def read_repository_list(path: Path | str) -> list[str]:
+    """Slugs from a list file, comments and blank lines skipped, order kept.
+
+    A string that names no file is the list itself, comma or space separated
+    (#403).
+    """
     seen: set[str] = set()
     slugs: list[str] = []
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    text = (Path(path).read_text(encoding="utf-8") if Path(path).is_file()
+            else str(path).replace(",", " "))
+    for raw in text.splitlines():
         for slug in raw.split("#", 1)[0].split():
             key = slug.lower()
             if key not in seen:

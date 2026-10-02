@@ -828,8 +828,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     discover_parser.add_argument("--days", type=int, default=90,
                                  help="only reports opened in the last N days (default 90)")
-    discover_parser.add_argument("--repositories", type=Path,
-                                 help="a slug list to search instead of the tracked one")
+    discover_parser.add_argument("--repositories",
+                                 help="a list file, or comma-separated slugs, to search "
+                                      "instead of the tracked list")
     discover_parser.add_argument("--exclude", action="append", default=[],
                                  help="a slug to skip; repeatable")
     discover_parser.add_argument("--per-repository", type=int, default=5,
