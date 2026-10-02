@@ -960,6 +960,52 @@ class PrescreenTests(unittest.TestCase):
             [row["number"] for row in record["stale_attempts"]], [6328]
         )
 
+    def test_another_repositorys_number_is_not_a_citation(self) -> None:
+        # heretic#465 was refused as already-fixed-upstream over a Dependabot
+        # bump whose release notes linked tox-dev/filelock#465. Mailman #397.
+        payload = json.dumps(
+            [
+                {
+                    "number": 269,
+                    "title": "build(deps): bump filelock from 3.20.0 to 3.20.3",
+                    "body": (
+                        '<li>Fix in <a href="https://redirect.github.com/tox-dev/filelock/pull/7">'
+                        "tox-dev/filelock#7</a></li>\n"
+                        '<li>Fix (<a href="https://redirect.github.com/tox-dev/py-filelock/issues/7">'
+                        "#7</a>)</li>\n"
+                        "See [#7](https://github.com/other/repo/issues/7) and other/repo#7."
+                    ),
+                    "state": "MERGED",
+                    "url": "https://github.com/example/project/pull/269",
+                    "createdAt": "2026-04-04T02:41:49Z",
+                    "updatedAt": "2026-04-04T02:54:08Z",
+                    "isDraft": False,
+                },
+                {
+                    "number": 270,
+                    "title": "Fix the prefix wording",
+                    "body": "Closes https://github.com/example/project/issues/7 and example/project#7",
+                    "state": "OPEN",
+                    "url": "https://github.com/example/project/pull/270",
+                    "createdAt": "2026-07-01T11:55:00Z",
+                    "updatedAt": "2026-07-01T11:56:50Z",
+                    "isDraft": False,
+                },
+            ]
+        )
+        prescreen_issue(self.root, "example/project#7", executable=self.stub(payload))
+        directory = prescreen_directory(self.root, "example/project", 7)
+        search = json.loads(
+            (directory / "duplicate-search.json").read_text(encoding="utf-8")
+        )
+        narrow = {
+            row["number"]: row["references_issue"]
+            for row in search["matches"]
+            if "narrow" in row.get("methods", [])
+        }
+        self.assertEqual(narrow.get(269), False)
+        self.assertEqual(narrow.get(270), True)
+
     def test_the_verdict_lands_beside_the_repository_screens(self) -> None:
         prescreen_issue(self.root, "example/project#7", executable=self.stub("[]"))
         path = prescreen_path(self.root, "example/project", 7)

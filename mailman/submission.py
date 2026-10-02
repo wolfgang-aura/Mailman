@@ -1742,17 +1742,44 @@ def _compact_matches(
     return rows
 
 
-def _references_issue(text: str, issue_number: int | None) -> bool:
+_REPOSITORY_URL = r"(?:https?://)?(?:[\w-]+\.)?github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/\d+"
+#: A link whose target is an issue or pull request URL, anchor text included:
+#: the text of a link to another repository is that repository's number.
+_LINKED_REFERENCE = re.compile(
+    rf"<a\s[^>]*href=\"{_REPOSITORY_URL}[^\"]*\"[^>]*>.*?</a>"
+    rf"|\[[^\]]*\]\({_REPOSITORY_URL}[^)]*\)"
+    rf"|{_REPOSITORY_URL}",
+    re.IGNORECASE | re.DOTALL,
+)
+_QUALIFIED_REFERENCE = re.compile(r"(?<![\w./-])([\w.-]+/[\w.-]+)#\d+")
+
+
+def _without_foreign_references(text: str, repository: str) -> str:
+    """Drop references that name another repository. Mailman #397."""
+    def keep_own(match: re.Match[str]) -> str:
+        named = next((group for group in match.groups() if group), "")
+        return match.group(0) if named.lower() == repository.lower() else " "
+
+    text = _LINKED_REFERENCE.sub(keep_own, text)
+    return _QUALIFIED_REFERENCE.sub(keep_own, text)
+
+
+def _references_issue(
+    text: str, issue_number: int | None, repository: str = ""
+) -> bool:
     """Does this text cite the issue, as a reference and not as a bare number?
 
     GitHub's search tokenises `#6327` to `6327`, so the narrow query for
     pretix#6327 returned a 2018 pull request whose comment log carried
     `django.po:6327:`. A line number, a byte count or a version is not a
     citation. Only the forms people write for one are: `#N`, `GH-N`,
-    `issues/N`, `pull/N`, `issue N`.
+    `issues/N`, `pull/N`, `issue N`. Nor is another repository's number:
+    a Dependabot bump quoting `tox-dev/filelock#465` refused heretic#465.
     """
     if issue_number is None or not text:
         return False
+    if repository:
+        text = _without_foreign_references(text, repository)
     return bool(
         re.search(
             rf"(?:#|GH-|issues/|pull/|issue\s+|pull\s+request\s+){issue_number}(?![0-9])",
@@ -2323,7 +2350,7 @@ def record_duplicate_search(
                     text = " ".join(
                         str(entry.get(field) or "") for field in ("title", "body")
                     )
-                    cited = _references_issue(text, issue_number)
+                    cited = _references_issue(text, issue_number, slug)
                     # A hit that does not cite the issue matched on the
                     # symbols alone, so the `#N` term is not among its
                     # matched terms and `duplicate_is_related` reads it as
