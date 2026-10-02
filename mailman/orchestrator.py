@@ -1039,9 +1039,48 @@ class _Orchestration:
             "specific question remains.\n\n"
             f"```diff\n{diff or 'No tracked diff. Check the changed-path list for new files.'}\n```\n"
         )
+        candidate += self._lint_briefing()
         return self._write_derived_prompt(
             "review-input.md",
             f"{source}{candidate}\n{notice}{sandbox}{_VERDICT_CONTRACT}",
+        )
+
+    def _lint_briefing(self) -> str:
+        """The target's own linters on the candidate, new findings only.
+
+        prepare-submission runs the same check after approval, where a fix
+        changes the approved bytes and costs a second review (#401). Read
+        here, a failure is a REVISE inside the run's one revision.
+        """
+        from mailman.target_checks import TARGET_CHECK_TIMEOUT_SECONDS, run_lint
+
+        names = (
+            git_bytes(self.workspace, "diff", self.run.base_commit, "--name-only")
+            + b"\n"
+            + git_bytes(self.workspace, "ls-files", "--others", "--exclude-standard")
+        )
+        paths = [p for p in names.decode("utf-8", errors="replace").splitlines() if p]
+        if not paths:
+            return ""
+        try:
+            _, findings = run_lint(
+                self.run_directory,
+                workspace=self.workspace,
+                changed_paths=paths,
+                base_commit=self.run.base_commit,
+                timeout_seconds=self._remaining_timeout(
+                    TARGET_CHECK_TIMEOUT_SECONDS, "lint"
+                ),
+            )
+        except (OSError, ValueError) as error:
+            return f"\n## Target lint\n\nThe target's linters could not run: {error}\n"
+        failed = [f["detail"] for f in findings if f.get("code") == "lint-failed"]
+        if not failed:
+            return ""
+        return (
+            "\n## Target lint\n\nThe target's CI linters fail on lines this "
+            "candidate added. Return REVISE and name each finding, unless one is "
+            "plainly not the candidate's:\n\n" + "\n\n".join(failed) + "\n"
         )
 
     def _revision_prompt(self, findings: str) -> Path:

@@ -366,6 +366,32 @@ class EmptyCandidateTests(OrchestratorHarness):
         self.assertIn(str(run_directory / "scratch"), prompt)
         self.assertIs(outcome.status, RunStatus.ENGINEERING_COMPLETE)
 
+    def test_the_reviewer_reads_the_target_lint_findings_on_the_candidate(self) -> None:
+        # semantica#1846 (#401): black failed only in prepare-submission, after
+        # approval, and the reformat cost a second review.
+        failed = {
+            "code": "lint-failed",
+            "blocking": True,
+            "detail": "`black --check` exited 1: would reformat tests/test_x.py",
+        }
+        preexisting = {"code": "lint-preexisting", "blocking": False, "detail": "old"}
+        with patch(
+            "mailman.target_checks.run_lint", return_value=({}, [failed, preexisting])
+        ) as lint:
+            _, _, _, reviewer = self.orchestrate(
+                primary_script=[
+                    {"report": "candidate ready\n", "touch": ("fix.txt", "fixed\n")}
+                ],
+                reviewer_script=[{"report": APPROVED}],
+            )
+
+        prompt = reviewer.calls[0][1]
+        self.assertIn("would reformat tests/test_x.py", prompt)
+        section = prompt.split("## Target lint")[1].split("##")[0]
+        self.assertIn("Return REVISE", section)
+        self.assertNotIn("old", section)
+        self.assertIn("fix.txt", lint.call_args.kwargs["changed_paths"])
+
     def test_the_primary_receives_run_owned_scratch_outside_the_workspace(self) -> None:
         outcome, run_directory, primary, _ = self.orchestrate(
             primary_script=[
