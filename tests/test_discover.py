@@ -11,6 +11,7 @@ from mailman.discover import (
     read_repository_list,
     render_discovery,
 )
+from mailman.prescreen import prescreen_path
 from mailman.screen import (
     FRESHNESS_WINDOW_DAYS,
     ISSUE_WINDOW_DAYS,
@@ -156,6 +157,60 @@ class DiscoverTests(unittest.TestCase):
         self.assertEqual([row["number"] for row in result["issues"]], [9])
         self.assertEqual(result["unread_timelines"], ["a/one#5"])
         self.assertIn("TIMELINE NOT READ", render_discovery(result))
+
+    def test_a_maintainer_triaged_report_ranks_first_and_is_marked(self) -> None:
+        # A hunt counts only triaged runs; the coordinator filtered a
+        # 180-day list for them by hand. Mailman #393.
+        fresh = _issue("a/one", 9, "2026-09-20") | {"author_association": "NONE"}
+        commented = _issue("a/one", 5, "2026-09-01") | {"author_association": "NONE"}
+        labelled = _issue("a/one", 4, "2026-08-30") | {"author_association": "NONE"}
+        by_bot = _issue("a/one", 3, "2026-08-29") | {"author_association": "NONE"}
+        filed = _issue("a/one", 2, "2026-08-28")
+
+        def timeline(slug: str, number: int) -> list[dict]:
+            return {
+                5: [{"event": "commented", "author_association": "MEMBER"}],
+                4: [{"event": "labeled", "actor": {"login": "keeper", "type": "User"},
+                     "label": {"name": "P2"}}],
+                3: [{"event": "labeled", "actor": {"login": "triage[bot]", "type": "Bot"},
+                     "label": {"name": "bug"}}],
+            }.get(number, [])
+
+        result = discover(
+            ["a/one"], data_root=self.root, since="2026-07-01",
+            search=lambda query: [fresh, commented, labelled, by_bot, filed],
+            timeline=timeline, per_repository=10, spacing_seconds=0,
+        )
+
+        self.assertEqual([row["number"] for row in result["issues"]], [5, 4, 2, 9, 3])
+        self.assertEqual([row["engaged"] for row in result["issues"]],
+                         [True, True, True, False, False])
+        self.assertIn("3 triaged", render_discovery(result))
+
+    def test_an_issue_prescreen_rejected_is_dropped_before_its_timeline(self) -> None:
+        # Five of 14 triaged rows on 2026-10-02 were copier issues prescreen
+        # had already rejected. Mailman #394.
+        record = prescreen_path(self.root, "a/one", 5)
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps({
+            "verdict": "reject", "blocking": ["maintainer-disputed"],
+        }), encoding="utf-8")
+        read: list[int] = []
+
+        def timeline(slug: str, number: int) -> list[dict]:
+            read.append(number)
+            return []
+
+        result = discover(
+            ["a/one"], data_root=self.root, since="2026-07-01",
+            search=lambda query: [_issue("a/one", 5, "2026-09-01"), _issue("a/one", 9, "2026-09-02")],
+            timeline=timeline, spacing_seconds=0,
+        )
+
+        self.assertEqual(read, [9])
+        self.assertEqual([row["number"] for row in result["issues"]], [9])
+        self.assertEqual(result["rejected"], {"a/one#5": ["maintainer-disputed"]})
+        self.assertIn("rejected a/one#5", render_discovery(result))
 
     def test_an_unanswered_batch_is_reported_not_counted_as_empty(self) -> None:
         # The scratch search printed "0 from 7 repos" for a batch it could

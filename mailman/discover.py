@@ -21,6 +21,9 @@ from pathlib import Path
 from typing import Any
 
 from mailman.claims import rival_pull_requests
+from mailman.hunt import maintainer_engaged
+from mailman.maintainers import MAINTAINER_ASSOCIATIONS
+from mailman.prescreen import load_prescreen
 from mailman.screen import load_screen, refusal_stands
 
 #: The tracked list of recognizable Python repositories, one slug per line.
@@ -110,6 +113,8 @@ def _row(item: dict[str, Any]) -> dict[str, Any]:
         "comments": item.get("comments", 0),
         "author_association": item.get("author_association", ""),
         "labels": [label.get("name", "") for label in item.get("labels") or []],
+        "engaged": item.get("author_association") in MAINTAINER_ASSOCIATIONS,
+        "_author": (item.get("user") or {}).get("login"),
     }
 
 
@@ -145,6 +150,17 @@ def discover(
             continue
         progress(f"[{index}/{len(batches)}] {len(items)} from {len(batch)} repositories")
         rows.extend(_row(item) for item in items)
+    # A stored prescreen rejection stands; reading the timeline again only
+    # puts the issue back in front of the coordinator. Mailman #394.
+    rejected: dict[str, list[str]] = {}
+    unrejected = []
+    for row in rows:
+        record = load_prescreen(data_root, row["repository"], row["number"])
+        if isinstance(record, dict) and record.get("verdict") == "reject":
+            rejected[f"{row['repository']}#{row['number']}"] = list(record.get("blocking") or [])
+        else:
+            unrejected.append(row)
+    rows = unrejected
     rows.sort(key=lambda row: row["created_at"], reverse=True)
     kept_per: dict[str, int] = {}
     capped = []
@@ -172,11 +188,18 @@ def discover(
             elif rivals:
                 claimed[name] = rivals
             else:
+                row["engaged"] = row["engaged"] or maintainer_engaged(events, row["_author"])
                 kept.append(row)
         rows = kept
+    # A hunt counts only triaged runs, so a report a maintainer filed,
+    # answered or labelled comes first. Mailman #393.
+    for row in rows:
+        row.pop("_author", None)
     rows.sort(key=lambda row: row["created_at"], reverse=True)
+    rows.sort(key=lambda row: not row["engaged"])
     return {
         "claimed": claimed,
+        "rejected": rejected,
         "since": since,
         "searched": len(searched) - len(unsearched),
         "unsearched": unsearched,
@@ -236,15 +259,18 @@ def render_discovery(result: dict[str, Any]) -> str:
     for row in result["issues"]:
         labels = ",".join(row["labels"])[:40]
         lines.append(
-            f"  {row['repository'] + '#' + str(row['number']):44} {row['created_at']} "
+            f"{'*' if row.get('engaged') else ' '} {row['repository'] + '#' + str(row['number']):44} {row['created_at']} "
             f"c={row['comments']:<3} {row['author_association'][:4]:4} {labels:40} {row['title'][:70]}"
         )
     lines.append(
-        f"  {len(result['issues'])} issue(s) from {result['searched']} repositories searched; "
-        f"{len(result['skipped'])} skipped"
+        f"  {len(result['issues'])} issue(s), "
+        f"{sum(1 for row in result['issues'] if row.get('engaged'))} triaged (*), "
+        f"from {result['searched']} repositories searched; {len(result['skipped'])} skipped"
     )
     for name, rivals in sorted(result.get("claimed", {}).items()):
         lines.append(f"  claimed {name}: {', '.join(rivals)}")
+    for name, blocking in sorted(result.get("rejected", {}).items()):
+        lines.append(f"  rejected {name}: {', '.join(blocking) or 'prescreen'}")
     for slug, reason in sorted(result["skipped"].items()):
         if reason != "excluded":
             lines.append(f"  skipped {slug}: {reason}")

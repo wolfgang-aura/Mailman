@@ -787,6 +787,21 @@ _UNDECIDED_LABEL = re.compile(
 _REQUEST_LABEL = re.compile(r"(?i)enhancement|feature|documentation|\bdocs?\b|proposal")
 
 
+def maintainer_engaged(events: list, author: str | None) -> bool:
+    """A maintainer commented on the issue, or someone else labelled it."""
+    return any(
+        (event.get("event") == "commented"
+         and event.get("author_association") in MAINTAINER_ASSOCIATIONS)
+        or (event.get("event") == "labeled"
+            and (event.get("actor") or {}).get("login") not in (None, author)
+            # A labelling bot is not triage (#253).
+            and not _is_bot(event.get("actor"))
+            # `ai-review` only summons a triage bot (#267).
+            and not is_routing_label(str((event.get("label") or {}).get("name") or "")))
+        for event in events if isinstance(event, dict)
+    )
+
+
 def sweep_labels_admit(labels: list[str]) -> bool:
     """A defect label, or a maintainer's invitation on something not a request."""
     if any(_UNDECIDED_LABEL.search(label) for label in labels):
@@ -1001,17 +1016,7 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
             if source.get("state") == "closed"
             and not (source.get("pull_request") or {}).get("merged_at")
         }, key=_by_name)
-        row["engaged"] = any(
-            (event.get("event") == "commented"
-             and event.get("author_association") in MAINTAINER_ASSOCIATIONS)
-            or (event.get("event") == "labeled"
-                and (event.get("actor") or {}).get("login") not in (None, author)
-                # A labelling bot is not triage (#253).
-                and not _is_bot(event.get("actor"))
-                # `ai-review` only summons a triage bot (#267).
-                and not is_routing_label(str((event.get("label") or {}).get("name") or "")))
-            for event in events if isinstance(event, dict)
-        )
+        row["engaged"] = maintainer_engaged(events, author)
         kept.append(row)
     ordered = sorted(kept, key=lambda row: str(row["created_at"] or ""), reverse=True)
     ordered.sort(key=lambda row: (bool(row.get("prior_attempts")),
