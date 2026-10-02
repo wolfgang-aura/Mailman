@@ -465,6 +465,12 @@ opening the local packet URL during this session; visual state is unverified.
     datetime zarr tests pass. Push awaits the operator.
   - pymc#8442: ricardoV94 approved. Red checks are in `test_zarr.py` and `test_mcmc_external.py`,
     files the PR does not touch. Watch gap filed as #372. No work.
+- Re-read 2026-10-02 (`mailman hunt watch`, `mailman contributions --refresh`; unattended
+  `pr-followup` run, `gh pr view 1215`): one PR moved to merged.
+  - solara#1215: maartenbreddels merged 08:22 UTC (merge commit `dc83310`), calling the three red
+    integration jobs flaky and fixed on master. Record `docs/runs/0023-solara-1215-eleventh-merge.md`.
+    Fork delete awaits the operator.
+  - pretix#6564 read `attention` again (CLA check); parked, no work.
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
   It still exists and now carries the #1370 PR.
 
