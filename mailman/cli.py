@@ -2329,6 +2329,14 @@ def _pinned_agent_factory(
     return factory
 
 
+def _dirty_workspace(workspace: Path) -> str:
+    """The workspace's uncommitted changes, or "" when clean or not a git tree."""
+    if not (workspace / ".git").exists():
+        return ""
+    state = inspect_workspace(workspace)
+    return "" if state.clean else ", ".join(state.changes)
+
+
 def _resolve_workspace(run_directory: Path, given: Path | None) -> Path:
     """Fall back to the workspace `prepare-workspace` wrote for this run."""
     if given is not None:
@@ -3230,6 +3238,16 @@ def _reproduce(arguments: argparse.Namespace) -> int:
         base_commit=run.base_commit,
     )
     print(json.dumps(_reproduction_summary(record), indent=2))
+    dirty = _dirty_workspace(working_directory)
+    if dirty:
+        # orchestrate refuses a dirty workspace; say so now, not one launch later (#398).
+        print(
+            f"the workspace is not clean after reproducing: {dirty}. orchestrate "
+            "will refuse it. Keep reproducer files in the run directory, revert "
+            "what the command wrote, and rerun reproduce.",
+            file=sys.stderr,
+        )
+        return 4
     if record["reproduced"]:
         return 0
     # Failing here is the point: the run should stop rather than hand an

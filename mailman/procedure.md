@@ -291,7 +291,9 @@ and start the run with `init-run --defect-report PATH`.
    reproduces means replace the candidate. Mailman snapshots any workspace file
    named by the reproduction command. The primary must compare that exact source
    with the report before running a command; a semantic mismatch stops the run
-   before review or verification.
+   before review or verification. Save a new reproducer script in the run
+   directory, not the workspace: `reproduce` exits 4 on a dirty workspace
+   because `orchestrate` would refuse it.
 9. Use `build-prompts RUN_ID -- EXECUTABLE ARG ...` to record verification argv.
    Everything after `--` is run as a program, so it starts with an executable
    and carries no Mailman option; the CLI refuses the common mistakes but not

@@ -505,6 +505,28 @@ class ReproduceCliTests(unittest.TestCase):
             self.assertIn("prepare-workspace", stderr)
             self.assertIsNone(load_reproduction(run_directory))
 
+    def test_a_reproducer_left_in_the_workspace_fails_before_orchestrate_does(self) -> None:
+        # orchestrate refuses a dirty workspace; reproduce used to pass it on (#398).
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "runs"
+            run, run_directory = self._run(data_root)
+            workspace = run_directory / "workspace"
+            for command in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "base"]):
+                subprocess.run(
+                    ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(workspace), *command],
+                    check=True,
+                )
+            (workspace / "repro.py").write_text("raise SystemExit(1)\n", encoding="utf-8")
+            exit_code, _, stderr = self._reproduce(
+                ["reproduce", run.run_id, "--data-root", str(data_root),
+                 "--timeout", "60", "--", sys.executable, "repro.py"]
+            )
+            self.assertNotEqual(exit_code, 0)
+            self.assertIn("repro.py", stderr)
+            self.assertIn("run directory", stderr)
+
     def test_a_reproduction_without_an_environment_record_is_refused(self) -> None:
         """A reproduction against an unknown environment proves nothing.
 
