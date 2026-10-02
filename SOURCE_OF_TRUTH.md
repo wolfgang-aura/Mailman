@@ -434,6 +434,13 @@ opening the local packet URL during this session; visual state is unverified.
     windows-latest; the operator asked for a re-run at 09:44 UTC. xarray#11637 fails only the
     Windows `test_distributed` timeout; waiting on the maintainer after our 2026-09-30 reply.
     pretix#6564 stays parked on the CLA.
+- Re-read 2026-10-02 later (`mailman hunt watch`, `mailman contributions --refresh`; unattended
+  `pr-followup` run): counts unchanged. One row moved.
+  - sqlmesh#6105: mday-io reviewed (commented) and merged main into the branch (`2291c5d`). He asked
+    to drop the helper-level `_exchange_tables` test, assert the overwrite-level test's only `DROP`
+    is the temp table, and confirm `make style` and `make fast-test`. Test-only revision `d9cae3b5`
+    in the run workspace on top of his head; 35 clickhouse adapter tests pass, ruff clean. Push and
+    reply (`.mailman/drafts/sqlmesh-6105-review-reply.md`) await the operator.
 - Re-read 2026-10-02 (`mailman hunt watch`, `mailman contributions --refresh`): counts unchanged
   from the 2026-10-01 15:20 UTC entry (37 filed, 10 merged, 7 closed unmerged, 20 open).
   - beets#7065 and xarray#11637 went `attention` -> `ok`: the merges of the base branch (`3a935d6`,
