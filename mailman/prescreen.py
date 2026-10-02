@@ -756,12 +756,21 @@ def prescreen_issue(
     # stanza takes pull requests only against `dev`, 91 commits ahead of
     # `main`; a run pinned to `main` patches the wrong tree. Mailman #258.
     record["pull_request_base"] = pull_request_base(screen)
+    warnings: list[str] = []
     if screen and screen.get("success") and screen.get("verdict") != "pass":
-        issue_blocking.append(REPOSITORY_SCREEN_FAILED)
+        # A refusal read under older windows may not stand, and the hunt
+        # re-reads it before a run counts. The issue checks are cheaper than
+        # a re-screen, so they go first. Mailman #383.
+        if screen_is_current(screen):
+            issue_blocking.append(REPOSITORY_SCREEN_FAILED)
+        else:
+            warnings.append(
+                f"The screen of {slug} failed under older windows; run "
+                f"`mailman screen-target {slug} --refresh` before init-run."
+            )
     share = direct_push_share(screen)
     shortlisted = shortlist_engagement(screen, number)
     shortlist_engaged = bool(shortlisted and shortlisted["engaged"])
-    warnings: list[str] = []
     if estimate == TRIVIAL:
         if share is not None and share >= DIRECT_PUSH_LIMIT:
             issue_blocking.append(TRIVIAL_FIX_DIRECT_PUSH)

@@ -46,7 +46,12 @@ from mailman.prescreen import (
     prescreen_issue,
     prescreen_path,
 )
-from mailman.screen import screen_path
+from mailman.screen import (
+    FRESHNESS_WINDOW_DAYS,
+    ISSUE_WINDOW_DAYS,
+    RESPONSIVENESS_WINDOW_DAYS,
+    screen_path,
+)
 from mailman.shortlist import (
     MAINTAINER_INVITED,
     NO_LINKED_PR,
@@ -579,16 +584,24 @@ class PrescreenTests(unittest.TestCase):
 
         self.assertNotIn("issue-under-discussion", record.get("blocking", []))
 
-    def record_direct_push_share(self, share: float, verdict: str = "pass") -> None:
+    def record_direct_push_share(
+        self, share: float, verdict: str = "pass", current: bool = True
+    ) -> None:
         """Write the screen record the pre-screen reads the habit out of."""
         path = screen_path(self.root, "example/project")
         path.parent.mkdir(parents=True, exist_ok=True)
+        windows = {
+            "window_days": FRESHNESS_WINDOW_DAYS,
+            "issue_window_days": ISSUE_WINDOW_DAYS,
+            "responsiveness_days": RESPONSIVENESS_WINDOW_DAYS,
+        } if current else {}
         path.write_text(
             json.dumps(
                 {
                     "repository": "example/project",
                     "success": True,
                     "verdict": verdict,
+                    **windows,
                     "gates": [
                         {
                             "name": "direct-push",
@@ -667,6 +680,22 @@ class PrescreenTests(unittest.TestCase):
         self.assertIn(REPOSITORY_SCREEN_FAILED, record["blocking"])
         self.assertIn("screen-target example/project --refresh", record["next"])
         self.assertNotIn("duplicate_search", record)
+
+    def test_a_screen_failed_under_older_windows_only_warns(self) -> None:
+        # Six of eight prescreens on 2026-10-02 stopped on a stale refusal;
+        # pyvista's did not stand once re-read. Mailman #383.
+        self.record_direct_push_share(0.05, verdict="fail", current=False)
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub("[]", self.typo_issue()),
+        )
+
+        self.assertNotIn(REPOSITORY_SCREEN_FAILED, record["blocking"])
+        self.assertTrue(
+            any("screen-target example/project --refresh" in warning
+                for warning in record["warnings"])
+        )
 
     def test_a_trivial_fix_in_a_reviewed_repository_is_only_a_warning(self) -> None:
         self.record_direct_push_share(0.05)
