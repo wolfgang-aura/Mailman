@@ -838,6 +838,20 @@ def _build_parser() -> argparse.ArgumentParser:
     discover_parser.add_argument("--json", action="store_true")
     discover_parser.add_argument("--data-root", type=Path)
 
+    pool_parser = subparsers.add_parser(
+        "pool",
+        help="list unscreened top-PyPI repositories that merge outside pull requests",
+    )
+    pool_parser.add_argument("--top", type=int, default=3000,
+                             help="most-downloaded PyPI packages to map (default 3000)")
+    pool_parser.add_argument("--min-stars", type=int, default=500)
+    pool_parser.add_argument("--min-outside-authors", type=int, default=2,
+                             help="outside human authors merged in the last 30 days (default 2)")
+    pool_parser.add_argument("--output", type=Path,
+                             help="write the slug list here for discover --repositories")
+    pool_parser.add_argument("--json", action="store_true")
+    pool_parser.add_argument("--data-root", type=Path)
+
     identity_parser = subparsers.add_parser(
         "identity",
         help="show or set the author every run's commits are made under",
@@ -2784,6 +2798,37 @@ def _discover(arguments: argparse.Namespace) -> int:
     return 1 if result["unsearched"] or result["unread_timelines"] else 0
 
 
+def _pool(arguments: argparse.Namespace) -> int:
+    from mailman.discover import REPOSITORIES_FILE, read_repository_list, stderr_progress
+    from mailman.pool import (
+        build_pool, gh_graphql, pypi_project_urls, pypi_top_packages, render_pool,
+    )
+
+    data_root = (arguments.data_root or default_data_root()).resolve()
+    result = build_pool(
+        data_root=data_root,
+        top_packages=pypi_top_packages(),
+        project_urls=pypi_project_urls(),
+        graphql=gh_graphql(),
+        top=arguments.top,
+        # The tracked list is already what discover searches.
+        excluded=read_repository_list(REPOSITORIES_FILE),
+        min_stars=arguments.min_stars,
+        min_outside_authors=arguments.min_outside_authors,
+        progress=stderr_progress,
+    )
+    rendered = render_pool(result)
+    if arguments.output:
+        arguments.output.parent.mkdir(parents=True, exist_ok=True)
+        arguments.output.write_text(rendered, encoding="utf-8")
+    if arguments.json:
+        print(json.dumps(result, indent=2))
+    else:
+        _emit(rendered)
+    # An unread package or batch is not a dry pool. Mailman #409.
+    return 1 if result["unread"] else 0
+
+
 def _contributions(arguments: argparse.Namespace) -> int:
     data_root = (arguments.data_root or default_data_root()).resolve()
     failures: list[str] = []
@@ -3736,6 +3781,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _contributions(parsed)
         if parsed.subcommand == "discover":
             return _discover(parsed)
+        if parsed.subcommand == "pool":
+            return _pool(parsed)
         if parsed.subcommand == "identity":
             return _identity(parsed)
         if parsed.subcommand == "check-authors":

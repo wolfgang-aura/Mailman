@@ -62,6 +62,13 @@ or already-fixed label, and no cross-referenced pull request, that nobody has
 prescreened, engaged ones first. It exits non-zero when GitHub refused a read.
 Pre-screen its rows as usual (#226, #259).
 
+To find new repositories when the sweep is dry, run `mailman pool --output
+.mailman/scratch/pool.txt`, then `mailman discover --repositories
+.mailman/scratch/pool.txt`. The pool lists unscreened repositories behind the
+top PyPI packages that merged outside pull requests in the last 30 days, at
+about one GraphQL call per 40 repositories. It exits non-zero when a read
+failed (#409).
+
 A failed screen is not re-read on its own. When the gate's rules change, the
 `hunt targets` warning names the screens that failed only on responsiveness
 under older rules and whose stored numbers could pass now, most stars first.
