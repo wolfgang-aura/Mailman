@@ -389,7 +389,10 @@ refused before any stage runs (#222). It runs export-patch, prepare-submission,
 decision, finalize-review, the local commit of the exported paths,
 check-authors, handoff, handoff-check and review, and stops at the first
 failure with the stage name. Fix that finding and rerun it; finished stages
-are safe to repeat. A `policy-requires-own-words` finding alone, for the
+are safe to repeat. Before handing package to the operator, run `mailman body-check
+body.md [--affirm LINE]` until it exits 0; it runs handoff-check's body lints
+without a handoff, so a citation or first-person finding never costs the
+operator a round trip (#413). A `policy-requires-own-words` finding alone, for the
 current export, does not stop it (#181): the handoff then prints no publish
 command, `handoff-check` refuses with `own-words-pending`, and the review page
 names the rewrite. The rewrite is the operator's at filing approval: rewrite

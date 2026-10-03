@@ -1426,3 +1426,29 @@ class OfferHandoffTests(unittest.TestCase):
             self.assertEqual((made, checked), (0, 0), stream.getvalue())
             self.assertFalse((directory / HANDOFF_FILENAME).exists())
             self.assertTrue((directory / OFFER_HANDOFF_FILENAME).is_file())
+
+
+class BodyCheckCommandTests(unittest.TestCase):
+    """The body lints ran only inside package, which the agent cannot run, so
+    DOT's "RFC 7592 PUT" reached the operator before anyone saw it. #413."""
+
+    def check(self, text: str, *affirm: str) -> tuple[int, dict]:
+        with TemporaryDirectory() as directory:
+            body = Path(directory) / "body.md"
+            body.write_text(text, encoding="utf-8")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = main(["body-check", str(body), *affirm])
+        return code, json.loads(output.getvalue())
+
+    def test_an_unsourced_standard_fails_before_package(self) -> None:
+        code, result = self.check("Fix it.\n\nDCR POST and RFC 7592 PUT reject the URI.\n")
+        self.assertEqual(code, 1)
+        self.assertEqual(result["codes"], ["unsourced-specification-claims"])
+
+    def test_first_person_claims_fail_unless_affirmed(self) -> None:
+        code, result = self.check(CLAIMING_BODY)
+        self.assertEqual((code, result["codes"]), (1, ["first-person-claims"]))
+        line = result["first_person_claims"][0]["line"]
+        code, result = self.check(CLAIMING_BODY, "--affirm", str(line))
+        self.assertEqual((code, result["codes"]), (0, []))

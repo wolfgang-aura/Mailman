@@ -557,6 +557,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     handoff_check.add_argument("--data-root", type=Path)
 
+    body_check = subparsers.add_parser(
+        "body-check",
+        help="run handoff-check's body lints on a draft body without a handoff",
+    )
+    body_check.add_argument("body", type=Path)
+    body_check.add_argument("--affirm", type=int, action="append", default=[])
+
     prior_art = subparsers.add_parser(
         "prior-art",
         help="read earlier pull requests on this issue and put them in the prompts",
@@ -2145,6 +2152,32 @@ def _handoff_check(arguments: argparse.Namespace) -> int:
     )
     print(json.dumps(result, indent=2))
     return 0 if result["ok"] else 1
+
+
+def _body_check(arguments: argparse.Namespace) -> int:
+    # The lints otherwise run only inside package, which publishes and so is
+    # the operator's to run; a failure there cost a round trip. Mailman #413.
+    from mailman.handoff import first_person_claims, unsourced_specification_claims
+
+    text = arguments.body.read_text(encoding="utf-8")
+    claims = [
+        claim for claim in first_person_claims(text) if claim["line"] not in arguments.affirm
+    ]
+    unsourced = unsourced_specification_claims(text)
+    codes = [
+        code
+        for code, rows in (
+            ("first-person-claims", claims),
+            ("unsourced-specification-claims", unsourced),
+        )
+        if rows
+    ]
+    print(json.dumps({
+        "codes": codes,
+        "first_person_claims": claims,
+        "unsourced_specification_claims": unsourced,
+    }, indent=2))
+    return 1 if codes else 0
 
 
 def _export_patch(arguments: argparse.Namespace) -> int:
@@ -3747,6 +3780,8 @@ def main(arguments: list[str] | None = None) -> int:
             return _handoff(parsed)
         if parsed.subcommand == "handoff-check":
             return _handoff_check(parsed)
+        if parsed.subcommand == "body-check":
+            return _body_check(parsed)
         if parsed.subcommand == "package":
             return _package(parsed)
         if parsed.subcommand == "duplicate-search":
