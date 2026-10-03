@@ -1159,6 +1159,22 @@ def prepare_submission(
             base_commit=run.base_commit,
         )
     findings.extend(_touched_tests_findings(touched_tests))
+    # Added tests must fail without the source change, or they guard nothing
+    # (#410).
+    from mailman.guard import guard_findings, load_guard, run_guard
+    from mailman.prompts import load_recorded_verification
+
+    guard = load_guard(run_directory)
+    if guard is None or guard.get("diff_sha256") != diff_digest:
+        guard = run_guard(
+            run_directory,
+            diff=diff,
+            changed_paths=changed_paths,
+            workspace=touched_workspace,
+            base_commit=run.base_commit,
+            verification_command=load_recorded_verification(run_directory),
+        )
+    findings.extend(Finding(**entry) for entry in guard_findings(guard))
     # The target's own CI checks on changed files, so CI is not the first to
     # run them (#137, #120).
     from mailman.target_checks import (

@@ -470,6 +470,11 @@ sign-off in the filing approval request, because it certifies the DCO.
     RUN_ID --tool NAME --note "..."`, which is pinned to the exported diff and
     turns only `lint-not-run` non-blocking. A target with no linter
     configured has no finding. Each tool's outcome is under `lint.tools`.
+    It then runs the guard stage (#410): the test functions the diff adds,
+    with the base bytes of every changed source file put back. Every added
+    test passing at base is `new-tests-pass-at-base` and blocks; some passing
+    is a non-blocking `unguarded-tests`. Tighten those tests rather than
+    explaining them away. The record is `guard.json`.
 14. Write decision.json using `decision --init` and the schema in
     docs/review-page-standard.md. Keep evidence classes distinct. Questions
     must be genuine user choices, never tasks you can do. Use [] otherwise.
