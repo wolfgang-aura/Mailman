@@ -602,6 +602,49 @@ def _evidence_findings(
     return findings
 
 
+def _candidate_changed_findings(run: RunRecord, run_directory: Path) -> list[Finding]:
+    """A candidate edited after its last passing final verification blocks here.
+
+    `finalize-review` refuses the same thing, but `package` runs it last: a
+    django-oauth-toolkit run edited after review passed this stage and
+    `decision`, and the operator learned at `package`. Mailman #412.
+    """
+    from mailman.completion import candidate_digest
+
+    try:
+        orchestration = json.loads(
+            (run_directory / "orchestration.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return []
+    finals = [
+        step for step in orchestration.get("steps", [])
+        if step.get("name") == "verification:final" and step.get("ok")
+    ]
+    evidence = finals[-1].get("data", {}) if finals else {}
+    expected = evidence.get("candidate_digest")
+    workspace = evidence.get("workspace")
+    if not expected or not workspace or not run.base_commit:
+        return []
+    try:
+        actual = candidate_digest(Path(workspace), run.base_commit)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    if actual == expected:
+        return []
+    return [
+        Finding(
+            code="candidate-changed-since-review",
+            blocking=True,
+            detail=(
+                "the workspace changed after the last passing final verification, so "
+                "neither the review nor the verification covers these bytes. Run "
+                f"`mailman resume-review {run.run_id}` before packaging."
+            ),
+        )
+    ]
+
+
 def _touched_selection_changed(
     record: dict[str, Any], workspace: Path | None, changed_paths: list[str]
 ) -> bool:
@@ -1108,6 +1151,7 @@ def prepare_submission(
         )
     )
     findings.extend(_evidence_findings(run, verifications))
+    findings.extend(_candidate_changed_findings(run, run_directory))
     diff_digest = hashlib.sha256(diff.encode("utf-8")).hexdigest()
     touched_tests = load_touched_tests(run_directory)
     touched_workspace = resolve_workspace(run_directory, workspace)

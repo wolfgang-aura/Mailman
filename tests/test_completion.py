@@ -46,6 +46,24 @@ class CompletionTests(OrchestratorHarness):
         with self.assertRaisesRegex(ValueError, "candidate-changed"):
             finalize_review(directory)
 
+    def test_submission_blocks_a_candidate_edited_after_final_verification(self):
+        # DOT#1918's run passed prepare-submission and decision after an
+        # operator edit; only finalize-review inside package refused. #412.
+        from mailman.submission import prepare_submission
+        from tests.test_submission import SOURCE_DIFF, _policy
+        directory = self.completed()
+        run = load_run(directory.name, directory.parent)[0]
+
+        def codes():
+            record = prepare_submission(run, directory, diff=SOURCE_DIFF, policy=_policy(),
+                                        destination=directory / "submission", branch="main",
+                                        title="Fix fixture")
+            return record["blocking_codes"]
+
+        self.assertNotIn("candidate-changed-since-review", codes())
+        (self.workspace / "fix.txt").write_text("edited after verification", encoding="utf-8")
+        self.assertIn("candidate-changed-since-review", codes())
+
     def test_package_affirm_passes_decision_and_finalize_review(self):
         # #322 fixed the decision stage only: finalize-review read the decision
         # with no affirmations and refused the same line. Mailman #329.
