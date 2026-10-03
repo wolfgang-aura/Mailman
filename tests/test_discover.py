@@ -122,6 +122,26 @@ class DiscoverTests(unittest.TestCase):
         self.assertNotIn("a/closed", queries[0])
         self.assertIn("closed to outside pull requests", result["skipped"]["a/closed"])
 
+    def test_a_repository_with_our_open_pull_request_is_not_searched(self) -> None:
+        # Python-Markdown#1647 was offered while our pull request there was
+        # open; the hand list of open-PR repositories did not name it. #407.
+        data_root = self.root / "runs"
+        hunt = self.root / "hunts" / "h1" / "hunt.json"
+        hunt.parent.mkdir(parents=True)
+        hunt.write_text(json.dumps({"hunt_id": "h1", "runs": [{
+            "run_id": "r1", "target": "a/ours#1",
+            "filed": {"pr_url": "https://github.com/a/ours/pull/2", "pr_number": 2,
+                      "repository": "a/ours", "target": "a/ours#1"},
+        }]}), encoding="utf-8")
+        queries: list[str] = []
+        result = discover(
+            ["a/ours", "a/open"], data_root=data_root, since="2026-07-01",
+            search=lambda query: queries.append(query) or [], spacing_seconds=0,
+        )
+
+        self.assertNotIn("a/ours", queries[0])
+        self.assertIn("open pull request", result["skipped"]["a/ours"])
+
     def test_a_policy_refusal_under_older_windows_is_not_searched(self) -> None:
         # python/mypy refused AI-assisted work; discover listed it anyway.
         # Mailman #387.

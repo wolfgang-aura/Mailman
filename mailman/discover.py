@@ -23,7 +23,11 @@ from typing import Any
 
 from mailman.claims import _row as claim_row
 from mailman.claims import classify_thread, rival_pull_requests
-from mailman.hunt import closed_repositories, maintainer_engaged
+from mailman.hunt import (
+    closed_repositories,
+    maintainer_engaged,
+    open_pull_request_repositories,
+)
 from mailman.maintainers import MAINTAINER_ASSOCIATIONS
 from mailman.prescreen import load_prescreen
 from mailman.screen import load_screen, refusal_stands
@@ -78,6 +82,9 @@ def skipped_repositories(
     # A hunt dropped a run there because the project refuses our pull
     # requests; hunt targets already leaves it out (#300). Mailman #405.
     closed_keys = {slug.lower() for slug in closed_repositories(data_root)}
+    # One open pull request per repository, read from the filed record rather
+    # than a hand-kept list. Mailman #407.
+    open_keys = {slug.lower() for slug in open_pull_request_repositories(data_root)}
     skipped: dict[str, str] = {}
     for slug in slugs:
         if slug.lower() in excluded_keys:
@@ -85,6 +92,9 @@ def skipped_repositories(
             continue
         if slug.lower() in closed_keys:
             skipped[slug] = "a hunt dropped it as closed to outside pull requests"
+            continue
+        if slug.lower() in open_keys:
+            skipped[slug] = "our open pull request is there"
             continue
         screen = load_screen(data_root, slug)
         if (
