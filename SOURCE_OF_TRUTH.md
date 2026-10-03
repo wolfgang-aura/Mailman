@@ -482,6 +482,13 @@ opening the local packet URL during this session; visual state is unverified.
   - xarray#11637: `dirty` again after main moved; local merge `f77d712c` is clean, 8 datetime/timedelta
     append tests pass. Push awaits the operator.
   - openalgo#2021 (Windows timing flake), pymc#8442 (inherited red) and pretix#6564 (CLA, parked): no work.
+- Re-read 2026-10-03 later (`mailman hunt watch`; unattended `pr-followup` run, `contributions --refresh`
+  not run): 8 rows need work, 2 moved since 03:01 UTC. semantica#1869 is newly watched (filed 04:39 UTC,
+  `behind`, no review yet, no work). tqdm#1837 went from inherited to attention: pre-commit.ci fails
+  flake8 B018 in `benchmarks/benchmarks.py:20` and `tests/tests_tqdm.py:1201`, files our diff does not
+  touch (it changes contrib tests and discord/telegram); 3 of the 6 newest open tqdm PRs fail the same
+  check, so it is inherited again. beets#7065, markdown#1648 and xarray#11637 are unchanged and still
+  await push approval.
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
   It still exists and now carries the #1370 PR.
 
