@@ -666,6 +666,48 @@ def verification_marker(run_directory: Path) -> str | None:
     return None
 
 
+#: Options that say how pytest is configured, not what it runs. The value
+#: options take the next argument unless written `--name=value`.
+_SETTINGS_VALUE_OPTIONS = frozenset({
+    "--ds", "--dc", "-c", "--config-file", "--rootdir", "-p", "-o",
+    "--override-ini", "--import-mode", "--confcutdir",
+})
+_SETTINGS_FLAGS = frozenset({"--nomigrations", "--no-migrations", "--create-db", "--reuse-db"})
+
+
+def verification_settings(run_directory: Path) -> list[str]:
+    """The configuration options the run's recorded pytest verification passes.
+
+    django-oauth-toolkit sets DJANGO_SETTINGS_MODULE only in tox, so its
+    verification passed `--ds=tests.settings`; touched tests ran without it
+    and every file failed to import the conftest. The cache plugin option is
+    left to the caller, which chooses its own. Mailman #411.
+    """
+    try:
+        payload = json.loads((run_directory / "prompts.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    argv = payload.get("verification_command") if isinstance(payload, dict) else None
+    if not isinstance(argv, list) or "pytest" not in argv:
+        return []
+    arguments = [part for part in argv[argv.index("pytest") + 1:] if isinstance(part, str)]
+    kept: list[str] = []
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        name = argument.split("=", 1)[0]
+        if argument in _SETTINGS_VALUE_OPTIONS and index + 1 < len(arguments):
+            pair = [argument, arguments[index + 1]]
+            if pair != list(NO_CACHE):
+                kept += pair
+            index += 2
+            continue
+        if (name in _SETTINGS_VALUE_OPTIONS and "=" in argument) or argument in _SETTINGS_FLAGS:
+            kept.append(argument)
+        index += 1
+    return kept
+
+
 def deselects_for(run_directory: Path, paths: list[str]) -> list[str]:
     """The verification deselects whose test file is among `paths`."""
     wanted = {path.replace("\\", "/") for path in paths}
@@ -717,6 +759,7 @@ def _baseline_failures(
     extra: list[str] | None = None,
     directory: str = ".",
     cache: tuple[str, str] = NO_CACHE,
+    settings: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run the failing nodes on the base commit and say which fail there too.
 
@@ -752,7 +795,7 @@ def _baseline_failures(
             record["detail"] = f"the base worktree could not be made: {baseline.detail}"
             return record
         ran = execute(
-            _pytest_targets(python, nodes, files, extra, cache),
+            _pytest_targets(python, nodes, files, extra, cache, settings),
             working_directory=baseline.path / directory,
             timeout_seconds=timeout_seconds,
         )
@@ -767,7 +810,7 @@ def _baseline_failures(
         baseline.close()
     if record["new"]:
         again = execute(
-            _pytest_targets(python, record["new"], files, extra, cache),
+            _pytest_targets(python, record["new"], files, extra, cache, settings),
             working_directory=workspace / directory,
             timeout_seconds=timeout_seconds,
         )
@@ -794,9 +837,10 @@ def _pytest_targets(
     files: list[str] | None,
     extra: list[str] | None,
     cache: tuple[str, str] = NO_CACHE,
+    settings: list[str] | None = None,
 ) -> list[str]:
     if len(nodes) <= BASELINE_NODE_LIMIT or not files:
-        return [python, "-m", "pytest", *nodes, "-q", *cache, "-rfE"]
+        return [python, "-m", "pytest", *nodes, "-q", *cache, *(settings or []), "-rfE"]
     return [python, "-m", "pytest", *files, "-q", *cache, *(extra or []), "-rfE"]
 
 
@@ -1307,12 +1351,13 @@ def run_touched_tests(
         return [argument for node in kept for argument in ("--deselect", node)]
 
     cache = NO_CACHE
+    settings = verification_settings(run_directory) if runner == "pytest" else []
 
     def command_for(paths: list[str]) -> list[str]:
         if runner == "pytest":
             return [
                 python, "-m", "pytest", *paths, "-q", *cache,
-                *marker, *deselect_for(paths),
+                *settings, *marker, *deselect_for(paths),
             ]
         return [python, "-m", "unittest", *paths]
 
@@ -1404,11 +1449,12 @@ def run_touched_tests(
             nodes=nodes,
             timeout_seconds=timeout_seconds,
             files=files,
-            # The marker filter and deselects: what follows `-q` and the
-            # two cache tokens.
+            # The settings, marker filter and deselects: what follows `-q`
+            # and the two cache tokens.
             extra=command[3 + len(files) + 3:],
             directory=record["working_directory"],
             cache=cache,
+            settings=settings,
         )
     return with_lane(python)
 

@@ -550,6 +550,25 @@ class RunTouchedTestsTests(_RunFixture):
         record = self._run(FakeExecutor())
         self.assertEqual(record["command"][-2:], ["-m", "(not network) and (not screen)"])
 
+    def test_frozen_verification_configuration_options_carry_over(self) -> None:
+        # django-oauth-toolkit run 20261003T054636Z-ae0406 verified with
+        # `--ds=tests.settings`; touched tests ran without it and the conftest
+        # raised ImproperlyConfigured. Mailman #411.
+        (self.run_directory / "prompts.json").write_text(
+            json.dumps({"verification_command": [
+                str(self.python), "-m", "pytest", "--ds=tests.settings",
+                "-p", "no:cacheprovider", "-c", "tests/pytest.ini",
+                "-q", "-k", "port", "tests/test_xbrl.py",
+            ]}),
+            encoding="utf-8",
+        )
+        record = self._run(FakeExecutor())
+        command = record["command"]
+        self.assertIn("--ds=tests.settings", command)
+        self.assertEqual(command[command.index("-c") + 1], "tests/pytest.ini")
+        self.assertNotIn("-k", command)
+        self.assertEqual(command.count("no:cacheprovider"), 1)
+
     def test_no_prompts_record_means_nothing_deselected(self) -> None:
         record = self._run(FakeExecutor())
         self.assertNotIn("--deselect", record["command"])
