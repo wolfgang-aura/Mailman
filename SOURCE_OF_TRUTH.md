@@ -471,6 +471,17 @@ opening the local packet URL during this session; visual state is unverified.
     integration jobs flaky and fixed on master. Record `docs/runs/0023-solara-1215-eleventh-merge.md`.
     Fork delete awaits the operator.
   - pretix#6564 read `attention` again (CLA check); parked, no work.
+- Re-read 2026-10-03 (`mailman hunt watch`, `mailman contributions --refresh` not run; unattended
+  `pr-followup` run, comments read with `gh api`): 40 rows on the watch table: 10 merged, 8 closed
+  unmerged, 22 open. The 2026-10-02 entry said 7 closed; the table lists 8, so one close was uncounted.
+  uproot5#1741 and markdown#1648 are newly watched.
+  - beets#7065: JOJ0 requested changes (yes/no wording in two error strings). `19e23f0e9` in the run
+    workspace; 27 whitelist/canonical tests pass. Push and reply await the operator.
+  - markdown#1648: waylan asked for one more test. `e947c55` in the run workspace; it passes with and
+    without the fix, as he wanted. Push and reply await the operator.
+  - xarray#11637: `dirty` again after main moved; local merge `f77d712c` is clean, 8 datetime/timedelta
+    append tests pass. Push awaits the operator.
+  - openalgo#2021 (Windows timing flake), pymc#8442 (inherited red) and pretix#6564 (CLA, parked): no work.
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
   It still exists and now carries the #1370 PR.
 
