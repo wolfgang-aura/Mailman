@@ -23,7 +23,7 @@ from typing import Any
 
 from mailman.claims import _row as claim_row
 from mailman.claims import classify_thread, rival_pull_requests
-from mailman.hunt import maintainer_engaged
+from mailman.hunt import closed_repositories, maintainer_engaged
 from mailman.maintainers import MAINTAINER_ASSOCIATIONS
 from mailman.prescreen import load_prescreen
 from mailman.screen import load_screen, refusal_stands
@@ -75,10 +75,16 @@ def skipped_repositories(
 ) -> dict[str, str]:
     """Each slug not worth a search, with the reason."""
     excluded_keys = {slug.lower() for slug in excluded}
+    # A hunt dropped a run there because the project refuses our pull
+    # requests; hunt targets already leaves it out (#300). Mailman #405.
+    closed_keys = {slug.lower() for slug in closed_repositories(data_root)}
     skipped: dict[str, str] = {}
     for slug in slugs:
         if slug.lower() in excluded_keys:
             skipped[slug] = "excluded"
+            continue
+        if slug.lower() in closed_keys:
+            skipped[slug] = "a hunt dropped it as closed to outside pull requests"
             continue
         screen = load_screen(data_root, slug)
         if (

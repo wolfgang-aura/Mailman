@@ -103,6 +103,25 @@ class DiscoverTests(unittest.TestCase):
         self.assertIn("responsiveness", result["skipped"]["a/refused"])
         self.assertEqual([row["number"] for row in result["issues"]], [9, 5])
 
+    def test_a_repository_a_hunt_dropped_as_closed_is_not_searched(self) -> None:
+        # streamlit was dropped as closed to outside pull requests and
+        # discover offered streamlit#17234 again. Mailman #405.
+        data_root = self.root / "runs"
+        hunt = self.root / "hunts" / "h1" / "hunt.json"
+        hunt.parent.mkdir(parents=True)
+        hunt.write_text(json.dumps({"hunt_id": "h1", "runs": [{
+            "run_id": "r1", "target": "a/closed#1", "dropped": True,
+            "reason": "target-closed-to-outside-prs",
+        }]}), encoding="utf-8")
+        queries: list[str] = []
+        result = discover(
+            ["a/closed", "a/open"], data_root=data_root, since="2026-07-01",
+            search=lambda query: queries.append(query) or [], spacing_seconds=0,
+        )
+
+        self.assertNotIn("a/closed", queries[0])
+        self.assertIn("closed to outside pull requests", result["skipped"]["a/closed"])
+
     def test_a_policy_refusal_under_older_windows_is_not_searched(self) -> None:
         # python/mypy refused AI-assisted work; discover listed it anyway.
         # Mailman #387.
