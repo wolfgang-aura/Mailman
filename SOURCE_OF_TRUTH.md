@@ -841,3 +841,12 @@ Nothing yet writes a lesson automatically at the end of a run, so the registry
 does not gain evidence without a hand pass. `mailman retrospective` has still not
 been run against a live run. Skill versioning and the regression suite are not
 implemented, so every retrospective records `skill_version` as `unversioned`.
+
+- Re-read 2026-10-03 afternoon (`mailman hunt watch`, `mailman contributions --refresh`; unattended
+  `pr-followup` run): 42 watched rows, 10 merged, 8 closed unmerged, 24 open.
+  - django-oauth-toolkit#1927 (run `20261003T054636Z-ae0406`): dopry reviewed 14:07 UTC, five changes
+    requested. Revision commit `193ec4b` is in the run workspace, not pushed. The two new view tests
+    fail with `ValueError` on the pre-fix `models.py` and pass now; 603 tests in the five touched
+    files pass.
+  - beets#7065: JOJ0 approved 2026-10-03 11:52 UTC; waiting on a maintainer merge.
+  - tqdm#1837 moved from attention to inherited (`pre-commit.ci` fails on 3 of 5 other open PRs).
