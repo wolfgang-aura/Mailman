@@ -398,6 +398,23 @@ class DesignUndecidedTests(unittest.TestCase):
         ]
         self.assertEqual(len(design_open_questions(thread)), 1)
 
+    def test_a_link_to_an_rfc_is_not_an_open_design(self) -> None:
+        # django-oauth/django-oauth-toolkit#1919 cites the spec it should
+        # follow; the URL's rfc-editor and /rfc/ read as "RFC". Mailman #408.
+        thread = [
+            _comment(
+                "Reject lone surrogates and return invalid_client_metadata. See "
+                "the [RFC 7591 section 3.2.2 registration error response]"
+                "(https://www.rfc-editor.org/rfc/rfc7591.html#section-3.2.2).",
+                association="MEMBER",
+                login="dopry",
+            ),
+        ]
+        self.assertEqual(design_open_questions(thread), [])
+        proposal = [_comment("RFC: should we drop the old API?",
+                             association="MEMBER", login="dopry")]
+        self.assertEqual(len(design_open_questions(proposal)), 1)
+
     def test_a_maintainer_still_thinking_about_it_blocks(self) -> None:
         # huggingface/sentence-transformers#3996, Mailman #252
         thread = [

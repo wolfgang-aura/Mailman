@@ -138,7 +138,8 @@ _DESIGN_OPEN = re.compile(
     r".{0,400}?\banother\b"
     r"|alternatively,? we could"
     r"|i(?:'d| would) like to hear"
-    r"|rfc\b(?![\s-]*\d)"
+    # Not inside a link: rfc-editor.org/rfc/rfc7591 cites a spec. Mailman #408.
+    r"|(?<![./-])rfc\b(?![\s-]*\d|[-/]|\.\w)"
     r"|proposals?\b"
     r"|(?:haven't|have not|not yet) decided"
     # A project voice declining for now and polling for demand. plotly/dash#3968.
