@@ -489,6 +489,13 @@ opening the local packet URL during this session; visual state is unverified.
   touch (it changes contrib tests and discord/telegram); 3 of the 6 newest open tqdm PRs fail the same
   check, so it is inherited again. beets#7065, markdown#1648 and xarray#11637 are unchanged and still
   await push approval.
+- Re-read 2026-10-03 09:01 UTC (`mailman hunt watch`; unattended `pr-followup` run, `contributions --refresh`
+  not run): 41 rows: 11 merged, 8 closed, 15 ok, 3 inherited, 4 attention (openalgo#2021, pymc#8442,
+  tqdm#1837 and the parked pretix#6564, none changed). semantica#1869 merged 07:49 UTC (merge commit `858d5dd`);
+  KaifAhmad1's one commit on it is a merge of `main`, record 0024. The beets#7065, markdown#1648 and
+  xarray#11637 revisions are now upstream: heads `18e981a`, `488d96a` and `04560f7` were pushed at 07:37 UTC
+  and the replies posted at 07:38 UTC, so the earlier push-approval items are done. xarray#11637 is no longer
+  `dirty`; its two red checks are inherited.
 - edgartools fork `wolfgang-aura/edgartools` deleted 2026-09-23, recreated 2026-09-26 for #1365.
   It still exists and now carries the #1370 PR.
 
