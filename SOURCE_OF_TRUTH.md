@@ -856,3 +856,6 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   - Python-Markdown/markdown#1648 went from ok to attention: master gained `7a29324` (#1647), which conflicts
     with our changelog bullet only. Merge `d7fa2bb` is committed in run `20261001T232940Z-89206e`, not pushed.
     The suite passes (1117 tests, 52 skipped). waylan's test request was already answered on 2026-10-03.
+    Pushed with operator approval the same day: head `488d96a` -> `d7fa2bb`, fast-forward.
+  - django-oauth-toolkit#1927: revision pushed `fa20c4a` -> `193ec4b` with operator approval, reply posted
+    (comment 5976958444).
