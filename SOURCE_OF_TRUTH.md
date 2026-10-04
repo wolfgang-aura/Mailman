@@ -850,3 +850,9 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
     files pass.
   - beets#7065: JOJ0 approved 2026-10-03 11:52 UTC; waiting on a maintainer merge.
   - tqdm#1837 moved from attention to inherited (`pre-commit.ci` fails on 3 of 5 other open PRs).
+
+- Re-read 2026-10-04 00:01 UTC (`mailman hunt watch`, unattended `pr-followup` run): 42 watched rows, counts
+  unchanged.
+  - Python-Markdown/markdown#1648 went from ok to attention: master gained `7a29324` (#1647), which conflicts
+    with our changelog bullet only. Merge `d7fa2bb` is committed in run `20261001T232940Z-89206e`, not pushed.
+    The suite passes (1117 tests, 52 skipped). waylan's test request was already answered on 2026-10-03.
