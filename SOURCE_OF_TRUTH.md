@@ -859,3 +859,11 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
     Pushed with operator approval the same day: head `488d96a` -> `d7fa2bb`, fast-forward.
   - django-oauth-toolkit#1927: revision pushed `fa20c4a` -> `193ec4b` with operator approval, reply posted
     (comment 5976958444).
+
+- Re-read 2026-10-04 evening (`mailman hunt watch`, unattended `pr-followup` run; the first run was killed after
+  30 minutes with no output, a rerun finished in a few minutes): 42 watched rows, counts unchanged.
+  - pylint-dev/pylint#11517 went from ok to attention: Pierre-Sassoulas pushed `6b91a27` on our head
+    (positional-only and rebound pass-through decorators), requested changes, and codecov failed patch coverage
+    (`typecheck.py` line 724 and a partial branch). A revision is committed locally in run
+    `20260930T215739Z-794226` (`5b97131`, `adda924`, not pushed): coverage fix plus the uninferable-return case
+    from `#11518`, which our head still reported. Functional suite 936 passed; changed lines fully covered.
