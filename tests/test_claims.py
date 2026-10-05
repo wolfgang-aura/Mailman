@@ -189,6 +189,11 @@ class ClassifyCommentTests(unittest.TestCase):
             "test are ready, and we will open the PR once a maintainer "
             "confirms the approach, per CONTRIBUTING.md.",
             "We are working on this.",
+            # agentscope's reporter, verbatim, without the "no fix PR is open
+            # yet" that matched by accident. Mailman #426.
+            "Implementation and local regression testing are in progress.",
+            "A fix is in progress.",
+            "Work on a fix is underway.",
         ):
             with self.subTest(body=body):
                 self.assertEqual(classify_comment(_comment(body)), "claim")

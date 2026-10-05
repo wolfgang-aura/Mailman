@@ -379,6 +379,11 @@ _CLAIM = re.compile(
     r"|(?:i(?:'ve|ve| have) )?(?:opened|submitted|raised|sent) "
     r"(?:a |the |my )?(?:pr|pull request|#\d+)"
     r"|still planning to"
+    # The work's state with nobody named: agentscope's reporter wrote
+    # "Implementation and local regression testing are in progress".
+    # Mailman #426.
+    r"|(?:implementation|fix|patch|pr|pull request)\b[^.;?]{0,60}"
+    r"\b(?:is|are) (?:now |already )?(?:in progress|underway)"
     # A reporter settling the design before building it: biopython#5307
     # "I'd like to check one more point before I start ... I'll follow
     # whichever option you recommend". Mailman #204.
