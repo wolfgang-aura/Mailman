@@ -264,6 +264,10 @@ class FakeGitHub:
             return [{"name": name} for name in self.workflows]
         if "/contents/" in base:
             relative = base.split("/contents/", 1)[1]
+            # "owner/repo:path" answers for that repository alone.
+            repository = base.split("/contents/", 1)[0].split("repos/", 1)[-1]
+            if f"{repository}:{relative}" in self.policies:
+                return _contents(self.policies[f"{repository}:{relative}"])
             if relative in self.policies:
                 return _contents(self.policies[relative])
             inside = [key for key in self.policies if key.startswith(relative + "/")]
@@ -1387,6 +1391,26 @@ class ScreenTests(unittest.TestCase):
                 self.assertIn("policy", record["failed_gates"])
                 self.assertEqual(gate["data"]["source"], "AGENTS.md")
 
+    def test_an_unlinked_ai_policy_file_is_read(self) -> None:
+        # kornia keeps AI_POLICY.md at the root and no guide links it, so the
+        # gate never read it. A refusal kept there passed the screen.
+        for path in ("AI_POLICY.md", ".github/AI_POLICY.md"):
+            with self.subTest(path=path):
+                with tempfile.TemporaryDirectory() as temporary:
+                    record = _screen(
+                        Path(temporary),
+                        FakeGitHub(
+                            policies={
+                                "CONTRIBUTING.md": "## Rules\n\nRun the tests.\n",
+                                path: "This repo requires human-authored contributions.\n",
+                            }
+                        ),
+                    )
+                gate = _named(record, "policy")
+
+                self.assertIn("policy", record["failed_gates"])
+                self.assertEqual(gate["data"]["source"], path)
+
     def test_requiring_human_authored_contributions_fails_the_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(
@@ -1668,6 +1692,41 @@ class ScreenTests(unittest.TestCase):
         self.assertNotIn("policy", record["failed_gates"])
         self.assertTrue(gate["data"]["requires_disclosure"])
 
+    def test_a_refusal_of_autonomous_tool_work_fails_the_gate(self) -> None:
+        # BeeWare's AI policy names no "AI" in its refusal sentence, so the
+        # gate recorded beeware/toga as permitted. Mailman #422.
+        refusal = (
+            "We do not accept unsolicited pull requests or issues that result "
+            "from running an autonomous tool over the BeeWare code base."
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(policies={"CONTRIBUTING.md": refusal + "\n"}),
+            )
+
+        self.assertIn("policy", record["failed_gates"])
+        self.assertIn(refusal, str(_named(record, "policy")))
+
+    def test_disclosing_the_tools_used_is_a_disclosure_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "CONTRIBUTING.md": (
+                            "If AI tools were used to generate a significant "
+                            "portion of your contribution, we require you to "
+                            "**disclose the tools used** in the pull request "
+                            "description.\n"
+                        )
+                    }
+                ),
+            )
+
+        self.assertNotIn("policy", record["failed_gates"])
+        self.assertTrue(_named(record, "policy")["data"]["requires_disclosure"])
+
     def test_a_guide_that_permits_code_but_requires_own_words_records_it(
         self,
     ) -> None:
@@ -1833,7 +1892,7 @@ class ScreenTests(unittest.TestCase):
         gh = FakeGitHub(
             policies={
                 "CONTRIBUTING.md": self.CATTRS_GUIDE,
-                "AI_POLICY.md": self.ATTRS_AI_POLICY,
+                "python-attrs/.github:AI_POLICY.md": self.ATTRS_AI_POLICY,
             }
         )
         with tempfile.TemporaryDirectory() as temporary:

@@ -414,7 +414,9 @@ _REFUSAL_OUTCOME = re.compile(
 #: project.
 _AI_SUBJECT = re.compile(
     r"\b(?:ai|a\.i\.|llms?|agents?|agentic|copilot|chatgpt|generated|"
-    r"machine[- ]written)\b",
+    # BeeWare refuses PRs "that result from running an autonomous tool" and
+    # never says AI in that sentence. Mailman #422.
+    r"machine[- ]written|autonomous(?:ly)?)\b",
     re.IGNORECASE,
 )
 
@@ -468,6 +470,8 @@ _POLICY_PRIOR_DISCUSSION = re.compile(
 _POLICY_DISCLOSURE = re.compile(
     r"(?:"
     r"disclose\s+.{0,40}\b(?:ai|llm|assistant)"
+    # BeeWare: "we require you to **disclose the tools used**". Mailman #422.
+    r"|disclose\s+the\s+tools?\b"
     r"|\b(?:ai|llm)\b.{0,40}must\s+be\s+disclosed"
     r"|declare\s+.{0,30}\bai\b"
     r"|state\s+.{0,30}\bai[- ]assisted"
@@ -556,6 +560,10 @@ _POLICY_PATHS = (
     # zarr keeps its "must be in your own words" rule here. Mailman #271.
     "docs/contributing.md",
     "AGENTS.md",
+    # kornia keeps its AI rules in a root AI_POLICY.md that no guide links.
+    # Mailman #421.
+    "AI_POLICY.md",
+    ".github/AI_POLICY.md",
 )
 
 #: Where a project keeps the text every pull request opens with. A ban written
