@@ -891,4 +891,14 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   that would publish an address (#414, `a85dc28`). It applies only when the follow-up runs `fetch-review`, which
   this one skipped. The xarray#11637 reply is posted (comment 5986926030).
 - 2026-10-05: pylint#11517 head is `a58b089` (noreply author and committer), reply comment 5987025832 posted.
+- Re-read 2026-10-05 12:07 UTC (`mailman hunt watch`; unattended `pr-followup` run, `contributions --refresh`
+  not run): 43 watched rows. Merged 12, closed unmerged 8, open 23. Two rows moved since 09:06 UTC.
+  - mdomke/schwifty#318 merged 2026-10-05 10:51 UTC as `e40e32f` (maintainer merged `main` in at `f5e9142`).
+    Provenance recorded `MERGED`. Run record 0025. Fork `wolfgang-aura/schwifty` carries no open PR; delete awaits
+    the operator.
+  - syrupy-project/syrupy#1257 is newly watched (filed 2026-10-05) and `attention`: 10 Test jobs and the required
+    rollup are red, one real failure (`test_update_success_shows_snapshot_report[xdist_two]`, Windows 3.10), the
+    rest cancelled by fail-fast. Our comment already says it fails on main too; waiting on a maintainer re-run.
+  - beets#7065 approved by JOJ0, awaiting merge. poetry#11052 still `behind`, openalgo#2021 still red on one
+    Windows timing check, pretix#6564 parked. No write proposed.
 - 2026-10-05: the `wolfgang-aura/semantica` fork is deleted (merged upstream as `858d5dd`); GitHub no longer resolves it.
