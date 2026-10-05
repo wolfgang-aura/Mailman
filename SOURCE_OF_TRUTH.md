@@ -881,3 +881,7 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
     and need no `units` attribute. No change requested. Reply drafted, awaiting approval.
   - python-poetry/poetry#11052 went from clean to behind: main is one commit ahead (`wheel_installer.py`, no
     overlap). Poetry's last 8 merged PRs carry no merge-main commits, so the branch update is the maintainers' move.
+- 2026-10-05: the pylint#11517 follow-up push was declined by GitHub GH007 because both revision commits carried
+  a private address. Nothing was published. `revision-response --check` now refuses commits after the PR head
+  that would publish an address (#414, `a85dc28`). It applies only when the follow-up runs `fetch-review`, which
+  this one skipped. The xarray#11637 reply is posted (comment 5986926030).
