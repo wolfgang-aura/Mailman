@@ -38,8 +38,10 @@ from mailman.screen import (
 )
 from mailman.shortlist import (
     ACKNOWLEDGEMENT_GRACE_DAYS,
+    CLOSED_TO_OUTSIDERS,
     is_recent,
     is_unacknowledged,
+    label_closes,
     label_invites,
     ranking,
 )
@@ -412,6 +414,11 @@ def _issue_blocking(captured: dict[str, Any]) -> list[str]:
         blocking.append(ISSUE_UNDER_DISCUSSION)
     if any(_NOT_TRIAGED_LABEL.search(label) for label in labels):
         blocking.append(ISSUE_NOT_TRIAGED_HERE)
+    # haystack#13018 `handled internally`. Mailman #416.
+    if label_closes(sorted(labels)) or any(
+        CLOSED_TO_OUTSIDERS.search(str(text)) for text in descriptions
+    ):
+        blocking.append(ISSUE_RESERVED_FOR_HUMANS)
     return blocking
 
 
@@ -639,7 +646,8 @@ def _ranking(
     a coordinator reading two passes can see which one a maintainer asked for.
     """
     return ranking(
-        invited=bool(claims.get("invitations")) or label_invites(list(labels)),
+        invited=not label_closes(list(labels))
+        and (bool(claims.get("invitations")) or label_invites(list(labels))),
         recent=is_recent(
             claims.get("issue_created_at"), claims.get("maintainer_touched_at")
         ),

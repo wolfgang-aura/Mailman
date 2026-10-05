@@ -366,6 +366,40 @@ class AgentExclusionTests(unittest.TestCase):
                 self.assertFalse(excludes_agents(_comment(body, association="MEMBER")))
 
 
+HAYSTACK_13018 = (
+    "Saving the encoding in `ByteStream.meta` should make things work.\n\n"
+    "<!-- handled-internally -->\n---\n"
+    "Hello there! This issue will be handled internally and isn't open "
+    "for external contributions. If you'd like to contribute, please take a look "
+    "at issues labeled [contributions welcome](https://github.com/orgs/deepset-ai/"
+    "projects/14) or [good first issue](https://github.com/deepset-ai/haystack/"
+    "contribute). We'd really appreciate it!\n<!-- /handled-internally -->"
+)
+
+
+class ClosedToOutsidersTests(unittest.TestCase):
+    """Mailman #416: haystack's refusal names `contributions welcome` as a
+    pointer elsewhere, and was ranked as an invitation."""
+
+    def test_the_haystack_refusal_is_not_an_invitation(self) -> None:
+        report = _comment(HAYSTACK_13018, association="MEMBER")
+        self.assertFalse(is_maintainer_invitation(report))
+
+    def test_the_haystack_refusal_reserves_the_issue(self) -> None:
+        self.assertTrue(
+            excludes_agents(_comment(HAYSTACK_13018, association="MEMBER"))
+        )
+
+    def test_other_closed_wordings_are_read(self) -> None:
+        for body in (
+            "This issue is not open for outside contributions.",
+            "We'll handle this internally.",
+            "Not open to community contributions for now.",
+        ):
+            with self.subTest(body=body):
+                self.assertTrue(excludes_agents(_comment(body, association="OWNER")))
+
+
 class DesignUndecidedTests(unittest.TestCase):
     """Mailman #124: an open design choice in the thread, with no label on it."""
 

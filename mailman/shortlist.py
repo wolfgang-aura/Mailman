@@ -20,6 +20,7 @@ first rather than trust that it is.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -76,6 +77,23 @@ def _label_names(labels: Any) -> list[str]:
 
 def _normal(name: str) -> str:
     return " ".join(name.lower().replace("-", " ").replace("_", " ").split())
+
+
+#: A label that keeps the issue for the team: haystack's `handled internally`,
+#: described as "Handled by the team, not open for external contributions".
+#: It outranks any invitation on the same issue. Mailman #416.
+CLOSED_TO_OUTSIDERS = re.compile(
+    r"handled internally|internal only|team only|maintainers? only"
+    r"|not open (?:for|to) (?:external |outside |community )?contributions?",
+    re.IGNORECASE,
+)
+
+
+def label_closes(labels: Any) -> bool:
+    """Say whether one of these labels keeps the issue for the team."""
+    return any(
+        CLOSED_TO_OUTSIDERS.search(_normal(name)) for name in _label_names(labels)
+    )
 
 
 def label_invites(labels: Any) -> bool:
@@ -170,7 +188,7 @@ def rank_issue(
     and is never called unacknowledged, because nobody read whether it was.
     """
     thread = [comment for comment in comments if isinstance(comment, dict)]
-    invited = (
+    invited = not label_closes(issue.get("labels")) and (
         label_invites(issue.get("labels"))
         or is_maintainer_invitation(issue, maintainers=maintainers)
         or any(
@@ -255,6 +273,8 @@ __all__ = [
     "invites_pull_request",
     "is_recent",
     "is_unacknowledged",
+    "CLOSED_TO_OUTSIDERS",
+    "label_closes",
     "label_invites",
     "maintainer_engaged",
     "rank_issue",

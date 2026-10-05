@@ -3194,6 +3194,45 @@ class ScopedLabelTests(unittest.TestCase):
                 self.assertEqual(blocking(label), [])
 
 
+    def test_a_label_closing_the_issue_to_outsiders_blocks(self) -> None:
+        # haystack#13018 `handled internally`. Mailman #416.
+        from mailman.prescreen import _issue_blocking
+
+        for label in ("handled internally", "Handled-Internally", "internal only"):
+            with self.subTest(label=label):
+                self.assertIn(
+                    "issue-reserved-for-humans",
+                    _issue_blocking(
+                        {"success": True, "state": "OPEN", "labels": [label]}
+                    ),
+                )
+        described = _issue_blocking(
+            {
+                "success": True,
+                "state": "OPEN",
+                "labels": ["P1"],
+                "label_descriptions": {
+                    "P1": "Handled by the team, not open for external contributions"
+                },
+            }
+        )
+        self.assertIn("issue-reserved-for-humans", described)
+
+    def test_a_closing_label_cancels_the_rank_invitation(self) -> None:
+        from mailman.shortlist import MAINTAINER_INVITED, rank_issue
+
+        row = rank_issue(
+            {
+                "labels": [{"name": "good first issue"}, {"name": "handled internally"}],
+                "author_association": "MEMBER",
+                "body": "PRs welcome.",
+                "created_at": "2026-01-01T00:00:00Z",
+            },
+            [],
+            linked_pull_requests=False,
+        )
+        self.assertNotIn(MAINTAINER_INVITED, row["reasons"])
+
 
 class UnreadCitedPullRequestTests(unittest.TestCase):
     """A cited pull request `gh` could not read may be an open rival. Mailman

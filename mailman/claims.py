@@ -97,6 +97,12 @@ _AGENT_EXCLUSION = re.compile(
     # pvlib#2864, a member: "if I review one more microslop hallucination I
     # drop my career in software". Mailman #198.
     r"|microslop|ai[- ]slop"
+    # deepset-ai/haystack#13018, a bot block in a member's report: "This
+    # issue will be handled internally and isn't open for external
+    # contributions." Mailman #416.
+    r"|(?:isn't|is not|aren't|are not|not) open (?:for|to) (?:external |outside "
+    r"|community |public |third[- ]party )?contributions?"
+    r"|handled? (?:this |it )?internally"
     r")",
     re.IGNORECASE,
 )
@@ -118,8 +124,11 @@ def excludes_agents(
         comment, maintainers, associations=MAINTAINER_ASSOCIATIONS | {"CONTRIBUTOR"}
     ):
         return False
-    text = _matchable(_flat(comment.get("body"))).replace("*", "").replace("_", " ")
-    return bool(_AGENT_EXCLUSION.search(text))
+    return bool(_AGENT_EXCLUSION.search(_exclusion_text(comment.get("body"))))
+
+
+def _exclusion_text(body: Any) -> str:
+    return _matchable(_flat(body)).replace("*", "").replace("_", " ")
 
 
 #: A project voice saying the design is still open. zarr-python#2706 left an
@@ -694,6 +703,10 @@ def is_maintainer_invitation(
     if not isinstance(comment, dict) or _is_bot(comment.get("user")):
         return False
     if not is_maintainer(comment, maintainers):
+        return False
+    # haystack's refusal points at the `contributions welcome` label for other
+    # issues; the same text closing this one is no invitation. Mailman #416.
+    if _AGENT_EXCLUSION.search(_exclusion_text(comment.get("body"))):
         return False
     return invites_pull_request(comment.get("body"))
 
