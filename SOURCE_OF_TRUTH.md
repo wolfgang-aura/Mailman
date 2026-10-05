@@ -885,3 +885,4 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   a private address. Nothing was published. `revision-response --check` now refuses commits after the PR head
   that would publish an address (#414, `a85dc28`). It applies only when the follow-up runs `fetch-review`, which
   this one skipped. The xarray#11637 reply is posted (comment 5986926030).
+- 2026-10-05: pylint#11517 head is `a58b089` (noreply author and committer), reply comment 5987025832 posted.
