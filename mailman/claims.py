@@ -358,11 +358,16 @@ _CLAIM = re.compile(
     # request". Mailman #198.
     # terryyin/lizard#487 dropped the "I'm": "Happy to put that together with
     # tests". Mailman #225.
-    r"|(?:i(?:'m|m| am) |^)(?:glad|happy|pleased|willing) to "
+    # inspect_ai reports: "I have this written locally ... and am happy to
+    # open a PR". Mailman #423.
+    r"|(?:i(?:'m|m| am) |\bam |^)(?:glad|happy|pleased|willing) to "
     r"(?:implement|prepare|open|submit|send|raise|take|work|fix|make|contribute"
     r"|put (?:that|this|it|one|something) together)"
     r"|i(?:'d| would) be (?:glad|happy|pleased) to "
     r"(?:prepare|open|submit|send|raise|help|take|work|fix|make|turn|contribute)"
+    r"|i(?:'ve|ve| have) (?:this|it|the fix|a fix|the change) "
+    r"(?:implemented|written|ready|done)"
+    r"|(?:written|ready|implemented) locally"
     r"|(?:attached|linked|local|my) candidate"
     r"|candidate (?:patch|fix|source|diff|change)"
     r"|proposed (?:correction|fix|patch|change|diff)"

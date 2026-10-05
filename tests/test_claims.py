@@ -176,6 +176,14 @@ class ClassifyCommentTests(unittest.TestCase):
             "description",
             "I'd love to work on this.",
             "I plan to implement the fix described above.",
+            # Two inspect_ai reports, verbatim: no "I" before "am happy to",
+            # and the fix already written. Mailman #423.
+            "I have this implemented and tested (branch stacked on the #5256 "
+            "PR) and am happy to open it if you want this direction, or drop "
+            "it if you'd rather these stay strict.",
+            "I have this written locally with a regression test and am happy "
+            "to open a PR if a maintainer accepts the issue",
+            "A fix is ready locally.",
         ):
             with self.subTest(body=body):
                 self.assertEqual(classify_comment(_comment(body)), "claim")
