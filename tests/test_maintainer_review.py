@@ -491,6 +491,14 @@ class PromptTests(unittest.TestCase):
         self.assertIn("not yours to negotiate away", primary)
         self.assertIn("leaves one of them unanswered is not", reviewer)
 
+    def test_reviewer_is_asked_who_consumes_the_change(self) -> None:
+        # edgartools 1329 and 1386: approved diffs broke a downstream reader
+        # that only the maintainer traced (#420).
+        run = self.run_record()
+        reviewer = build_reviewer_prompt(run, "issue", verification_command=None)
+        self.assertIn("Who consumes what the diff changes?", reviewer)
+        self.assertIn("callers and readers", reviewer)
+
     def test_a_run_with_no_upstream_review_is_unchanged(self) -> None:
         run = self.run_record()
         text = build_primary_prompt(run, "issue", verification_command=None)

@@ -673,6 +673,9 @@ question requires a bounded slice of surrounding code or one focused check.
 
 - Does the change address the issue below, and only that issue?
 - Is the cause fixed, or only the symptom?
+- Who consumes what the diff changes? Search once for the callers and readers
+  of each changed function, field or output, and say whether each still gets
+  what it expects.
 - Which edge cases and failure modes are unhandled?
 - Is there regression coverage, and does it follow repository conventions?
 - Any security, reliability, or compatibility risk?
