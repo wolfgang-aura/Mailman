@@ -184,6 +184,11 @@ class ClassifyCommentTests(unittest.TestCase):
             "I have this written locally with a regression test and am happy "
             "to open a PR if a maintainer accepts the issue",
             "A fix is ready locally.",
+            # An mlflow reporter, verbatim: a claim in the plural. Mailman #424.
+            "We'd like to take this one ourselves: the fix and a regression "
+            "test are ready, and we will open the PR once a maintainer "
+            "confirms the approach, per CONTRIBUTING.md.",
+            "We are working on this.",
         ):
             with self.subTest(body=body):
                 self.assertEqual(classify_comment(_comment(body)), "claim")

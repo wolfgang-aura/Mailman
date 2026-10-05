@@ -650,9 +650,27 @@ def classify_comment(
     # Judge each sentence on its own: a question in one ("if someone reports
     # it later") must not cancel a claim in another. Mailman #204.
     for sentence in _SENTENCE_BREAK.split(body):
-        if _CLAIM.search(sentence) and not _NOT_A_CLAIM.search(sentence):
+        if _CLAIM.search(_singular(sentence)) and not _NOT_A_CLAIM.search(sentence):
             return "claim"
     return None
+
+
+#: A team claims in the plural: mlflow's "We'd like to take this one
+#: ourselves". `_CLAIM` is written in the singular, so read "we" as "I".
+#: Mailman #424.
+_PLURAL = (
+    (re.compile(r"\bwe(?:'re| are)\b", re.IGNORECASE), "i am"),
+    (re.compile(r"\bwe(?:'ve)\b", re.IGNORECASE), "i have"),
+    (re.compile(r"\bwe(?:'d)\b", re.IGNORECASE), "i'd"),
+    (re.compile(r"\bwe(?:'ll)\b", re.IGNORECASE), "i'll"),
+    (re.compile(r"\bwe\b", re.IGNORECASE), "i"),
+)
+
+
+def _singular(sentence: str) -> str:
+    for pattern, replacement in _PLURAL:
+        sentence = pattern.sub(replacement, sentence)
+    return sentence
 
 
 _SENTENCE_BREAK = re.compile(r"(?<=[.?!;])\s+")
