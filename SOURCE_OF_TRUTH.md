@@ -867,3 +867,17 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
     (`typecheck.py` line 724 and a partial branch). A revision is committed locally in run
     `20260930T215739Z-794226` (`5b97131`, `adda924`, not pushed): coverage fix plus the uninferable-return case
     from `#11518`, which our head still reported. Functional suite 936 passed; changed lines fully covered.
+
+- Re-read 2026-10-04 13:00 UTC (`mailman hunt watch`, `mailman contributions --refresh`): 42 watched rows, 11
+  merged, 8 closed unmerged, 23 open. No upstream state moved since the evening reading.
+  - pymc-devs/pymc#8442 went from attention to inherited after a watch fix (#372). Its red matrix (attempt 3,
+    2026-09-28) fails `tests/backends/test_zarr.py::test_sampling_consistency` and
+    `tests/sampling/test_mcmc_external.py::test_step_args`. pymc main `d005877` (run `36395412009`) failed the
+    same five tests in the same hour, and main is green from 2026-10-01. The PR is still approved by ricardoV94.
+  - pylint-dev/pylint#11517: head still `6b91a27`; revision `adda924` and the reply still await operator approval.
+- Re-read 2026-10-05 (`mailman hunt watch`): 42 watched rows, counts unchanged; two rows moved.
+  - pydata/xarray#11637 went from inherited to attention: spencerkclark reviewed head `04560f7` (ours) on
+    2026-10-04 22:18 UTC. He says native `datetime64` values should not go through the CF time-encoding path
+    and need no `units` attribute. No change requested. Reply drafted, awaiting approval.
+  - python-poetry/poetry#11052 went from clean to behind: main is one commit ahead (`wheel_installer.py`, no
+    overlap). Poetry's last 8 merged PRs carry no merge-main commits, so the branch update is the maintainers' move.
