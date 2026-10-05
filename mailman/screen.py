@@ -352,6 +352,15 @@ _POLICY_BANS = re.compile(
     r"(?:(?:external|outside|community|third[- ]party)\s+)?"
     r"(?:pull\s+requests?|prs?|code\s+contributions?|contributions?)"
     r"(?:\s+from\s+outside\b)?"
+    # openai/openai-agents-python CONTRIBUTING.md: "Pull requests are limited
+    # to repository collaborators. We do not accept pull requests from
+    # non-collaborators". Mailman #418.
+    r"|(?:pull\s+requests?|prs?|contributions?)\s+(?:are|is)\s+(?:limited|restricted)\s+"
+    r"to\s+(?:repository\s+|project\s+)?(?:collaborators|maintainers|members)"
+    r"|(?:do\s+not|don't|does\s+not|doesn't|cannot|can't)\s+accept\s+"
+    r"(?:pull\s+requests?|prs?|code\s+contributions?|contributions?)\s+from\s+"
+    r"(?:non[- ]?collaborators|non[- ]?members|outside(?:\s+contributors)?|"
+    r"external\s+contributors|third[- ]part(?:y|ies)|the\s+community)"
     # SpikeInterface/spikeinterface AGENTS.md: "tell them this repo requires
     # human-authored contributions". Mailman #366.
     r"|requires?\s+human[- ](?:authored|written|made)\s+contributions?"
@@ -724,7 +733,20 @@ def _followed_policies(
         if kind == _PAGE_DOCUMENT:
             document = page_text(gh.page(locator) or "")
         else:
-            document = _decoded(gh.json(locator))
+            payload = gh.json(locator)
+            inner = _directory_document(payload)
+            if inner is not None:
+                # A link to a folder: read the file inside it written for
+                # agents. Mailman #419.
+                path, _, query = locator.partition("?")
+                locator = f"{path}/{inner}" + (f"?{query}" if query else "")
+                if locator in seen:
+                    continue
+                seen.add(locator)
+                source = f"{source}/{inner}"
+                entry["source"] = source
+                payload = gh.json(locator)
+            document = _decoded(payload)
         if document.strip():
             read.append({**entry, "body": document})
         else:
@@ -783,6 +805,23 @@ def _outcome_refusal(flat: str) -> str | None:
         if _AI_SUBJECT.search(sentence) and not _DISCLOSURE_RULE.search(sentence):
             return sentence
     return None
+
+
+#: The file a linked folder is read through, first match wins. huggingface/
+#: diffusers links `.ai/`, whose rules for agents are in `.ai/AGENTS.md`.
+_DIRECTORY_DOCUMENTS = ("AGENTS.md", "AI_POLICY.md", "README.md")
+
+
+def _directory_document(payload: Any) -> str | None:
+    """The policy file inside a contents listing, or None for a file."""
+    if not isinstance(payload, list):
+        return None
+    names = {
+        entry.get("name"): entry
+        for entry in payload
+        if isinstance(entry, dict) and entry.get("type") == "file"
+    }
+    return next((name for name in _DIRECTORY_DOCUMENTS if name in names), None)
 
 
 def _decoded(payload: Any) -> str:
@@ -1777,6 +1816,8 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         for document in documents:
             flat = " ".join(document["body"].split())
             ban = _POLICY_BANS.search(flat)
+            if not ban and posixpath.basename(document["source"]) in _AGENT_FILES:
+                ban = _AGENT_FILE_BANS.search(flat)
             # A ban is written two ways: as a rule about what may be submitted,
             # and as a statement of what will happen to it. The second is the
             # one sentry-python uses, and reading only the first spent a whole

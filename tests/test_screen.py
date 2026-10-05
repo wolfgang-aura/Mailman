@@ -266,6 +266,13 @@ class FakeGitHub:
             relative = base.split("/contents/", 1)[1]
             if relative in self.policies:
                 return _contents(self.policies[relative])
+            inside = [key for key in self.policies if key.startswith(relative + "/")]
+            if inside:
+                return [
+                    {"name": key[len(relative) + 1 :], "path": key, "type": "file"}
+                    for key in inside
+                    if "/" not in key[len(relative) + 1 :]
+                ]
             return {"message": "Not Found"}
         if base.endswith("/contents"):
             return self.root
@@ -1597,6 +1604,21 @@ class ScreenTests(unittest.TestCase):
                 )
                 self.assertIn("policy", record["failed_gates"])
 
+    def test_a_collaborator_only_policy_fails_the_gate(self) -> None:
+        # openai/openai-agents-python CONTRIBUTING.md, commit cc14936. The gate
+        # passed it. Mailman #418.
+        for sentence in (
+            "Pull requests are limited to repository collaborators.",
+            "We do not accept pull requests from non-collaborators.",
+            "We don't accept pull requests from external contributors.",
+        ):
+            with self.subTest(sentence=sentence), tempfile.TemporaryDirectory() as temporary:
+                record = _screen(
+                    Path(temporary),
+                    FakeGitHub(policies={"CONTRIBUTING.md": sentence + "\n"}),
+                )
+                self.assertIn("policy", record["failed_gates"])
+
     def test_a_pause_on_one_kind_of_change_does_not_fail_the_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(
@@ -1873,6 +1895,43 @@ class ScreenTests(unittest.TestCase):
         self.assertIn("policy", record["failed_gates"])
         self.assertEqual(gate["data"]["source"], ".github/AI_POLICY.md")
         self.assertIn("repos/example/project/contents/.github/AI_POLICY.md", gh.asked)
+
+    def test_a_linked_directory_is_read_through_its_agents_file(self) -> None:
+        # huggingface/diffusers CONTRIBUTING.md links its agent guide as the
+        # `.ai` directory. The listing was recorded as unreadable and the gate
+        # failed a project that welcomes agents. Mailman #419.
+        gh = FakeGitHub(
+            policies={
+                "CONTRIBUTING.md": (
+                    "The repository keeps AI-agent configuration in "
+                    "[`.ai/`](https://github.com/example/project/tree/main/.ai).\n"
+                ),
+                ".ai/plugin.json": "{}",
+                ".ai/AGENTS.md": "Run the tests before you open a pull request.\n",
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), gh)
+        gate = _named(record, "policy")
+
+        self.assertNotIn("policy", record["failed_gates"])
+        self.assertEqual(
+            [entry["source"] for entry in gate["data"]["followed_documents"]],
+            [".ai/AGENTS.md"],
+        )
+
+    def test_a_refusal_in_a_linked_directory_fails_the_gate(self) -> None:
+        gh = FakeGitHub(
+            policies={
+                "CONTRIBUTING.md": "Agents: see [ai](.ai).\n",
+                ".ai/AGENTS.md": "Do not open pull requests against this repository.\n",
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), gh)
+
+        self.assertIn("policy", record["failed_gates"])
+        self.assertEqual(_named(record, "policy")["data"]["result"], "refused")
 
     def test_a_link_that_is_not_about_ai_costs_no_call(self) -> None:
         # Every guide links a code of conduct. Following all of them would turn
