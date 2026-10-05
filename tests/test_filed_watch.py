@@ -62,12 +62,14 @@ class FakeGitHub:
     def __init__(self, pulls: dict[str, dict], *, open_pulls: list[dict] | None = None,
                  peer_statuses: dict[str, list] | None = None,
                  annotations: dict[str, list] | None = None,
-                 base_statuses: list | None = None) -> None:
+                 base_statuses: list | None = None,
+                 base_history: list | None = None) -> None:
         self.pulls = pulls
         self.open_pulls = open_pulls or []
         self.peer_statuses = peer_statuses or {}
         self.annotations = annotations or {}
         self.base_statuses = base_statuses or []
+        self.base_history = base_history or []
         self.asked: list[str] = []
         self.mergeable_reads: dict[str, int] = {}
 
@@ -79,6 +81,8 @@ class FakeGitHub:
         slug = f"{parts[1]}/{parts[2]}"
         if len(parts) == 4 and parts[3] == "pulls":
             return _Result(json.dumps(self.open_pulls))
+        if len(parts) == 4 and parts[3] == "commits":
+            return _Result(json.dumps(self.base_history))
         if parts[3] == "check-runs":
             return _Result(json.dumps(self.annotations.get(parts[4], [])))
         if parts[3] == "commits" and parts[4] == "main":
@@ -647,6 +651,39 @@ class WatchTests(unittest.TestCase):
         (row,) = result["rows"]
         self.assertEqual(row["status"], "inherited")
         self.assertIn("base branch main", row["inherited"]["alternative_backends"])
+
+    def test_a_check_the_base_branch_failed_when_ours_finished_is_inherited(
+        self,
+    ) -> None:
+        """pymc#8442 and main `d005877` failed the same tests on 2026-09-28; main
+        was green again by the next reading. https://github.com/wolfgang-aura/Mailman/issues/372
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_hunt("hunt-a", "run-1", "pymc-devs/pymc", 8442)
+            failing = {**_check("ubuntu (numba, 3.14)", "failure"), "id": 9, "output": {
+                "text": "tests/backends/test_zarr.py:120: AssertionError"}}
+            gh = FakeGitHub(
+                {"pymc-devs/pymc#8442": {
+                    "checks": [failing],
+                    "files": ["pymc/distributions/continuous.py",
+                              "tests/distributions/test_continuous.py"]}},
+                open_pulls=[{"number": n, "head": {"sha": f"peer-{n}"}} for n in (1, 2, 3)],
+                peer_statuses={
+                    **{f"peer-{n}": [{"context": "ubuntu (numba, 3.14)", "state": "success"}]
+                       for n in (1, 2, 3)},
+                    "d005877aa": [{"context": "ubuntu (numba, 3.14)", "state": "failure"}],
+                },
+                base_history=[{"sha": "d005877aa"}],
+            )
+
+            result = self._watch(root, gh)
+
+        (row,) = result["rows"]
+        self.assertEqual(row["status"], "inherited")
+        self.assertIn("failed it too at d005877", row["inherited"]["ubuntu (numba, 3.14)"])
+        self.assertTrue(any(path.startswith("repos/pymc-devs/pymc/commits?sha=main&until=")
+                            for path in gh.asked))
 
     def test_project_coverage_is_inherited_when_patch_coverage_passes(self) -> None:
         """pymc#8442: 100% of the diff hit, project -1.56% from missing uploads.

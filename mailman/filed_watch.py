@@ -392,7 +392,38 @@ def _classify_inherited(gh: _Gh, slug: str, number: int, checks: dict[str, Any],
         for name in undecided:
             if name in base["failing"]:
                 inherited[name] = f"the base branch {base_ref} fails it at its tip too"
+        undecided = [name for name in undecided if name not in inherited]
+        inherited.update(_compare_with_base_then(gh, slug, base_ref, undecided, runs))
     return inherited
+
+
+def _compare_with_base_then(gh: _Gh, slug: str, base_ref: str, names: list[str],
+                            runs: dict[str, dict[str, Any]]) -> dict[str, str]:
+    """Failing checks the base branch also failed when ours finished.
+
+    pymc#8442's matrix went red on 2026-09-28 in two test files it never
+    touched. pymc main `d005877` failed the same five tests in the same hour,
+    and main was green again by 2026-10-01, so the tip rule no longer saw it.
+    The base commit read here is the newest one committed before our check
+    completed. https://github.com/wolfgang-aura/Mailman/issues/372
+    """
+    found: dict[str, str] = {}
+    failing_at: dict[str, set[str]] = {}
+    for name in names:
+        finished = (runs.get(name) or {}).get("completed_at")
+        if not finished:
+            continue
+        listing = gh.json(f"repos/{slug}/commits?sha={base_ref}&until={finished}&per_page=1")
+        sha = listing[0].get("sha") if isinstance(listing, list) and listing and isinstance(
+            listing[0], dict) else None
+        if not sha:
+            continue
+        if sha not in failing_at:
+            failing_at[sha] = set(_read_checks(gh, slug, sha)[0]["failing"])
+        if name in failing_at[sha]:
+            found[name] = (f"the base branch {base_ref} failed it too at {sha[:7]}, "
+                           "its tip when this check finished")
+    return found
 
 
 def _overlaps(paths: set[str], touched: set[str]) -> bool:
