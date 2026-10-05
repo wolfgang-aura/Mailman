@@ -891,3 +891,4 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   that would publish an address (#414, `a85dc28`). It applies only when the follow-up runs `fetch-review`, which
   this one skipped. The xarray#11637 reply is posted (comment 5986926030).
 - 2026-10-05: pylint#11517 head is `a58b089` (noreply author and committer), reply comment 5987025832 posted.
+- 2026-10-05: the `wolfgang-aura/semantica` fork is deleted (merged upstream as `858d5dd`); GitHub no longer resolves it.
