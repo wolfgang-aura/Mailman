@@ -20,6 +20,7 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
+from mailman import identity
 from mailman.executor import CommandResult, execute
 from mailman.toolchain import resolve_tool
 
@@ -461,6 +462,29 @@ def init_response(run_directory: Path) -> dict[str, Any]:
     return record
 
 
+def _revision_identity_violations(run_directory: Path, review: dict[str, Any]) -> list[str]:
+    """Follow-up commits that would publish an address, newest first.
+
+    Only commits after the pull request's head count: anything at or before it
+    is already upstream, maintainer commits included.
+    See https://github.com/wolfgang-aura/Mailman/issues/414
+    """
+    head = str(review.get("head_sha") or "")
+    exported = run_directory / "export" / "export.json"
+    workspace = run_directory / "workspace"
+    if exported.is_file():
+        try:
+            workspace = Path(json.loads(exported.read_text(encoding="utf-8")).get("workspace")
+                             or workspace)
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    if not head or not (workspace / ".git").exists():
+        return []
+    commits = identity.branch_commits(workspace, head)
+    found = identity.author_violations(commits, identity.resolve_identity(run_directory.parent))
+    return [item["sha"] for item in found]
+
+
 def check_revision(run_directory: Path) -> dict[str, Any]:
     """Refuse a revision that leaves a requested change unanswered.
 
@@ -474,7 +498,12 @@ def check_revision(run_directory: Path) -> dict[str, Any]:
     foreign = foreign_detail(review)
     if foreign and not review.get("foreign_commits_acknowledged"):
         return {"ok": False, "reason": "foreign-commits", "detail": foreign}
-    wanted = {item["id"] for item in review.get("requested_changes", [])}
+    misattributed = _revision_identity_violations(run_directory, review)
+    if misattributed:
+        # The diagnostic names commits, never the private addresses.
+        return {"ok": False, "reason": "author-identity", "commits": misattributed,
+                "detail": "correct author/committer identity on " + ", ".join(misattributed)}
+    wanted ={item["id"] for item in review.get("requested_changes", [])}
     if not wanted:
         return {"ok": True, "reason": "nothing-requested", "answered": [],
                 "detail": f"{review['repository']}#{review['number']} has no requested change to answer"}

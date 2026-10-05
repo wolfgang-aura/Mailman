@@ -497,5 +497,43 @@ class PromptTests(unittest.TestCase):
         self.assertNotIn("maintainer's review", text)
 
 
+class RevisionIdentityTests(unittest.TestCase):
+    """A follow-up push is a publication too. https://github.com/wolfgang-aura/Mailman/issues/414"""
+
+    def test_a_follow_up_commit_with_a_private_address_is_refused(self) -> None:
+        import subprocess
+        from mailman.identity import Identity, save_identity
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            save_identity(root, Identity(name="us", email="1+us@users.noreply.github.com"))
+            _, directory = make_run(root)
+            workspace = directory / "workspace"
+            workspace.mkdir()
+
+            def commit(email: str, message: str) -> str:
+                (workspace / "file.txt").write_text(message, encoding="utf-8")
+                subprocess.run(["git", "-C", str(workspace), "add", "file.txt"], check=True)
+                subprocess.run(["git", "-C", str(workspace), "-c", "user.name=x",
+                                "-c", f"user.email={email}", "commit", "-q", "-m", message],
+                               check=True)
+                return subprocess.run(["git", "-C", str(workspace), "rev-parse", "HEAD"],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+
+            subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+            head = commit("maintainer@example.org", "maintainer's public commit")
+            leaked = commit("private@example.com", "our follow-up")
+            (directory / "maintainer-review.json").write_text(json.dumps({
+                "success": True, "repository": "example/project", "number": 42,
+                "head_sha": head, "requested_changes": [],
+            }), encoding="utf-8")
+
+            checked = check_revision(directory)
+
+        self.assertFalse(checked["ok"])
+        self.assertEqual(checked["reason"], "author-identity")
+        self.assertEqual(checked["commits"], [leaked])
+        self.assertNotIn("private@example.com", checked["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()
