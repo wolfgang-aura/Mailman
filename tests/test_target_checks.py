@@ -461,6 +461,17 @@ class LintConfigurationTests(_Fixture):
         self.write("pyproject.toml", "[tool.ruff.lint.isort]\nknown-first-party = ['x']\n")
         self.assertEqual(self._tools(), ["ruff"])
 
+    def test_a_blackdoc_section_is_not_black(self) -> None:
+        # pyvista#8104 (#433): `[tool.blackdoc]` ran black over a ruff-format
+        # target, and every single-quoted line blocked.
+        self.write("pyproject.toml", "[tool.blackdoc]\nline-length = 88\n[tool.ruff]\n")
+        self.write(
+            ".pre-commit-config.yaml",
+            "repos:\n  - repo: https://github.com/keewis/blackdoc\n"
+            "    rev: v0.4.6\n    hooks:\n      - id: blackdoc\n",
+        )
+        self.assertEqual(self._tools(), ["ruff"])
+
 
 class OtherLinterTests(_Fixture):
     def _run(self, executor: Executor, acknowledged=None):

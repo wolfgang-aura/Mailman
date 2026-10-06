@@ -287,6 +287,18 @@ def _without_hook_dependencies(text: str) -> str:
     return "\n".join(kept)
 
 
+def _names_section(header: str, section: str) -> bool:
+    """`header` is `section` or one of its subsections, not a longer name.
+
+    `[tool.black` must not match `[tool.blackdoc]` (#433); `[mypy` still
+    matches mypy's per-module `[mypy-pkg.*]`.
+    """
+    if not header.startswith(section):
+        return False
+    rest = header[len(section):]
+    return section.endswith("]") or rest[:1] in ("]", ".", "-")
+
+
 def _mentions(tool: LintTool, name: str, text: str) -> bool:
     if name == ".pre-commit-config.yaml":
         text = _without_hook_dependencies(text)
@@ -294,7 +306,7 @@ def _mentions(tool: LintTool, name: str, text: str) -> bool:
         return True
     if name in _CONFIGURING_FILES:
         headers = [line.strip() for line in text.splitlines() if line.lstrip().startswith("[")]
-        if any(header.startswith(section) for header in headers for section in tool.sections):
+        if any(_names_section(header, section) for header in headers for section in tool.sections):
             return True
         # pandas-stubs runs every checker as a poe task of the same name (#305).
         if f"[tool.poe.tasks.{tool.name}]" in headers:
