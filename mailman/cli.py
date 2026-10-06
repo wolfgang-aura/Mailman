@@ -2010,7 +2010,7 @@ def _screen_summary(record: dict) -> dict:
     the reason codes (`maintainer-invited`, `recent`, `no-linked-pr`) that
     put it where it is.
     """
-    return {
+    summary = {
         "repository": record.get("repository"),
         "screened_at": record.get("screened_at"),
         "success": record.get("success"),
@@ -2018,6 +2018,12 @@ def _screen_summary(record: dict) -> dict:
         "failed_gates": record.get("failed_gates", []),
         "shortlist": screen_shortlist(record),
     }
+    # A failed screen says why, or a rate-limited batch reads as a broken one.
+    # Mailman #436.
+    for key in ("detail", "rate_limited"):
+        if key in record:
+            summary[key] = record[key]
+    return summary
 
 
 def _screened_maintainers(run: object, run_directory: Path) -> frozenset[str]:

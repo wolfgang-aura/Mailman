@@ -3633,6 +3633,29 @@ class ShortlistTests(unittest.TestCase):
         self.assertEqual(printed["shortlist"], rows)
         self.assertEqual(printed["shortlist"][0]["number"], 11)
 
+    def test_screen_target_json_says_why_a_screen_failed(self) -> None:
+        """Mailman #436."""
+        record = {
+            "repository": "example/project",
+            "success": False,
+            "gates": [],
+            "rate_limited": True,
+            "detail": "rate limited: the hourly GitHub core budget ran out",
+        }
+        stdout = StringIO()
+        with tempfile.TemporaryDirectory() as temporary, mock.patch(
+            "mailman.cli.screen_repository", return_value=record
+        ), redirect_stdout(stdout):
+            code = main(
+                ["screen-target", "example/project", "--refresh", "--json",
+                 "--data-root", temporary]
+            )
+        printed = json.loads(stdout.getvalue())
+
+        self.assertEqual(code, 2)
+        self.assertTrue(printed["rate_limited"])
+        self.assertIn("rate limited", printed["detail"])
+
 
 
 
