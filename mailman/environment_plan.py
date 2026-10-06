@@ -48,7 +48,8 @@ BINARY_POLICY = "--prefer-binary"
 #: 2.12.1 imported. Mailman #374. hypothesis 6.168.5 cp314 blocked `_native` on
 #: mpmath#1158 while 6.168.4 imported. Mailman #427. vtk 9.7.1 cp314 blocked 58
 #: modules, `vtkCommonTransforms` among them, on pyvista#8104 while 9.7.0
-#: imported all of them. Mailman #429.
+#: imported all of them. Mailman #429. pyvista-zstd 0.4.2 and 0.5.0 ship a
+#: blocked `pvzstd.dll` while 0.4.1 loads. Mailman #430.
 HOST_BLOCKED_RELEASES = (
     "scikit-learn!=1.9.1",
     "pandas!=3.0.6",
@@ -57,6 +58,7 @@ HOST_BLOCKED_RELEASES = (
     "cramjam!=2.13.0",
     "hypothesis!=6.168.5",
     "vtk!=9.7.1",
+    "pyvista-zstd!=0.4.2,!=0.5.0",
 )
 HOST_CONSTRAINTS_FILENAME = "host-constraints.txt"
 

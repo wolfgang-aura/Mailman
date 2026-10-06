@@ -216,6 +216,8 @@ dependencies = ["mkdocs"]
             self.assertIn("hypothesis!=6.168.5", constraints)
             # pyvista#8104: vtk 9.7.1's DLLs are blocked. #429.
             self.assertIn("vtk!=9.7.1", constraints)
+            # pyvista#8104: pyvista-zstd's `pvzstd.dll` is blocked. #430.
+            self.assertIn("pyvista-zstd!=0.4.2,!=0.5.0", constraints)
             for step in plan["steps"][1:]:
                 command = step["command"]
                 self.assertEqual(
