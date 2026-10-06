@@ -1036,6 +1036,34 @@ def _signatures(
     return lines
 
 
+_LOCATION = re.compile(r"(?P<path>[^:\s]+):(?P<line>\d+):")
+
+
+def _quoted(
+    line: str,
+    root: Path,
+    roots: tuple[Path, ...],
+    sources: dict[Path, list[str] | None],
+) -> tuple[str, str] | None:
+    """A finding's signature and the source line it names under `root`."""
+    signature = next(iter(_signatures(line, roots)), None)
+    exact = next(iter(_signatures(line, roots, blank_numbers=False)), None)
+    found = _LOCATION.match(exact or "")
+    if signature is None or found is None:
+        return None
+    path = root / found.group("path")
+    if path not in sources:
+        try:
+            sources[path] = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            sources[path] = None
+    text = sources[path]
+    number = int(found.group("line"))
+    if text is None or not 0 < number <= len(text):
+        return None
+    return signature, text[number - 1].strip()
+
+
 class _Baseline:
     """A detached worktree at the base commit, made on the first failure (#163).
 
@@ -1129,6 +1157,13 @@ def _new_findings(
     # A patch that repeats a base finding adds one more of the same signature;
     # name the line the base does not print verbatim, not the base's own (#400).
     base_exact = _signatures(base_output, roots, blank_numbers=False)
+    # A base finding the patch moved down keeps its source text, not its line
+    # number, so compare the quoted source line too (#431).
+    sources: dict[Path, list[str] | None] = {}
+    base_quoted = {
+        _quoted(line, baseline.path, roots, sources) for line in base_output.splitlines()
+    }
+    base_quoted.discard(None)
     chosen: set[int] = set()
     for verbatim_ok in (False, True):
         for index, line in enumerate(output.splitlines()):
@@ -1136,7 +1171,10 @@ def _new_findings(
             if signature is None or new[signature] <= 0 or index in chosen:
                 continue
             exact = next(iter(_signatures(line, roots, blank_numbers=False)), None)
-            if not verbatim_ok and base_exact[exact] > 0:
+            if not verbatim_ok and (
+                base_exact[exact] > 0
+                or _quoted(line, workspace, roots, sources) in base_quoted
+            ):
                 continue
             new[signature] -= 1
             chosen.add(index)

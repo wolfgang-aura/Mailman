@@ -924,10 +924,11 @@ class BaselineExecutor:
     """Makes the base worktree on `git worktree add`; answers by directory."""
 
     def __init__(self, workspace_output: str, base_output: str | None,
-                 base_files=("pkg/mod.py",)) -> None:
+                 base_files=("pkg/mod.py",), base_text="x = 1\n") -> None:
         self.workspace_output = workspace_output
         self.base_output = base_output
         self.base_files = base_files
+        self.base_text = base_text
         self.calls: list[tuple[list[str], str]] = []
 
     def __call__(self, command, *, working_directory, timeout_seconds, **_):
@@ -936,7 +937,7 @@ class BaselineExecutor:
             base = Path(command[4])
             for relative in self.base_files:
                 (base / relative).parent.mkdir(parents=True, exist_ok=True)
-                (base / relative).write_text("x = 1\n", encoding="utf-8")
+                (base / relative).write_text(self.base_text, encoding="utf-8")
             return _result(list(command))
         if command[0] == "git" or "--version" in command:
             return _result(list(command))
@@ -998,6 +999,23 @@ class LintBaselineTests(_Fixture):
         self.assertEqual([f["code"] for f in findings], ["lint-failed"])
         self.assertIn(":1755:", findings[0]["detail"])
         self.assertNotIn(":97:", findings[0]["detail"])
+
+    def test_a_shifted_base_finding_is_not_named_as_the_new_one(self) -> None:
+        # bleachbit#2286 (#431): the patch moved a long base line down two and
+        # added another; the finding named the moved line, not the new one.
+        long_line = "y = '" + "a" * 129 + "'\n"
+        added = "z = '" + "b" * 83 + "'\n"
+        self.write("pkg/mod.py", "import os\nimport sys\nx = 1\n" + long_line + added)
+        executor = BaselineExecutor(
+            "pkg/mod.py:4:80: E501 line too long (135 > 79 characters)\n"
+            "pkg/mod.py:5:80: E501 line too long (89 > 79 characters)\n",
+            "pkg/mod.py:2:80: E501 line too long (135 > 79 characters)\n",
+            base_text="x = 1\n" + long_line,
+        )
+        _, findings = self._run(executor)
+        self.assertEqual([f["code"] for f in findings], ["lint-failed"])
+        self.assertIn(":5:", findings[0]["detail"])
+        self.assertNotIn(":4:", findings[0]["detail"])
 
     def test_a_base_that_passes_leaves_the_failure_blocking(self) -> None:
         executor = BaselineExecutor("pkg/mod.py:1:1: F401 'os' imported but unused\n", None)
