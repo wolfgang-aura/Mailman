@@ -45,13 +45,15 @@ BINARY_POLICY = "--prefer-binary"
 #: blocked `_network` on PyPSA#1938 while 3.7.2 imported. Mailman #197.
 #: pyarrow 25.0.1 cp314 blocked `_fs` on awkward#4228 while 25.0.0 imported.
 #: Mailman #369. cramjam 2.13.0 cp314 blocked its DLL on uproot5#1529 while
-#: 2.12.1 imported. Mailman #374.
+#: 2.12.1 imported. Mailman #374. hypothesis 6.168.5 cp314 blocked `_native` on
+#: mpmath#1158 while 6.168.4 imported. Mailman #427.
 HOST_BLOCKED_RELEASES = (
     "scikit-learn!=1.9.1",
     "pandas!=3.0.6",
     "pyproj!=3.8.0",
     "pyarrow!=25.0.1",
     "cramjam!=2.13.0",
+    "hypothesis!=6.168.5",
 )
 HOST_CONSTRAINTS_FILENAME = "host-constraints.txt"
 

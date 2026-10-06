@@ -212,6 +212,8 @@ dependencies = ["mkdocs"]
             self.assertIn("pyarrow!=25.0.1", constraints)
             # uproot5#1529: cramjam 2.13.0's DLL is blocked. #374.
             self.assertIn("cramjam!=2.13.0", constraints)
+            # mpmath#1158: hypothesis 6.168.5's `_native` DLL is blocked. #427.
+            self.assertIn("hypothesis!=6.168.5", constraints)
             for step in plan["steps"][1:]:
                 command = step["command"]
                 self.assertEqual(
