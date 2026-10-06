@@ -26,6 +26,8 @@ GUARD_TIMEOUT_SECONDS = 10 * 60
 _SOURCE_SUFFIXES = (".py", ".pyi")
 _FILE_HEADER = re.compile(r"^\+\+\+ b/(.+)$")
 _ADDED_TEST = re.compile(r"^\+\s*(?:async\s+)?def\s+(test\w*)\s*\(")
+#: A pytest-mypy-plugins case added to a yml test file (#438).
+_ADDED_YAML_CASE = re.compile(r"^\+\s*-\s+case:\s*['\"]?(\w+)")
 #: pytest options whose value is the next argument, which may be a real path.
 _VALUE_OPTIONS = frozenset({
     "-c", "-p", "-o", "-W", "-n", "-r", "--rootdir", "--confcutdir", "--basetemp",
@@ -48,7 +50,8 @@ def added_test_names(diff: str) -> dict[str, list[str]]:
             continue
         if current is None or not _is_test_path(current):
             continue
-        match = _ADDED_TEST.match(line)
+        pattern = _ADDED_YAML_CASE if current.endswith((".yml", ".yaml")) else _ADDED_TEST
+        match = pattern.match(line)
         if match and match.group(1) not in names.get(current, []):
             names.setdefault(current, []).append(match.group(1))
     return names

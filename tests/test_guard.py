@@ -100,6 +100,22 @@ class GuardTests(unittest.TestCase):
             {"tests/test_x.py": ["test_one", "test_not_top_level_but_counted"]},
         )
 
+    def test_added_test_names_reads_pytest_mypy_plugins_yml_cases(self) -> None:
+        diff = (
+            "diff --git a/tests/typecheck/test_m.yml b/tests/typecheck/test_m.yml\n"
+            "--- a/tests/typecheck/test_m.yml\n+++ b/tests/typecheck/test_m.yml\n"
+            "@@ -1,2 +1,6 @@\n"
+            " -   case: existing_case\n"
+            "+-   case: new_case\n"
+            "+    main: |\n"
+            "+- case: \"quoted_case\"\n"
+        )
+
+        self.assertEqual(
+            added_test_names(diff),
+            {"tests/typecheck/test_m.yml": ["new_case", "quoted_case"]},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
