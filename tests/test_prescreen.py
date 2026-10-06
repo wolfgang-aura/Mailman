@@ -25,6 +25,7 @@ from mailman.prescreen import (
     ISSUE_NOT_BOUNDED_FIX,
     ISSUE_NOT_TRIAGED_HERE,
     ISSUE_LACKS_REQUIRED_LABEL,
+    ISSUE_NOT_APPROVED_BY_TRIAGE_GATE,
     PRESCREEN_HOURS,
     REPOSITORY_SCREEN_FAILED,
     TRIVIAL,
@@ -2189,6 +2190,77 @@ class MaintainerDisputedTests(PrescreenTests):
                 else:
                     self.assertNotIn(
                         ISSUE_LACKS_REQUIRED_LABEL, record.get("blocking", [])
+                    )
+
+    def test_a_triage_gate_rejects_an_issue_without_maintainer_approval(
+        self,
+    ) -> None:
+        # huggingface/peft closes outside PRs unless the issue carries
+        # `/peft-triage: approved` from a maintainer. Mailman #417.
+        path = screen_path(self.root, "example/project")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "repository": "example/project",
+                    "success": True,
+                    "verdict": "pass",
+                    "gates": [
+                        {
+                            "name": "triage-approval",
+                            "passed": True,
+                            "blocking": False,
+                            "detail": "",
+                            "data": {"command": "/peft-triage: approved"},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        approval = "Thanks, confirmed.\n/peft-triage:  approved\n"
+        for association, comment_body, blocked in (
+            (None, None, True),
+            ("NONE", approval, True),
+            ("MEMBER", approval, False),
+        ):
+            with self.subTest(association=association):
+                issue = {
+                    "number": 9,
+                    "title": "LoRA merge drops bias",
+                    "body": "Merging drops the bias term.",
+                    "state": "OPEN",
+                    "url": "https://github.com/example/project/issues/9",
+                    "author": {"login": "reporter"},
+                    "labels": [{"name": "bug"}],
+                    "createdAt": "2026-09-01T00:00:00Z",
+                    "updatedAt": "2026-09-01T00:00:00Z",
+                    "comments": (
+                        [
+                            {
+                                "author": {"login": "someone"},
+                                "authorAssociation": association,
+                                "body": comment_body,
+                                "createdAt": "2026-09-02T00:00:00Z",
+                            }
+                        ]
+                        if comment_body
+                        else []
+                    ),
+                }
+                record = prescreen_issue(
+                    self.root, "example/project#9", executable=self.stub("[]", issue)
+                )
+
+                if blocked:
+                    self.assertEqual(record["verdict"], "reject")
+                    self.assertIn(
+                        ISSUE_NOT_APPROVED_BY_TRIAGE_GATE, record["blocking"]
+                    )
+                    self.assertIn("/peft-triage: approved", record["next"])
+                else:
+                    self.assertNotIn(
+                        ISSUE_NOT_APPROVED_BY_TRIAGE_GATE, record.get("blocking", [])
                     )
 
 class PriorDiscussionTests(PrescreenTests):

@@ -192,6 +192,37 @@ def _maintainer_comment_lines(
     return lines
 
 
+def maintainer_command_lines(
+    raw_comments: object, *, maintainers: Collection[str] = ()
+) -> list[str]:
+    """Slash-command lines maintainers wrote, each on its own line.
+
+    A triage workflow such as peft's keeps an outside pull request only when
+    its issue carries an approval command from a maintainer. Mailman #417.
+    """
+    listed = {str(name).lower() for name in maintainers}
+    found: list[str] = []
+    for comment in raw_comments if isinstance(raw_comments, list) else []:
+        if not isinstance(comment, dict):
+            continue
+        author = comment.get("author")
+        login = author.get("login") if isinstance(author, dict) else None
+        body = comment.get("body")
+        if (
+            not isinstance(login, str)
+            or not isinstance(body, str)
+            or (
+                comment.get("authorAssociation") not in MAINTAINER_ASSOCIATIONS
+                and login.lower() not in listed
+            )
+        ):
+            continue
+        found += [
+            line.strip() for line in body.splitlines() if line.strip().startswith("/")
+        ]
+    return found
+
+
 def _write_record(run_directory: Path, record: dict[str, Any]) -> Path:
     destination = run_directory / "issue.json"
     temporary = destination.with_suffix(".json.tmp")
@@ -264,6 +295,9 @@ def capture_issue_from_github(
             "label_descriptions": _label_descriptions(payload.get("labels")),
             "created_at": payload.get("createdAt"),
             "body_characters": len(payload.get("body") or ""),
+            "maintainer_commands": maintainer_command_lines(
+                payload.get("comments"), maintainers=maintainers
+            ),
             "issue_markdown": str((run_directory / "issue.md").resolve()),
         }
     )

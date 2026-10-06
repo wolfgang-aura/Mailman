@@ -35,6 +35,7 @@ from mailman.screen import (
     refusal_stands,
     screen_is_current,
     screen_shortlist,
+    triage_approval_command,
 )
 from mailman.shortlist import (
     ACKNOWLEDGEMENT_GRACE_DAYS,
@@ -97,7 +98,9 @@ from mailman.toolchain import resolve_tool
 #: Mailman #203.
 #: 14 records each searched attempt's author association and refuses a
 #: project voice's closed fix that no maintainer rejected. Mailman #199.
-PRESCREEN_SCHEMA_VERSION = 14
+#: 15 refuses an issue that lacks the approval command a repository's
+#: triage workflow requires. Mailman #417.
+PRESCREEN_SCHEMA_VERSION = 15
 ISSUE_SCREENS = "issue-screens"
 #: A pre-screen filters a shortlist; it is not the filing gate. The run stage
 #: still re-runs the duplicate search under its own one-hour limit, and
@@ -189,6 +192,12 @@ _REQUIRED_LABEL_RE = re.compile(
     r"appl(?:y|ied|ies)\s+(?:the\s+)?[`'\"]([^`'\"\n]{1,40})[`'\"]\s+label",
     re.IGNORECASE,
 )
+
+#: The repository's triage workflow closes an outside pull request unless its
+#: linked issue carries an approval command from a maintainer, and this issue
+#: does not. peft's `/peft-triage: approved`; the 2026-10-05 screen offered
+#: four peft issues without it. Mailman #417.
+ISSUE_NOT_APPROVED_BY_TRIAGE_GATE = "issue-not-approved-by-triage-gate"
 
 
 def required_labels(body: str) -> list[str]:
@@ -761,6 +770,15 @@ def prescreen_issue(
         issue_blocking.append(ISSUE_LACKS_REQUIRED_LABEL)
         record["required_labels_missing"] = missing
     screen = load_screen(data_root, slug)
+    approval = triage_approval_command(screen)
+    if approval:
+        record["triage_approval_command"] = approval
+        wanted = " ".join(approval.lower().split())
+        if not any(
+            " ".join(str(line).lower().split()) == wanted
+            for line in captured.get("maintainer_commands") or []
+        ):
+            issue_blocking.append(ISSUE_NOT_APPROVED_BY_TRIAGE_GATE)
     record["maintainer_logins_known"] = len(maintainers)
     # stanza takes pull requests only against `dev`, 91 commits ahead of
     # `main`; a run pinned to `main` patches the wrong tree. Mailman #258.
@@ -822,6 +840,13 @@ def prescreen_issue(
                         f"`{label}`" for label in record["required_labels_missing"]
                     )
                     if ISSUE_LACKS_REQUIRED_LABEL in issue_blocking
+                    else ""
+                )
+                + (
+                    ". The repository closes outside pull requests unless a "
+                    f"maintainer wrote `{record.get('triage_approval_command')}` "
+                    "on the issue, and nobody has"
+                    if ISSUE_NOT_APPROVED_BY_TRIAGE_GATE in issue_blocking
                     else ""
                 )
                 + (

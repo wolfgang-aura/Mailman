@@ -1994,7 +1994,25 @@ _ISSUE_AUTHOR_EXEMPT = re.compile(
 )
 
 
-def _workflow_assignment_rule(gh: _Gh, slug: str) -> dict[str, Any] | None:
+def _workflow_bodies(gh: _Gh, slug: str) -> list[tuple[str, str]]:
+    """Each workflow file's name and text, read once for the rules below."""
+    listing = gh.json(f"repos/{slug}/contents/.github/workflows")
+    if not isinstance(listing, list):
+        return []
+    bodies: list[tuple[str, str]] = []
+    for entry in listing:
+        name = entry.get("name") if isinstance(entry, dict) else None
+        if not isinstance(name, str) or not name.endswith((".yml", ".yaml")):
+            continue
+        bodies.append(
+            (name, _decoded(gh.json(f"repos/{slug}/contents/.github/workflows/{name}")))
+        )
+    return bodies
+
+
+def _workflow_assignment_rule(
+    workflows: list[tuple[str, str]],
+) -> dict[str, Any] | None:
     """The workflow that closes unassigned outside pull requests, if one is written down.
 
     pydantic/pydantic-ai passed the screen on 2026-09-14 (#89) because its rule is
@@ -2002,14 +2020,7 @@ def _workflow_assignment_rule(gh: _Gh, slug: str) -> dict[str, Any] | None:
     knew langchain's bot marker. A workflow that names the rule is better
     evidence than a closed pull request: it is the rule, not one enforcement.
     """
-    listing = gh.json(f"repos/{slug}/contents/.github/workflows")
-    if not isinstance(listing, list):
-        return None
-    for entry in listing:
-        name = entry.get("name") if isinstance(entry, dict) else None
-        if not isinstance(name, str) or not name.endswith((".yml", ".yaml")):
-            continue
-        body = _decoded(gh.json(f"repos/{slug}/contents/.github/workflows/{name}"))
+    for name, body in workflows:
         match = _ASSIGNMENT_RULE.search(body)
         if match and re.search(r"clos", body, re.IGNORECASE):
             return {
@@ -2020,7 +2031,68 @@ def _workflow_assignment_rule(gh: _Gh, slug: str) -> dict[str, Any] | None:
     return None
 
 
-def _assignment_gate(gh: _Gh, slug: str) -> dict[str, Any]:
+#: A quoted slash command that approves an issue for pull requests. peft's
+#: triage_prs.yml closes every outside PR unless its linked issue carries
+#: "/peft-triage: approved" from a maintainer. Mailman #417.
+_TRIAGE_APPROVAL_COMMAND = re.compile(
+    r"[\"'`](/[\w.-]+(?::?\s*[\w.-]+)?)[\"'`]"
+)
+
+
+def _workflow_triage_approval(
+    workflows: list[tuple[str, str]],
+) -> dict[str, Any] | None:
+    """The approval command a workflow requires before it keeps an outside PR."""
+    for name, body in workflows:
+        if not re.search(r"clos", body, re.IGNORECASE):
+            continue
+        for match in _TRIAGE_APPROVAL_COMMAND.finditer(body):
+            command = match.group(1)
+            if re.search(r"approv", command, re.IGNORECASE):
+                return {"workflow": name, "command": command}
+    return None
+
+
+def _triage_approval_gate(workflows: list[tuple[str, str]]) -> dict[str, Any]:
+    """Record an issue-level approval command. Never blocks the repository.
+
+    The repository stays workable: an issue that already carries the
+    approval can take a PR. Prescreen reads the command and refuses each
+    issue whose maintainers have not written it.
+    """
+    rule = _workflow_triage_approval(workflows)
+    if rule is None:
+        return _gate(
+            "triage-approval",
+            passed=True,
+            blocking=False,
+            detail="no workflow requires an approval command on the linked issue",
+            data={"command": None},
+        )
+    return _gate(
+        "triage-approval",
+        passed=True,
+        blocking=False,
+        detail=(
+            f"{rule['workflow']} closes outside pull requests unless the linked "
+            f"issue carries `{rule['command']}` from a maintainer"
+        ),
+        data=rule,
+    )
+
+
+def triage_approval_command(screen: dict[str, Any] | None) -> str | None:
+    """The approval command a recorded screen found, or None."""
+    for gate in (screen or {}).get("gates") or []:
+        if isinstance(gate, dict) and gate.get("name") == "triage-approval":
+            command = (gate.get("data") or {}).get("command")
+            return command if isinstance(command, str) and command else None
+    return None
+
+
+def _assignment_gate(
+    gh: _Gh, slug: str, workflows: list[tuple[str, str]] | None = None
+) -> dict[str, Any]:
     """Reject repositories whose bot closes unassigned outside pull requests.
 
     Two readings, either one enough. The workflows are read for the rule in
@@ -2029,7 +2101,9 @@ def _assignment_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     gate reads those comments and requires the exact marker from a bot,
     avoiding GitHub's loose token matches.
     """
-    rule = _workflow_assignment_rule(gh, slug)
+    rule = _workflow_assignment_rule(
+        _workflow_bodies(gh, slug) if workflows is None else workflows
+    )
     if rule:
         exempt = (
             "; the workflow exempts issue authors, so a self-reported defect stays filable"
@@ -3026,6 +3100,7 @@ def screen_repository(
     freshness = _freshness_gate(gh, slug, window_days, maintainers)
     python = _python_gate(gh, slug)
     ci = _ci_gate(gh, slug)
+    workflows = _workflow_bodies(gh, slug)
     gates = [
         _provenance_gate(meta, freshness),
         freshness,
@@ -3040,7 +3115,8 @@ def screen_repository(
             ci=ci["data"],
         ),
         _policy_gate(gh, slug),
-        _assignment_gate(gh, slug),
+        _assignment_gate(gh, slug, workflows),
+        _triage_approval_gate(workflows),
     ]
     stars = _stars_gate(meta)
     # The last three gates cost about 150 of a screen's ~220 reads and

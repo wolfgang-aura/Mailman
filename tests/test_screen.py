@@ -466,6 +466,29 @@ class ScreenTests(unittest.TestCase):
         self.assertIn("pr-guard.yml", gate["detail"])
         self.assertIn("issue authors", gate["detail"])
 
+    def test_a_workflow_requiring_an_approval_command_is_recorded_not_failed(
+        self,
+    ) -> None:
+        # huggingface/peft triage_prs.yml. Mailman #417.
+        triage = (
+            "name: Triage PRs\n"
+            "# Outside PRs must link an open issue approved by a maintainer with\n"
+            '# "/peft-triage: approved" on its own line.\n'
+            "# PRs without approval are closed with an explanation.\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    workflows={"ci.yml": HEALTHY_WORKFLOW, "triage_prs.yml": triage}
+                ),
+            )
+
+        self.assertNotIn("triage-approval", record["failed_gates"])
+        gate = _named(record, "triage-approval")
+        self.assertEqual(gate["data"]["command"], "/peft-triage: approved")
+        self.assertIn("triage_prs.yml", gate["detail"])
+
     def test_loose_search_hits_without_the_exact_marker_do_not_reject(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(
