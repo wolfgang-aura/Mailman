@@ -479,6 +479,18 @@ class HuntTests(OrchestratorHarness):
         self.assertTrue(result["ready"], result)
         self.assertTrue(result["human_required"])
 
+    def test_the_own_words_question_is_answered_once_the_rewrite_is_confirmed(self):
+        # The confirmed rewrite clears the submission's own-words block, and
+        # the question about it must not then hold the run. Mailman #434.
+        directory = self.own_words_questions(["own-words"])
+        path = directory / "submission" / "submission.json"
+        submission = json.loads(path.read_text(encoding="utf-8"))
+        submission.update(ready=True, blocking_codes=[])
+        path.write_text(json.dumps(submission), encoding="utf-8")
+        result = next_action(directory)
+        self.assertTrue(result["ready"], result)
+        self.assertFalse(result["human_required"])
+
     def assert_held_at_decision(self, gates):
         result = next_action(self.own_words_questions(gates))
         self.assertFalse(result["ready"])

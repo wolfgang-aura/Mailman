@@ -1388,9 +1388,10 @@ def next_action(directory: Path) -> dict:
     # A CLA signature is the operator's act at filing approval, like the
     # own-words rewrite. Mailman #290. Only the question naming that act is
     # set aside; any other blocking question, the triage one included, still
-    # holds an own-words run. Mailman #181.
+    # holds an own-words run. Mailman #181. A ready submission means the
+    # rewrite is confirmed, which answers the question. Mailman #434.
     human_gates = ({CLA_GATE, PERSONAL_REVIEW_GATE}
-                   | ({OWN_WORDS_GATE} if own_words else set()))
+                   | ({OWN_WORDS_GATE} if own_words or submission.get("ready") else set()))
     blocking = [question for question in decision.blocking_questions
                 if question.gate not in human_gates]
     cla = any(question.gate == CLA_GATE for question in decision.blocking_questions)
