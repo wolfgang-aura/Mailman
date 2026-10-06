@@ -901,4 +901,11 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
     rest cancelled by fail-fast. Our comment already says it fails on main too; waiting on a maintainer re-run.
   - beets#7065 approved by JOJ0, awaiting merge. poetry#11052 still `behind`, openalgo#2021 still red on one
     Windows timing check, pretix#6564 parked. No write proposed.
+- Re-read 2026-10-06 (`mailman hunt watch`; unattended `pr-followup` run, `contributions --refresh` not run):
+  one row moved since 2026-10-05 12:01 UTC.
+  - django-oauth/django-oauth-toolkit#1927 `ok` -> `attention`: dopry's second review accepts the revision and asks for
+    one assertion (`not is_logged_in`) in the logout test. Committed locally as `47b1dc1` in the run workspace, 19 logout
+    tests pass; push and reply await operator approval.
+  - Other attention rows (beets#7065 approved, openalgo#2021, poetry#11052 behind, syrupy#1257, pretix#6564 parked)
+    are unchanged.
 - 2026-10-05: the `wolfgang-aura/semantica` fork is deleted (merged upstream as `858d5dd`); GitHub no longer resolves it.
