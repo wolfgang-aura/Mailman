@@ -170,7 +170,7 @@ def _maintainer_comment_lines(
         body = comment.get("body")
         if (
             not isinstance(login, str)
-            or login.lower().endswith(("[bot]", "-bot"))
+            or login.lower().endswith(("[bot]", "-bot", "-robot"))
             or (
                 association not in MAINTAINER_ASSOCIATIONS
                 and login.lower() not in listed

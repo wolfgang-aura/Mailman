@@ -1420,6 +1420,26 @@ class MaintainerDisputeTests(unittest.TestCase):
             "created_at": "2026-09-01T00:00:00Z",
         }
 
+    def test_a_prow_robot_boilerplate_is_not_the_latest_word(self):
+        from mailman.claims import maintainer_dispute
+
+        # kubernetes-client/python#2292, 2026-10-07. Mailman #437.
+        robot = {
+            **self._comment(
+                "This request has been marked as needing help from a "
+                "contributor. If you have questions or suggestions related to "
+                "my behavior, please file an issue against the "
+                "kubernetes-sigs/prow repository.",
+                association="CONTRIBUTOR",
+            ),
+            "user": {"login": "k8s-ci-robot", "type": "User"},
+        }
+        thread = [
+            self._comment("I think we need some parsing like rest.py does. /help"),
+            robot,
+        ]
+        self.assertIsNone(maintainer_dispute(thread))
+
     def test_cannot_reproduce_is_a_dispute(self):
         from mailman.claims import maintainer_dispute
 

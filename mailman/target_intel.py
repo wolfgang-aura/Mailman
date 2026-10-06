@@ -182,14 +182,16 @@ def _is_bot(user: dict[str, Any] | None) -> bool:
 
     `author_association` does not carry this. Dependabot merges as a
     `CONTRIBUTOR`, which is what made `PyCQA/bandit` score a fresh outside merge
-    while it had merged no human contribution in four months.
+    while it had merged no human contribution in four months. Prow's
+    `k8s-ci-robot` is a `User` and a `CONTRIBUTOR`, so its help-wanted
+    boilerplate read as a maintainer dispute. Mailman #437.
     """
     if not isinstance(user, dict):
         return True
     if (user.get("type") or "") == "Bot":
         return True
     login = (user.get("login") or "").lower()
-    return login.endswith(("[bot]", "-bot")) or login.startswith("dependabot")
+    return login.endswith(("[bot]", "-bot", "-robot")) or login.startswith("dependabot")
 
 
 def is_outside_human(row: dict[str, Any]) -> bool:
