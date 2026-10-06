@@ -740,6 +740,19 @@ TOUCHED_BASELINE_DIRECTORY = "touched-base"
 #: Two tokens either way, so the slice after them stays the same length.
 NO_CACHE = ("-p", "no:cacheprovider")
 _UNKNOWN_CACHE_DIR = "Unknown config option: cache_dir"
+_NO_CACHE_ATTRIBUTE = "object has no attribute 'cache'"
+
+
+def needs_scratch_cache(exit_code: int, output: str) -> bool:
+    """Whether a run under `NO_CACHE` failed because the cache plugin was off.
+
+    A project that sets `cache_dir` under --strict-config exits 4 (#297); a
+    plugin that reads `config.cache`, pytest-pyvista, fails after every test
+    passed (#432).
+    """
+    if exit_code == 4 and _UNKNOWN_CACHE_DIR in output:
+        return True
+    return exit_code != 0 and _NO_CACHE_ATTRIBUTE in output
 
 
 def failing_nodes(output: str) -> list[str]:
@@ -1136,7 +1149,7 @@ def run_marker_lane(
         output = result.stdout + "\n" + result.stderr
         if (
             cache == NO_CACHE and not result.timed_out
-            and result.exit_code == 4 and _UNKNOWN_CACHE_DIR in output
+            and needs_scratch_cache(result.exit_code, output)
         ):
             cache = _scratch_cache(run_directory)
             continue
@@ -1370,13 +1383,15 @@ def run_touched_tests(
         result: CommandResult = execute(
             command, working_directory=workspace, timeout_seconds=timeout_seconds
         )
-        if runner != "pytest" or result.timed_out or result.exit_code not in (2, 4):
+        if runner != "pytest" or result.timed_out:
             break
         output = result.stdout + "\n" + result.stderr
-        if cache == NO_CACHE and result.exit_code == 4 and _UNKNOWN_CACHE_DIR in output:
+        if cache == NO_CACHE and needs_scratch_cache(result.exit_code, output):
             cache = _scratch_cache(run_directory)
             record["cache_option"] = list(cache)
             continue
+        if result.exit_code not in (2, 4):
+            break
         # A test file whose import needs an optional extra the environment
         # lacks, or a DLL this host blocks, is left out with its reason, and
         # the rest run again (#127, #214).

@@ -719,6 +719,22 @@ class CacheOptionTests(_RunFixture):
         self.assertEqual(record["exit_code"], 0)
         self.assertIsNone(touched_tests_verdict(record)[0])
 
+    def test_a_plugin_that_needs_the_cache_reruns_with_a_scratch_cache(self) -> None:
+        # pyvista#8104 (#432): every test passed, then pytest-pyvista's
+        # unconfigure hook read `config.cache` and pytest exited 1.
+        executor = SequenceExecutor(
+            [
+                (1, "2388 passed in 300s\nAttributeError: 'Config' object has no attribute 'cache'\n"),
+                (0, "2388 passed in 300s\n"),
+            ]
+        )
+        record = self._run(executor)
+        runs = [call["command"] for call in executor.calls if "pytest" in call["command"]]
+        self.assertEqual(len(runs), 2)
+        self.assertNotIn("no:cacheprovider", runs[1])
+        self.assertEqual(record["exit_code"], 0)
+        self.assertIsNone(touched_tests_verdict(record)[0])
+
     def test_another_usage_error_is_not_retried(self) -> None:
         executor = SequenceExecutor([(4, "ERROR: file or directory not found: x\n")])
         record = self._run(executor)

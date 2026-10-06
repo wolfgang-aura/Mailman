@@ -29,9 +29,9 @@ from mailman.executor import CommandResult, execute
 from mailman.target_intel import _Gh, repository_slug
 from mailman.touched_tests import (
     NO_CACHE,
-    _UNKNOWN_CACHE_DIR,
     _scratch_cache,
     environment_python,
+    needs_scratch_cache,
     parse_counts,
 )
 from mailman.workspace import WORKSPACE_DIRECTORY, prepare_workspace
@@ -324,9 +324,8 @@ def run_suite(
             **({"on_stdout_line": on_line} if on_line else {}),
         )
         output = (result.stdout or "") + "\n" + (result.stderr or "")
-        # A project that sets cache_dir under --strict-config exits 4 once
-        # the cache plugin is off. Mailman #297.
-        if cache == NO_CACHE and result.exit_code == 4 and _UNKNOWN_CACHE_DIR in output:
+        # The project needs the cache plugin it was run without (#297, #432).
+        if cache == NO_CACHE and needs_scratch_cache(result.exit_code, output):
             cache = _scratch_cache(directory)
             continue
         break
