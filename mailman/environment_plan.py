@@ -46,7 +46,9 @@ BINARY_POLICY = "--prefer-binary"
 #: pyarrow 25.0.1 cp314 blocked `_fs` on awkward#4228 while 25.0.0 imported.
 #: Mailman #369. cramjam 2.13.0 cp314 blocked its DLL on uproot5#1529 while
 #: 2.12.1 imported. Mailman #374. hypothesis 6.168.5 cp314 blocked `_native` on
-#: mpmath#1158 while 6.168.4 imported. Mailman #427.
+#: mpmath#1158 while 6.168.4 imported. Mailman #427. vtk 9.7.1 cp314 blocked 58
+#: modules, `vtkCommonTransforms` among them, on pyvista#8104 while 9.7.0
+#: imported all of them. Mailman #429.
 HOST_BLOCKED_RELEASES = (
     "scikit-learn!=1.9.1",
     "pandas!=3.0.6",
@@ -54,6 +56,7 @@ HOST_BLOCKED_RELEASES = (
     "pyarrow!=25.0.1",
     "cramjam!=2.13.0",
     "hypothesis!=6.168.5",
+    "vtk!=9.7.1",
 )
 HOST_CONSTRAINTS_FILENAME = "host-constraints.txt"
 
