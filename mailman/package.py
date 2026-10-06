@@ -94,7 +94,10 @@ _DCO_ACTION = re.compile(r"\buses:\s*\S*dco\S*@|\bdco[-_]check\b", re.IGNORECASE
 _SIGNOFF_RULE = re.compile(r"\bDCO\b|certificate of origin|\bcommit -s\b|\bmust\b|\brequired?\b",
                            re.IGNORECASE)
 _CONTRIBUTION_DOCS = ("CONTRIBUTING.md", "CONTRIBUTING.rst", ".github/CONTRIBUTING.md",
-                      "docs/CONTRIBUTING.md", "DCO", "DCO.md")
+                      "docs/CONTRIBUTING.md", "DCO", "DCO.md", "README.md", "README.rst")
+# The DCO app leaves no file behind, so the docs are the only local signal, and
+# they say "git commit --signoff" as often as "Signed-off-by". Mailman #435.
+_SIGNOFF_MENTION = re.compile(r"signed-off-by|--signoff\b|\bsign-?off\b", re.IGNORECASE)
 
 
 def signoff_requirement(workspace: Path) -> str | None:
@@ -112,7 +115,7 @@ def signoff_requirement(workspace: Path) -> str | None:
         path = workspace / name
         if path.is_file():
             text = path.read_text(encoding="utf-8", errors="replace")
-            if re.search(r"signed-off-by", text, re.IGNORECASE) and _SIGNOFF_RULE.search(text):
+            if _SIGNOFF_MENTION.search(text) and _SIGNOFF_RULE.search(text):
                 return name
     return None
 

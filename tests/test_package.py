@@ -135,6 +135,15 @@ class SignoffTests(unittest.TestCase):
 
         self.assertEqual(signoff_requirement(root), "CONTRIBUTING.md")
 
+    def test_a_readme_that_requires_git_commit_signoff_is_a_requirement(self) -> None:
+        # spack states the rule only in README.md and enforces it with the DCO app (#435).
+        root = self.workspace({"README.md":
+                               "Your PR must:\n\n  4. Sign off all commits with `git commit "
+                               "--signoff`. Signoff says that you agree to the Developer "
+                               "Certificate of Origin.\n"})
+
+        self.assertEqual(signoff_requirement(root), "README.md")
+
     def test_a_repository_without_either_signal_has_none(self) -> None:
         root = self.workspace({"CONTRIBUTING.md": "Run the tests before opening a PR.\n",
                                ".github/workflows/ci.yml": "steps:\n  - run: pytest\n"})
