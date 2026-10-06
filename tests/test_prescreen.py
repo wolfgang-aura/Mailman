@@ -2263,6 +2263,29 @@ class MaintainerDisputedTests(PrescreenTests):
                         ISSUE_NOT_APPROVED_BY_TRIAGE_GATE, record.get("blocking", [])
                     )
 
+    def test_a_screen_older_than_the_triage_check_warns(self) -> None:
+        # A screen cached before Mailman #417 never looked for the command.
+        path = screen_path(self.root, "example/project")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "repository": "example/project",
+                    "success": True,
+                    "verdict": "pass",
+                    "gates": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        record = prescreen_issue(
+            self.root, "example/project#7", executable=self.stub("[]")
+        )
+
+        self.assertTrue(
+            any("triage-approval" in warning for warning in record["warnings"])
+        )
+
 class PriorDiscussionTests(PrescreenTests):
     """A repository that closes a pull request whose issue nobody answered.
 

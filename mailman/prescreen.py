@@ -784,6 +784,19 @@ def prescreen_issue(
     # `main`; a run pinned to `main` patches the wrong tree. Mailman #258.
     record["pull_request_base"] = pull_request_base(screen)
     warnings: list[str] = []
+    if (
+        screen
+        and screen.get("success")
+        and not any(
+            isinstance(gate, dict) and gate.get("name") == "triage-approval"
+            for gate in screen.get("gates") or []
+        )
+    ):
+        # A screen cached before #417 never looked for an approval command.
+        warnings.append(
+            f"The screen of {slug} predates the triage-approval check; run "
+            f"`mailman screen-target {slug} --refresh` before init-run."
+        )
     if screen and screen.get("success") and screen.get("verdict") != "pass":
         # A refusal read under older windows may not stand, and the hunt
         # re-reads it before a run counts. The issue checks are cheaper than
