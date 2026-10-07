@@ -357,6 +357,11 @@ _POLICY_BANS = re.compile(
     r"(?:(?:external|outside|community|third[- ]party)\s+)?"
     r"(?:pull\s+requests?|prs?|code\s+contributions?|contributions?)"
     r"(?:\s+from\s+outside\b)?"
+    # aws/bedrock-agentcore-sdk-python CONTRIBUTING.md: "is not currently
+    # accepting external pull requests". The qualifier is required, so "not
+    # accepting pull requests for new backends" stays open. Mailman #448.
+    r"|not\s+(?:currently\s+)?accepting\s+(?:external|outside|community|third[- ]party)\s+"
+    r"(?:pull\s+requests?|prs?|code\s+contributions?|contributions?)"
     # openai/openai-agents-python CONTRIBUTING.md: "Pull requests are limited
     # to repository collaborators. We do not accept pull requests from
     # non-collaborators". Mailman #418.

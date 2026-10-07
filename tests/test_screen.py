@@ -1652,6 +1652,9 @@ class ScreenTests(unittest.TestCase):
             "maintainer team.",
             "We are no longer accepting external contributions.",
             "We have temporarily stopped accepting community pull requests.",
+            # aws/bedrock-agentcore-sdk-python CONTRIBUTING.md. Mailman #448.
+            "**This repository is maintained exclusively by the AWS Bedrock "
+            "AgentCore team and is not currently accepting external pull requests.**",
         ):
             with self.subTest(sentence=sentence), tempfile.TemporaryDirectory() as temporary:
                 record = _screen(
