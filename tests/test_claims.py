@@ -1555,6 +1555,19 @@ class MaintainerDisputeTests(unittest.TestCase):
             "That looks like a configuration problem rather than a bug."
         )]))
 
+    def test_was_not_able_to_reproduce_and_marked_blocked_are_disputes(self):
+        # server-client-python#1711 and pandas-stubs#1897, verbatim. Mailman #457.
+        from mailman.claims import maintainer_dispute
+
+        for body in (
+            "I also wasn't able to reproduce this. I tried the values `\"\"`.",
+            "I haven't been able to replicate it on 3.12.",
+            "I am going to mark this one as blocked, if you want to open an "
+            "issue on the pandas website to ask for clarification.",
+        ):
+            with self.subTest(body=body):
+                self.assertIsNotNone(maintainer_dispute([self._comment(body)]))
+
     def test_cannot_recreate_is_a_dispute(self):
         # Arelle#2570, verbatim. Mailman #359.
         from mailman.claims import maintainer_dispute

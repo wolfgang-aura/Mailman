@@ -149,6 +149,8 @@ _DESIGN_OPEN = re.compile(
     r"|i(?:'d| would) like to hear"
     # Not inside a link: rfc-editor.org/rfc/rfc7591 cites a spec. Mailman #408.
     r"|(?<![./-])rfc\b(?![\s-]*\d|[-/]|\.\w)"
+    # pandas-stubs#1897 "I am going to mark this one as blocked". Mailman #457.
+    r"|mark(?:ing|ed)? (?:this|it)(?: one| issue)? as blocked\b"
     r"|proposals?\b"
     r"|(?:haven't|have not|not yet) decided"
     # A project voice declining for now and polling for demand. plotly/dash#3968.
@@ -1154,7 +1156,9 @@ def render_claims(record: dict[str, Any]) -> str:
 #: A project voice saying the report does not reproduce for them.
 _NOT_REPRODUCED = re.compile(
     r"\b(?:"
-    r"(?:can(?:no|')?t|cannot|could(?:n't| not)|unable to|not able to|failed to)"
+    r"(?:can(?:no|')?t|cannot|could(?:n't| not)|unable to|not able to|failed to"
+    # server-client-python#1711 "I also wasn't able to reproduce". Mailman #457.
+    r"|(?:was|were|have|has|had)(?:n't| not)(?: been)? able to)"
     # Arelle#2570 "I can't recreate this". Mailman #359.
     r" (?:reproduce|repro|replicate|recreate)\b"
     # jedi#2077: "I have tried to reproduce this, but couldn't." Mailman #210.
