@@ -955,6 +955,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="start even though somebody claimed this issue in its comments "
         "and nobody answered them; an assignment still refuses",
     )
+    orchestrate_parser.add_argument(
+        "--findings",
+        type=Path,
+        help="resume-review only: a file of the coordinator's findings, sent "
+        "to the primary as one revision before the reviewer runs again",
+    )
     orchestrate_parser.add_argument("--data-root", type=Path)
 
     retrospective = subparsers.add_parser(
@@ -2673,6 +2679,11 @@ def _orchestrate(arguments: argparse.Namespace) -> int:
         acknowledge_prior_attempts=arguments.acknowledge_prior_attempts,
         acknowledge_claims=arguments.acknowledge_claims,
         resume_review=arguments.subcommand == "resume-review",
+        coordinator_findings=(
+            arguments.findings.read_text(encoding="utf-8")
+            if arguments.findings
+            else None
+        ),
     )
     summary = {
         "run_id": outcome.run_id,

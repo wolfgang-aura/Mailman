@@ -1123,7 +1123,12 @@ class _Orchestration:
 
     # Entry point -------------------------------------------------------
 
-    def execute(self, *, resume_review: bool = False) -> OrchestrationOutcome:
+    def execute(
+        self,
+        *,
+        resume_review: bool = False,
+        coordinator_findings: str | None = None,
+    ) -> OrchestrationOutcome:
         # BLOCKED is resumable because the target gate below is what blocks a
         # run before the primary ever starts, and its preconditions are
         # satisfied by commands the operator runs afterwards. Refusing to
@@ -1133,6 +1138,8 @@ class _Orchestration:
         # slipping past.
         stored_review: tuple[str, str, str] | None = None
         stored_findings: str | None = None
+        if coordinator_findings is not None and not resume_review:
+            raise ValueError("coordinator findings apply only to resume-review")
         if resume_review:
             if self.run.status not in (
                 RunStatus.BLOCKED,
@@ -1296,6 +1303,8 @@ class _Orchestration:
                 raise ValueError("candidate does not descend from the run base")
             self._record_workspace_change("resume")
             stored_findings = self._reuse_stored_review(stored_review)
+            if coordinator_findings is not None:
+                stored_findings = self._coordinator_revision(coordinator_findings)
         else:
             baseline_ok, _ = self._verify("baseline")
             if not baseline_ok:
@@ -1375,6 +1384,30 @@ class _Orchestration:
             data={"candidate_digest": digest, "execution_record": record},
         )
         return report
+
+    def _coordinator_revision(self, findings: str) -> str:
+        """Send the coordinator's findings to the primary as one revision.
+
+        A reviewer can approve a patch the coordinator then finds wrong, and
+        before this the only choices were to ship it, hand-edit the candidate
+        or drop the run. The findings spend a revision like a REVISE verdict
+        does, then the reviewer and final verification run again.
+        https://github.com/wolfgang-aura/Mailman/issues/465
+        """
+        if not findings.strip():
+            raise ValueError("the coordinator findings are empty")
+        if self.revisions_used >= self.max_revisions:
+            raise ValueError(
+                f"no revision left: {self.revisions_used} of "
+                f"{self.max_revisions} used; pass a higher --max-revisions"
+            )
+        self._step(
+            "coordinator-findings",
+            ok=True,
+            detail="the coordinator's findings go to the primary as a revision",
+            data={"findings_sha256": _sha256(findings)},
+        )
+        return findings
 
     def _check_verification_agreement(self) -> None:
         """Require identical resolved verification executables and arguments.
@@ -1672,6 +1705,7 @@ def orchestrate(
     acknowledge_prior_attempts: bool = False,
     acknowledge_claims: bool = False,
     resume_review: bool = False,
+    coordinator_findings: str | None = None,
 ) -> OrchestrationOutcome:
     """Run one bounded primary, reviewer, and verification loop for a run."""
     return _Orchestration(
@@ -1698,4 +1732,6 @@ def orchestrate(
         check_target=check_target,
         acknowledge_prior_attempts=acknowledge_prior_attempts,
         acknowledge_claims=acknowledge_claims,
-    ).execute(resume_review=resume_review)
+    ).execute(
+        resume_review=resume_review, coordinator_findings=coordinator_findings
+    )

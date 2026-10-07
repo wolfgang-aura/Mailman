@@ -1011,6 +1011,60 @@ class OrchestrationTests(OrchestratorHarness):
         self.assertEqual(len(resumed.calls), 1)
         self.assertEqual(primary.calls, [])
 
+    def _approved_then_resumed_with_findings(
+        self, *, max_revisions: int
+    ) -> tuple[object, ScriptedAgent, ScriptedAgent]:
+        run, directory = self.make_run()
+        primary = ScriptedAgent(
+            "codex",
+            [
+                {"report": "candidate", "touch": ("fix.txt", "fixed")},
+                {"report": "revised", "touch": ("test_fix.txt", "covered")},
+            ],
+        )
+        reviewer = ScriptedAgent("claude", [{"report": APPROVED}, {"report": APPROVED}])
+        common = dict(
+            run=run,
+            run_directory=directory,
+            workspace=self.workspace,
+            primary_prompt=self.primary_prompt,
+            reviewer_prompt=self.reviewer_prompt,
+            verification_command=[sys.executable, "-c", PASSING_CHECK],
+            agent_factory=lambda name, model: {"codex": primary, "claude": reviewer}[name],
+            max_review_cycles=3,
+        )
+        first = orchestrate(**common, max_revisions=1)
+        self.assertEqual(first.status, RunStatus.ENGINEERING_COMPLETE)
+        outcome = orchestrate(
+            **common,
+            max_revisions=max_revisions,
+            resume_review=True,
+            coordinator_findings="Keep scroll on resize; add a regression test.",
+        )
+        return outcome, primary, reviewer
+
+    def test_coordinator_findings_revise_an_approved_candidate(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/465
+
+        The reviewer approved a patch the coordinator found wrong. The findings
+        go to the primary as a revision, then the reviewer runs again.
+        """
+        outcome, primary, reviewer = self._approved_then_resumed_with_findings(
+            max_revisions=1
+        )
+
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
+        self.assertEqual(outcome.revisions_used, 1)
+        self.assertEqual(len(primary.calls), 2)
+        self.assertIn("Keep scroll on resize", primary.calls[1][1])
+        self.assertEqual(len(reviewer.calls), 2)
+        self.assertIn("coordinator-findings", [step.name for step in outcome.steps])
+
+    def test_coordinator_findings_need_a_revision_left(self) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/465"""
+        with self.assertRaisesRegex(ValueError, "no revision left"):
+            self._approved_then_resumed_with_findings(max_revisions=0)
+
     def test_an_expired_run_deadline_stops_a_resume_review(self) -> None:
         """https://github.com/wolfgang-aura/Mailman/issues/81"""
         run, directory = self.make_run()
