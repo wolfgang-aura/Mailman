@@ -909,3 +909,18 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   - Other attention rows (beets#7065 approved, openalgo#2021, poetry#11052 behind, syrupy#1257, pretix#6564 parked)
     are unchanged.
 - 2026-10-05: the `wolfgang-aura/semantica` fork is deleted (merged upstream as `858d5dd`); GitHub no longer resolves it.
+- Re-read 2026-10-07 (`mailman hunt watch`; unattended `pr-followup` run, `contributions --refresh` not run): 46 watched
+  rows, 13 merged, 8 closed unmerged, 25 open (13 ok, 1 approved, 4 inherited, 7 attention). Six rows moved since
+  2026-10-06 15:02 UTC.
+  - PrefectHQ/prefect#23237 merged 2026-10-06 14:25 UTC as `3fbbdf489` after desertaxle's approval; record
+    `docs/runs/0026-prefect-23237-fourteenth-merge.md`. Fork `wolfgang-aura/prefect` still exists, delete awaits approval.
+  - pylint-dev/pylint#11517 `inherited` -> `attention`: Pierre-Sassoulas requested changes on our head `a58b089` (2026-10-06
+    19:53 UTC, "increase the coverage or remove the code that can never run"). `codecov/patch` reports 100% of the diff hit on
+    that head; a local branch-coverage run of the functional test shows no uncovered line or branch in the changed code. The
+    red check is `codecov/project` (94.33% against 95.00%). Reply drafted, awaits approval.
+  - pydata/xarray#11637 `inherited` -> `attention`, `blocked` -> `dirty`: main moved to `3c1b225`. A local merge of main into
+    the run branch is clean (`825a4ad`, whats-new entry still under `v2026.09.1 (unreleased)`), `test_append_native_time_dtype_encoding`
+    passes; push awaits approval. spencerkclark has not answered our 2026-10-05 reply.
+  - pretix/pretix#6564 `inherited` -> `attention` on the CLA check, parked. spack/spack#53167 is now watched (ok).
+  - Unchanged: beets#7065 approved awaiting merge; openalgo#2021 and syrupy#1257 wait on maintainers (Windows flakes);
+    poetry#11052 is `behind`, left to the maintainers; bleachbit#2397 flags only a coveralls bot comment.
