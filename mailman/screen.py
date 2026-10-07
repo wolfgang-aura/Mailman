@@ -1947,6 +1947,12 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         # "must be in your own words" there behind a one-line guide. #271.
         if template:
             _constraints(template_source, " ".join(template.split()), constraints)
+        # The other guides bind too: otel-python's CONTRIBUTING.md says
+        # nothing about comments, and its AGENTS.md forbids AI-generated ones.
+        # Mailman #443.
+        for other, body in guides.items():
+            if body and other != relative:
+                _constraints(other, " ".join(body.split()), constraints)
         if not any(entry["kind"] == REQUIRES_CLA for entry in constraints):
             bot = _cla_bot(gh, slug)
             if bot:

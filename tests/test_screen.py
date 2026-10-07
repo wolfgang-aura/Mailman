@@ -2223,6 +2223,7 @@ class ScreenTests(unittest.TestCase):
                 Path(temporary),
                 FakeGitHub(
                     policies={
+                        "CONTRIBUTING.md": "# Contributing\nOpen a PR.\n",
                         "AGENTS.md": (
                             "# Agents\n"
                             "The most important rule is not to post comments on "
