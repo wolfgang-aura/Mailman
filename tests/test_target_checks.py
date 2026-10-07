@@ -1157,6 +1157,17 @@ class LintBaselineTests(_Fixture):
         self.assertEqual([f["code"] for f in findings], ["lint-preexisting"])
         self.assertEqual(seen, [True])
 
+    def test_mypy_summary_checking_one_more_file_is_not_a_new_finding(self) -> None:
+        # robotframework-browser#5152 (#462): the patch added a test file, so
+        # mypy said "2 source files" where the base said "1 source file".
+        error = 'pkg/a.py:3: error: old  [misc]\n'
+        executor = BaselineExecutor(
+            error + "Found 1 error in 1 file (checked 2 source files)\n",
+            error + "Found 1 error in 1 file (checked 1 source file)\n",
+        )
+        _, findings = self._run(executor)
+        self.assertEqual([f["code"] for f in findings], ["lint-preexisting"])
+
     def test_without_a_base_commit_no_worktree_is_made(self) -> None:
         executor = BaselineExecutor("pkg/mod.py:1:1: F401\n", "pkg/mod.py:1:1: F401\n")
         _, findings = self._run(executor, base_commit=None)

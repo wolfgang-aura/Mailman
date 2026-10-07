@@ -1016,6 +1016,8 @@ _SKIPPED_PARTS = frozenset({
 })
 _DIGITS = re.compile(r"\d+")
 _NOTE = re.compile(r":\d+(?::\d+)?: note: ")
+#: mypy's closing tally; it pluralizes "file" by how many files were checked (#462).
+_MYPY_SUMMARY = re.compile(r"^(?:Found \d+ errors? in \d+ files?|Success: no issues found)")
 _CODE_FRAME = re.compile(r"\s*\d*\s*\|")
 #: pyrefly's `Cannot find module `x`` and mypy's missing-module error.
 _MISSING_MODULE = re.compile(
@@ -1068,7 +1070,7 @@ def _signatures(
         if is_diff and line.startswith((" ", "@@", "--- ", "+++ ")):
             continue
         # ruff's and ty's code frames quote source, which the patch can shift.
-        if _CODE_FRAME.match(line):
+        if _CODE_FRAME.match(line) or _MYPY_SUMMARY.match(line):
             continue
         line = line.replace("\\", "/").strip()
         # pyrefly quotes the import root JSON-escaped, `C:\\Users` (#305).
