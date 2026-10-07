@@ -933,3 +933,13 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   - pretix/pretix#6564 `inherited` -> `attention` on the CLA check, parked. spack/spack#53167 is now watched (ok).
   - Unchanged: beets#7065 approved awaiting merge; openalgo#2021 and syrupy#1257 wait on maintainers (Windows flakes);
     poetry#11052 is `behind`, left to the maintainers; bleachbit#2397 flags only a coveralls bot comment.
+- Re-read 2026-10-07 11:10 SGT (`mailman hunt watch`; unattended `pr-followup` run): counts unchanged (46 rows, 13 merged,
+  8 closed unmerged, 25 open). Five rows moved since 01:11 UTC.
+  - pydata/xarray#11637: still `dirty`. Main moved again to `4b0ab62d9` after our push of `825a4ad`. A local merge in the run
+    workspace is clean (`0842608f`); `test_zarr.py -k "datetime64 or append"` gives 84 passed, 92 skipped. Push awaits approval.
+    The earlier failing checks (Test Results, a flaky py314 job) no longer fail.
+  - syrupy-project/syrupy#1257: red on one job, `test_update_success_shows_snapshot_report[xdist_two]` on windows 3.10; the
+    other 10 jobs were cancelled by it. The test also fails on the base `7dc8f88` (3 of 8 local runs, 1 of 8 with our change),
+    so it is an upstream xdist flake. Nothing to push.
+  - pylint#11517 `attention` -> `inherited` (only `codecov/project` red). django-stubs#3685, djangorestframework-stubs#1073 and
+    python-markdown2#732 are now watched (ok).
