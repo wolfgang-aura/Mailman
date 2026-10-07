@@ -308,6 +308,32 @@ build-backend = "poetry.core.masonry.api"
             self.assertIn("compiled", plan["draft"]["review"])
             self.assertTrue(plan["draft"]["compiled_extensions"])
 
+    def test_setup_py_extras_reach_a_compiled_target_on_windows(self):
+        # Pyomo: pyproject marks both dynamic and setup.py declares them in
+        # `setup_kwargs = dict(...)`; the plan dropped `parameterized` and the
+        # touched tests failed to collect. Mailman #453.
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "pyproject.toml").write_text(
+                '[project]\nname = "pyomo"\ndynamic = ["dependencies", "optional-dependencies"]\n',
+                encoding="utf-8",
+            )
+            (root / "setup.py").write_text(
+                "from setuptools import Extension, setup\n"
+                "setup_kwargs = dict(install_requires=['ply'],\n"
+                "    extras_require={'tests': ['parameterized', 'pytest!=9.0.0'], 'docs': ['sphinx']},\n"
+                "    ext_modules=[Extension('pyomo.x', ['x.c'])])\n"
+                "setup(**setup_kwargs)\n",
+                encoding="utf-8",
+            )
+            with mock.patch("mailman.environment_plan.sys.platform", "win32"):
+                plan = draft_plan(root, root / "run" / "plan.json")
+            installed = plan["steps"][1]["command"]
+            self.assertIn("parameterized", installed)
+            self.assertIn("pytest!=9.0.0", installed)
+            self.assertIn("ply", installed)
+            self.assertNotIn("sphinx", installed)
+
     def test_a_c_extension_target_off_windows_keeps_the_editable_install(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)

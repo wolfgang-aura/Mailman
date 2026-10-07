@@ -1,6 +1,7 @@
 """Draft an editable Python environment plan from declared dependencies."""
 from __future__ import annotations
 
+import ast
 import json
 import re
 import sys
@@ -226,6 +227,35 @@ def _builds_compiled_extensions(workspace: Path) -> bool:
     return "Extension(" in text or "ext_modules" in text
 
 
+def _setup_py_literal(workspace: Path, key: str) -> object:
+    """The literal value setup.py gives `key`, as a setup() keyword or dict entry.
+
+    Pyomo marks its dependencies dynamic in pyproject and declares them in
+    `setup_kwargs = dict(..., extras_require={...})`. A value that is not a
+    literal returns None. Mailman #453.
+    """
+    setup = workspace / "setup.py"
+    if not setup.is_file():
+        return None
+    try:
+        tree = ast.parse(setup.read_text(encoding="utf-8", errors="replace"))
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        values = []
+        if isinstance(node, ast.Call):
+            values = [keyword.value for keyword in node.keywords if keyword.arg == key]
+        elif isinstance(node, ast.Dict):
+            values = [value for name, value in zip(node.keys, node.values)
+                      if isinstance(name, ast.Constant) and name.value == key]
+        for value in values:
+            try:
+                return ast.literal_eval(value)
+            except ValueError:
+                continue
+    return None
+
+
 #: Copies the installed release's compiled modules into the workspace (the
 #: step's working directory) at the same relative paths. Targets gitignore
 #: them, so the tree stays clean. Mailman #213. A pure release wheel means the
@@ -360,6 +390,17 @@ def draft_plan(
     project = tomllib.loads(source.read_text(encoding="utf-8"))
     metadata = project.get("project", {})
     extras = metadata.get("optional-dependencies", {})
+    dynamic = metadata.get("dynamic", [])
+    if not extras and "optional-dependencies" in dynamic:
+        declared_extras = _setup_py_literal(workspace, "extras_require")
+        if isinstance(declared_extras, dict):
+            extras = {name: [entry for entry in entries if isinstance(entry, str)]
+                      for name, entries in declared_extras.items()
+                      if isinstance(name, str) and isinstance(entries, list)}
+    if not metadata.get("dependencies") and "dependencies" in dynamic:
+        declared_runtime = _setup_py_literal(workspace, "install_requires")
+        if isinstance(declared_runtime, list):
+            metadata = {**metadata, "dependencies": [entry for entry in declared_runtime if isinstance(entry, str)]}
     groups = project.get("dependency-groups", {})
     names = ("test", "tests", "testing", "dev")
     extra = next((name for name in names if name in extras), None)
@@ -444,7 +485,11 @@ def draft_plan(
     name = metadata.get("name")
     if compiled and isinstance(name, str):
         runtime = [entry for entry in metadata.get("dependencies", []) if isinstance(entry, str)]
-        dependencies = list(dict.fromkeys([*dependencies, *runtime, "pytest"]))
+        # The editable branch installs `.[extra]`; this one installs no target,
+        # so the test extra's entries go in by name. Mailman #453.
+        test_extra = [entry for name in (extra or "").split(",") for entry in extras.get(name, [])
+                      if isinstance(entry, str)]
+        dependencies = list(dict.fromkeys([*dependencies, *runtime, *test_extra, "pytest"]))
         install_steps = [
             {"name": "install-release-wheel-for-compiled-modules", "command": [interpreter, "-m", "pip", "install", *constraints, "--only-binary", ":all:", "--no-deps", name]},
             {"name": "copy-compiled-modules-into-workspace", "command": [interpreter, "-c", _COPY_COMPILED, name]},
