@@ -364,7 +364,9 @@ _CLAIM = re.compile(
     # open a PR". Mailman #423.
     r"|(?:i(?:'m|m| am) |\bam |^)(?:glad|happy|pleased|willing) to "
     r"(?:implement|prepare|open|submit|send|raise|take|work|fix|make|contribute"
-    r"|put (?:that|this|it|one|something) together)"
+    r"|put (?:that|this|it|one|something) together"
+    # sentence-transformers#4134: "Happy to turn it into a PR". Mailman #458.
+    r"|turn (?:that|this|it) into)"
     r"|i(?:'d| would) be (?:glad|happy|pleased) to "
     r"(?:prepare|open|submit|send|raise|help|take|work|fix|make|turn|contribute)"
     r"|i(?:'ve|ve| have) (?:this|it|the fix|a fix|the change) "
