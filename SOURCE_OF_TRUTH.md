@@ -949,12 +949,14 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
     `docs/runs/0027-beets-7065-fifteenth-merge.md`. Fork `wolfgang-aura/beets` delete awaits approval.
   - pylint-dev/pylint#11517 `inherited` -> `attention`: Pierre-Sassoulas (2026-10-07 05:59 UTC) says the coverage change is in
     `5ee6932` and asks for a rebase on origin/main; our head `a58b089` is 31 commits behind it. Merge of main in the run
-    workspace is clean (`660fdd3`), touched tests pass; push and reply await approval.
+    workspace is clean (`660fdd3`), touched tests pass; pushed and replied by the operator (head `660fdd3` confirmed with `gh`).
+  - Fork `wolfgang-aura/beets` deleted by the operator (confirmed: repository no longer resolves).
   - pydata/xarray#11637 `attention` -> `ok` (`blocked`, 42 checks pass) after the 2026-10-07 push.
 - Re-read 2026-10-07 17:01 SGT (`mailman hunt watch`; unattended `pr-followup` run, `contributions --refresh` not run): 53 rows,
   14 merged, 8 closed unmerged, 19 ok, 4 inherited, 8 attention. Five rows moved since 06:01 UTC.
   - typeddjango/django-stubs#3685 `ok` -> `attention`: sobolevn (2026-10-07 07:03 UTC) asked for the new tests to expose `T` and
     check it with `reveal_type`. Our head `450a0ed` also fails `test (3.11, 0)`: the PEP 695 `class X[T: ...]` case cannot parse on
-    3.11 (`Critical error occurred`, `test_metaclass.yml:230`). Revision awaits the operator's model choice.
+    3.11 (`Critical error occurred`, `test_metaclass.yml:230`). Revision (Sonnet 5.5 both roles, reviewer APPROVE, verification
+    exit 0) pushed by the operator as `c5214aa`; reply posted. CI on the new head not yet read.
   - strawberry-graphql/strawberry-django#971 now watched, `attention` only for botberry's autopub changelog preview; no action.
   - caronc/apprise#1775, pyinfra-dev/pyinfra#1992, sktime/pytorch-forecasting#2452 now watched, all `ok`.
