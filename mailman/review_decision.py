@@ -389,6 +389,18 @@ def _not_utf8(path: Path, error: UnicodeDecodeError) -> str:
     )
 
 
+def _ai_comment_ban(root: Path, run: dict[str, Any]) -> dict[str, Any] | None:
+    """The repository screen's ban on agent-written comments, if it has one. #443."""
+    from mailman.screen import NO_AI_COMMENTS, load_screen, policy_constraint
+
+    match = re.search(r"github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?/?$",
+                      str(run.get("repository") or ""))
+    if not match:
+        return None
+    return policy_constraint(load_screen(root.parent, f"{match[1]}/{match[2]}"),
+                             NO_AI_COMMENTS)
+
+
 def offer_problems(run_directory: Path, offer: Offer) -> tuple[list[str], str]:
     """What is wrong with the offer draft on disk, and its text when nothing is."""
     root = Path(run_directory).resolve()
@@ -421,6 +433,13 @@ def offer_problems(run_directory: Path, offer: Offer) -> tuple[list[str], str]:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         run = {}
     base = str(run.get("base_commit") or "").lower() if isinstance(run, dict) else ""
+    banned = _ai_comment_ban(root, run if isinstance(run, dict) else {})
+    if banned:
+        problems.append(
+            f"the project forbids AI-generated comments ({banned.get('source')}: "
+            f"{banned.get('quote')!r}); an ask-first offer cannot go to this "
+            "repository. Drop the run or find a target that allows it."
+        )
     if not base:
         problems.append("run.json names no base commit for the offer to cite.")
     elif not any(base.startswith(word) for word in _COMMIT_WORD.findall(text.lower())):

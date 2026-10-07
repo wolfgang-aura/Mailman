@@ -523,6 +523,29 @@ class AskFirstDecisionTests(unittest.TestCase):
         problems = self.problems(offer={"path": "../elsewhere/offer.md"})
         self.assertIn("inside the run directory", problems)
 
+    def test_an_offer_to_a_project_that_bans_ai_comments_is_refused(self) -> None:
+        # open-telemetry/opentelemetry-python AGENTS.md forbids AI-generated
+        # issue comments. The offer gate let a draft for #5568 through. #443.
+        from mailman.screen import screen_path
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory) / "run-1"
+            directory.mkdir()
+            ask_decision(directory)
+            run = json.loads((directory / "run.json").read_text(encoding="utf-8"))
+            run["repository"] = "https://github.com/acme/widgets.git"
+            (directory / "run.json").write_text(json.dumps(run), encoding="utf-8")
+            screen = screen_path(Path(temporary_directory), "acme/widgets")
+            screen.parent.mkdir(parents=True, exist_ok=True)
+            screen.write_text(json.dumps({"gates": [{"name": "policy", "data": {
+                "constraints": [{"kind": "no-ai-comments", "source": "AGENTS.md",
+                                 "quote": "not to post comments that are AI-generated"}],
+            }}]}), encoding="utf-8")
+            with self.assertRaises(DecisionError) as caught:
+                load_decision(directory)
+
+        self.assertIn("forbids AI-generated comments", " ".join(caught.exception.problems))
+
     def test_an_offer_on_a_send_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)

@@ -2216,6 +2216,46 @@ class ScreenTests(unittest.TestCase):
         )
         self.assertIn("Contributor License Agreement", constraint["quote"])
 
+    def test_a_ban_on_ai_generated_comments_is_recorded(self) -> None:
+        # open-telemetry/opentelemetry-python AGENTS.md. Mailman #443.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "AGENTS.md": (
+                            "# Agents\n"
+                            "The most important rule is not to post comments on "
+                            "issues or PRs that are AI-generated. Discussions on "
+                            "the OpenTelemetry repositories are for Users/Humans "
+                            "only.\n"
+                        )
+                    }
+                ),
+            )
+        gate = _named(record, "policy")
+
+        self.assertTrue(gate["data"]["forbids_ai_comments"])
+        kinds = [entry["kind"] for entry in gate["data"]["constraints"]]
+        self.assertIn("no-ai-comments", kinds)
+
+    def test_a_rule_about_comment_style_is_no_ai_comment_ban(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "CONTRIBUTING.md": (
+                            "# Contributing\nPlease do not post comments that "
+                            "only say +1. AI tools are fine for writing code.\n"
+                        )
+                    }
+                ),
+            )
+        gate = _named(record, "policy")
+
+        self.assertFalse(gate["data"]["forbids_ai_comments"])
+
     def test_a_cla_enforced_only_by_a_status_check_is_recorded(self) -> None:
         # traceloop/openllmetry's guide names no CLA; CLA assistant posts
         # `license/cla` on every pull request. The screen passed it as

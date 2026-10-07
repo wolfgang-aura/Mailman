@@ -559,6 +559,23 @@ _POLICY_CLA = re.compile(
     re.IGNORECASE,
 )
 
+#: A project that wants no agent-written comments on its threads. An ask-first
+#: offer is one, so it cannot go there however good the fix. OpenTelemetry
+#: Python's AGENTS.md: "not to post comments on issues or PRs that are
+#: AI-generated. Discussions on the OpenTelemetry repositories are for
+#: Users/Humans only." Mailman #443.
+NO_AI_COMMENTS = "no-ai-comments"
+_POLICY_NO_AI_COMMENTS = re.compile(
+    r"(?:"
+    r"(?:not|never)\s+(?:to\s+)?post\s+(?:any\s+)?comments?\b[^.]{0,60}?"
+    r"(?:ai|llm|machine)[- ]generated"
+    r"|(?:do\s+not|don't|never)\s+post\s+(?:ai|llm|machine)[- ]generated\s+comments?"
+    r"|discussions?\b[^.]{0,60}\bare\s+for\s+(?:users\s*/\s*)?humans\s+only"
+    r"|(?:cannot|can't|may\s+not|must\s+not)\s+comment\s+for\s+(?:the\s+)?users?\b"
+    r")",
+    re.IGNORECASE,
+)
+
 _POLICY_PATHS = (
     "CONTRIBUTING.md",
     ".github/CONTRIBUTING.md",
@@ -1402,6 +1419,7 @@ _CONSTRAINT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (PRIOR_DISCUSSION, _POLICY_PRIOR_DISCUSSION),
     (NO_DUPLICATE_PULL_REQUESTS, _POLICY_NO_DUPLICATES),
     (REQUIRES_CLA, _POLICY_CLA),
+    (NO_AI_COMMENTS, _POLICY_NO_AI_COMMENTS),
 )
 
 #: The constraints whose quote is the whole sentence rather than the matched
@@ -1981,6 +1999,7 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
                     NO_DUPLICATE_PULL_REQUESTS in kinds
                 ),
                 "requires_cla": REQUIRES_CLA in kinds,
+                "forbids_ai_comments": NO_AI_COMMENTS in kinds,
                 # Marks a screen that read CLA checks; one from before #440
                 # may say False for an EasyCLA repository. Mailman #442.
                 "cla_checks_read": True,
@@ -2020,6 +2039,7 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
             "requires_prior_discussion": PRIOR_DISCUSSION in kinds,
             "forbids_duplicate_pull_requests": NO_DUPLICATE_PULL_REQUESTS in kinds,
             "requires_cla": REQUIRES_CLA in kinds,
+            "forbids_ai_comments": NO_AI_COMMENTS in kinds,
             "cla_checks_read": True,
             "constraints": constraints,
             "pull_request_base": _pull_request_base([template]),
@@ -3021,6 +3041,16 @@ def _stars_gate(meta: dict[str, Any]) -> dict[str, Any]:
 def screen_path(data_root: Path, slug: str) -> Path:
     owner, _, name = slug.partition("/")
     return data_root / SCREENS_DIRECTORY / f"{owner}__{name}.json"
+
+
+def policy_constraint(screen: dict[str, Any] | None, kind: str) -> dict[str, Any] | None:
+    """The policy gate's constraint of this kind in a stored screen, or None."""
+    for gate in (screen or {}).get("gates") or []:
+        if isinstance(gate, dict) and gate.get("name") == "policy":
+            for entry in (gate.get("data") or {}).get("constraints") or []:
+                if isinstance(entry, dict) and entry.get("kind") == kind:
+                    return entry
+    return None
 
 
 def load_screen(data_root: Path, slug: str) -> dict[str, Any] | None:
