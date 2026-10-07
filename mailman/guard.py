@@ -22,6 +22,8 @@ from mailman.executor import execute
 from mailman.touched_tests import _is_test_path, diff_sha256, environment_python
 
 GUARD_FILENAME = "guard.json"
+# Bump when the outcome rules change, so a cached record is rerun (#461).
+GUARD_VERSION = 2
 GUARD_TIMEOUT_SECONDS = 10 * 60
 _SOURCE_SUFFIXES = (".py", ".pyi")
 _FILE_HEADER = re.compile(r"^\+\+\+ b/(.+)$")
@@ -115,6 +117,12 @@ def load_guard(run_directory: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def guard_is_current(record: dict[str, Any] | None, diff_digest: str) -> bool:
+    """A record is reused only for the same diff under the same outcome rules."""
+    return (record is not None and record.get("diff_sha256") == diff_digest
+            and record.get("version") == GUARD_VERSION)
+
+
 def run_guard(
     run_directory: Path,
     *,
@@ -127,6 +135,7 @@ def run_guard(
 ) -> dict[str, Any]:
     """Run the added tests against base source; every outcome is written."""
     record: dict[str, Any] = {
+        "version": GUARD_VERSION,
         "diff_sha256": diff_sha256(diff),
         "checked_at": datetime.now(UTC).isoformat(),
         "ran": False,

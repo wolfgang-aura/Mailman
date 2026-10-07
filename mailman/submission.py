@@ -1278,11 +1278,11 @@ def prepare_submission(
     findings.extend(_touched_tests_findings(touched_tests))
     # Added tests must fail without the source change, or they guard nothing
     # (#410).
-    from mailman.guard import guard_findings, load_guard, run_guard
+    from mailman.guard import guard_findings, guard_is_current, load_guard, run_guard
     from mailman.prompts import load_recorded_verification
 
     guard = load_guard(run_directory)
-    if guard is None or guard.get("diff_sha256") != diff_digest:
+    if not guard_is_current(guard, diff_digest):
         guard = run_guard(
             run_directory,
             diff=diff,

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mailman.guard import added_test_names, guard_findings, run_guard
+from mailman.guard import added_test_names, guard_findings, guard_is_current, run_guard
 
 
 def _git(workspace: Path, *arguments: str) -> str:
@@ -86,6 +86,13 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(record["failed_at_base"], ["test_cases"])
         self.assertEqual([(f["code"], f["blocking"]) for f in guard_findings(record)],
                          [("unguarded-tests", False)])
+
+    def test_a_record_from_older_outcome_rules_is_rerun(self) -> None:
+        record = self._run(self._add_tests("\n\ndef test_guards():\n    assert double(3) == 6\n"))
+
+        self.assertTrue(guard_is_current(record, record["diff_sha256"]))
+        self.assertFalse(guard_is_current(record, "other-diff"))
+        self.assertFalse(guard_is_current({**record, "version": None}, record["diff_sha256"]))
 
     def test_a_diff_that_adds_no_test_has_nothing_to_guard(self) -> None:
         record = self._run(_git(self.workspace, "diff"))
