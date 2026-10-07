@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import unittest
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
@@ -14,6 +15,7 @@ from mailman.submission import (
     _compact_matches,
     _local_matches,
     _match_rows,
+    _missing_module_now_importable,
     _query_terms,
     analyze_diff,
     compact_terms,
@@ -1785,6 +1787,31 @@ class PrepareSubmissionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MissingModuleRetryTests(unittest.TestCase):
+    """A failure from a module the environment lacked is retried once it has it (#455)."""
+
+    def record(self, missing: str) -> dict:
+        return {
+            "ran": True,
+            "exit_code": 2,
+            "python": sys.executable,
+            "output_tail": f"E   ModuleNotFoundError: No module named '{missing}'\n1 error",
+        }
+
+    def test_a_module_installed_since_the_failure_triggers_a_retry(self) -> None:
+        self.assertTrue(_missing_module_now_importable(self.record("json")))
+
+    def test_a_module_still_missing_keeps_the_failure(self) -> None:
+        self.assertFalse(
+            _missing_module_now_importable(self.record("mailman_absent_module_455"))
+        )
+
+    def test_a_passing_record_is_not_retried(self) -> None:
+        record = self.record("json")
+        record["exit_code"] = 0
+        self.assertFalse(_missing_module_now_importable(record))
 
 
 class NoTestAcknowledgementRecordTests(unittest.TestCase):

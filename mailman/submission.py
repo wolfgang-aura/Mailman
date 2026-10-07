@@ -701,6 +701,34 @@ def _touched_selection_changed(
     return [entry["path"] for entry in fresh["selected"]] != recorded
 
 
+_MISSING_MODULE = re.compile(r"No module named '([A-Za-z0-9_.]+)'")
+_IMPORT_ALL = "import importlib, sys; [importlib.import_module(n) for n in sys.argv[1:]]"
+
+
+def _missing_module_now_importable(record: dict[str, Any]) -> bool:
+    """Whether a failure blamed a module the run's python can now import (#455).
+
+    Installing a missing test dependency changes the environment, not the
+    diff, so the stored failure would otherwise stand for the same diff.
+    """
+    if not record.get("ran") or record.get("exit_code") in (0, None):
+        return False
+    python = record.get("python")
+    names = sorted(set(_MISSING_MODULE.findall(record.get("output_tail") or "")))
+    if not python or not names:
+        return False
+    try:
+        result = subprocess.run(
+            [python, "-c", _IMPORT_ALL, *names],
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def _touched_deselects_changed(record: dict[str, Any], run_directory: Path) -> bool:
     """Whether Mailman would now deselect other tests than the record did (#161)."""
     ran = [entry.get("path") for entry in record.get("selected") or []]
@@ -1215,6 +1243,7 @@ def prepare_submission(
         )
         or _touched_selection_changed(touched_tests, touched_workspace, changed_paths)
         or _touched_deselects_changed(touched_tests, run_directory)
+        or _missing_module_now_importable(touched_tests)
         # A record made before the CI marker lane ran, for a target that has
         # one (#302).
         or (
