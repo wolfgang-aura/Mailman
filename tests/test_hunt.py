@@ -1261,7 +1261,7 @@ class PrescreenRecordTests(OrchestratorHarness):
                 "blocking": list(blocking), "screened_at": "2026-09-28T01:00:00+00:00"}
 
     def _screen(self, slug, numbers, *, verdict="pass", days_old=0, flags=None,
-                window_days=None):
+                window_days=None, policy=None):
         from mailman.screen import (FRESHNESS_WINDOW_DAYS, ISSUE_WINDOW_DAYS,
                                     RESPONSIVENESS_WINDOW_DAYS)
         path = screen_path(self.data_root, slug)
@@ -1275,7 +1275,9 @@ class PrescreenRecordTests(OrchestratorHarness):
             "window_days": FRESHNESS_WINDOW_DAYS if window_days is None else window_days,
             "issue_window_days": ISSUE_WINDOW_DAYS,
             "responsiveness_days": RESPONSIVENESS_WINDOW_DAYS,
-            "gates": [{"name": "saturation", "data": {"shortlist": rows}}],
+            "gates": [{"name": "saturation", "data": {"shortlist": rows}},
+                      {"name": "policy", "data": policy if policy is not None else
+                       {"requires_cla": False, "cla_checks_read": True}}],
         }), encoding="utf-8")
 
     def test_a_prescreen_is_appended_to_the_hunt_and_counted_in_status(self):
@@ -1360,6 +1362,24 @@ class PrescreenRecordTests(OrchestratorHarness):
         self.assertTrue(by_target["acme/new#3"]["maintainer_replied"])
         self.assertTrue(by_target["acme/old#1"]["stale_screen"])
         self.assertFalse(by_target["acme/new#5"]["stale_screen"])
+
+    def test_workable_targets_say_whether_the_repository_needs_a_cla(self):
+        # cloud-custodian's screen predated #440 and hid EasyCLA. #442.
+        self._screen("acme/cla", [1], policy={"requires_cla": True, "cla_checks_read": True})
+        self._screen("acme/free", [2])
+        self._screen("acme/old", [3], policy={"requires_cla": False})
+
+        rows = {row["target"]: row["requires_cla"]
+                for row in workable_targets(self.data_root, held_repositories=set())}
+
+        self.assertEqual(rows, {"acme/cla#1": True, "acme/free#2": False, "acme/old#3": None})
+        out, err = StringIO(), StringIO()
+        with redirect_stdout(out), mock.patch("sys.stderr", err):
+            main(["hunt", "targets", "--data-root", str(self.data_root)])
+        line = next(text for text in err.getvalue().splitlines()
+                    if "predate CLA check detection" in text)
+        self.assertIn("acme/old --refresh", line)
+        self.assertNotIn("acme/free", line)
 
     def test_workable_targets_engaged_only(self):
         self._engagement_screens()

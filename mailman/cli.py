@@ -1210,6 +1210,7 @@ def _hunt(arguments: argparse.Namespace) -> int:
         every = hunt.workable_targets(root)
         warnings = [line for line in (
             hunt.stale_screen_warning(every),
+            hunt.unknown_cla_warning(every),
             hunt.rescreen_warning(hunt.rescreen_candidates(root)),
         ) if line]
         workable = (

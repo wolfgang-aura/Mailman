@@ -750,6 +750,34 @@ def stale_screen_warning(targets: list[dict]) -> str | None:
     )
 
 
+def screen_requires_cla(screen: dict) -> bool | None:
+    """Whether a stored screen found a CLA, or None when it cannot say.
+
+    A screen from before #440 read only the contributing guide, so its False
+    missed cloud-custodian's EasyCLA. Mailman #442.
+    """
+    for gate in screen.get("gates") or []:
+        if isinstance(gate, dict) and gate.get("name") == "policy":
+            data = gate.get("data") or {}
+            if data.get("requires_cla"):
+                return True
+            return False if data.get("cla_checks_read") else None
+    return None
+
+
+def unknown_cla_warning(targets: list[dict]) -> str | None:
+    """One line naming the screens that never read CLA checks, or None."""
+    slugs = sorted({row["target"].rsplit("#", 1)[0] for row in targets
+                    if row.get("requires_cla") is None})
+    if not slugs:
+        return None
+    commands = "; ".join(f"mailman screen-target {slug} --refresh" for slug in slugs)
+    return (
+        f"warning: {len(slugs)} screen(s) predate CLA check detection, so whether "
+        f"they need a CLA is unknown; refresh with: {commands}"
+    )
+
+
 def _could_pass_responsiveness(data: dict) -> bool:
     """Whether stored responsiveness numbers could pass today's rules.
 
@@ -1180,6 +1208,7 @@ def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
     screens = _passing_screens(root, held_repositories, max_age_days, now)
     targets = []
     for screened, slug, screen in sorted(screens, key=lambda item: item[0], reverse=True):
+        requires_cla = screen_requires_cla(screen)
         for row in screen_shortlist(screen):
             target = f"{slug}#{row.get('number')}"
             if target in claimed or prescreen_path(root, slug, int(row["number"])).is_file():
@@ -1213,6 +1242,7 @@ def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
                 "maintainer_disputed": row.get("maintainer_disputed"),
                 # A screen written before f94d449 has no flags at all.
                 "stale_screen": "maintainer_filed" not in row,
+                "requires_cla": requires_cla,
                 "screened_at": screen.get("screened_at"),
             })
     targets.sort(key=_target_rank)

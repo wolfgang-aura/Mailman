@@ -1981,6 +1981,9 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
                     NO_DUPLICATE_PULL_REQUESTS in kinds
                 ),
                 "requires_cla": REQUIRES_CLA in kinds,
+                # Marks a screen that read CLA checks; one from before #440
+                # may say False for an EasyCLA repository. Mailman #442.
+                "cla_checks_read": True,
                 "constraints": constraints,
                 "quote": _quoted(constraints, "disclosure"),
                 "pull_request_base": _pull_request_base(
@@ -2017,6 +2020,7 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
             "requires_prior_discussion": PRIOR_DISCUSSION in kinds,
             "forbids_duplicate_pull_requests": NO_DUPLICATE_PULL_REQUESTS in kinds,
             "requires_cla": REQUIRES_CLA in kinds,
+            "cla_checks_read": True,
             "constraints": constraints,
             "pull_request_base": _pull_request_base([template]),
         },
