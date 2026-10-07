@@ -179,6 +179,34 @@ dependencies = ["mkdocs"]
             self.assertFalse(any("{root:uri}" in part for part in build))
             self.assertEqual(plan["draft"]["hatch_environments"], ["default", "hatch-test"])
 
+    def test_poetry_test_group_supplies_test_dependencies(self):
+        """docformatter declares pytest only in a Poetry group (#450)."""
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "pyproject.toml").write_text('''
+[tool.poetry]
+name = "fixture"
+[tool.poetry.group.dev.dependencies]
+Sphinx = "^6.0.0"
+[tool.poetry.group.testing.dependencies]
+coverage = {extras = ["toml"], version = "^7.5.0"}
+mock = "^5.2.0"
+pytest = ">=8.4,<10.0"
+pytest-order = "~1.3"
+legacy = "0.4.2"
+local = {path = "../local"}
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+''', encoding="utf-8")
+            plan = draft_plan(root, root / "plan.json")
+            build = plan["steps"][1]["command"]
+            for requirement in ("coverage[toml]>=7.5.0,<8", "mock>=5.2.0,<6", "pytest>=8.4,<10.0",
+                                "pytest-order>=1.3,<1.4", "legacy==0.4.2"):
+                self.assertIn(requirement, build)
+            self.assertFalse(any(part.startswith(("Sphinx", "local")) for part in build))
+            self.assertEqual(plan["draft"]["group"], "tool.poetry.group.testing")
+
     def test_sdist_only_dependencies_are_not_refused(self):
         """beets' langdetect publishes no wheel and is pure Python (#133)."""
         with tempfile.TemporaryDirectory() as name:

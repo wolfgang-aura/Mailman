@@ -273,6 +273,55 @@ def _hatch_test_dependencies(project: dict) -> tuple[list[str], list[str]]:
     return dependencies, used
 
 
+def _poetry_requirement(name: str, spec) -> str | None:
+    """A pip requirement for one Poetry dependency, or None for path, git or url ones.
+
+    Poetry's `^1.2.3` means `>=1.2.3,<2.0.0` and `~1.2` means `>=1.2,<1.3`;
+    pip reads neither, so they are spelled out.
+    """
+    extras = ""
+    if isinstance(spec, dict):
+        if any(key in spec for key in ("path", "git", "url")):
+            return None
+        if spec.get("extras"):
+            extras = f"[{','.join(spec['extras'])}]"
+        spec = spec.get("version", "*")
+    if not isinstance(spec, str):
+        return None
+    spec = spec.strip()
+    if spec in ("", "*"):
+        return name + extras
+    match = re.fullmatch(r"([\^~])\s*(\d+(?:\.\d+)*)", spec)
+    if match:
+        parts = [int(part) for part in match.group(2).split(".")]
+        if match.group(1) == "^":
+            index = next((i for i, part in enumerate(parts) if part), len(parts) - 1)
+        else:
+            index = min(1, len(parts) - 1) if len(parts) > 1 else 0
+        upper = [*parts[:index], parts[index] + 1]
+        return f"{name}{extras}>={match.group(2)},<{'.'.join(map(str, upper))}"
+    if re.fullmatch(r"\d+(?:\.\d+)*", spec):
+        return f"{name}{extras}=={spec}"
+    return f"{name}{extras}{spec}"
+
+
+def _poetry_test_dependencies(project: dict, names: tuple[str, ...]) -> tuple[list[str], str | None]:
+    """Requirements in the first test-named Poetry group, or the legacy dev-dependencies.
+
+    docformatter declares pytest only under `[tool.poetry.group.testing]`.
+    Mailman #450.
+    """
+    poetry = project.get("tool", {}).get("poetry", {})
+    groups = poetry.get("group", {}) if isinstance(poetry, dict) else {}
+    name = next((name for name in names if isinstance(groups.get(name), dict)), None)
+    declared = groups[name].get("dependencies", {}) if name else poetry.get("dev-dependencies", {})
+    if not isinstance(declared, dict):
+        return [], None
+    requirements = [_poetry_requirement(package, spec) for package, spec in declared.items() if package != "python"]
+    found = [requirement for requirement in requirements if requirement]
+    return found, (f"tool.poetry.group.{name}" if name else ("tool.poetry.dev-dependencies" if found else None))
+
+
 def _poe_test_extras(project: dict, declared: dict) -> list[str]:
     """Extras the poe `test` task asks uv for.
 
@@ -337,7 +386,8 @@ def draft_plan(
         constraints = ["-c", str(constraint_file.resolve())]
     build = project.get("build-system", {}).get("requires", ["setuptools"])
     hatch, hatch_environments = _hatch_test_dependencies(project)
-    dependencies = list(dict.fromkeys([*build, *(expand(group) if group else []), *hatch]))
+    poetry, poetry_group = _poetry_test_dependencies(project, names) if not group else ([], None)
+    dependencies = list(dict.fromkeys([*build, *(expand(group) if group else []), *hatch, *poetry]))
     install = [interpreter, "-m", "pip", "install", BINARY_POLICY, *constraints, "--no-build-isolation", "-e", f".[{extra}]" if extra else "."]
     # Without build isolation a dependency that ships only an sdist builds with
     # whatever the environment holds, and a fresh venv holds no setuptools.
@@ -419,7 +469,7 @@ def draft_plan(
         "register": [{"name": "python", "executable": interpreter}],
         "draft": {
             "source": str(source.resolve()), "requires_python": metadata.get("requires-python"),
-            "extra": extra, "group": group, "hatch_environments": hatch_environments,
+            "extra": extra, "group": group or poetry_group, "hatch_environments": hatch_environments,
             "compiled_extensions": compiled,
             "review": review,
             **({"interpreter": interpreter_choice} if interpreter_choice is not None else {}),
