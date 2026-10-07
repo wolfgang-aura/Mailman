@@ -684,6 +684,20 @@ class PrescreenTests(unittest.TestCase):
         self.assertIn("screen-target example/project --refresh", record["next"])
         self.assertNotIn("duplicate_search", record)
 
+    def test_an_unscreened_repository_warns_to_screen_it(self) -> None:
+        # robotframework-browser#5152 passed with no warning and no screen,
+        # then failed the screen at `hunt finish`. Mailman #463.
+        record = prescreen_issue(
+            self.root,
+            "example/project#7",
+            executable=self.stub("[]", self.typo_issue()),
+        )
+
+        self.assertTrue(
+            any("mailman screen-target example/project`" in warning
+                for warning in record["warnings"])
+        )
+
     def test_a_screen_failed_under_older_windows_only_warns(self) -> None:
         # Six of eight prescreens on 2026-10-02 stopped on a stale refusal;
         # pyvista's did not stand once re-read. Mailman #383.

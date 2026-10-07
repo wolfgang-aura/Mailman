@@ -797,7 +797,15 @@ def prescreen_issue(
             f"The screen of {slug} predates the triage-approval check; run "
             f"`mailman screen-target {slug} --refresh` before init-run."
         )
-    if screen and screen.get("success") and screen.get("verdict") != "pass":
+    if not (screen and screen.get("success")):
+        # robotframework-browser#5152 passed here with no screen on record,
+        # ran to a candidate, and `hunt finish` then refused the repository
+        # on freshness. Target intel's freshness bar is looser. Mailman #463.
+        warnings.append(
+            f"No screen of {slug} is recorded, so its gates are unread; run "
+            f"`mailman screen-target {slug}` before init-run."
+        )
+    elif screen.get("verdict") != "pass":
         # A refusal read under older windows may not stand, and the hunt
         # re-reads it before a run counts. The issue checks are cheaper than
         # a re-screen, so they go first. Mailman #383. A refusal on a gate
