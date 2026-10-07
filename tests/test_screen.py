@@ -212,6 +212,9 @@ class FakeGitHub:
         self.assignment_pulls = overrides.pop("assignment_pulls", [])
         #: Open issues and pull requests with "policy" in the title. #220.
         self.policy_proposals = overrides.pop("policy_proposals", [])
+        #: Commit status contexts per head sha. Mailman #440.
+        self.statuses = overrides.pop("statuses", {})
+        self.check_runs = overrides.pop("check_runs", {})
         self.meta = overrides.pop(
             "meta",
             {
@@ -243,6 +246,12 @@ class FakeGitHub:
             ]
             return {"data": {"repository": {"pullRequests": {"nodes": nodes}}}}
         base = path.split("?", 1)[0]
+        if "/commits/" in base and base.endswith("/status"):
+            sha = base.rsplit("/", 2)[-2]
+            return {"statuses": [{"context": c} for c in self.statuses.get(sha, [])]}
+        if "/commits/" in base and base.endswith("/check-runs"):
+            sha = base.rsplit("/", 2)[-2]
+            return {"check_runs": [{"name": n} for n in self.check_runs.get(sha, [])]}
         if base == "search/issues" and "policy" in path:
             return {
                 "total_count": len(self.policy_proposals),
@@ -2206,6 +2215,58 @@ class ScreenTests(unittest.TestCase):
             entry for entry in gate["data"]["constraints"] if entry["kind"] == "cla"
         )
         self.assertIn("Contributor License Agreement", constraint["quote"])
+
+    def test_a_cla_enforced_only_by_a_status_check_is_recorded(self) -> None:
+        # traceloop/openllmetry's guide names no CLA; CLA assistant posts
+        # `license/cla` on every pull request. The screen passed it as
+        # CLA-free. Mailman #440.
+        signed = _pull(4531, author="alice", merged_days_ago=2)
+        signed["head"]["sha"] = "abc123"
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={"CONTRIBUTING.md": "# Contributing\nOpen a PR.\n"},
+                    closed_pulls=[signed],
+                    statuses={"abc123": ["license/cla", "CodeRabbit"]},
+                ),
+            )
+        gate = _named(record, "policy")
+
+        self.assertTrue(gate["data"]["requires_cla"])
+        self.assertIn("signed CLA", gate["detail"])
+        constraint = next(
+            entry for entry in gate["data"]["constraints"] if entry["kind"] == "cla"
+        )
+        self.assertEqual(constraint["source"], "pull request #4531")
+
+    def test_a_cla_enforced_by_a_check_run_is_recorded(self) -> None:
+        # mandiant/capa: Google's CLA reports as the check run `cla/google`.
+        pull = _pull(2990, author="alice", merged_days_ago=2)
+        pull["head"]["sha"] = "fed789"
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(closed_pulls=[pull], check_runs={"fed789": ["tests", "cla/google"]}),
+            )
+        gate = _named(record, "policy")
+
+        self.assertTrue(gate["data"]["requires_cla"])
+        self.assertIn("check run 'cla/google'", gate["detail"])
+
+    def test_a_status_that_only_contains_cla_letters_is_not_a_cla(self) -> None:
+        pull = _pull(7, author="alice", merged_days_ago=2)
+        pull["head"]["sha"] = "def456"
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    closed_pulls=[pull],
+                    statuses={"def456": ["ci/declare-types", "codecov/patch"]},
+                ),
+            )
+
+        self.assertFalse(_named(record, "policy")["data"]["requires_cla"])
 
     def test_a_rule_against_duplicate_pull_requests_is_recorded(self) -> None:
         # urllib3's contributing guide and README, verbatim. Nothing read this,

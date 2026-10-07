@@ -1431,6 +1431,44 @@ def _constraints(source: str, flat: str, found: list[dict[str, Any]]) -> None:
         )
 
 
+#: The check a CLA service posts on every pull request: CLA assistant's
+#: `license/cla`, the Linux Foundation's `EasyCLA`, Google's `cla/google`,
+#: cloud-init's `cla`.
+_CLA_STATUS = re.compile(r"(?:^|[/\s_-])cla(?:$|[/\s_-])|easycla", re.IGNORECASE)
+
+
+def _cla_bot(gh: _Gh, slug: str) -> dict[str, Any] | None:
+    """A `cla` constraint from the commit status a CLA service posts.
+
+    traceloop/openllmetry's guide says nothing about a CLA, and CLA assistant
+    asks every unsigned outside author to sign; cloud-custodian runs EasyCLA,
+    capa Google's CLA and cloud-init its own `cla` workflow. Mailman #440.
+    """
+    pulls = gh.json(f"repos/{slug}/pulls?state=closed&per_page=3&page=1")
+    for pull in pulls if isinstance(pulls, list) else []:
+        head = pull.get("head") if isinstance(pull, dict) else None
+        sha = (head or {}).get("sha")
+        if not isinstance(sha, str) or not sha:
+            continue
+        # CLA assistant and EasyCLA post a commit status; Google's CLA and
+        # cloud-init's workflow post a check run.
+        for suffix, rows_key, name_key, what in (
+            ("status", "statuses", "context", "commit status"),
+            ("check-runs?per_page=100", "check_runs", "name", "check run"),
+        ):
+            answer = gh.json(f"repos/{slug}/commits/{sha}/{suffix}")
+            rows = answer.get(rows_key) if isinstance(answer, dict) else None
+            for row in rows if isinstance(rows, list) else []:
+                name = row.get(name_key) if isinstance(row, dict) else None
+                if isinstance(name, str) and _CLA_STATUS.search(name):
+                    return {
+                        "kind": REQUIRES_CLA,
+                        "quote": f"{what} {name!r}",
+                        "source": f"pull request #{pull.get('number')}",
+                    }
+    return None
+
+
 def _quoted(constraints: list[dict[str, Any]], kind: str) -> str | None:
     for entry in constraints:
         if entry["kind"] == kind:
@@ -1891,6 +1929,10 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         # "must be in your own words" there behind a one-line guide. #271.
         if template:
             _constraints(template_source, " ".join(template.split()), constraints)
+        if not any(entry["kind"] == REQUIRES_CLA for entry in constraints):
+            bot = _cla_bot(gh, slug)
+            if bot:
+                constraints.append(bot)
         kinds = {entry["kind"] for entry in constraints}
         read = ", ".join(entry["source"] for entry in documents)
         if constraints:
@@ -1950,11 +1992,16 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     constraints = []
     if template:
         _constraints(template_source, " ".join(template.split()), constraints)
+    if not any(entry["kind"] == REQUIRES_CLA for entry in constraints):
+        bot = _cla_bot(gh, slug)
+        if bot:
+            constraints.append(bot)
     kinds = {entry["kind"] for entry in constraints}
     detail = "no contributing guide found, so nothing forbids the work in writing"
     if constraints:
-        detail += "; the pull request template constrains the submission - " + "; ".join(
-            f"{entry['kind']}: {entry['quote']!r}" for entry in constraints
+        detail += "; the submission is constrained - " + "; ".join(
+            f"{entry['kind']} ({entry['source']}): {entry['quote']!r}"
+            for entry in constraints
         )
     return _gate(
         "policy",
