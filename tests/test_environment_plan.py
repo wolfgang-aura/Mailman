@@ -37,6 +37,32 @@ test = [{include-group = "common"}, "pytest"]
             with self.assertRaisesRegex(ValueError, "already exists"):
                 draft_plan(root, path)
 
+    def test_a_test_requirements_file_supplies_test_dependencies(self):
+        # dishka keeps pytest in requirements/test.txt and its `dev` group
+        # holds only linters; the baseline had no pytest. Mailman #460.
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "pyproject.toml").write_text('''
+[project]
+name = "fixture"
+[dependency-groups]
+dev = ["ruff"]
+''', encoding="utf-8")
+            (root / "requirements").mkdir()
+            (root / "requirements" / "test.txt").write_text(
+                "# test tools\npytest~=9.0.1\n-r base.txt\n\npytest-asyncio==1.4.*  # async\n",
+                encoding="utf-8",
+            )
+            path = root / "plan.json"
+            draft_plan(root, path)
+            plan = load_plan(path)
+            command = plan["steps"][1]["command"]
+            self.assertIn("pytest~=9.0.1", command)
+            self.assertIn("pytest-asyncio==1.4.*", command)
+            self.assertIn("ruff", command)
+            self.assertNotIn("-r", command)
+            self.assertEqual(plan["draft"]["requirements_file"], "requirements/test.txt")
+
     def test_extras_the_poe_test_task_installs_are_installed(self):
         # schwifty: `test = "uv run --extra pydantic pytest ..."`; the plan
         # installed `.` and test_pydantic_protocol failed at baseline. Mailman #360.

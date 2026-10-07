@@ -368,6 +368,36 @@ def _poe_test_extras(project: dict, declared: dict) -> list[str]:
     return [name for name in re.findall(r"--extra[= ](\S+)", task) if name in declared]
 
 
+#: Where projects keep test dependencies outside pyproject.toml, first match
+#: wins. dishka's `dev` group is linters; pytest lives in requirements/test.txt.
+#: Mailman #460.
+TEST_REQUIREMENT_FILES = (
+    "requirements/test.txt", "requirements/tests.txt", "requirements/testing.txt",
+    "requirements-test.txt", "requirements_test.txt", "requirements-tests.txt",
+    "requirements_tests.txt", "test-requirements.txt", "test_requirements.txt",
+    "tests/requirements.txt",
+)
+
+
+def _test_requirements(workspace: Path) -> tuple[list[str], str | None]:
+    """The requirement lines of the first test requirements file found.
+
+    Option lines (`-r`, `-c`, `-e`, `--index-url`) are left out: they name
+    paths relative to the file or indexes this plan does not use.
+    """
+    for relative in TEST_REQUIREMENT_FILES:
+        path = workspace / relative
+        if not path.is_file():
+            continue
+        entries = []
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            entry = line.split(" #", 1)[0].split("\t#", 1)[0].strip()
+            if entry and not entry.startswith(("#", "-")):
+                entries.append(entry)
+        return entries, relative
+    return [], None
+
+
 def draft_plan(
     workspace: Path,
     destination: Path,
@@ -428,7 +458,10 @@ def draft_plan(
     build = project.get("build-system", {}).get("requires", ["setuptools"])
     hatch, hatch_environments = _hatch_test_dependencies(project)
     poetry, poetry_group = _poetry_test_dependencies(project, names) if not group else ([], None)
-    dependencies = list(dict.fromkeys([*build, *(expand(group) if group else []), *hatch, *poetry]))
+    requirement_file_entries, requirements_file = _test_requirements(workspace)
+    dependencies = list(dict.fromkeys([
+        *build, *(expand(group) if group else []), *hatch, *poetry, *requirement_file_entries,
+    ]))
     install = [interpreter, "-m", "pip", "install", BINARY_POLICY, *constraints, "--no-build-isolation", "-e", f".[{extra}]" if extra else "."]
     # Without build isolation a dependency that ships only an sdist builds with
     # whatever the environment holds, and a fresh venv holds no setuptools.
@@ -515,6 +548,7 @@ def draft_plan(
         "draft": {
             "source": str(source.resolve()), "requires_python": metadata.get("requires-python"),
             "extra": extra, "group": group or poetry_group, "hatch_environments": hatch_environments,
+            "requirements_file": requirements_file,
             "compiled_extensions": compiled,
             "review": review,
             **({"interpreter": interpreter_choice} if interpreter_choice is not None else {}),
