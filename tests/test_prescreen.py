@@ -935,8 +935,8 @@ class PrescreenTests(unittest.TestCase):
                     "body": "Fixes #7",
                     "state": "CLOSED",
                     "url": "https://github.com/example/project/pull/6328",
-                    "createdAt": "2026-07-01T11:55:00Z",
-                    "updatedAt": "2026-07-01T11:56:50Z",
+                    "createdAt": "2026-09-05T11:55:00Z",
+                    "updatedAt": "2026-09-05T11:56:50Z",
                     "isDraft": False,
                 },
             ]

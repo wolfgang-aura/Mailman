@@ -1805,10 +1805,26 @@ class PredatingAttemptTests(unittest.TestCase):
         from mailman.issue import predates_issue
 
         opened = datetime(2025, 8, 13, tzinfo=UTC)
-        cited = self.row(9513, "2024-09-18T12:22:47Z", references_issue=True)
+        cited = self.row(
+            9513,
+            "2024-09-18T12:22:47Z",
+            references_issue=True,
+            updated_at="2025-08-20T00:00:00Z",
+        )
 
         self.assertFalse(predates_issue(cited, opened))
         self.assertFalse(predates_issue(self.row(1, "2024-01-01T00:00:00Z"), None))
+
+    def test_a_citation_untouched_since_before_the_issue_opened_predates_it(self) -> None:
+        # Dependabot release notes said `#1781` about another repository,
+        # years before pytorch-forecasting#1781 existed. Mailman #441.
+        from mailman.issue import predates_issue
+
+        opened = datetime(2025, 2, 23, 16, 6, 51, tzinfo=UTC)
+        bump = self.row(75, "2020-10-05T06:56:34Z", references_issue=True)
+        bump["updated_at"] = "2020-10-05T07:46:46Z"
+
+        self.assertTrue(predates_issue(bump, opened))
 
     def test_the_opened_date_is_read_from_an_older_runs_issue_text(self) -> None:
         from mailman.issue import issue_opened_at

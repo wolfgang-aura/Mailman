@@ -449,20 +449,40 @@ def predates_issue(row: dict[str, Any], opened: datetime | None) -> bool:
     Such a pull request cannot be an attempt at the issue. xarray#9513 and
     #4461 matched a text search for #10639, predated it by one and five
     years, and were reported as stale attempts the body had to supersede
-    (#178). A row that cites the issue is kept whatever its date.
+    (#178). A row that cites the issue is kept, unless nothing happened to it
+    after the issue was opened: then the citation is some other repository's
+    number. pytorch-forecasting#1781 matched two Dependabot bumps from 2020
+    and 2021 whose release notes said `#1781`, and was refused as already
+    fixed (#441).
     """
-    if opened is None or row.get("references_issue"):
+    if opened is None:
         return False
-    stamp = row.get("created_at") or row.get("createdAt")
-    if not isinstance(stamp, str):
-        return False
-    try:
-        created = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=UTC)
-    return created < opened
+
+    def stamp(*names: str) -> datetime | None:
+        for name in names:
+            value = row.get(name)
+            if not isinstance(value, str) or not value:
+                continue
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        return None
+
+    if row.get("references_issue"):
+        touched = [
+            moment
+            for moment in (
+                stamp("updated_at", "updatedAt"),
+                stamp("closed_at", "closedAt"),
+                stamp("merged_at", "mergedAt"),
+            )
+            if moment is not None
+        ]
+        return bool(touched) and max(touched) < opened
+    created = stamp("created_at", "createdAt")
+    return created is not None and created < opened
 
 
 def load_issue_record(run_directory: Path) -> dict[str, Any] | None:
