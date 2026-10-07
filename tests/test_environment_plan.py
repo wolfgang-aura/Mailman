@@ -226,6 +226,32 @@ dependencies = ["mkdocs"]
             # A constraint installs nothing the target did not ask for.
             self.assertNotIn("scikit-learn!=1.9.1", plan["steps"][1]["command"])
 
+    def test_uv_lock_versions_become_constraints(self):
+        """bedrock-agentcore locks strands-agents 1.56.0; 1.58.1 failed its baseline (#447)."""
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "pyproject.toml").write_text(
+                '[project]\nname = "fixture"\n[dependency-groups]\ndev = ["strands-agents>=1.56.0"]\n',
+                encoding="utf-8",
+            )
+            (root / "uv.lock").write_text(
+                'version = 1\n'
+                '[[package]]\nname = "Strands_Agents"\nversion = "1.56.0"\nsource = { registry = "https://pypi.org/simple" }\n'
+                '[[package]]\nname = "fixture"\nversion = "0.1.0"\nsource = { editable = "." }\n'
+                '[[package]]\nname = "numpy"\nversion = "2.2.6"\nsource = { registry = "https://pypi.org/simple" }\n'
+                '[[package]]\nname = "numpy"\nversion = "2.3.4"\nsource = { registry = "https://pypi.org/simple" }\n'
+                '[[package]]\nname = "pandas"\nversion = "3.0.6"\nsource = { registry = "https://pypi.org/simple" }\n',
+                encoding="utf-8",
+            )
+            with mock.patch("mailman.environment_plan.sys.platform", "win32"):
+                plan = draft_plan(root, root / "run" / "plan.json")
+            constraints = (root / "run" / HOST_CONSTRAINTS_FILENAME).read_text(encoding="utf-8").splitlines()
+            self.assertIn("strands-agents==1.56.0", constraints)
+            # The project itself, a platform fork and a host-blocked release stay unpinned.
+            self.assertFalse(any(line.startswith(("fixture", "numpy", "pandas==")) for line in constraints))
+            self.assertIn("pandas!=3.0.6", constraints)
+            self.assertIn("Pinned 1 package(s)", plan["draft"]["review"])
+
     def test_a_c_extension_target_on_windows_overlays_the_release_wheel(self):
         # biopython: `pip install -e .` compiles C and this host has no
         # compiler. The release wheel's compiled modules go into the workspace

@@ -92,6 +92,33 @@ def _normalized(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+def _lock_pins(workspace: Path) -> list[str]:
+    """`name==version` for each registry package `uv.lock` resolves to one version.
+
+    pip otherwise takes the newest release in range. bedrock-agentcore locks
+    strands-agents 1.56.0; pip took 1.58.1 and eight baseline tests failed, and
+    the unlocked dev group backtracked for over 15 minutes. A package locked at
+    several versions (a platform fork), a non-registry source and a package the
+    host already constrains stay unpinned. Mailman #447.
+    """
+    lock = workspace / "uv.lock"
+    if not lock.is_file():
+        return []
+    try:
+        packages = tomllib.loads(lock.read_text(encoding="utf-8")).get("package", [])
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError):
+        return []
+    blocked = {_normalized(re.split(r"[<>=!~]", entry, maxsplit=1)[0]) for entry in HOST_BLOCKED_RELEASES}
+    versions: dict[str, set[str]] = {}
+    for package in packages:
+        name, version, source = package.get("name"), package.get("version"), package.get("source", {})
+        if not isinstance(name, str) or not isinstance(version, str) or "registry" not in source:
+            continue
+        versions.setdefault(_normalized(name), set()).add(version)
+    return [f"{name}=={next(iter(found))}" for name, found in sorted(versions.items())
+            if len(found) == 1 and name not in blocked]
+
+
 def _admits(requires_python: object, version: str) -> bool:
     """Whether a `requires-python` range admits a minor version, by its bounds."""
     if not isinstance(requires_python, str):
@@ -322,8 +349,11 @@ def draft_plan(
     review = "Read CI and contributing instructions before execution. This draft does not reproduce uv or poetry lock resolution. Adjust the interpreter to requires-python and the supported CI matrix."
     destination.parent.mkdir(parents=True, exist_ok=True)
     if constraints:
+        pins = _lock_pins(workspace)
+        if pins:
+            review += f" Pinned {len(pins)} package(s) to the versions uv.lock records."
         (destination.parent / HOST_CONSTRAINTS_FILENAME).write_text(
-            "\n".join(HOST_BLOCKED_RELEASES) + "\n", encoding="utf-8"
+            "\n".join([*HOST_BLOCKED_RELEASES, *pins]) + "\n", encoding="utf-8"
         )
     interpreter_choice = None
     if candidates is not None:
