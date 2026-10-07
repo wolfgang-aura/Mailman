@@ -229,6 +229,25 @@ class HuntTests(OrchestratorHarness):
         self.assertFalse(finished["complete"])
         self.assertEqual(finished["ready_to_ask"], 1)
 
+    def test_an_offer_on_an_own_words_target_is_ready_to_ask_for_the_rewrite(self):
+        """Mailman #454: the withheld offer command is the operator's rewrite, not a repair."""
+        hunt = self.new_hunt()
+        directory = self.ask_ready_run(offer_handoff=False)
+        path = directory / "submission" / "submission.json"
+        submission = json.loads(path.read_text(encoding="utf-8"))
+        submission.update(ready=False, blocking_codes=["policy-requires-own-words"])
+        path.write_text(json.dumps(submission), encoding="utf-8")
+        build_handoff(run_id=directory.name, run_directory=directory,
+                      body_path=directory / "offer-comment.md", kind="issue-comment",
+                      repository="example/project", issue_number=1, offer=True)
+        add_run(self.data_root, hunt, directory.name)
+
+        row = status(self.data_root, hunt)["runs"][0]
+
+        self.assertEqual(row["disposition"], "READY_TO_ASK", row)
+        self.assertTrue(row["human_required"])
+        self.assertIn("own words", row["action"])
+
     def test_an_assignment_block_does_not_stop_the_ask_that_clears_it(self):
         """Mailman #399: semantica merges only assigned work, so the offer asks for it."""
         hunt = self.new_hunt()

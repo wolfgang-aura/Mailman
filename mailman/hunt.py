@@ -1409,7 +1409,10 @@ def ask_ready(run, directory: Path, decision, action, warnings: list) -> dict:
                                  f"--issue {issue} --repo {repository_slug(run.repository)} "
                                  f'--body "{draft}"')
     checked = check_handoff(directory, offer=True)
-    if not checked["ok"]:
+    # On an own-words target the offer comes back refused until the operator
+    # rewrites it; that rewrite happens at approval, like the PR body's. #454.
+    own_words = not checked["ok"] and checked["reason"] == OWN_WORDS_PENDING
+    if not checked["ok"] and not own_words:
         return action("handoff", f"mailman handoff-check {run.run_id} --offer", checked["detail"])
     replies = (load_claims(directory) or {}).get("offer_replies") or []
     if replies:
@@ -1427,6 +1430,9 @@ def ask_ready(run, directory: Path, decision, action, warnings: list) -> dict:
                      "maintainer's answer; this is not a PR. Once it is posted, "
                      f"`mailman claims {run.run_id}` or `hunt refresh` reads "
                      "the answer."}
+    if own_words:
+        row.update(human_required=True,
+                   action=f"Before posting, {OWN_WORDS_INSTRUCTION}. {row['action']}")
     if warnings:
         row["warnings"] = list(warnings)
     return row
