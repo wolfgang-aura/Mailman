@@ -569,6 +569,20 @@ class RunTouchedTestsTests(_RunFixture):
         self.assertNotIn("-k", command)
         self.assertEqual(command.count("no:cacheprovider"), 1)
 
+    def test_a_verification_that_skips_the_conftest_carries_over(self) -> None:
+        # ansible-navigator's conftest imports pty, which needs termios, so
+        # its verification passed --noconftest and touched tests exited 4
+        # without it. Mailman #466.
+        (self.run_directory / "prompts.json").write_text(
+            json.dumps({"verification_command": [
+                str(self.python), "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                "--noconftest", "tests/unit/ui_framework/test_ui.py",
+            ]}),
+            encoding="utf-8",
+        )
+        record = self._run(FakeExecutor())
+        self.assertIn("--noconftest", record["command"])
+
     def test_no_prompts_record_means_nothing_deselected(self) -> None:
         record = self._run(FakeExecutor())
         self.assertNotIn("--deselect", record["command"])

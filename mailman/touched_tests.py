@@ -672,7 +672,11 @@ _SETTINGS_VALUE_OPTIONS = frozenset({
     "--ds", "--dc", "-c", "--config-file", "--rootdir", "-p", "-o",
     "--override-ini", "--import-mode", "--confcutdir",
 })
-_SETTINGS_FLAGS = frozenset({"--nomigrations", "--no-migrations", "--create-db", "--reuse-db"})
+#: `--noconftest` is how a verification skips a conftest this host cannot
+#: import: ansible-navigator's imports `pty`, which needs termios. Mailman #466.
+_SETTINGS_FLAGS = frozenset({
+    "--nomigrations", "--no-migrations", "--create-db", "--reuse-db", "--noconftest",
+})
 
 
 def verification_settings(run_directory: Path) -> list[str]:
