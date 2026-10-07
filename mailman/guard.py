@@ -190,11 +190,11 @@ def run_guard(
         if name in wanted:
             outcomes.setdefault(name, set()).add(outcome)
     ordered = [name for names in record["added"].values() for name in names]
-    # A parametrized test guards the fix only if every case fails at base.
+    # A parametrized test guards the fix when any case fails at base; a case
+    # that passes there (a control) still lands in passed_at_base (#461).
     record["passed_at_base"] = [name for name in ordered if "PASSED" in outcomes.get(name, set())]
     record["failed_at_base"] = [
-        name for name in ordered
-        if outcomes.get(name) and "PASSED" not in outcomes[name]
+        name for name in ordered if outcomes.get(name, set()) & {"FAILED", "ERROR"}
     ]
     record["not_reported"] = [name for name in ordered if name not in outcomes]
     record["ran"] = bool(outcomes)

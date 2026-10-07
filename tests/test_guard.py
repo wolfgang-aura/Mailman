@@ -75,6 +75,18 @@ class GuardTests(unittest.TestCase):
         self.assertEqual([(f["code"], f["blocking"]) for f in guard_findings(record)],
                          [("new-tests-pass-at-base", True)])
 
+    def test_a_parametrized_test_with_one_failing_case_guards_the_fix(self) -> None:
+        diff = self._add_tests(
+            "\n\nimport pytest\n\n\n@pytest.mark.parametrize('x', [2, 3])\n"
+            "def test_cases(x):\n    assert double(x) == x * 2\n"
+        )
+
+        record = self._run(diff)
+
+        self.assertEqual(record["failed_at_base"], ["test_cases"])
+        self.assertEqual([(f["code"], f["blocking"]) for f in guard_findings(record)],
+                         [("unguarded-tests", False)])
+
     def test_a_diff_that_adds_no_test_has_nothing_to_guard(self) -> None:
         record = self._run(_git(self.workspace, "diff"))
 
