@@ -921,6 +921,14 @@ def _api(
         return None
 
 
+def _is_bot(actor: Any) -> bool:
+    """Whether a GitHub account is an app or bot, such as a stale bot."""
+    if not isinstance(actor, dict):
+        return False
+    login = str(actor.get("login") or "")
+    return actor.get("type") == "Bot" or login.endswith("[bot]") or login == "github-actions"
+
+
 def closing_actor(
     run_directory: Path,
     *,
@@ -960,6 +968,7 @@ def closing_actor(
     associations: dict[str, str] = {}
     login: str | None = None
     association: str | None = None
+    bot = False
     # The last closure can sit past the first hundred events; reading one
     # page took an early self-close for the one that stands.
     events: list[Any] = []
@@ -992,6 +1001,7 @@ def closing_actor(
         if event.get("event") == "closed" and name:
             login = name
             association = kind or None
+            bot = _is_bot(actor)
             found["source"] = "timeline"
             # When it was closed, so a later maintainer label can say the
             # issue still stands. Python-Markdown#1643. Mailman #378.
@@ -1013,6 +1023,7 @@ def closing_actor(
         closed_by = issue.get("closed_by") if isinstance(issue, dict) else None
         if isinstance(closed_by, dict) and closed_by.get("login"):
             login = str(closed_by["login"])
+            bot = _is_bot(closed_by)
             found["source"] = "closed_by"
             found["at"] = issue.get("closed_at")
     if login is None:
@@ -1028,6 +1039,17 @@ def closing_actor(
         found["detail"] = (
             f"{login} ({(association or 'maintainer').lower()}) closed it, "
             "and did not write it"
+        )
+        return found
+    if author and not bot:
+        # Only the author or someone with triage access can close a pull
+        # request, so a human closer who did not write it speaks for the
+        # project whatever the association says. cephalization closed
+        # phoenix#16439 as CONTRIBUTOR, membership private. Mailman #459.
+        found["maintainer"] = True
+        found["detail"] = (
+            f"{login} ({(association or 'unknown').lower()}) closed it, "
+            "did not write it, and needs triage access to close it"
         )
         return found
     found["detail"] = (

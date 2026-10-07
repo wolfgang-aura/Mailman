@@ -368,6 +368,28 @@ class ClosingActorTests(unittest.TestCase):
         self.assertEqual(found["source"], "closed_by")
         self.assertTrue(found["maintainer"])
 
+    def test_a_human_closer_who_is_not_the_author_speaks_for_the_project(self) -> None:
+        # phoenix#16439: cephalization closed it ("doesn't fit the direction
+        # we have planned") and showed as CONTRIBUTOR, membership private.
+        # Only the author or someone with triage access can close a pull
+        # request. A stale bot's closure judges nothing. Mailman #459.
+        from unittest.mock import patch
+
+        from mailman.prior_art import closing_actor
+
+        def found_for(actor: dict) -> dict:
+            events = [{"event": "closed", "actor": actor,
+                       "author_association": "CONTRIBUTOR"}]
+            with patch("mailman.prior_art._api", return_value=events):
+                return closing_actor(
+                    Path("."), executable="gh", slug="acme/a", number=8,
+                    author="outsider", timeout_seconds=5, commands=[],
+                )
+
+        self.assertTrue(found_for({"login": "cephalization", "type": "User"})["maintainer"])
+        self.assertFalse(found_for({"login": "github-actions[bot]", "type": "Bot"})["maintainer"])
+        self.assertFalse(found_for({"login": "stale", "type": "Bot"})["maintainer"])
+
 
 class AiAuthorshipDoubtTests(unittest.TestCase):
     """Mailman #304 named the doubt; it must not fire on AI as a topic."""
