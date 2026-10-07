@@ -35,6 +35,15 @@ behavior, not a complete PRHunt under 30 minutes.
 
 ## Current local procedure
 
+Rolling hunts (2026-10-07): `hunt init --rolling` stores `requested: null`.
+The coordinator takes one candidate at a time to filing approval and then
+starts the next, until `hunt stop`. `hunt finish HUNT RUN` gates that one
+candidate, and a rolling hunt stays `RUNNING` after it. `hunt ship` and `hunt
+file` no longer need the lease, so the operator files from a second session.
+`save` takes a lock file (`hunt.json.lock`) and merges three ways with what
+the other session wrote. `hunt targets` skips any repository where a hunt
+holds an unfiled candidate. Models are asked once per rolling hunt.
+
 A hunt has a deadline only when `hunt init --time-budget-hours` sets one
 (#166, 2026-09-29; before that every hunt got a fixed two hours). When set,
 every attached orchestration reads that deadline, and neither a replacement

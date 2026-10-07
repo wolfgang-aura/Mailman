@@ -179,10 +179,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "refresh",
             "file",
             "ship",
+            "stop",
             "targets",
             "sweep",
             "watch",
         ),
+    )
+    hunt.add_argument(
+        "--rolling",
+        action="store_true",
+        help="for hunt init: no count. Prepare candidates one at a time until "
+        "`hunt stop`; each ready one can be shipped while the hunt goes on",
     )
     hunt.add_argument(
         "--pr-url",
@@ -1261,9 +1268,11 @@ def _hunt(arguments: argparse.Namespace) -> int:
         else:
             _emit(render_watch(result))
         return 0 if result["ok"] else 1
-    if not arguments.hunt_id:
-        raise ValueError("provide a hunt ID, or a count for hunt init")
+    if not arguments.hunt_id and not (arguments.action == "init" and arguments.rolling):
+        raise ValueError("provide a hunt ID, or a count or --rolling for hunt init")
     if arguments.action == "init":
+        if arguments.rolling and arguments.hunt_id:
+            raise ValueError("a rolling hunt has no count; pass --rolling or a count, not both")
         if not all(
             (
                 arguments.primary,
@@ -1280,7 +1289,7 @@ def _hunt(arguments: argparse.Namespace) -> int:
             raise ValueError("--time-budget-hours must be positive")
         record = hunt.create_hunt(
             root,
-            int(arguments.hunt_id),
+            None if arguments.rolling else int(arguments.hunt_id),
             primary=arguments.primary,
             primary_model=arguments.primary_model,
             reviewer=arguments.reviewer,
@@ -1338,6 +1347,10 @@ def _hunt(arguments: argparse.Namespace) -> int:
             )
         )
         return 0
+    if arguments.action == "stop":
+        print(json.dumps(hunt.stop(root, record, owner=arguments.owner,
+                                   reason=arguments.reason), indent=2))
+        return 0
     if arguments.action == "release":
         hunt.release_lease(root, record, owner=arguments.owner)
         print(json.dumps({"hunt_id": record["hunt_id"], "lease": None}, indent=2))
@@ -1349,10 +1362,11 @@ def _hunt(arguments: argparse.Namespace) -> int:
         "escalate",
         "finish",
         "refresh",
-        "file",
-        "ship",
     ):
         hunt.require_lease(record, arguments.owner)
+    # Filing is the operator's act, not a coordinator's, so `ship` and `file`
+    # do not need the lease: a rolling hunt is filed from a second session
+    # while its coordinator keeps working, and `save` merges the two writers.
     if arguments.action == "ship":
         # Package, fork, push, open and record every run at filing approval,
         # stopping at the first failure. Running it is the batch's approval.
@@ -1457,7 +1471,7 @@ def _hunt(arguments: argparse.Namespace) -> int:
             # and they are the ones `hunt refresh` skips mid-hunt.
             # https://github.com/wolfgang-aura/Mailman/issues/41
             hunt.refresh(root, record, include_ready=True)
-        result = hunt.finish(root, record)
+        result = hunt.finish(root, record, run_id=arguments.run_id)
     else:
         result = hunt.status(root, record)
         _report_leftover_processes(root, result)

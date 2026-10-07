@@ -253,6 +253,17 @@ class ShipGateTests(unittest.TestCase):
         self.assertEqual([row["outcome"] for row in result["runs"]],
                          ["already-filed", "pending", "skipped"])
 
+    def test_a_rolling_hunt_ships_every_ready_run(self):
+        self.record["requested"] = None
+        self.record["runs"][0]["filed"] = {"pr_url": "https://github.com/x/y/pull/1"}
+        ready = {"ready": True, "stage": "filing-approval", "disposition": "READY",
+                 "human_required": False}
+        with mock.patch("mailman.ship.ship_run") as shipped:
+            result = self.ship(lambda _: ready)
+        self.assertEqual(shipped.call_count, 2)
+        self.assertEqual([row["outcome"] for row in result["runs"]],
+                         ["already-filed", "pending", "pending"])
+
 
 if __name__ == "__main__":
     unittest.main()

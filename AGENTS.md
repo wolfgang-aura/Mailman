@@ -11,6 +11,11 @@ Ask for primary and reviewer adapter/model IDs once if missing. Resume the
 persistent hunt, finish every required stage, and run `mailman hunt finish`.
 Its exit code, not an agent's summary, decides whether the quota is ready.
 
+`/PRHunt` with no number, or "keep going until I say stop", is a rolling hunt
+(`hunt init --rolling`): each candidate goes to filing approval, the operator
+gets its page and ship command, and the coordinator starts the next one.
+Filing happens in a separate session. See "Rolling hunt" in the procedure.
+
 An individual run marked BLOCKED does not mean the operator is blocked.
 Diagnose and repair routine failures, or drop and replace unsuitable targets.
 Escalate only the dependencies allowed by the shared procedure, with evidence.
