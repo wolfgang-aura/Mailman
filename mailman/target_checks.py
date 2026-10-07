@@ -575,6 +575,41 @@ def _run_tool(
     return entry
 
 
+_TYPE_CHECKERS = ("mypy", "pyright", "ty", "pyrefly")
+_SHELL_BREAK = re.compile(r"&&|\|\||[;|&>]")
+
+
+def _ci_type_targets(workspace: Path, tool: LintTool) -> list[str]:
+    """The paths CI's own type-checker command names, such as `mypy asyncua tests`.
+
+    A type checker reads the whole program: opcua-asyncio#2039 retyped a
+    generated module, and `mypy` on the three changed files passed while CI's
+    `mypy asyncua tests` found 24 errors in files the patch never touched.
+    Mailman #451.
+    """
+    if tool.name not in _TYPE_CHECKERS:
+        return []
+    command = re.compile(rf"(?:^|[\s/\"'])(?:-m\s+)?{re.escape(tool.name)}(?:\s+check)?\s+(.*)$")
+    for name, text in _lint_sources(workspace).items():
+        if not (name.startswith(".github/workflows/") or name == "tox.ini"):
+            continue
+        for line in text.splitlines():
+            found = command.search(line.split("#", 1)[0])
+            if found is None:
+                continue
+            arguments = _SHELL_BREAK.split(found.group(1), 1)[0].split()
+            targets = [
+                argument.rstrip("/")
+                for argument in arguments
+                if not argument.startswith(("-", "$", "{"))
+                and (workspace / argument).exists()
+                and ((workspace / argument).is_dir() or argument.endswith(".py"))
+            ]
+            if targets:
+                return targets
+    return []
+
+
 def _mypy_exclude_patterns(workspace: Path) -> list[str]:
     """The target's mypy `exclude` regexes, from pyproject, mypy.ini or setup.cfg."""
     patterns: list[str] = []
@@ -1140,7 +1175,7 @@ def _new_findings(
     """Lines of `result` the base commit does not produce, or None if unknown."""
     if not baseline.prepare(timeout_seconds):
         return None, f"the base worktree could not be made: {baseline.detail}"
-    base_files = [path for path in files if (baseline.path / path).is_file()]
+    base_files = [path for path in files if (baseline.path / path).exists()]
     if not base_files:
         return None, "every linted file is new in this patch"
     command = [*result["command"][: len(result["command"]) - len(files)], *base_files]
@@ -1293,6 +1328,8 @@ def _lint_each(
         if tool.name == "mypy":
             files = [path for path in files if not _mypy_excluded(workspace, path)]
         files = [path for path in files if not _pre_commit_skips(workspace, tool, path)]
+        if files:
+            files = _ci_type_targets(workspace, tool) or files
         if not files:
             entries.append(
                 {
@@ -1358,7 +1395,7 @@ def _lint_each(
                             "blocking": False,
                             "detail": (
                                 f"`{result['label']}` exited {result['exit_code']} on "
-                                f"the changed files, but {why} with the same "
+                                f"{' '.join(files)}, but {why} with the same "
                                 "output; the patch adds no finding. " + output
                             ),
                         }
@@ -1372,7 +1409,7 @@ def _lint_each(
                     "blocking": True,
                     "detail": (
                         f"`{result['label']}` exited {result['exit_code']} on "
-                        f"the changed files; the target's CI runs {tool.name} "
+                        f"{' '.join(files)}; the target's CI runs {tool.name} "
                         "and will fail. " + output
                     ),
                 }

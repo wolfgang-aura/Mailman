@@ -642,6 +642,31 @@ class OtherLinterTests(_Fixture):
         self.assertEqual(mypy_calls, [[str(self.python), "-m", "mypy", "pkg/mod.py"]])
         self.assertEqual([f["code"] for f in findings], ["lint-failed"])
 
+    def test_mypy_runs_on_the_targets_ci_names(self) -> None:
+        # opcua-asyncio#2039: mypy on the changed files passed while CI's
+        # `mypy asyncua tests` found 24 errors in files the patch never
+        # touched. Mailman #451.
+        self.write("mypy.ini", "[mypy]\n")
+        self.write("tests/test_mod.py", "")
+        self.write(
+            ".github/workflows/ci.yml",
+            "jobs:\n  check:\n    steps:\n"
+            "      - run: uv tool install mypy\n"
+            "      - run: uv run mypy pkg tests --strict && echo done\n",
+        )
+        executor = Executor({"mypy pkg tests": 1})
+        with patch("mailman.target_checks.execute", executor):
+            record, findings = run_lint(
+                self.run_directory,
+                workspace=self.workspace,
+                changed_paths=["pkg/mod.py"],
+            )
+        mypy_calls = [c for c in executor.calls if "mypy" in c and "--version" not in c
+                      and "pip" not in c]
+        self.assertEqual(mypy_calls, [[str(self.python), "-m", "mypy", "pkg", "tests"]])
+        self.assertEqual([f["code"] for f in findings], ["lint-failed"])
+        self.assertIn("on pkg tests", findings[0]["detail"])
+
     def test_mypy_with_every_changed_file_excluded_does_not_run(self) -> None:
         self.write("mypy.ini", "[mypy]\nexclude = tests\n")
         executor = Executor({"mypy": 1})
