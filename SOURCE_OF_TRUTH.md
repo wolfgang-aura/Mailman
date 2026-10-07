@@ -960,3 +960,15 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
     exit 0) pushed by the operator as `c5214aa`; reply posted. CI on the new head not yet read.
   - strawberry-graphql/strawberry-django#971 now watched, `attention` only for botberry's autopub changelog preview; no action.
   - caronc/apprise#1775, pyinfra-dev/pyinfra#1992, sktime/pytorch-forecasting#2452 now watched, all `ok`.
+- Re-read 2026-10-07 23:10 SGT (`mailman hunt watch`; unattended `pr-followup` run, `contributions --refresh` not run): 54 rows,
+  14 merged, 8 closed unmerged, 32 open; `hunt watch` listed 14 rows needing work. Ten rows moved since 12:19 UTC.
+  - Six rows (python-markdown2#732, django-stubs#3685, djangorestframework-stubs#1073, solara#1215, nox#1191, nicegui#6345)
+    read `unknown` because `gh` returned HTTP 500; a direct `gh pr view` re-read gave open/clean (django-stubs#3685 approved),
+    and the two merges (solara 2026-10-02, nicegui 2026-09-29) already have records 0023 and 0018.
+  - posit-dev/py-shiny#2511 `ok` -> `attention`, `blocked` -> `dirty`: main took a Polars 2.0 CHANGELOG entry (`#2529`) next to
+    ours. A local merge of main in the run workspace (`d464b701`) conflicts only in `CHANGELOG.md`; both entries kept,
+    `tests/pytest/test_types.py` 3 passed. Push awaits approval.
+  - tqdm/tqdm#1837 `inherited` -> `attention`: `pre-commit.ci - pr` status is `FAILURE` (started 2026-09-17, our head `96e8caf`);
+    cause not read yet.
+  - pylint-dev/pylint#11517 `attention` -> `ok` (codecov/project no longer failing). PyCQA/docformatter#393 now watched (ok).
+  - bleachbit#2397: XhmikosR's 2026-10-07 comment retracts a duplicate claim ("a separate issue"); no action.
