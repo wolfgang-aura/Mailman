@@ -1008,6 +1008,12 @@ def _pre_commit_skips(workspace: Path, tool: LintTool, path: str) -> bool:
 
 
 BASELINE_DIRECTORY = "lint-base"
+_SOURCE_SUFFIXES = (".py", ".pyi")
+#: Ignored directories that hold caches or environments, not generated code.
+_SKIPPED_PARTS = frozenset({
+    ".venv", "venv", ".tox", ".nox", "node_modules", "__pycache__", ".mypy_cache",
+    ".pytest_cache", ".ruff_cache", "build", "dist", "site-packages", ".eggs",
+})
 _DIGITS = re.compile(r"\d+")
 _NOTE = re.compile(r":\d+(?::\d+)?: note: ")
 _CODE_FRAME = re.compile(r"\s*\d*\s*\|")
@@ -1147,7 +1153,33 @@ class _Baseline:
             )
             if not self.ready:
                 self.detail = _tail(added.stdout + "\n" + added.stderr, 3).strip()
+            else:
+                self._copy_generated_sources(timeout_seconds)
         return self.ready
+
+    def _copy_generated_sources(self, timeout_seconds: float) -> None:
+        """Copy gitignored Python modules the environment step generated (#462).
+
+        robotframework-browser compiles protobuf into `Browser/generated`,
+        which is gitignored. A fresh worktree lacks it, so mypy at base could
+        not import it and every error that depends on it read as new.
+        """
+        listed = execute(
+            ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+            working_directory=self.workspace,
+            timeout_seconds=timeout_seconds,
+        )
+        if listed.exit_code != 0:
+            return
+        for relative in listed.stdout.split("\0"):
+            parts = Path(relative).parts
+            if not relative.endswith(_SOURCE_SUFFIXES) or _SKIPPED_PARTS & set(parts):
+                continue
+            source = self.workspace / relative
+            target = self.path / relative
+            if source.is_file() and not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read_bytes())
 
     def _remove(self) -> None:
         execute(

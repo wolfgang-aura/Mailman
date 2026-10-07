@@ -960,7 +960,8 @@ class BaselineExecutor:
     """Makes the base worktree on `git worktree add`; answers by directory."""
 
     def __init__(self, workspace_output: str, base_output: str | None,
-                 base_files=("pkg/mod.py",), base_text="x = 1\n") -> None:
+                 base_files=("pkg/mod.py",), base_text="x = 1\n", ignored="") -> None:
+        self.ignored = ignored
         self.workspace_output = workspace_output
         self.base_output = base_output
         self.base_files = base_files
@@ -975,6 +976,8 @@ class BaselineExecutor:
                 (base / relative).parent.mkdir(parents=True, exist_ok=True)
                 (base / relative).write_text(self.base_text, encoding="utf-8")
             return _result(list(command))
+        if command[:2] == ["git", "ls-files"]:
+            return _result(list(command), stdout=self.ignored)
         if command[0] == "git" or "--version" in command:
             return _result(list(command))
         if "lint-base" in str(working_directory):
@@ -1131,6 +1134,28 @@ class LintBaselineTests(_Fixture):
         _, findings = self._run(BaselineExecutor(patched, base))
         self.assertEqual([f["code"] for f in findings], ["lint-failed"])
         self.assertIn("grcp", findings[0]["detail"])
+
+    def test_the_base_worktree_gets_generated_modules_the_workspace_ignores(self) -> None:
+        # robotframework-browser#5152 (#462): protobuf compiled into a gitignored
+        # package was missing at base, so every mypy error on it read as new.
+        self.write("pkg/generated/pb2.py", "Request = 1\n")
+        self.write(".venv/lib/x.py", "")
+        base = self.run_directory / "scratch" / "lint-base"
+        seen: list[bool] = []
+        executor = BaselineExecutor(
+            "pkg/mod.py:1:1: F401\n", "pkg/mod.py:1:1: F401\n",
+            ignored="pkg/generated/pb2.py\0.venv/lib/x.py\0.coverage\0",
+        )
+
+        def watching(command, **kwargs):
+            if "lint-base" in str(kwargs["working_directory"]):
+                seen.append((base / "pkg/generated/pb2.py").is_file()
+                            and not (base / ".venv/lib/x.py").exists())
+            return executor(command, **kwargs)
+
+        _, findings = self._run(watching)
+        self.assertEqual([f["code"] for f in findings], ["lint-preexisting"])
+        self.assertEqual(seen, [True])
 
     def test_without_a_base_commit_no_worktree_is_made(self) -> None:
         executor = BaselineExecutor("pkg/mod.py:1:1: F401\n", "pkg/mod.py:1:1: F401\n")
