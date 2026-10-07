@@ -114,7 +114,8 @@ def plan(root: Path, record: dict, *, login: str | None,
 
     rows: list[dict] = []
     filed = sum(1 for row in record["runs"] if row.get("filed"))
-    slots = max(record["requested"] - filed, 0)
+    # A rolling hunt has no count, so every ready candidate is in the batch.
+    slots = None if record.get("requested") is None else max(record["requested"] - filed, 0)
     counted: set = set()
     for entry in record["runs"]:
         run_id = entry["run_id"]
@@ -152,7 +153,7 @@ def plan(root: Path, record: dict, *, login: str | None,
         if key is not None and key in counted:
             row.update(outcome="skipped", reason="same target as a run already in this batch")
             continue
-        if slots <= 0:
+        if slots is not None and slots <= 0:
             row.update(outcome="skipped", reason=f"the hunt's {record['requested']} requested "
                        "pull request(s) are already covered")
             continue
@@ -166,7 +167,8 @@ def plan(root: Path, record: dict, *, login: str | None,
             continue
         if key is not None:
             counted.add(key)
-        slots -= 1
+        if slots is not None:
+            slots -= 1
         row.update(outcome="pending", repository=repository_slug(str(handoff.get("repository"))),
                    head=head, base=handoff.get("base"), title=handoff.get("title"))
     return rows

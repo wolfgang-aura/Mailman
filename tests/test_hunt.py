@@ -17,6 +17,7 @@ from mailman.hunt import (
     abandon,
     add_run,
     acquire_lease,
+    candidate_repositories,
     require_lease,
     compact,
     create_hunt,
@@ -34,6 +35,7 @@ from mailman.hunt import (
     restore_run,
     save,
     status,
+    stop,
     target_claims,
     workable_targets,
     stale_screen_warning,
@@ -796,6 +798,95 @@ class FilingRecordTests(HuntTests):
                       pr_url="https://github.com/example/project/pull/7")
         self.assertEqual(record["status"], "RUNNING")
 
+    # --- Rolling hunts: no count, filed from a second session while running.
+
+    def test_two_sessions_writing_one_hunt_keep_each_others_changes(self):
+        # The filing session records a pull request while the coordinator
+        # adds a candidate and renews its lease. Whole-record writes dropped
+        # whichever change landed first.
+        record = self.new_hunt()
+        record["runs"].append({"run_id": "a", "target": "acme/one#1"})
+        save(hunt_path(self.data_root, record["hunt_id"]), record)
+        filer = load_hunt(self.data_root, record["hunt_id"])
+        coordinator = load_hunt(self.data_root, record["hunt_id"])
+
+        filer["runs"][0]["filed"] = {"pr_url": "https://github.com/acme/one/pull/9"}
+        save(hunt_path(self.data_root, record["hunt_id"]), filer)
+        coordinator["runs"].append({"run_id": "b", "target": "acme/two#2"})
+        acquire_lease(self.data_root, coordinator, owner=record["lease"]["owner"])
+        filer["last_check"] = {"ready": 1}
+        save(hunt_path(self.data_root, record["hunt_id"]), filer)
+
+        stored = json.loads(hunt_path(self.data_root, record["hunt_id"]).read_text(encoding="utf-8"))
+        self.assertEqual([row["run_id"] for row in stored["runs"]], ["a", "b"])
+        self.assertIn("filed", stored["runs"][0])
+        self.assertEqual(stored["lease"]["expires_at"], coordinator["lease"]["expires_at"])
+
+    def test_a_rolling_hunt_packages_each_ready_run_and_keeps_running(self):
+        record = self.new_hunt(None)
+        self.assertIsNone(record["requested"])
+        self.assertEqual(status(self.data_root, record)["next"], "Find the next target.")
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+
+        result = finish(self.data_root, record, run_id=directory.name)
+
+        self.assertTrue(result["complete"], result["runs"])
+        self.assertIsNone(result["remaining"])
+        self.assertTrue(Path(result["packet"]).is_file())
+        self.assertEqual(record["status"], "RUNNING")
+        self.assertIn("example/project", candidate_repositories(self.data_root))
+
+    def test_a_rolling_hunt_is_filed_from_a_second_session_and_stopped(self):
+        record = self.new_hunt(None)
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        status(self.data_root, record)
+        with redirect_stdout(StringIO()):
+            code = main(["hunt", "file", record["hunt_id"], directory.name,
+                         "--pr-url", "https://github.com/example/project/pull/42",
+                         "--data-root", str(self.data_root)])
+        self.assertEqual(code, 0)
+        record = load_hunt(self.data_root, record["hunt_id"])
+        self.assertEqual(record["status"], "RUNNING")
+
+        stopped = stop(self.data_root, record, owner=record["lease"]["owner"], reason="done")
+
+        self.assertEqual(stopped["status"], "FILED")
+        self.assertNotIn("lease", record)
+
+    def test_a_rolling_hunt_stopped_with_a_ready_run_waits_for_filing(self):
+        record = self.new_hunt(None)
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+
+        stopped = stop(self.data_root, record, owner=record["lease"]["owner"], reason=None)
+
+        self.assertEqual(stopped["status"], "AWAITING_FILING_APPROVAL")
+        self.assertEqual(stopped["awaiting_filing"], [directory.name])
+        record_filing(self.data_root, record, directory.name,
+                      pr_url="https://github.com/example/project/pull/42")
+        self.assertEqual(record["status"], "FILED")
+
+    def test_stop_closes_an_empty_rolling_hunt_and_refuses_a_counted_one(self):
+        with self.assertRaisesRegex(ValueError, "finish it"):
+            counted = self.new_hunt(2)
+            stop(self.data_root, counted, owner=counted["lease"]["owner"], reason="x")
+        record = self.new_hunt(None)
+        self.assertEqual(stop(self.data_root, record, owner=record["lease"]["owner"],
+                              reason="pool dry")["status"], "ABANDONED")
+
+    def test_hunt_init_rolling_takes_no_count(self):
+        printed = StringIO()
+        with redirect_stdout(printed):
+            code = main(["hunt", "init", "--rolling",
+                         "--primary", "codex", "--primary-model", "fixture-primary",
+                         "--reviewer", "claude", "--reviewer-model", "fixture-reviewer",
+                         "--data-root", str(self.data_root)])
+        self.assertEqual(code, 0)
+        self.assertIsNone(json.loads(printed.getvalue())["requested"])
+
+
     def test_a_filing_recorded_without_its_commit_can_add_it(self):
         # prefect's PR was recorded without --commit, then "already recorded"
         # refused the commit for good. Mailman #250.
@@ -1451,7 +1542,6 @@ class PrescreenRecordTests(OrchestratorHarness):
             {"repository": "acme/held", "pull_request": 12, "state": "closed"}
         ]}), encoding="utf-8")
         self.assertEqual(open_pull_request_repositories(self.data_root), set())
-
 
 class _SearchGh:
     """Answers `repos/R/issues` with canned items, one list per repository."""

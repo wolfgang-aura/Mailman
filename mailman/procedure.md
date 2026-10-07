@@ -81,6 +81,50 @@ the reasons and evidence for replaced candidates by default; the record keeps
 them, and `--full` prints them when you actually need one. Do not poll: a
 status check you did not act on is pure cost.
 
+## Rolling hunt
+
+`/PRHunt` with no count, or a request to keep going until told to stop, is a
+rolling hunt. Ask for the models once at the start and use them for every
+candidate. Create it with `mailman hunt init --rolling` and the four model
+flags. It has no quota. It works one candidate at a time and stops only when
+the operator says stop.
+
+Each cycle:
+
+1. Renew the lease: `mailman hunt lease HUNT_ID --owner TOKEN`.
+2. Pick the next target with `hunt targets --engaged-only`, then `hunt sweep`,
+   then `pool` and `discover`, exactly as below. `hunt targets` already leaves
+   out any repository where a hunt holds an unfiled candidate.
+3. Pre-screen, `hunt add`, prepare, review, package and write `decision.json`
+   as for any candidate.
+4. Run `mailman hunt finish HUNT_ID RUN_ID --owner TOKEN`. Exit 0 means this
+   candidate passed the filing gate, and the packet now holds it with every
+   other unfiled ready run. Exit 1 means repair it or drop and replace it.
+5. When it passed, tell the operator in one short message: the target, the
+   review page, and `mailman hunt ship HUNT_ID RUN_ID`. Send a push
+   notification if the client has one. Do not wait for an answer.
+6. Start the next cycle.
+
+Stop only when the operator says stop, when `pool` and `discover` both come
+back empty, at a usage limit, or for an escalation this procedure allows.
+Then run `mailman hunt stop HUNT_ID --owner TOKEN --reason "..."`. The hunt
+waits for filing while a ready candidate is unfiled, reads FILED once each one
+has its pull request, and reads ABANDONED when it produced nothing.
+
+Filing happens in a separate session, never in the coordinator's. The
+operator opens one when it suits them and does the filing work there:
+rewording a body, a failed push, a CLA, a question about a candidate. `hunt
+ship` and `hunt file` need no lease, and the hunt record merges both
+sessions' writes, so the coordinator keeps working the whole time. If the
+filing session changes this procedure, the coordinator's next command reports
+`procedure changed`. Read the new procedure, run `hunt refresh-procedure`, and
+continue.
+
+A rolling hunt outlives the conversation's context. The hunt record holds the
+state. After compaction or in a new session, read `hunt status` and continue
+from its `next`. Keep two pre-screened targets queued ahead of the current
+candidate so a cycle never starts with an empty pool.
+
 ## Find and screen
 
 A hunt is a general Python hunt. Any recognizable, maintained Python project is

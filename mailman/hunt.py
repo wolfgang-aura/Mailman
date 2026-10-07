@@ -1,13 +1,17 @@
 """Persistent PRHunt quota and completion gates, shared by every coordinator."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import os
 import re
 import secrets
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -128,12 +132,96 @@ def abandon(root: Path, record: dict, *, reason: str, owner: str | None = None) 
     return record["abandoned"]
 
 
-def save(path: Path, record: dict) -> None:
-    record["updated_at"] = utc_now()
+# --- Writing the record ------------------------------------------------------
+#
+# A rolling hunt is written by two sessions at once: the coordinator adds and
+# checks candidates while the operator's filing session ships the ready ones.
+# Every command loads the record, works for up to minutes, and writes all of it
+# back, so a plain write drops whatever the other session saved in between: a
+# filing the coordinator never saw, or a candidate `ship` never saw. `save`
+# therefore takes a lock and merges three ways, keeping each field the other
+# writer changed when this one left it alone.
+
+#: How long a writer waits for another's lock, and when a lock is a crash's.
+LOCK_TIMEOUT_SECONDS = 30
+LOCK_STALE_SECONDS = 120
+_MISSING = object()
+#: id(record) -> (record, the record as this process last read or wrote it).
+_LOADED: dict[int, tuple[dict, dict]] = {}
+
+
+def _remember(record: dict) -> None:
+    _LOADED[id(record)] = (record, copy.deepcopy(record))
+
+
+@contextmanager
+def _record_lock(path: Path):
+    lock = path.with_name(path.name + ".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    started = time.monotonic()
+    while True:
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > LOCK_STALE_SECONDS:
+                    lock.unlink(missing_ok=True)
+                    continue
+            except FileNotFoundError:
+                continue
+            if time.monotonic() - started > LOCK_TIMEOUT_SECONDS:
+                raise TimeoutError(
+                    f"{lock} has been held for over {LOCK_TIMEOUT_SECONDS}s; "
+                    "another session is writing this hunt"
+                ) from None
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _take_theirs(mine: dict, base: dict, theirs: dict, keys) -> None:
+    for key in keys:
+        own, before, other = (mine.get(key, _MISSING), base.get(key, _MISSING),
+                              theirs.get(key, _MISSING))
+        if own == before and other != before:
+            if other is _MISSING:
+                mine.pop(key, None)
+            else:
+                mine[key] = other
+
+
+def _merge_concurrent(mine: dict, base: dict, theirs: dict) -> None:
+    """Fold another writer's changes since `base` into `mine`, in place."""
+    _take_theirs(mine, base, theirs,
+                 (set(base) | set(theirs)) - {"runs", "updated_at"})
+    base_rows = {row["run_id"]: row for row in base.get("runs", [])}
+    their_rows = {row["run_id"]: row for row in theirs.get("runs", [])}
+    rows = mine.setdefault("runs", [])
+    known = {row["run_id"] for row in rows}
+    for row in rows:
+        other = their_rows.get(row["run_id"])
+        if other is not None:
+            before = base_rows.get(row["run_id"], {})
+            _take_theirs(row, before, other, set(before) | set(other))
+    rows.extend(row for row in theirs.get("runs", [])
+                if row["run_id"] not in known and row["run_id"] not in base_rows)
+
+
+def save(path: Path, record: dict) -> None:
+    with _record_lock(path):
+        loaded = _LOADED.get(id(record))
+        if loaded is not None and loaded[0] is record:
+            on_disk = read_object(path)
+            if on_disk:
+                _merge_concurrent(record, loaded[1], on_disk)
+        record["updated_at"] = utc_now()
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+    _remember(record)
 
 
 def hunt_path(root: Path, hunt_id: str) -> Path:
@@ -142,10 +230,15 @@ def hunt_path(root: Path, hunt_id: str) -> Path:
     return root.parent / "hunts" / hunt_id / "hunt.json"
 
 
-def create_hunt(root: Path, count: int, *, primary: str, primary_model: str,
+def is_rolling(record: dict) -> bool:
+    """A hunt with no count: it finds and prepares candidates until stopped."""
+    return record.get("requested") is None
+
+
+def create_hunt(root: Path, count: int | None, *, primary: str, primary_model: str,
                 reviewer: str, reviewer_model: str, owner: str | None = None,
                 time_budget_seconds: float | None = None) -> dict:
-    if count < 1 or isinstance(count, bool):
+    if count is not None and (isinstance(count, bool) or count < 1):
         raise ValueError("the PR count must be positive")
     if not primary_model.strip() or not reviewer_model.strip():
         raise ValueError("ask for both model IDs before starting the hunt")
@@ -186,6 +279,7 @@ def load_hunt(root: Path, hunt_id: str, *, require_procedure: bool = True) -> di
     if (require_procedure and not is_terminal(record)
             and record.get("procedure_sha256") != hashlib.sha256(PROCEDURE.read_bytes()).hexdigest()):
         raise ValueError("procedure changed: read `mailman procedure`, then use `hunt refresh-procedure`")
+    _remember(record)
     return record
 
 
@@ -353,7 +447,13 @@ def record_filing(root: Path, record: dict, run_id: str, *, pr_url: str,
                     "repository": match["repository"], "target": target_key(run),
                     "commit": commit, "filed_at": utc_now()}
     filed = [row for row in record["runs"] if row.get("filed")]
-    if len(filed) >= record["requested"]:
+    # A rolling hunt has no count to reach. It is filed once it was stopped
+    # and nothing it left ready is still waiting.
+    if is_rolling(record):
+        complete = bool(record.get("stopped")) and not _awaiting_filing(record)
+    else:
+        complete = len(filed) >= record["requested"]
+    if complete:
         record["status"] = "FILED"
         record["filed_at"] = utc_now()
     save(hunt_path(root, record["hunt_id"]), record)
@@ -518,6 +618,38 @@ def open_pull_request_repositories(root: Path) -> set[str]:
         if (row["repository"].lower(), row["pull_request"]) not in closed
         and not row.get("superseded_by")
     }
+
+
+def candidate_repositories(root: Path) -> set[str]:
+    """Repositories where a hunt holds a candidate that has no pull request yet.
+
+    One open pull request per repository is the rule, and a candidate waiting
+    for filing becomes one. A rolling hunt keeps finding targets while earlier
+    candidates wait, so without this it would queue a second on the same
+    repository. A live hunt holds every unfiled run; a hunt waiting for filing
+    holds the ones its last check read ready.
+    """
+    held: set[str] = set()
+    for record in iter_hunts(root):
+        state = effective_status(record)
+        if state in ("RUNNING", AWAITING_FILING):
+            names = [row["run_id"] for row in record["runs"]
+                     if not row.get("dropped") and not row.get("filed")]
+        elif state == "AWAITING_FILING_APPROVAL":
+            settled = {row["run_id"] for row in record["runs"]
+                       if row.get("dropped") or row.get("filed")}
+            names = [row["run_id"] for row in (record.get("last_check") or {}).get("runs", [])
+                     if row.get("ready") and row.get("run_id") not in settled]
+        else:
+            continue
+        for name in names:
+            try:
+                run, _ = load_run(name, root)
+            except (OSError, ValueError, KeyError):
+                continue
+            if run.repository:
+                held.add(repository_slug(str(run.repository)).lower())
+    return held
 
 
 #: Drop reasons that say the repository, not the issue, is closed to us.
@@ -715,7 +847,7 @@ def _passing_screens(root: Path, held_repositories: set[str] | None,
     held = {slug.lower() for slug in (
         open_pull_request_repositories(root) if held_repositories is None
         else held_repositories
-    ) | closed_repositories(root)}
+    ) | closed_repositories(root) | candidate_repositories(root)}
     screens = []
     for path in sorted((root / SCREENS_DIRECTORY).glob("*.json")):
         screen = read_object(path)
@@ -1501,16 +1633,24 @@ def status(root: Path, record: dict) -> dict:
     # Ask-first candidates are counted on their own and never toward the PR
     # quota. https://github.com/wolfgang-aura/Mailman/issues/138
     asking = sum(row.get("disposition") == READY_TO_ASK for row in rows)
+    rolling = is_rolling(record)
+    if rolling:
+        waiting = sum(row["ready"] and not row.get("filed") for row in rows)
+        upcoming = ("Package the ready candidates with `hunt finish`, then find the "
+                    "next target." if waiting else "Find the next target.")
+    else:
+        upcoming = ("Prepare the approval packet." if ready >= record["requested"]
+                    else "Complete the next action or find a replacement candidate.")
     result = {"hunt_id": record["hunt_id"], "requested": record["requested"],
-              "ready": ready, "remaining": max(0, record["requested"] - ready),
+              "ready": ready,
+              "remaining": None if rolling else max(0, record["requested"] - ready),
               "ready_to_ask": asking,
-              "checked_at": utc_now(), "runs": rows,
-              "next": "Prepare the approval packet." if ready >= record["requested"] else "Complete the next action or find a replacement candidate.",
+              "checked_at": utc_now(), "runs": rows, "next": upcoming,
               "escalations": record["escalations"]}
     expires = deadline(record)
     result["deadline_at"] = expires.isoformat() if expires else None
     result["deadline_expired"] = expires is not None and datetime.now(UTC) >= expires
-    if result["deadline_expired"] and result["remaining"]:
+    if result["deadline_expired"] and (rolling or result["remaining"]):
         result["next"] = (
             "The hunt deadline expired. Preserve its records and abandon the "
             "hunt; do not add or start another candidate."
@@ -1579,7 +1719,8 @@ def write_checkpoint(root: Path, record: dict, result: dict) -> Path | None:
     for directory in directories:
         write_run_page(directory)
     destination = hunt_path(root, record["hunt_id"]).parent / "checkpoint.html"
-    title = f"{len(prs)} of {record['requested']} candidates ready so far"
+    title = (f"{len(prs)} candidates ready so far" if is_rolling(record)
+             else f"{len(prs)} of {record['requested']} candidates ready so far")
     if asks:
         title += f", {len(asks)} ready to ask"
     write_packet_page(directories, destination, title=title)
@@ -1661,7 +1802,14 @@ def refresh(root: Path, record: dict, *, include_ready: bool = False) -> dict:
             "ready_before_refresh": before["ready"]}
 
 
-def finish(root: Path, record: dict) -> dict:
+def finish(root: Path, record: dict, *, run_id: str | None = None) -> dict:
+    """Gate the ready candidates and write the packet the operator files from.
+
+    A counted hunt is complete when its count is ready, and then waits for
+    filing. A rolling hunt packages whatever is ready and keeps running; with
+    `run_id` it is complete only when that candidate passed, which is how the
+    coordinator learns whether the run it just finished made it.
+    """
     from mailman.review_packet import write_packet_page
     from mailman.review_page import write_run_page
     if is_terminal(record):
@@ -1675,15 +1823,22 @@ def finish(root: Path, record: dict) -> dict:
             "result are the record for pull requests that are already open"
         )
     result = status(root, record)
-    if result["remaining"]:
+    rolling = is_rolling(record)
+    unfiled = [row["run_id"] for row in result["runs"]
+               if row["ready"] and not row.get("filed")]
+    if rolling:
+        if run_id is not None and not any(row["run_id"] == run_id for row in record["runs"]):
+            raise ValueError(f"run {run_id} is not in hunt {record['hunt_id']}")
+        if (run_id not in unfiled) if run_id is not None else not unfiled:
+            return {**result, "complete": False}
+    elif result["remaining"]:
         return {**result, "complete": False}
     # A filed row satisfies its slot without joining the packet. The packet is
     # what the operator approves for filing, and its pull request is already
     # open. https://github.com/wolfgang-aura/Mailman/issues/97
     # It also took its slot, so the packet offers only the slots left. #351.
-    directories = [root / row["run_id"] for row in result["runs"]
-                   if row["ready"] and not row.get("filed")
-                   ][:max(record["requested"] - result["filed"], 0)]
+    directories = [root / name for name in (
+        unfiled if rolling else unfiled[:max(record["requested"] - result["filed"], 0)])]
     if not directories:
         # Every requested slot is filled by a pull request that is already
         # open. `hunt file` moves a hunt to FILED once the last requested
@@ -1708,8 +1863,44 @@ def finish(root: Path, record: dict) -> dict:
     if asks:
         title += f", and {len(asks)} offer comment(s)"
     write_packet_page(directories, packet, title=title)
-    record["status"] = "AWAITING_FILING_APPROVAL"
+    if not rolling:
+        record["status"] = "AWAITING_FILING_APPROVAL"
     record["packet"] = str(packet)
     record["packet_sha256"] = hashlib.sha256(packet.read_bytes()).hexdigest()
     save(hunt_path(root, record["hunt_id"]), record)
     return {**result, "complete": True, "packet": str(packet), "published": False}
+
+
+def stop(root: Path, record: dict, *, owner: str | None, reason: str | None) -> dict:
+    """End a rolling hunt: no new candidates, and the ready ones wait for filing.
+
+    The hunt reads AWAITING_FILING_APPROVAL while a ready candidate is unfiled,
+    FILED once every ready one has its pull request, and ABANDONED when it
+    produced nothing.
+    """
+    if not is_rolling(record):
+        raise ValueError(
+            f"hunt {record['hunt_id']} asked for {record['requested']} pull "
+            "request(s); finish it, or close it with `hunt abandon --reason ...`"
+        )
+    if is_terminal(record):
+        raise ValueError(f"hunt {record['hunt_id']} is already {record['status']}")
+    require_lease(record, owner)
+    result = status(root, record)
+    reason = reason or "the operator said stop"
+    record["stopped"] = {"at": utc_now(), "reason": reason}
+    waiting = [row["run_id"] for row in result["runs"]
+               if row["ready"] and not row.get("filed")]
+    if waiting:
+        record["status"] = "AWAITING_FILING_APPROVAL"
+    elif result["filed"]:
+        record["status"] = "FILED"
+        record["filed_at"] = utc_now()
+    else:
+        record["status"] = "ABANDONED"
+        record["abandoned"] = {"reason": reason, "at": utc_now()}
+    record.pop("lease", None)
+    save(hunt_path(root, record["hunt_id"]), record)
+    return {"hunt_id": record["hunt_id"], "status": record["status"],
+            "stopped": record["stopped"], "filed": result["filed"],
+            "awaiting_filing": waiting}
