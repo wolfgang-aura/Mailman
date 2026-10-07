@@ -1405,6 +1405,22 @@ class OfferHandoffTests(unittest.TestCase):
             self.assertFalse(tampered["ok"])
             self.assertEqual(tampered["reason"], "offer-invalid")
 
+    def test_an_offer_on_an_own_words_target_gets_no_command(self) -> None:
+        # Pyomo forbids AI speaking for the contributor; the offer is the
+        # first thing its maintainers would read. Mailman #454.
+        with TemporaryDirectory() as name:
+            run, directory = self._run(Path(name))
+            path = directory / "submission" / "submission.json"
+            record = json.loads(path.read_text(encoding="utf-8"))
+            record.update(ready=False, blocking_codes=["policy-requires-own-words"])
+            path.write_text(json.dumps(record), encoding="utf-8")
+            offer, block = self._offer(run, directory)
+            result = check_handoff(directory, offer=True)
+
+        self.assertIsNone(offer["command"])
+        self.assertNotIn("gh issue comment", block)
+        self.assertEqual(result["reason"], "own-words-pending")
+
     def test_offer_check_fails_when_the_draft_changes(self) -> None:
         with TemporaryDirectory() as name:
             run, directory = self._run(Path(name))

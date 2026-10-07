@@ -57,9 +57,9 @@ HANDOFF_SCHEMA_VERSION = 1
 #: the human. Mailman #181.
 OWN_WORDS_PENDING = "own-words-pending"
 OWN_WORDS_INSTRUCTION = (
-    "rewrite the pull request body in your own words, set own_words_confirmed "
-    "in the target policy, rerun prepare-submission, then run handoff again "
-    "on the rewritten body"
+    "rewrite the pull request body, and the offer comment on an ask-first run, "
+    "in your own words, set own_words_confirmed in the target policy, rerun "
+    "prepare-submission, then run handoff again on the rewritten text"
 )
 
 #: How old prior-art evidence may be when it is handed over for publishing.
@@ -555,8 +555,8 @@ def _preamble(record: dict[str, Any], claims: list[dict[str, Any]]) -> list[str]
                 "OWN WORDS -- you must rewrite this body before filing",
                 "-" * 72,
                 "",
-                f"  {record['repository']} requires pull request descriptions in",
-                "  the author's own words. The body below was written by an agent,",
+                f"  {record['repository']} requires what you post there to be in",
+                "  your own words. The text below was written by an agent,",
                 "  so filing it as it is breaks that rule. Before filing:",
                 f"  {OWN_WORDS_INSTRUCTION}.",
                 "  No publish command is printed until then, and handoff-check",
@@ -786,7 +786,9 @@ def build_handoff(
     # The project wants the description in the human's own words and this
     # body is still the agent's, so there is nothing to publish yet: the
     # command is withheld rather than printed under a warning. Mailman #181.
-    own_words = kind == "pull-request" and own_words_pending(run_directory)
+    # The rule covers comments too, and an ask-first offer is the first thing
+    # the maintainers read (#454).
+    own_words = own_words_pending(run_directory)
     if own_words:
         command = None
     owner = head_owner(head) if kind == "pull-request" else None
@@ -1323,6 +1325,16 @@ def check_handoff(
                 "ok": False,
                 "reason": "offer-invalid",
                 "detail": " ".join(problems),
+                "digest": current,
+            }
+        if own_words_pending(run_directory) or record.get("own_words_pending"):
+            return {
+                "ok": False,
+                "reason": OWN_WORDS_PENDING,
+                "detail": (
+                    "the target wants comments in the author's own words and this "
+                    f"offer is the agent's. Before posting, {OWN_WORDS_INSTRUCTION}."
+                ),
                 "digest": current,
             }
         unchanged["word_count"] = record.get("word_count")
