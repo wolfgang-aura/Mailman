@@ -913,7 +913,7 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   rows, 13 merged, 8 closed unmerged, 25 open (13 ok, 1 approved, 4 inherited, 7 attention). Six rows moved since
   2026-10-06 15:02 UTC.
   - PrefectHQ/prefect#23237 merged 2026-10-06 14:25 UTC as `3fbbdf489` after desertaxle's approval; record
-    `docs/runs/0026-prefect-23237-fourteenth-merge.md`. Fork `wolfgang-aura/prefect` still exists, delete awaits approval.
+    `docs/runs/0026-prefect-23237-fourteenth-merge.md`. Forks `wolfgang-aura/prefect` and `wolfgang-aura/schwifty` deleted by the operator 2026-10-07 (`gh repo delete` reported success for both).
   - pylint-dev/pylint#11517 `inherited` -> `attention`: Pierre-Sassoulas requested changes on our head `a58b089` (2026-10-06
     19:53 UTC, "increase the coverage or remove the code that can never run"). `codecov/patch` reports 100% of the diff hit on
     that head; a local branch-coverage run of the functional test shows no uncovered line or branch in the changed code. The
