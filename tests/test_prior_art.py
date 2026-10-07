@@ -308,6 +308,13 @@ class PromptIntegrationTests(unittest.TestCase):
             self.assertIn("500 changed lines", prompt)
             self.assertIn("Do not print whole large files", prompt)
 
+    def test_prompts_ask_for_one_command_per_shell_call(self) -> None:
+        # opcua-asyncio#2039: five chained commands (`cd ... &&`, `sed -i`)
+        # waited for approval and the revision never ran mypy. Mailman #452.
+        primary = build_primary_prompt(_run(), "the issue", verification_command=None)
+        self.assertIn("Run one command per shell call", primary)
+        self.assertIn("not `sed -i`", primary)
+
 
 class ClosingActorTests(unittest.TestCase):
     def test_the_last_closure_past_the_first_page_is_the_one_that_stands(self) -> None:

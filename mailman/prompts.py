@@ -47,6 +47,10 @@ This run is optimized for a small upstream patch. Keep shell output narrow:
 - Cap searches and file slices to the lines needed for the current decision.
 - Read each instruction file once per session. Do not reopen it unless it changed.
 - Prefer the recorded focused verification over a full suite.
+- Run one command per shell call. The workspace is already the working
+  directory, so never chain with `cd`, `&&`, `;` or `|`, and edit files with
+  the edit tool, not `sed -i`. A chained command waits for an approval this
+  run cannot give.
 - Stop and report that the issue is too broad if the fix grows past 8 files or
   about 500 changed lines. Do not turn one issue into a subsystem redesign.
 """
