@@ -741,6 +741,10 @@ class PriorArtFreshnessTests(unittest.TestCase):
                 "--query 'rolling window cache'",
                 result["detail"],
             )
+            # `mailman handoff` needs --body and --repo, so the bare name
+            # fails; handoff-check re-reads the refreshed evidence itself.
+            self.assertIn(f"`mailman handoff-check {directory.name}`", result["detail"])
+            self.assertNotIn("`mailman handoff` again", result["detail"])
 
     def test_a_run_that_never_searched_refuses(self) -> None:
         with TemporaryDirectory() as name:

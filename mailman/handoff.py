@@ -998,7 +998,7 @@ def check_prior_art_freshness(
             search_command += " --symbol " + _quoted_argument(symbol)
     refresh = (
         f"Re-run `{search_command}` and `mailman claims {run_id}`, "
-        "then `mailman handoff` again."
+        f"then `mailman handoff-check {run_id}`."
     )
     if search_age is None:
         return {
