@@ -832,6 +832,9 @@ def _sentence(flat: str, start: int, end: int, *, limit: int = 400) -> str:
 _DISCLOSURE_RULE = re.compile(r"\b(?:un)?disclos\w*", re.IGNORECASE)
 
 
+_URI_TOKEN = re.compile(r"\S*://\S*")
+
+
 def _outcome_refusal(flat: str) -> str | None:
     """A refusal stated as what happens to the pull request, about AI work.
 
@@ -846,7 +849,10 @@ def _outcome_refusal(flat: str) -> str | None:
         if _REFUSES_THE_TOOL.match(flat, match.end()):
             continue
         sentence = _sentence(flat, match.start(), match.end())
-        if _AI_SUBJECT.search(sentence) and not _DISCLOSURE_RULE.search(sentence):
+        # A URI's path segments are not a subject: `viking://agent/skills`
+        # named no AI work in OpenViking's guide. Mailman #464.
+        subject = _URI_TOKEN.sub(" ", sentence)
+        if _AI_SUBJECT.search(subject) and not _DISCLOSURE_RULE.search(sentence):
             return sentence
     return None
 

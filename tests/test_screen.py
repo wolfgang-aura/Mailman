@@ -2398,6 +2398,10 @@ class ScreenTests(unittest.TestCase):
             "**We don't review the AI, we review you.** When a PR arrives, the "
             "questions are the same as they have always been: does this person "
             "understand what they are proposing?",
+            # OpenViking's configuration guide: "agent" is a path segment of
+            # a URI, not who wrote the change. Mailman #464.
+            "In v1, only viking://~/skills and viking://agent/skills are "
+            "accepted; explicit viking://user/{user_id}/skills is not accepted.",
         ):
             with self.subTest(guide=guide[:40]):
                 with tempfile.TemporaryDirectory() as temporary:
