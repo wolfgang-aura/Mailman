@@ -138,6 +138,21 @@ class AnalyzeDiffTests(unittest.TestCase):
         self.assertIn("newline-only-change", codes)
         self.assertTrue(report["blocking"])
 
+    def test_a_python_indentation_change_is_not_whitespace_only(self) -> None:
+        # ansible-navigator#2174's fix moved a call back inside an `if`. #467.
+        diff = """diff --git a/src/ui.py b/src/ui.py
+--- a/src/ui.py
++++ b/src/ui.py
+@@ -1,3 +1,3 @@
+     if changed:
+         index = new
+-    reset()
++        reset()
+"""
+        self.assertFalse(analyze_diff(diff)["files"][0]["whitespace_only"])
+        prose = diff.replace("src/ui.py", "docs/ui.md")
+        self.assertTrue(analyze_diff(prose)["files"][0]["whitespace_only"])
+
     def test_a_typeshed_test_case_is_a_test_change(self) -> None:
         # python/typeshed#15495 (#311): stub test cases live in @tests/test_cases.
         from mailman.submission import _is_test_path

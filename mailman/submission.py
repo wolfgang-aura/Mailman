@@ -172,6 +172,9 @@ def _is_test_path(path: str) -> bool:
     return name.startswith("test_") or name.endswith(("_test.py", "_tests.py"))
 
 
+_INDENT_SIGNIFICANT_SUFFIXES = (".py", ".pyi", ".pyx", ".yml", ".yaml")
+
+
 def analyze_diff(
     diff: str, *, no_test_acknowledgement: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -189,9 +192,16 @@ def analyze_diff(
         newline_marker = any(r"\ No newline at end of file" in line for line in lines)
         substantive_added = [line for line in added if line.strip()]
         substantive_removed = [line for line in removed if line.strip()]
+        # Leading whitespace is syntax in Python and YAML: ansible-navigator's
+        # fix moved `self.scroll(0)` back inside an `if`. Mailman #467.
+        normalize = (
+            str.rstrip
+            if path.lower().endswith(_INDENT_SIGNIFICANT_SUFFIXES)
+            else str.strip
+        )
         whitespace_only = bool(added or removed) and [
-            line.strip() for line in added
-        ] == [line.strip() for line in removed]
+            normalize(line) for line in added
+        ] == [normalize(line) for line in removed]
         newline_only = newline_marker and (
             whitespace_only or (not substantive_added and not substantive_removed)
         )
