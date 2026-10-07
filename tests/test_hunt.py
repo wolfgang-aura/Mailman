@@ -856,6 +856,17 @@ class FilingRecordTests(HuntTests):
         self.assertEqual(record["status"], "RUNNING")
         self.assertIn("example/project", candidate_repositories(self.data_root))
 
+    def test_a_rolling_hunt_passes_an_ask_first_run_with_its_offer(self):
+        """Mailman #456: READY_TO_ASK is the ask-first run's filing gate."""
+        record = self.new_hunt(None)
+        directory = self.ask_ready_run()
+        add_run(self.data_root, record, directory.name)
+
+        result = finish(self.data_root, record, run_id=directory.name)
+
+        self.assertTrue(result["complete"], result["runs"])
+        self.assertIn("would you like a PR?", Path(result["packet"]).read_text(encoding="utf-8"))
+
     def test_a_rolling_hunt_is_filed_from_a_second_session_and_stopped(self):
         record = self.new_hunt(None)
         directory = self.ready_run()

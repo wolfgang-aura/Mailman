@@ -1862,10 +1862,15 @@ def finish(root: Path, record: dict, *, run_id: str | None = None) -> dict:
     rolling = is_rolling(record)
     unfiled = [row["run_id"] for row in result["runs"]
                if row["ready"] and not row.get("filed")]
+    ask_ids = [row["run_id"] for row in result["runs"]
+               if row.get("disposition") == READY_TO_ASK]
     if rolling:
         if run_id is not None and not any(row["run_id"] == run_id for row in record["runs"]):
             raise ValueError(f"run {run_id} is not in hunt {record['hunt_id']}")
-        if (run_id not in unfiled) if run_id is not None else not unfiled:
+        # An ask-first run passes at READY_TO_ASK; its offer is what the
+        # operator approves. Mailman #456.
+        passed = unfiled + ask_ids
+        if (run_id not in passed) if run_id is not None else not passed:
             return {**result, "complete": False}
     elif result["remaining"]:
         return {**result, "complete": False}
@@ -1875,7 +1880,7 @@ def finish(root: Path, record: dict, *, run_id: str | None = None) -> dict:
     # It also took its slot, so the packet offers only the slots left. #351.
     directories = [root / name for name in (
         unfiled if rolling else unfiled[:max(record["requested"] - result["filed"], 0)])]
-    if not directories:
+    if not directories and not ask_ids:
         # Every requested slot is filled by a pull request that is already
         # open. `hunt file` moves a hunt to FILED once the last requested
         # filing is recorded, and `finish` refuses a terminal hunt above, so
@@ -1889,8 +1894,7 @@ def finish(root: Path, record: dict, *, run_id: str | None = None) -> dict:
     # Ask-first candidates ride along so their offer comments are approved in
     # the same pass. They are not PRs and filled no slot above.
     # https://github.com/wolfgang-aura/Mailman/issues/138
-    asks = [root / row["run_id"] for row in result["runs"]
-            if row.get("disposition") == READY_TO_ASK]
+    asks = [root / run for run in ask_ids]
     directories += asks
     for directory in directories:
         write_run_page(directory)
