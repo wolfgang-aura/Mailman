@@ -559,6 +559,50 @@ def _policy_findings(
                     ),
                 )
             )
+    if (
+        duplicate_search is not None
+        and "listing" in ((duplicate_search.get("methods") or {}).get("pr") or [])
+        and "open_pr_files" not in duplicate_search
+    ):
+        findings.append(
+            Finding(
+                code="open-pr-files-unread",
+                blocking=True,
+                detail=(
+                    "the duplicate search predates the open pull request file "
+                    "check, so nothing here knows whether one edits the same "
+                    "files. Run `mailman duplicate-search` again (#444)."
+                ),
+            )
+        )
+    shared = shared_file_rivals(
+        changed_paths,
+        duplicate_search,
+        changelog_directory=policy.changelog_directory,
+    )
+    open_files = (duplicate_search or {}).get("open_pr_files") or {}
+    unread = {
+        key: paths
+        for key, paths in shared.items()
+        if cleared.get(key) is None or cleared[key] != open_files[key].get("head_sha")
+    }
+    if unread:
+        findings.append(
+            Finding(
+                code="open-pr-touches-same-files",
+                blocking=True,
+                detail=(
+                    f"{len(unread)} open pull request(s) change a source file this "
+                    "diff changes. Read each one; if it fixes the same thing, drop "
+                    "the run, otherwise clear it with `mailman acknowledge-duplicates "
+                    "--not-duplicate KEY`: "
+                    + "; ".join(
+                        f"{key} {open_files[key].get('title')!r} ({', '.join(paths)})"
+                        for key, paths in sorted(unread.items())
+                    )
+                ),
+            )
+        )
     if policy.changelog_directory:
         prefix = policy.changelog_directory.rstrip("/") + "/"
         if not any(path.startswith(prefix) for path in changed_paths):
@@ -1459,6 +1503,76 @@ def duplicate_strength(row: dict[str, Any]) -> str:
     return "strong" if duplicate_is_related(row) else "weak"
 
 
+def _open_pr_files(payload: object) -> dict[str, dict[str, Any]]:
+    """The paths each open pull request changes, keyed like a duplicate row.
+
+    Wording decides every other match, and a competing fix that shares no word
+    with the query passed them all: metricflow#1957 changed the same file as
+    the candidate for the same bug (#444).
+    """
+    found: dict[str, dict[str, Any]] = {}
+    for entry in payload if isinstance(payload, list) else []:
+        if not isinstance(entry, dict) or entry.get("number") is None:
+            continue
+        found[f"pr#{entry['number']}"] = {
+            "title": entry.get("title"),
+            "url": entry.get("url"),
+            "head_sha": entry.get("headRefOid"),
+            "paths": [
+                str(item["path"])
+                for item in entry.get("files") or []
+                if isinstance(item, dict) and item.get("path")
+            ],
+        }
+    return found
+
+
+def _is_test_or_note(path: str, changelog_directory: str | None) -> bool:
+    if changelog_directory and path.startswith(changelog_directory.rstrip("/") + "/"):
+        return True
+    parts = path.lower().split("/")
+    name = parts[-1]
+    return (
+        any(part.startswith("test") for part in parts[:-1])
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+        or name.startswith("changelog")
+    )
+
+
+def _same_file(left: str, right: str) -> bool:
+    # A repository that moved a package under a new root still names the same
+    # file: metricflow-semantics/metricflow_semantics/x.py and
+    # metricflow_semantics/x.py.
+    return left == right or left.endswith("/" + right) or right.endswith("/" + left)
+
+
+def shared_file_rivals(
+    changed_paths: list[str],
+    duplicate_search: dict[str, Any] | None,
+    *,
+    changelog_directory: str | None = None,
+) -> dict[str, list[str]]:
+    """Open pull requests that change a source file this diff changes."""
+    open_files = (duplicate_search or {}).get("open_pr_files") or {}
+    sources = [
+        path for path in changed_paths if not _is_test_or_note(path, changelog_directory)
+    ]
+    rivals: dict[str, list[str]] = {}
+    for key, entry in open_files.items():
+        shared = sorted(
+            {
+                path
+                for path in sources
+                for other in entry.get("paths") or []
+                if _same_file(path, other)
+            }
+        )
+        if shared:
+            rivals[key] = shared
+    return rivals
+
+
 def _duplicate_key(row: dict[str, Any]) -> str:
     kind = "pr" if row.get("pull_request") else "issue"
     return f"{kind}#{row.get('number')}"
@@ -1544,8 +1658,14 @@ def record_duplicate_acknowledgement(
     cleared: dict[str, str | None] = {}
     by_key = {_duplicate_key(row): row for row in strong}
     read_heads = False
+    open_files = search.get("open_pr_files") or {}
     for key in not_duplicates or []:
         row = by_key.get(key)
+        if row is None and key in open_files:
+            # An open pull request that edits the same files and matched no
+            # wording; pinned to its head like a strong row (#444).
+            cleared[key] = open_files[key].get("head_sha")
+            continue
         if row is None:
             raise ValueError(f"{key} is not a strong match in this run's search")
         if duplicate_strength(row) == "merged" or row.get("references_issue") or any(
@@ -1616,7 +1736,7 @@ _INDEX_FIELDS = {
 # The unfiltered listing needs the text a local match reads. An issue has no
 # head ref, and asking for one makes `gh issue list` refuse the whole call.
 _LISTING_FIELDS = {
-    "pr": "number,title,state,url,createdAt,updatedAt,isDraft,body,headRefName,headRefOid",
+    "pr": "number,title,state,url,createdAt,updatedAt,isDraft,body,headRefName,headRefOid,files",
     "issue": "number,title,state,url,createdAt,updatedAt,body",
 }
 _MINIMUM_TERM_LENGTH = 4
@@ -2393,6 +2513,8 @@ def record_duplicate_search(
                 continue
             if method == "listing":
                 listed[kind] = payload if isinstance(payload, list) else []
+                if kind == "pr":
+                    record["open_pr_files"] = _open_pr_files(payload)
                 rows = _local_matches(
                     payload,
                     pull_request=kind == "pr",

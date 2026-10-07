@@ -1247,6 +1247,67 @@ class PrepareSubmissionTests(unittest.TestCase):
         record = self._prepare()
         self.assertIn("possible-duplicate", record["blocking_codes"])
 
+    def _open_pr_on_same_file(self, head_sha: str = "a" * 40) -> None:
+        # metricflow#1957 changed the candidate's file for the same bug and
+        # shared no word with the query (#444).
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "searched_at": "2026-10-07T00:00:00+00:00",
+                    "success": True,
+                    "complete": True,
+                    "methods": {"pr": ["listing"], "issue": ["listing"]},
+                    "matches": [],
+                    "open_pr_files": {
+                        "pr#1957": {
+                            "title": "Fix time period end boundaries",
+                            "head_sha": head_sha,
+                            "paths": ["moved-root/src/thing.py", "tests/test_thing.py"],
+                        },
+                        "pr#12": {
+                            "title": "Only shares a test file",
+                            "head_sha": "c" * 40,
+                            "paths": ["tests/test_thing.py"],
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_an_open_pr_changing_the_same_source_file_blocks(self) -> None:
+        self._open_pr_on_same_file()
+        record = self._prepare()
+        self.assertIn("open-pr-touches-same-files", record["blocking_codes"])
+        finding = next(
+            row for row in record["findings"] if row["code"] == "open-pr-touches-same-files"
+        )
+        self.assertIn("pr#1957", finding["detail"])
+        self.assertNotIn("pr#12", finding["detail"])
+
+    def test_a_same_file_pr_read_and_cleared_unblocks_until_it_moves(self) -> None:
+        self._open_pr_on_same_file()
+        record_duplicate_acknowledgement(
+            self.run_directory, note="different function", not_duplicates=["pr#1957"]
+        )
+        self.assertTrue(self._prepare()["ready"])
+        self._open_pr_on_same_file(head_sha="b" * 40)
+        self.assertIn("open-pr-touches-same-files", self._prepare()["blocking_codes"])
+
+    def test_a_listing_without_file_paths_blocks(self) -> None:
+        (self.run_directory / "duplicate-search.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "complete": True,
+                    "methods": {"pr": ["listing"]},
+                    "matches": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertIn("open-pr-files-unread", self._prepare()["blocking_codes"])
+
     def _head_read(self, stdout: str, exit_code: int = 0):
         from mailman.executor import CommandResult
 
