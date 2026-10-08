@@ -972,3 +972,19 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
     cause not read yet.
   - pylint-dev/pylint#11517 `attention` -> `ok` (codecov/project no longer failing). PyCQA/docformatter#393 now watched (ok).
   - bleachbit#2397: XhmikosR's 2026-10-07 comment retracts a duplicate claim ("a separate issue"); no action.
+- Re-read 2026-10-08 09:14 SGT (`mailman hunt watch`; unattended `pr-followup` run, `contributions --refresh` not run): 54 rows,
+  15 merged, 8 closed unmerged, 31 open; `hunt watch` listed 9 rows needing work. Twelve changes since 15:01 UTC on 10-07.
+  - Sixteenth merge: django-stubs#3685, merged by sobolevn 2026-10-07 20:34 UTC as `ef4b7c9` after he pushed `3e4fedd` (a
+    `skip: sys.version_info < (3, 12)` on our test). Provenance recorded `MERGED`; run record 0028. Fork delete awaits approval.
+  - pydata/xarray#11637 `ok` -> `attention`, `blocked` -> `dirty`: main moved (`14dd6a02..a3daba59`). Local merge of origin/main in
+    the run workspace (`cbcdf570`) is conflict-free; `test_zarr.py` -k "append or encoding or timedelta or datetime" 183 passed,
+    220 skipped. Push awaits approval. Head was ours (`0842608f`); the open reviews are dcherian's and spencerkclark's from before.
+  - posit-dev/py-shiny#2511: schloerke merged main into our branch himself (`ad7804b`) and left a review asking for a code comment
+    on the `Sequence`/`Mapping` trade-off and a CHANGELOG tweak. His 15:55 UTC comment says he is still weighing `Jsonifiable`
+    covariance against a separate `JsonifiableIn`. The next move is his; no draft over his head. Still `dirty`.
+  - scverse/anndata#2666 `inherited` -> `attention`: the failing checks are `Triage: Check PR title, milestone, and labels` and
+    `Triage: Check if GPU tests are allowed to run`. The PR has no labels or milestone, which only maintainers set; no action.
+  - tqdm/tqdm#1837 `attention` -> `inherited` (4 of 5 other open PRs fail `pre-commit.ci - pr` too); the earlier open item is closed.
+  - python-markdown2#732, djangorestframework-stubs#1073, nox#1191 `unknown` -> `ok`; solara#1215 and nicegui#6345 `unknown` ->
+    `merged` (records 0023, 0018 exist).
+  - bleachbit#2397, strawberry-django#971, openalgo#2021, syrupy#1257, poetry#11052 unchanged; pretix#6564 and biopython#5336 parked.
