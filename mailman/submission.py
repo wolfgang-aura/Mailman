@@ -1612,6 +1612,33 @@ def shared_file_rivals(
     return rivals
 
 
+def start_file_rivals(
+    start_files: list[str], duplicate_search: dict[str, Any] | None
+) -> dict[str, list[str]]:
+    """Open pull requests the search matched by wording that change a start file.
+
+    `shared_file_rivals` reads the candidate diff, so it runs at package time,
+    after the agents. PyGithub#3084 spent a full orchestration before it found
+    PR 2928 changing the same annotation; the PR predated the issue, so
+    check-target never counted it. File overlap alone lists 26 open PRs on
+    `Repository.py`, so this keeps only rows the wording search also matched.
+    Mailman #475.
+    """
+    search = duplicate_search or {}
+    matched = {
+        _duplicate_key(row)
+        for row in search.get("matches") or []
+        if isinstance(row, dict)
+        and row.get("pull_request")
+        and str(row.get("state") or "").lower() == "open"
+    }
+    return {
+        key: paths
+        for key, paths in shared_file_rivals(start_files, search).items()
+        if key in matched
+    }
+
+
 def _duplicate_key(row: dict[str, Any]) -> str:
     kind = "pr" if row.get("pull_request") else "issue"
     return f"{kind}#{row.get('number')}"

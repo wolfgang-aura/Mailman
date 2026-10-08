@@ -291,6 +291,45 @@ class TaskPromptTests(unittest.TestCase):
                 ],
             )
 
+    def test_the_work_order_names_an_open_pr_that_matched_and_changes_a_start_file(
+        self,
+    ) -> None:
+        """https://github.com/wolfgang-aura/Mailman/issues/475"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run, run_directory = make_run(Path(temporary_directory) / "runs")
+            source = run_directory / "workspace" / "github" / "Repository.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("creator = None\n", encoding="utf-8")
+            (run_directory / "issue.md").write_text("# creator type\n", encoding="utf-8")
+            (run_directory / "duplicate-search.json").write_text(
+                json.dumps(
+                    {
+                        "matches": [
+                            {"number": 2928, "state": "OPEN", "pull_request": True},
+                            {"number": 2000, "state": "CLOSED", "pull_request": True},
+                        ],
+                        "open_pr_files": {
+                            "pr#2928": {"paths": ["github/Repository.py"]},
+                            "pr#2000": {"paths": ["github/Repository.py"]},
+                            # Changes the file but matched no wording.
+                            "pr#3585": {"paths": ["github/Repository.py"]},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            write_task_prompts(
+                run, run_directory, start_files=["github/Repository.py"]
+            )
+
+            order = json.loads(
+                (run_directory / "work-order.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                order["open_pr_rivals"], {"pr#2928": ["github/Repository.py"]}
+            )
+
     def test_the_issue_comparison_to_other_tools_reaches_both_agents(self) -> None:
         """https://github.com/wolfgang-aura/Mailman/issues/85
 

@@ -439,6 +439,13 @@ def _work_order(
         # request body has to say it supersedes them.
         "stale_attempts": stale_attempts(run_directory),
     }
+    from mailman.submission import start_file_rivals
+
+    # Open PRs that may already be this fix. The coordinator reads them before
+    # the agents start, not at package time. Mailman #475.
+    order["open_pr_rivals"] = start_file_rivals(
+        list(order["start_files"]), _read_json(run_directory / "duplicate-search.json")
+    )
     (run_directory / WORK_ORDER_FILENAME).write_text(
         json.dumps(order, indent=2) + "\n", encoding="utf-8"
     )

@@ -73,7 +73,7 @@ from mailman.orchestrator import (
     orchestrate,
 )
 from mailman.prior_art import collect_prior_art
-from mailman.prompts import load_recorded_verification, write_task_prompts
+from mailman.prompts import WORK_ORDER_FILENAME, load_recorded_verification, write_task_prompts
 from mailman.provenance import (
     ProvenanceError,
     closure_counts,
@@ -1720,6 +1720,14 @@ def _build_prompts(arguments: argparse.Namespace) -> int:
             indent=2,
         )
     )
+    order = json.loads((run_directory / WORK_ORDER_FILENAME).read_text(encoding="utf-8"))
+    for key, paths in (order.get("open_pr_rivals") or {}).items():
+        # Read these before orchestrate; package refuses on them later. #475.
+        print(
+            f"warning: open {key} matched the issue wording and changes "
+            f"{', '.join(paths)}; read it before starting agents",
+            file=sys.stderr,
+        )
     return 0
 
 
