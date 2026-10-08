@@ -1243,6 +1243,20 @@ class PreFilingRefreshTests(HuntTests):
         result = refresh(self.data_root, record, include_ready=True)
         self.assertEqual([row["run_id"] for row in result["refreshed"]], [directory.name])
 
+    def test_shipping_one_run_refreshes_only_that_run_and_says_so(self):
+        # `hunt ship HUNT RUN` refreshed every other run first, silently, and
+        # looked stuck. Mailman #468.
+        record = self.new_hunt()
+        directory = self.ready_run()
+        add_run(self.data_root, record, directory.name)
+        other = refresh(self.data_root, record, include_ready=True, only="another-run")
+        self.assertEqual(other["refreshed"], [])
+        lines = []
+        result = refresh(self.data_root, record, include_ready=True,
+                         only=directory.name, progress=lines.append)
+        self.assertEqual([row["run_id"] for row in result["refreshed"]], [directory.name])
+        self.assertEqual(lines, [f"refresh: {directory.name} duplicate search and claims"])
+
     def test_a_filed_run_is_not_refreshed(self):
         # finish's pre-filing pass reran a filed run's search, which then found
         # our own pull request and overwrote the evidence it was filed on.

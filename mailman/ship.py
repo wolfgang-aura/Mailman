@@ -350,7 +350,8 @@ def ship(root: Path, record: dict, *, lease_owner: str | None = None, dry_run: b
         # The candidates about to be pushed are the ones a rival pull request
         # overtakes, so the filing checks run on fresh evidence, as in finish.
         progress("ship: refreshing duplicate searches and claims")
-        (refresher or hunt.refresh)(root, record, include_ready=True)
+        (refresher or hunt.refresh)(root, record, include_ready=True, only=only,
+                                    progress=progress)
     try:
         login = signed_in_login(run)
     except ShipFailure as failure:

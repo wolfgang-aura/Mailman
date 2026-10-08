@@ -1766,7 +1766,9 @@ def write_checkpoint(root: Path, record: dict, result: dict) -> Path | None:
     return destination
 
 
-def refresh(root: Path, record: dict, *, include_ready: bool = False) -> dict:
+def refresh(root: Path, record: dict, *, include_ready: bool = False,
+            only: str | None = None,
+            progress: Callable[[str], None] | None = None) -> dict:
     """Re-run the aging evidence for every ready candidate, as one batch.
 
     Duplicate searches and claim reads expire in an hour. Two finished
@@ -1782,6 +1784,10 @@ def refresh(root: Path, record: dict, *, include_ready: bool = False) -> dict:
     from mailman.claims import read_claims
     from mailman.submission import record_duplicate_search
 
+    # Shipping one run refreshed, and fingerprinted, every other run in a long
+    # rolling hunt first, silently, and looked stuck. Mailman #468.
+    if only:
+        record = {**record, "runs": [row for row in record["runs"] if row["run_id"] == only]}
     before = status(root, record)
     refreshed: list[dict] = []
     for row in before["runs"]:
@@ -1805,6 +1811,8 @@ def refresh(root: Path, record: dict, *, include_ready: bool = False) -> dict:
                 load_handoff(directory) is None and load_offer_handoff(directory) is None):
             continue
         outcome = {"run_id": run.run_id}
+        if progress:
+            progress(f"refresh: {run.run_id} duplicate search and claims")
         search = read_object(directory / "duplicate-search.json")
         if not search.get("query"):
             outcome["duplicate_search"] = "no recorded query; run duplicate-search first"
