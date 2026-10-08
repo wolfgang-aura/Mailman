@@ -44,7 +44,10 @@ from mailman.toolchain import resolve_tool
 #: Sixty days left 96 of 679 screens failing on freshness alone and PRHunt
 #: with no candidates; 56 of them merged an outside pull request inside 180
 #: days. Mailman #317.
-FRESHNESS_WINDOW_DAYS = 180
+#: By 2026-10-08 the pool was dry at 180 days across the top 12,000 packages;
+#: the operator chose a year, accepting that a slow repository may leave a
+#: pull request unreviewed for weeks.
+FRESHNESS_WINDOW_DAYS = 365
 
 TARGET_INTEL_FILENAME = "target-intel.json"
 TARGET_INTEL_MARKDOWN = "target-intel.md"
