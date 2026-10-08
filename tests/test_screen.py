@@ -2982,6 +2982,37 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(kept["verdict"], "pass")
         self.assertEqual(kept["gates"], good["gates"])
 
+    def test_an_unavailable_assignment_search_records_no_verdict(self) -> None:
+        # 2026-10-08: ansible/awx was cached as "rejected on assignment" while
+        # a discover run held the search budget; a refresh passed it. Mailman #477.
+        healthy = FakeGitHub()
+
+        def search_refused(arguments, **keywords):
+            if arguments[-1].startswith("search/issues"):
+                result = _Result("", exit_code=1)
+                result.stderr = "gh: HTTP 503: Service Unavailable"
+                return result
+            return healthy(arguments, **keywords)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            good = _screen(root, FakeGitHub())
+            record = screen_repository(
+                "example/project",
+                data_root=root,
+                executable="gh",
+                working_directory=root,
+                _execute=search_refused,
+                _fetch=FakePages(),
+            )
+            kept = load_screen(root, "example/project")
+
+        self.assertFalse(record["success"])
+        self.assertNotIn("assignment", record.get("failed_gates") or [])
+        self.assertIn("search", record["detail"])
+        self.assertEqual(kept["verdict"], "pass")
+        self.assertEqual(kept["gates"], good["gates"])
+
     def test_the_verdict_is_cached_so_a_candidate_is_screened_once(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -2269,12 +2269,14 @@ def _assignment_gate(
             data=data,
         )
     if result is None:
+        # A refused search is a read that failed, not a verdict; the screen
+        # turns it into an unread record. Mailman #477.
         return _gate(
             "assignment",
             passed=False,
             blocking=True,
-            detail="assignment enforcement search was unavailable",
-            data=data,
+            detail=ASSIGNMENT_SEARCH_UNREAD,
+            data={**data, "unread": True},
         )
     return _gate(
         "assignment",
@@ -3267,6 +3269,8 @@ def screen_repository(
         # responsiveness in the minutes the hourly budget was spent.
         # https://github.com/wolfgang-aura/Mailman/issues/169
         return _unread(data_root, slug, record, gh, RATE_LIMITED_DETAIL)
+    if any((gate.get("data") or {}).get("unread") for gate in gates):
+        return _unread(data_root, slug, record, gh, ASSIGNMENT_SEARCH_UNREAD)
     failed = [
         gate["name"] for gate in gates if gate["blocking"] and not gate["passed"]
     ]
@@ -3423,6 +3427,13 @@ RATE_LIMITED_DETAIL = (
     "rate limited: the hourly GitHub core budget ran out during the screen; "
     "rerun after it resets (`gh api -i` shows X-Ratelimit-Reset; the "
     "rate_limit endpoint can still report it full)"
+)
+
+
+#: What an unread screen says when the assignment search was refused.
+ASSIGNMENT_SEARCH_UNREAD = (
+    "assignment enforcement search was unavailable; rerun with --refresh "
+    "once the search budget resets"
 )
 
 
