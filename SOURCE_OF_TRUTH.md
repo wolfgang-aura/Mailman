@@ -993,3 +993,13 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   - pydata/xarray#11637 `ok` -> `attention`, `blocked` -> `dirty`: main moved again (`a3daba59..802bffd0`, 19 files; our pushed head
     `cbcdf570` is ours). Local merge of FETCH_HEAD in the run workspace (`1fac3aaf`) is conflict-free; `test_zarr.py` -k "append or
     datetime or encoding" 163 passed, 200 skipped. Push awaits approval.
+- Re-read 2026-10-08 afternoon (`mailman hunt watch`, `mailman contributions --refresh`): 55 rows, 15 merged, 8 closed unmerged,
+  32 open; 7 listed as needing work. Two rows moved since 12:44 UTC.
+  - pydata/xarray#11637 `attention` -> `ok`, `dirty` -> `blocked`: the operator pushed merge `1fac3aaf` (`cbcdf570..1fac3aaf`) after
+    approval; the branch no longer conflicts and CI is pending.
+  - Python-Markdown/markdown#1648 `ok` -> `attention`: waylan APPROVED and wrote at 14:07 UTC that a merge conflict remains and he
+    will merge once it is resolved. GitHub reports `CLEAN`/`MERGEABLE` at head `d7fa2bb` (ours); master moved at 13:57 UTC (playground
+    docs). Local merge of master in the run workspace (`b58cdef`) is conflict-free and `test_html_blocks` passed (133 tests).
+    Push and reply wait for approval (draft `.mailman/drafts/markdown-1648-conflict.md`).
+  - Unchanged: py-shiny#2511 (schloerke deciding), bleachbit#2397, strawberry-django#971, openalgo#2021, syrupy#1257, poetry#11052;
+    pretix#6564 and biopython#5336 parked.
