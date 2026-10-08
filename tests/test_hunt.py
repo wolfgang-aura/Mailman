@@ -2168,10 +2168,10 @@ class RescreenTests(OrchestratorHarness):
         self._failed("acme/also", failed=("freshness", "responsiveness"))
         # Merges 1 in 11 decided: fails today's merge-share rule regardless.
         self._failed("acme/closer", merged=1, closed_unmerged=10)
-        # Median wait over 14 days fails whatever the denominator.
-        self._failed("acme/slow", median_first_response_days=20.0)
-        # Even with every unanswered pull request left out, under half on time.
-        self._failed("acme/late", responded=40, responded_within_days=15)
+        # Median wait over 21 days fails whatever the denominator.
+        self._failed("acme/slow", median_first_response_days=22.0)
+        # Even with every unanswered pull request left out, under 35% on time.
+        self._failed("acme/late", responded=40, responded_within_days=13)
 
         rows = rescreen_candidates(self.data_root)
 

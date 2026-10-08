@@ -192,8 +192,8 @@ a time; a screen costs about 200 GitHub core calls.
    requests opened in the last 90 days (`--responsiveness-days`), excluding
    bots and the maintainers' own, and for each finds the first review, review
    comment or issue comment from an OWNER, MEMBER or COLLABORATOR. It fails
-   when the median wait is over 14 days, when fewer than half were answered
-   within 14 days, or when at least five were decided and under 30% of them
+   when the median wait is over 21 days, when under 35% were answered within
+   14 days (a 14-day median and half answered until 2026-10-08, #471), or when at least five were decided and under 30% of them
    merged (until 2026-09-29 it was "more closed than merged", which failed
    huggingface_hub at 20 merged and 21 closed). An unanswered pull request has waited its whole age.
    Fewer than three outside pull requests in the window is `unknown`, which

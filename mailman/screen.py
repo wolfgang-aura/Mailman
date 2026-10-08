@@ -186,11 +186,16 @@ RESPONSIVENESS_WORKERS = 4
 #: where our pull request will be read quickly.
 RESPONSIVENESS_SAMPLE_MINIMUM = 3
 
-#: A first maintainer response is on time inside this many days. The median
-#: wait has to sit under it, and at least `FIRST_RESPONSE_SHARE` of the sample
-#: has to have been answered inside it.
+#: A first maintainer response is on time inside this many days. At least
+#: `FIRST_RESPONSE_SHARE` of the sample has to have been answered inside it,
+#: and the median wait has to sit under `MEDIAN_RESPONSE_DAYS`.
+#: On 2026-10-08 the pool was dry: 122 screens since 2026-09-20 failed this
+#: gate alone, and a 14-day median with half answered let none of them
+#: through. The operator loosened it to a 21-day median with 35% answered,
+#: which reopens 18 of them (urllib3, psutil, watchdog, tenacity). Mailman #471.
 FIRST_RESPONSE_DAYS = 14
-FIRST_RESPONSE_SHARE = 0.5
+FIRST_RESPONSE_SHARE = 0.35
+MEDIAN_RESPONSE_DAYS = 21
 
 #: A repository that merges under this share of the outside pull requests it
 #: decides is saying no as a habit. It was "more closed than merged" until
@@ -208,7 +213,8 @@ REJECTION_DECIDED_MINIMUM = 5
 #: 3: an unanswered pull request younger than FIRST_RESPONSE_DAYS is left out
 #: of the share (#224). Bump it whenever the gate's arithmetic changes, so
 #: `hunt targets` can offer the failures an older rule produced. Mailman #227.
-RESPONSIVENESS_RULES_VERSION = 3
+#: 4: a 21-day median and 35% answered within 14 days (#471).
+RESPONSIVENESS_RULES_VERSION = 4
 
 #: Python has to be the language the repository is actually written in. On
 #: `ccxt/ccxt` the Python is generated from TypeScript, and a patch to it is
@@ -2906,6 +2912,7 @@ def _responsiveness_gate(
         "ai_refusals": refusals,
         "first_response_days": FIRST_RESPONSE_DAYS,
         "first_response_share": FIRST_RESPONSE_SHARE,
+        "median_response_days": MEDIAN_RESPONSE_DAYS,
         "sample_minimum": RESPONSIVENESS_SAMPLE_MINIMUM,
         "decided_minimum": REJECTION_DECIDED_MINIMUM,
         "merge_share_minimum": REJECTION_MERGE_SHARE,
@@ -2931,8 +2938,8 @@ def _responsiveness_gate(
         + (f"; excluded {', '.join(sorted(excluded_bots))}" if excluded_bots else "")
     )
     reasons: list[str] = []
-    if median is not None and median > FIRST_RESPONSE_DAYS:
-        reasons.append(f"the median wait is over {FIRST_RESPONSE_DAYS} days")
+    if median is not None and median > MEDIAN_RESPONSE_DAYS:
+        reasons.append(f"the median wait is over {MEDIAN_RESPONSE_DAYS} days")
     if share is not None and share < FIRST_RESPONSE_SHARE:
         reasons.append(
             f"under {FIRST_RESPONSE_SHARE:.0%} were answered within "

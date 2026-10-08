@@ -3217,8 +3217,25 @@ class ResponsivenessTests(unittest.TestCase):
         self.assertEqual(gate["data"]["responded"], 4)
         self.assertEqual(gate["data"]["responded_within_days"], 0)
         self.assertEqual(gate["data"]["response_share"], 0.0)
-        self.assertIn("the median wait is over 14 days", gate["detail"])
-        self.assertIn("under 50% were answered within 14 days", gate["detail"])
+        self.assertIn("the median wait is over 21 days", gate["detail"])
+        self.assertIn("under 35% were answered within 14 days", gate["detail"])
+
+    def test_a_three_week_median_with_a_third_answered_in_time_passes(self) -> None:
+        # urllib3 on 2026-10-01: median 7.3 days, 48% answered in 14 days,
+        # failed the old half-answered bar. A median under three weeks with
+        # over a third answered in a fortnight is open enough. Mailman #471.
+        pulls = [_outside_pull(500 + n, opened_days_ago=80 - 5 * n) for n in range(5)]
+        reviews = {500: [_response(70)], 501: [_response(57)], 502: [_response(52)],
+                   503: [_response(47)], 504: [_response(50)]}
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary), FakeGitHub(all_pulls=pulls, reviews=reviews)
+            )
+        gate = _named(record, "responsiveness")
+
+        self.assertTrue(gate["passed"], gate["detail"])
+        self.assertEqual(gate["data"]["median_first_response_days"], 18.0)
+        self.assertEqual(gate["data"]["response_share"], 0.4)
 
     def test_a_repository_that_rarely_merges_fails(self) -> None:
         # Fast answers, and the answer is usually no.

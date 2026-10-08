@@ -784,14 +784,14 @@ def _could_pass_responsiveness(data: dict) -> bool:
     Every unanswered pull request is assumed young, the most a re-screen can
     leave out of the share; the median and the merge share do not move.
     """
-    from mailman.screen import (FIRST_RESPONSE_DAYS, FIRST_RESPONSE_SHARE,
+    from mailman.screen import (FIRST_RESPONSE_SHARE, MEDIAN_RESPONSE_DAYS,
                                 REJECTION_DECIDED_MINIMUM, REJECTION_MERGE_SHARE,
                                 RESPONSIVENESS_SAMPLE_MINIMUM)
 
     if int(data.get("sampled") or 0) < RESPONSIVENESS_SAMPLE_MINIMUM:
         return False
     median = data.get("median_first_response_days")
-    if median is not None and median > FIRST_RESPONSE_DAYS:
+    if median is not None and median > MEDIAN_RESPONSE_DAYS:
         return False
     merged = int(data.get("merged") or 0)
     decided = merged + int(data.get("closed_unmerged") or 0)
