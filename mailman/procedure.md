@@ -180,9 +180,9 @@ a time; a screen costs about 200 GitHub core calls.
    clause number and the quoted sentence, read from the text; the patch's
    side in any disagreement between reference tools is named in the body.
    A guide that needs a signed Contributor License Agreement before a first
-   pull request merges is recorded as the `cla` constraint (`requires_cla`);
-   signing is the operator's act, so it goes to them before the run is filed,
-   not after cla-bot fails the first check.
+   pull request merges is recorded as the `cla` constraint (`requires_cla`)
+   and fails the `policy` gate: the operator does not sign CLAs, so the
+   repository is out (#469).
    Freshness asks whether outside work merges here; the `responsiveness` gate
    asks how long a stranger waits for a first word, because a collaborator's
    merge satisfies freshness and says nothing about a stranger's silence. Of

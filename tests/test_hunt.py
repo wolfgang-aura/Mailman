@@ -1407,8 +1407,9 @@ class PrescreenRecordTests(OrchestratorHarness):
         self.assertTrue(by_target["acme/old#1"]["stale_screen"])
         self.assertFalse(by_target["acme/new#5"]["stale_screen"])
 
-    def test_workable_targets_say_whether_the_repository_needs_a_cla(self):
-        # cloud-custodian's screen predated #440 and hid EasyCLA. #442.
+    def test_workable_targets_drop_cla_repositories_and_flag_unknown_ones(self):
+        # cloud-custodian's screen predated #440 and hid EasyCLA. #442. The
+        # operator does not sign CLAs, so a known one is left out. #469.
         self._screen("acme/cla", [1], policy={"requires_cla": True, "cla_checks_read": True})
         self._screen("acme/free", [2])
         self._screen("acme/old", [3], policy={"requires_cla": False})
@@ -1416,7 +1417,7 @@ class PrescreenRecordTests(OrchestratorHarness):
         rows = {row["target"]: row["requires_cla"]
                 for row in workable_targets(self.data_root, held_repositories=set())}
 
-        self.assertEqual(rows, {"acme/cla#1": True, "acme/free#2": False, "acme/old#3": None})
+        self.assertEqual(rows, {"acme/free#2": False, "acme/old#3": None})
         out, err = StringIO(), StringIO()
         with redirect_stdout(out), mock.patch("sys.stderr", err):
             main(["hunt", "targets", "--data-root", str(self.data_root)])

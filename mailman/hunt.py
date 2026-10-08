@@ -1209,6 +1209,10 @@ def workable_targets(root: Path, *, held_repositories: set[str] | None = None,
     targets = []
     for screened, slug, screen in sorted(screens, key=lambda item: item[0], reverse=True):
         requires_cla = screen_requires_cla(screen)
+        # A screen from before #469 passed a CLA project; the operator does
+        # not sign CLAs.
+        if requires_cla:
+            continue
         for row in screen_shortlist(screen):
             target = f"{slug}#{row.get('number')}"
             if target in claimed or prescreen_path(root, slug, int(row["number"])).is_file():

@@ -2191,9 +2191,10 @@ class ScreenTests(unittest.TestCase):
         )
         self.assertIn(self.PRETIX_POLICY_URL, record["read_failures"])
 
-    def test_a_cla_signature_requirement_is_recorded_as_a_constraint(self) -> None:
+    def test_a_cla_signature_requirement_fails_the_screen(self) -> None:
         # pretix/pretix CONTRIBUTING.md, line 13. Nothing read it, and cla-bot
         # failed the first check on #6564 the minute it was filed. Mailman #122.
+        # The operator does not sign CLAs, so the repository is out. #469.
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(
                 Path(temporary),
@@ -2211,7 +2212,8 @@ class ScreenTests(unittest.TestCase):
             )
         gate = _named(record, "policy")
 
-        self.assertEqual(record["verdict"], "pass")
+        self.assertEqual(record["verdict"], "fail")
+        self.assertFalse(gate["passed"])
         self.assertTrue(gate["data"]["requires_cla"])
         self.assertIn("signed CLA", gate["detail"])
         constraint = next(
@@ -2296,6 +2298,7 @@ class ScreenTests(unittest.TestCase):
         gate = _named(record, "policy")
 
         self.assertTrue(gate["data"]["requires_cla"])
+        self.assertFalse(gate["passed"])
         self.assertIn("check run 'cla/google'", gate["detail"])
 
     def test_a_status_that_only_contains_cla_letters_is_not_a_cla(self) -> None:

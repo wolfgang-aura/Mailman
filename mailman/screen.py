@@ -1995,13 +1995,15 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
             if REQUIRES_CLA in kinds:
                 detail += (
                     " A signed CLA is needed before a first pull request "
-                    "merges; the operator signs it before filing."
+                    "merges, and the operator does not sign CLAs."
                 )
         else:
             detail = f"{read} says nothing that closes AI-assisted work"
         return _gate(
             "policy",
-            passed=True,
+            # The operator will not sign CLAs, so a CLA project is closed to
+            # us like an AI ban is. Mailman #469.
+            passed=REQUIRES_CLA not in kinds,
             blocking=True,
             detail=detail,
             data={
@@ -2044,8 +2046,8 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         )
     return _gate(
         "policy",
-        passed=True,
-        blocking=False,
+        passed=REQUIRES_CLA not in kinds,
+        blocking=REQUIRES_CLA in kinds,
         detail=detail,
         data={
             "source": None,
