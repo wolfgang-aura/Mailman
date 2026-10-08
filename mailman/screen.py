@@ -255,8 +255,15 @@ _TEST_RUNNER = re.compile(
 #: broker listens here, and a screen does not start Docker. A test workflow
 #: that starts one needs it. netbox-community/netbox. Mailman #255.
 HOST_MISSING_SERVICES = (
-    "postgres", "postgis", "mysql", "mariadb", "redis", "valkey", "mongo",
-    "rabbitmq", "elasticsearch", "opensearch", "memcached", "kafka",
+    "postgres", "postgis", "pgvector", "mysql", "mariadb", "redis", "valkey",
+    "mongo", "rabbitmq", "elasticsearch", "opensearch", "memcached", "kafka",
+)
+#: A pull-request trigger that fires only when a maintainer adds a label. Such
+#: a workflow is not the suite an outside PR runs, so it cannot vouch that the
+#: tests need no service. plastic-labs/honcho. Mailman #476.
+_LABEL_ONLY_PULL_REQUEST = re.compile(
+    r"^\s*pull_request(?:_target)?:[ \t]*\n\s+types:\s*\[?\s*['\"]?labeled['\"]?\s*\]?[ \t]*$",
+    re.MULTILINE,
 )
 _SERVICE_IMAGE = re.compile(
     r"^\s*image:\s*['\"]?(?:[\w.-]+/)*("
@@ -1185,11 +1192,14 @@ def _ci_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         if isinstance(entry, dict) and str(entry.get("name", "")).endswith((".yml", ".yaml"))
     ]
     running: list[str] = []
+    label_gated: list[str] = []
     services: dict[str, list[str]] = {}
     for name in names:
         body = _decoded(gh.json(f"repos/{slug}/contents/.github/workflows/{name}"))
         if _TEST_RUNNER.search(body):
             running.append(name)
+            if _LABEL_ONLY_PULL_REQUEST.search(body):
+                label_gated.append(name)
             if re.search(r"^\s*services:", body, re.MULTILINE):
                 images = sorted(
                     {image.lower() for image in _SERVICE_IMAGE.findall(body)}
@@ -1201,6 +1211,7 @@ def _ci_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         "workflows_running_tests": running,
         # The databases and brokers each test workflow starts. Mailman #255.
         "service_images": services,
+        "label_gated_workflows": label_gated,
     }
     if not running:
         return _gate(
@@ -1762,6 +1773,8 @@ def _host_gate(
         for row in no_wheel
     ]
     running = (ci or {}).get("workflows_running_tests") or []
+    gated = set((ci or {}).get("label_gated_workflows") or [])
+    running = [name for name in running if name not in gated] or running
     services = (ci or {}).get("service_images") or {}
     if running and all(name in services for name in running):
         needed = sorted({image for name in running for image in services[name]})

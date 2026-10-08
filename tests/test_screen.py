@@ -1336,6 +1336,38 @@ class ScreenTests(unittest.TestCase):
             {"ci.yml": ["postgres", "redis"]},
         )
 
+    def test_a_label_gated_workflow_does_not_vouch_for_a_pgvector_suite(self) -> None:
+        # plastic-labs/honcho: the PR suite starts pgvector; the service-free
+        # workflows run only when a maintainer labels the PR. Mailman #476.
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    workflows={
+                        "unittest.yml": (
+                            "on:\n  pull_request:\n    branches: [main]\n"
+                            "jobs:\n  test:\n    services:\n"
+                            "      postgres:\n        image: pgvector/pgvector:pg15\n"
+                            "    steps:\n    - run: uv run pytest -x\n"
+                        ),
+                        "live-llm-tests.yml": (
+                            "on:\n  push:\n    branches: [main]\n"
+                            "  pull_request:\n    types: [labeled]\n"
+                            "jobs:\n  live:\n    steps:\n"
+                            "    - run: uv run --frozen pytest tests/live_llm/\n"
+                        ),
+                    }
+                ),
+            )
+        gate = _named(record, "host")
+
+        self.assertFalse(gate["passed"])
+        self.assertIn("pgvector", gate["detail"])
+        self.assertEqual(
+            _named(record, "ci")["data"]["label_gated_workflows"],
+            ["live-llm-tests.yml"],
+        )
+
     def test_one_service_free_test_workflow_passes_the_host_gate(self) -> None:
         # celery/celery: integration tests start redis, the unit tests do not.
         with tempfile.TemporaryDirectory() as temporary:
