@@ -1434,7 +1434,17 @@ def ask_ready(run, directory: Path, decision, action, warnings: list) -> dict:
                      "maintainer's answer; this is not a PR. Once it is posted, "
                      f"`mailman claims {run.run_id}` or `hunt refresh` reads "
                      "the answer."}
-    if own_words:
+    try:
+        posted = json.loads((directory / "offer-posted.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        posted = None
+    if isinstance(posted, dict):
+        # Posted offers were handed over for approval again. Mailman #474.
+        row.update(stage="offer-posted", action=(
+            f"Offer posted at {posted.get('comment_url') or 'the issue'}; do not post it "
+            f"again. `mailman claims {run.run_id}` or `hunt refresh` reads the "
+            "maintainer's answer."))
+    elif own_words:
         row.update(human_required=True,
                    action=f"Before posting, {OWN_WORDS_INSTRUCTION}. {row['action']}")
     if warnings:

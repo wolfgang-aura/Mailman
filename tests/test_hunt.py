@@ -204,6 +204,25 @@ class HuntTests(OrchestratorHarness):
         self.assertEqual(row["action"], "maintainer replied to offer; switch decision to SEND")
         self.assertIn("keeper (COLLABORATOR)", row["detail"])
 
+    def test_a_posted_offer_waits_for_the_maintainer_instead_of_approval(self):
+        """Mailman #474: a posted offer was handed over for approval again."""
+        hunt = self.new_hunt()
+        directory = self.ask_ready_run()
+        add_run(self.data_root, hunt, directory.name)
+        (directory / "offer-posted.json").write_text(json.dumps({
+            "kind": "ask-first-offer", "issue": "example/project#1",
+            "comment_url": "https://github.com/example/project/issues/1#issuecomment-9",
+            "posted_at": "2026-10-08"}), encoding="utf-8")
+
+        result = status(self.data_root, hunt)
+
+        row = result["runs"][0]
+        self.assertEqual(result["ready_to_ask"], 1)
+        self.assertEqual(row["disposition"], "READY_TO_ASK")
+        self.assertEqual(row["stage"], "offer-posted")
+        self.assertIn("issuecomment-9", row["action"])
+        self.assertNotIn("approval packet", row["action"])
+
     def test_an_ask_first_candidate_is_counted_apart_and_never_as_a_pr(self):
         """https://github.com/wolfgang-aura/Mailman/issues/138
 
