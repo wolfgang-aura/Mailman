@@ -988,3 +988,8 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   - python-markdown2#732, djangorestframework-stubs#1073, nox#1191 `unknown` -> `ok`; solara#1215 and nicegui#6345 `unknown` ->
     `merged` (records 0023, 0018 exist).
   - bleachbit#2397, strawberry-django#971, openalgo#2021, syrupy#1257, poetry#11052 unchanged; pretix#6564 and biopython#5336 parked.
+- Re-read 2026-10-08 (`mailman hunt watch`; unattended `pr-followup` run, `contributions --refresh` not run): 54 rows, 7 listed as
+  needing work. One row moved since 09:02 UTC.
+  - pydata/xarray#11637 `ok` -> `attention`, `blocked` -> `dirty`: main moved again (`a3daba59..802bffd0`, 19 files; our pushed head
+    `cbcdf570` is ours). Local merge of FETCH_HEAD in the run workspace (`1fac3aaf`) is conflict-free; `test_zarr.py` -k "append or
+    datetime or encoding" 163 passed, 200 skipped. Push awaits approval.
