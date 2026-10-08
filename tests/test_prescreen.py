@@ -232,6 +232,8 @@ if ARGUMENTS[:1] == ["api"]:
         emit("mergers.json")
     if "/compare/" in path:
         emit("compare.json")
+    if "/branches/" in path:
+        emit("branch.txt")
     if "/comments" in path:
         emit("comments.json")
     if "/timeline" in path:
@@ -297,6 +299,7 @@ class PrescreenTests(unittest.TestCase):
         merged_pull_requests: list[dict] | None = None,
         issues: dict[int, dict] | None = None,
         compare: dict | None = None,
+        branch: str | None = None,
     ) -> str:
         """A `gh` that answers from fixture files, one per question asked.
 
@@ -345,6 +348,10 @@ class PrescreenTests(unittest.TestCase):
             fixtures["corpus-pr.json"] = json.dumps(open_pull_requests)
         if compare is not None:
             fixtures["compare.json"] = json.dumps(compare)
+        # The name `gh api repos/S/branches/B --jq .name` prints after
+        # following a rename redirect.
+        if branch is not None:
+            fixtures["branch.txt"] = branch + "\n"
         # `gh search prs --merged` answers from these, and nothing else does.
         if merged_pull_requests is not None:
             fixtures["merged-prs.json"] = json.dumps(merged_pull_requests)
@@ -3259,6 +3266,30 @@ class PullRequestBaseTests(unittest.TestCase):
                 executable=self.stub("[]", compare={"status": "diverged", "ahead_by": 3}),
             )
         )
+
+    def test_a_branch_renamed_to_the_default_is_no_refusal(self) -> None:
+        # checkov's guide still says `master`, renamed to `main`: the compare
+        # 404s, and the branches endpoint follows the rename. Mailman #473.
+        record = {
+            "repository": "bridgecrewio/checkov",
+            "pull_request_base": {
+                "branch": "master",
+                "quote": "post-submits against master branch.",
+                "default_branch": "main",
+            },
+        }
+        self.assertIsNone(
+            base_branch_refusal(
+                record, base_commit="704ff81", executable=self.stub("[]", branch="main")
+            )
+        )
+        renamed_elsewhere = base_branch_refusal(
+            record,
+            base_commit="704ff81",
+            executable=self.stub("[]", branch="develop"),
+        )
+        self.assertIsNotNone(renamed_elsewhere)
+        self.assertIn("`develop`", renamed_elsewhere)
 
     def test_no_named_branch_costs_no_call(self) -> None:
         self.assertIsNone(

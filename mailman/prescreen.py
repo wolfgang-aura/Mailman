@@ -1683,6 +1683,34 @@ def base_branch_refusal(
         timeout_seconds=timeout_seconds,
     )
     if result.timed_out or result.exit_code != 0:
+        # checkov's guide still says `master`, renamed to `main`; the compare
+        # 404s but the branches endpoint follows the rename. Mailman #473.
+        renamed = execute(
+            [
+                executable or resolve_tool(Path.cwd(), "gh"),
+                "api",
+                f"repos/{slug}/branches/{branch}",
+                "--jq",
+                ".name",
+            ],
+            working_directory=Path.cwd(),
+            timeout_seconds=timeout_seconds,
+        )
+        current = (renamed.stdout or "").strip()
+        if (
+            not renamed.timed_out
+            and renamed.exit_code == 0
+            and current
+            and current.lower() != branch.lower()
+        ):
+            if current.lower() == str(base.get("default_branch") or "").lower():
+                return None
+            return base_branch_refusal(
+                {**record, "pull_request_base": {**base, "branch": current}},
+                base_commit=base_commit,
+                executable=executable,
+                timeout_seconds=timeout_seconds,
+            )
         return (
             f"{slug} takes pull requests against `{branch}`, and whether "
             f"{base_commit} is on it could not be read: "
