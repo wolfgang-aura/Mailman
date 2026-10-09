@@ -1,4 +1,4 @@
-﻿# Source of truth
+# Source of truth
 
 Last verified: 2026-10-01 in `Asia/Singapore`.
 
@@ -1022,3 +1022,9 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   openalgo#2021 `mergeable_state` went `unstable` to `dirty` (main moved). Last maintainer comment is Kalaiviswa's scope request of
   2026-09-10, which we answered; no new activity, so no revision started. The conflict needs a merge only if the maintainer re-engages.
   No other row changed; the open items in the entry above stand.
+- Re-read 2026-10-09 evening (`mailman hunt watch`; unattended `pr-followup` run, previous reading 09:01 UTC): two rows moved.
+  xarray#11637 `dirty` again because main moved to `7f4b6045`; the fork branch already holds `08e17c0e`. Local merge `a1e1b292` is
+  clean; `xarray/tests/backends/test_zarr.py` 819 passed, and the 6 `test_chunking_consistency` cases fail on plain main too.
+  python-markdown2#732: Crozzers asked why the scan stops at end of line and suggested a `splitlines` loop. Revision `511e95a`
+  in the run workspace adopts it; ReDoS tests 10 OK, the 14 `test.py` known failures match the base. Push and reply wait for approval.
+  The open items in the entries above stand.
