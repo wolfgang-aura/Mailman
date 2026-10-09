@@ -1,4 +1,4 @@
-# Source of truth
+﻿# Source of truth
 
 Last verified: 2026-10-01 in `Asia/Singapore`.
 
@@ -1002,4 +1002,19 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
     docs). Local merge of master in the run workspace (`b58cdef`) is conflict-free and `test_html_blocks` passed (133 tests).
     Push and reply wait for approval (draft `.mailman/drafts/markdown-1648-conflict.md`).
   - Unchanged: py-shiny#2511 (schloerke deciding), bleachbit#2397, strawberry-django#971, openalgo#2021, syrupy#1257, poetry#11052;
+    pretix#6564 and biopython#5336 parked.
+- Re-read 2026-10-09 (`mailman hunt watch`, `mailman contributions --refresh`; unattended `pr-followup` run): 56 rows, 18 merged,
+  8 closed unmerged, 30 open; 10 listed as needing work. Rows that moved since 2026-10-08 15:02 UTC:
+  - django-oauth-toolkit#1927 merged 2026-10-08 (`bafb69f`, dopry); run record 0029. pylint#11517 merged (`1e5861d`,
+    Pierre-Sassoulas, two commits of his on top); record 0030. Python-Markdown#1648 merged (`0bf535b`, waylan); record 0031.
+    Provenance recorded for all three; fork deletes wait for approval.
+  - xarray#11637 `dirty` again (main moved to `d4bce83a`). Local merge in the run workspace is clean (`08e17c0e`);
+    `xarray/tests/backends/test_zarr.py` 820 passed. Push waits for approval.
+  - py-shiny#2511 `dirty` (CHANGELOG conflict with main). Local merge `9ecacfd7` resolves it and applies schloerke's two suggestions;
+    `tests/pytest/test_types.py` 3 passed. His design decision is still open. Push waits for approval.
+  - dishka#771: Tishka17 inline review says `compiled_deps` knows only the current scope, so a parent-provider dependency
+    breaks the new path. Revision not started.
+  - bleachbit#2397: XhmikosR retracted his duplicate claim. podman-compose#1577 is newly watched (only rootless `trixie` checks fail,
+    3 of 5 other PRs fail the same). Nothing needed on strawberry-django#971 (bot comment), poetry#11052 (approved, `behind`),
+    syrupy#1257 and anndata#2666 (inherited or maintainer-set triage checks). pretix#6564 and biopython#5336 stay parked.
     pretix#6564 and biopython#5336 parked.
