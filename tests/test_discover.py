@@ -8,6 +8,7 @@ from mailman.discover import (
     REPOSITORIES_FILE,
     build_query,
     discover,
+    gh_timeline,
     query_batches,
     read_repository_list,
     render_discovery,
@@ -247,6 +248,36 @@ class DiscoverTests(unittest.TestCase):
         self.assertEqual([row["number"] for row in result["issues"]], [9])
         self.assertEqual(result["unread_timelines"], ["a/one#5"])
         self.assertIn("TIMELINE NOT READ", render_discovery(result))
+
+    def test_a_failed_timeline_read_is_retried_and_its_reason_reported(self) -> None:
+        # 2026-10-09: 981 of 1014 timelines came back unread with no reason,
+        # and every one of them read fine an hour later. Mailman #478.
+        class _Done:
+            def __init__(self, stdout, returncode=0, stderr=""):
+                self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+        calls = []
+
+        def run(arguments, **keywords):
+            calls.append(arguments[-1])
+            if "/5/" in arguments[-1]:
+                return _Done("", 1, "error connecting to api.github.com")
+            if len(calls) == 2:
+                return _Done("[]")
+            return _Done("", 1, "HTTP 502")
+
+        timeline = gh_timeline(_run=run, _sleep=lambda seconds: None)
+        result = discover(
+            ["a/one"], data_root=self.root, since="2026-07-01",
+            search=lambda query: [_issue("a/one", 5, "2026-09-01"), _issue("a/one", 9, "2026-09-02")],
+            timeline=timeline, spacing_seconds=0,
+        )
+
+        self.assertEqual([row["number"] for row in result["issues"]], [9])
+        self.assertEqual(result["unread_timelines"], ["a/one#5"])
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(result["timeline_errors"], ["a/one#5: exit 1: error connecting to api.github.com"])
+        self.assertIn("because a/one#5: exit 1: error connecting", render_discovery(result))
 
     def test_a_maintainer_triaged_report_ranks_first_and_is_marked(self) -> None:
         # A hunt counts only triaged runs; the coordinator filtered a

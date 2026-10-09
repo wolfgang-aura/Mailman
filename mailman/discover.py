@@ -278,6 +278,8 @@ def discover(
         "searched": len(searched) - len(unsearched),
         "unsearched": unsearched,
         "unread_timelines": unread,
+        # The first distinct reasons, so the report says why. Mailman #478.
+        "timeline_errors": _first_errors(getattr(timeline, "errors", None) or []),
         "skipped": skipped,
         "issues": rows,
     }
@@ -327,21 +329,59 @@ def comment_claims(events: list[dict[str, Any]] | None) -> list[str]:
     return holders
 
 
-def gh_timeline(executable: str = "gh", timeout_seconds: float = 60) -> Timeline:
-    """One page of an issue's timeline, None when it cannot be read."""
+def gh_timeline(
+    executable: str = "gh",
+    timeout_seconds: float = 60,
+    retry_pause_seconds: float = 10,
+    _run: Callable[..., Any] = subprocess.run,
+    _sleep: Callable[[float], None] = time.sleep,
+) -> Timeline:
+    """One page of an issue's timeline, None when it cannot be read.
 
-    def timeline(slug: str, number: int) -> list[dict[str, Any]] | None:
+    A failed read is retried once after a pause, and why it failed is kept on
+    `timeline.errors`, so a run full of unread timelines names its cause.
+    Mailman #478.
+    """
+    errors: list[str] = []
+
+    def read(slug: str, number: int) -> tuple[list[dict[str, Any]] | None, str]:
         try:
-            result = subprocess.run(
+            result = _run(
                 [executable, "api", f"repos/{slug}/issues/{number}/timeline?per_page=100"],
                 capture_output=True, text=True, encoding="utf-8", timeout=timeout_seconds,
             )
+        except subprocess.TimeoutExpired:
+            return None, f"timed out after {timeout_seconds:g}s"
+        except OSError as error:
+            return None, f"{type(error).__name__}: {error}"
+        try:
             data = json.loads(result.stdout or "null")
-        except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
-            return None
-        return data if isinstance(data, list) else None
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, list):
+            return data, ""
+        stderr = " ".join((result.stderr or "").split())[:200]
+        return None, f"exit {result.returncode}: {stderr or (result.stdout or '')[:200]}"
 
+    def timeline(slug: str, number: int) -> list[dict[str, Any]] | None:
+        data, error = read(slug, number)
+        if data is None:
+            _sleep(retry_pause_seconds)
+            data, error = read(slug, number)
+        if data is None:
+            errors.append(f"{slug}#{number}: {error}")
+        return data
+
+    timeline.errors = errors  # type: ignore[attr-defined]
     return timeline
+
+
+def _first_errors(errors: list[str], limit: int = 3) -> list[str]:
+    seen: dict[str, str] = {}
+    for error in errors:
+        reason = error.split(": ", 1)[-1]
+        seen.setdefault(reason, error)
+    return list(seen.values())[:limit]
 
 
 def default_since(days: int, now: datetime | None = None) -> str:
@@ -378,6 +418,8 @@ def render_discovery(result: dict[str, Any]) -> str:
             "  TIMELINE NOT READ (claim unknown; rerun later): "
             + " ".join(result["unread_timelines"])
         )
+        for error in result.get("timeline_errors") or []:
+            lines.append(f"    because {error}")
     return "\n".join(lines)
 
 
