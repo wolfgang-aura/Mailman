@@ -1742,13 +1742,21 @@ def _host_gate(
     optional = optional - required
     shims = sorted(name for name in NATIVE_LIBRARY_SHIMS if name in required)
     no_wheel: list[dict[str, Any]] = []
+    sdist_only: list[str] = []
     unchecked: list[str] = []
     if wheel_files is not None:
         for name in sorted(required - set(shims))[:WHEEL_CHECK_LIMIT]:
             files = wheel_files(name)
             if files is None:
                 unchecked.append(name)
-            elif not any(_wheel_fits_host(filename) for filename in files):
+            elif any(_wheel_fits_host(filename) for filename in files):
+                continue
+            elif files and not any(filename.endswith(".whl") for filename in files):
+                # No wheel for any platform: the environment step builds the
+                # sdist under --prefer-binary, as it does dstack's `cursor`.
+                # A compiled one still fails there. Mailman #479.
+                sdist_only.append(name)
+            else:
                 no_wheel.append({"package": name, "files": files})
     frameworks = sorted(
         name for name in HOST_UNRUNNABLE_FRAMEWORKS if name in required or (bench and name == "frappe")
@@ -1763,6 +1771,7 @@ def _host_gate(
         "optional_blocked": optional_blocked,
         "native_shims": shims,
         "no_wheel": no_wheel,
+        "sdist_only": sdist_only,
         "pypi_unchecked": unchecked,
     }
     reasons = [HOST_UNRUNNABLE_FRAMEWORKS[name] for name in frameworks]

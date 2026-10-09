@@ -1216,8 +1216,13 @@ class ScreenTests(unittest.TestCase):
     def test_a_required_package_with_no_wheel_fails_the_host_gate(self) -> None:
         pages = FakePages(
             {
-                "https://pypi.org/pypi/sdistonly/json": json.dumps(
-                    {"urls": [{"filename": "sdistonly-1.0.tar.gz"}]}
+                "https://pypi.org/pypi/linuxonly/json": json.dumps(
+                    {
+                        "urls": [
+                            {"filename": "linuxonly-1.0.tar.gz"},
+                            {"filename": "linuxonly-1.0-cp314-cp314-manylinux_2_28_x86_64.whl"},
+                        ]
+                    }
                 ),
                 "https://pypi.org/pypi/pure/json": json.dumps(
                     {"urls": [{"filename": "pure-2.0-py3-none-any.whl"}]}
@@ -1231,7 +1236,7 @@ class ScreenTests(unittest.TestCase):
                     policies={
                         "pyproject.toml": (
                             '[project]\nname = "p"\n'
-                            'dependencies = ["sdistonly>=1", "pure", "unlisted"]\n'
+                            'dependencies = ["linuxonly>=1", "pure", "unlisted"]\n'
                         )
                     }
                 ),
@@ -1241,11 +1246,43 @@ class ScreenTests(unittest.TestCase):
 
         self.assertIn("host", record["failed_gates"])
         self.assertEqual(
-            gate["data"]["no_wheel"],
-            [{"package": "sdistonly", "files": ["sdistonly-1.0.tar.gz"]}],
+            [row["package"] for row in gate["data"]["no_wheel"]], ["linuxonly"]
         )
         self.assertEqual(gate["data"]["pypi_unchecked"], ["unlisted"])
-        self.assertIn("sdistonly", gate["detail"])
+        self.assertIn("linuxonly", gate["detail"])
+
+    def test_a_package_that_publishes_only_an_sdist_does_not_fail_the_host_gate(self) -> None:
+        # dstack requires `cursor`, which ships only an sdist and builds
+        # without a compiler; the environment step installs it under
+        # --prefer-binary. Mailman #479.
+        pages = FakePages(
+            {
+                "https://pypi.org/pypi/cursor/json": json.dumps(
+                    {"urls": [{"filename": "cursor-1.3.5.tar.gz"}]}
+                ),
+                "https://pypi.org/pypi/pure/json": json.dumps(
+                    {"urls": [{"filename": "pure-2.0-py3-none-any.whl"}]}
+                ),
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    policies={
+                        "pyproject.toml": (
+                            '[project]\nname = "p"\n'
+                            'dependencies = ["cursor", "pure"]\n'
+                        )
+                    }
+                ),
+                pages,
+            )
+        gate = _named(record, "host")
+
+        self.assertNotIn("host", record["failed_gates"])
+        self.assertEqual(gate["data"]["no_wheel"], [])
+        self.assertEqual(gate["data"]["sdist_only"], ["cursor"])
 
     def test_a_macos_only_pyproject_dependency_is_not_required_here(self) -> None:
         # pyvista lists pyobjc-framework-Cocoa for darwin only; the host gate
