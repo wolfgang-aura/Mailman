@@ -1018,3 +1018,7 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
     3 of 5 other PRs fail the same). Nothing needed on strawberry-django#971 (bot comment), poetry#11052 (approved, `behind`),
     syrupy#1257 and anndata#2666 (inherited or maintainer-set triage checks). pretix#6564 and biopython#5336 stay parked.
     pretix#6564 and biopython#5336 parked.
+- Re-read 2026-10-09 later (`mailman hunt watch`; unattended `pr-followup` run, previous reading 06:07 UTC): one row moved.
+  openalgo#2021 `mergeable_state` went `unstable` to `dirty` (main moved). Last maintainer comment is Kalaiviswa's scope request of
+  2026-09-10, which we answered; no new activity, so no revision started. The conflict needs a merge only if the maintainer re-engages.
+  No other row changed; the open items in the entry above stand.
