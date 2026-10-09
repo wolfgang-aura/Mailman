@@ -1028,3 +1028,6 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   python-markdown2#732: Crozzers asked why the scan stops at end of line and suggested a `splitlines` loop. Revision `511e95a`
   in the run workspace adopts it; ReDoS tests 10 OK, the 14 `test.py` known failures match the base. Push and reply wait for approval.
   The open items in the entries above stand.
+- Re-read 2026-10-09 night (`mailman hunt watch`; unattended `pr-followup` run, previous reading 12:56 UTC): one row moved.
+  py-shiny#2511 checks `PR checks`, `playwright-examples (3.10, chromium, 0)` and `playwright-shiny (3.10, firefox, 1)` no longer fail.
+  The row still needs work for schloerke's comment; the push of `9ecacfd7` still waits for approval. The other 10 attention rows are unchanged.
