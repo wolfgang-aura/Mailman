@@ -1031,3 +1031,11 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
 - Re-read 2026-10-09 night (`mailman hunt watch`; unattended `pr-followup` run, previous reading 12:56 UTC): one row moved.
   py-shiny#2511 checks `PR checks`, `playwright-examples (3.10, chromium, 0)` and `playwright-shiny (3.10, firefox, 1)` no longer fail.
   The row still needs work for schloerke's comment; the push of `9ecacfd7` still waits for approval. The other 10 attention rows are unchanged.
+- Re-read 2026-10-10 (`mailman hunt watch`, `mailman contributions --refresh`; unattended `pr-followup` run, previous reading
+  2026-10-09 15:01 UTC): 56 rows, 20 merged, 8 closed unmerged, 28 open; 12 listed as needing work. Rows that moved:
+  - py-shiny#2511 merged 2026-10-09 15:05 UTC (`163c833`, schloerke); record 0032. docformatter#393 merged 2026-10-09 23:00 UTC
+    (`00b23e7`, weibullguy, two merges of `master`, no review); record 0033. Provenance recorded for both; the two fork deletes wait for approval.
+  - uproot5#1741: ariostas (COMMENTED, 2026-10-09 20:20 UTC) asked to move the sample to scikit-hep-testdata with a wider macro,
+    merge the duplicated `AsArray` branch, and reword the comment. The last two are in the run workspace (`b8d268d`, test passed);
+    the first needs ROOT. Push and reply wait for approval.
+  - pretix#6564 `inherited` -> `attention` on the failing CLA check alone; no new maintainer comment. Still parked.
