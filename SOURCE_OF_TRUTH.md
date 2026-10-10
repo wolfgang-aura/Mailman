@@ -1039,3 +1039,6 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
     merge the duplicated `AsArray` branch, and reword the comment. The last two are in the run workspace (`b8d268d`, test passed);
     the first needs ROOT. Push and reply wait for approval.
   - pretix#6564 `inherited` -> `attention` on the failing CLA check alone; no new maintainer comment. Still parked.
+- Approved writes applied 2026-10-11 (operator ran them; checked with `gh pr view` and `gh repo list --fork`): xarray#11637 head now `a1e1b29`
+  (main merged in); python-markdown2#732 head `511e95a` plus the splitlines reply; uproot5#1741 head `b8d268d` plus the revision reply, point 1
+  (ROOT sample) left to ariostas. Forks deleted: django-oauth-toolkit, pylint, markdown, py-shiny, docformatter. dishka#771 revision not started.
