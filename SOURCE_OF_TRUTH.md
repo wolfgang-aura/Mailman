@@ -1042,3 +1042,9 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
 - Approved writes applied 2026-10-11 (operator ran them; checked with `gh pr view` and `gh repo list --fork`): xarray#11637 head now `a1e1b29`
   (main merged in); python-markdown2#732 head `511e95a` plus the splitlines reply; uproot5#1741 head `b8d268d` plus the revision reply, point 1
   (ROOT sample) left to ariostas. Forks deleted: django-oauth-toolkit, pylint, markdown, py-shiny, docformatter. dishka#771 revision not started.
+- Re-read 2026-10-11 (`mailman hunt watch`; unattended `pr-followup` run, previous reading 2026-10-10 15:01 UTC): 4 PRs changed, 9 listed as needing work.
+  - xarray#11637 `dirty` again: `main` moved 5 commits past our head `a1e1b29`, and `pre-commit.ci` and `pydata.xarray` now fail
+    ("error during mergeable check"), which is the conflict state and not a code failure. `main` merges cleanly into the run workspace
+    (`5e255d1`, no conflicts, our diff against `main` is still three files, 8 append tests passed). Push waits for approval.
+  - uproot5#1741 `attention` -> `ok` (pre-commit-ci[bot] pushed `3d314ef`). markdown2#732 `attention` -> `ok`. anndata#2666 `attention` -> `inherited`.
+  - Unchanged: dishka#771 (revision not started), openalgo#2021 `dirty`, poetry#11052 `behind`, syrupy#1257, strawberry-django#971 (bot), pretix#6564 (parked).
