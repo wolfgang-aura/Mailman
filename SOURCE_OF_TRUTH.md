@@ -1048,3 +1048,7 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
     (`5e255d1`, no conflicts, our diff against `main` is still three files, 8 append tests passed). Push waits for approval.
   - uproot5#1741 `attention` -> `ok` (pre-commit-ci[bot] pushed `3d314ef`). markdown2#732 `attention` -> `ok`. anndata#2666 `attention` -> `inherited`.
   - Unchanged: dishka#771 (revision not started), openalgo#2021 `dirty`, poetry#11052 `behind`, syrupy#1257, strawberry-django#971 (bot), pretix#6564 (parked).
+- Re-read 2026-10-11 later (`mailman hunt watch`; unattended `pr-followup` run, previous reading 2026-10-11 03:01 UTC): 3 PRs changed, 9 listed as needing work.
+  - xarray#11637 `attention` -> `ok`: the 5e255d1 push landed, `dirty` -> `blocked` (waiting on review), `pre-commit.ci` and `pydata.xarray` pass again.
+  - cantools#848 and taskiq#695 are newly watched (cantools#848 `attention`, mergeable state `UNSTABLE`; taskiq#695 `ok`).
+  - Unchanged, no new work: dishka#771 (revision not started), openalgo#2021 `dirty`, poetry#11052 `behind`, syrupy#1257, strawberry-django#971 (bot), podman-compose#1577, pretix#6564 (parked).
