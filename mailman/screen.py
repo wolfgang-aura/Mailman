@@ -604,6 +604,10 @@ _POLICY_PATHS = (
     # Mailman #428.
     ".github/CONTRIBUTING.rst",
     "docs/CONTRIBUTING.rst",
+    # amaranth keeps its LLM ban in a root CONTRIBUTING.txt. Mailman #480.
+    "CONTRIBUTING.txt",
+    ".github/CONTRIBUTING.txt",
+    "docs/CONTRIBUTING.txt",
     # urllib3 keeps its guide here, lower case, and the gate read none of it.
     "docs/contributing.rst",
     # zarr keeps its "must be in your own words" rule here. Mailman #271.
