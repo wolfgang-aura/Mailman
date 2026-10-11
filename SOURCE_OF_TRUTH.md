@@ -1052,3 +1052,6 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   - xarray#11637 `attention` -> `ok`: the 5e255d1 push landed, `dirty` -> `blocked` (waiting on review), `pre-commit.ci` and `pydata.xarray` pass again.
   - cantools#848 and taskiq#695 are newly watched (cantools#848 `attention`, mergeable state `UNSTABLE`; taskiq#695 `ok`).
   - Unchanged, no new work: dishka#771 (revision not started), openalgo#2021 `dirty`, poetry#11052 `behind`, syrupy#1257, strawberry-django#971 (bot), podman-compose#1577, pretix#6564 (parked).
+- Re-read 2026-10-11 evening (`mailman hunt watch`; unattended `pr-followup` run, previous reading 2026-10-11 06:01 UTC): 1 PR changed, 10 listed as needing work.
+  - awkward#4398 `ok` -> `attention`: ianna merged main in (c235d12), added a test (b28f85a) and approved. `docs / Build Docs` and `Check CI result` fail on the docs workflow (Python 3.11.0 with Soup Sieve 3.0.1), which she says is unrelated and fixed by `awkward` PR 4421; she asks for a rebase after it merges. Nothing to push now. She also had all-contributors add us (`awkward` PR 4422).
+  - Unchanged, no new work: everything else in the previous entry.
