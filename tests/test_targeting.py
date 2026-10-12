@@ -326,6 +326,44 @@ class AssessTargetTests(unittest.TestCase):
         )
         self.assertIn("parked    #14502", assessment.summary())
 
+    def test_a_closed_pull_request_the_search_matched_on_no_term_is_not_parked(
+        self,
+    ) -> None:
+        # Mailman #481: bluesky#2056 appeared in the search with no matched
+        # term and no issue reference, and refused an unrelated fix.
+        parked = {
+            **_CLOSED,
+            "author": "voice",
+            "author_association": "COLLABORATOR",
+            "closed_by": {"login": "voice", "maintainer": False},
+            "maintainer_closed": False,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _record(Path(temporary), attempts=[parked])
+            (root / "duplicate-search.json").write_text(
+                json.dumps(
+                    {
+                        "success": True,
+                        "matches": [
+                            {
+                                "number": 14502,
+                                "state": "closed",
+                                "pull_request": True,
+                                "matched_by": ["search"],
+                                "matched_terms": [],
+                                "term_count": 0,
+                                "references_issue": False,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            assessment = assess_target(root)
+
+        self.assertNotIn(MAINTAINER_PENDING_FIX, assessment.blocking)
+        self.assertEqual(assessment.maintainer_pending_attempts, [])
+
     def test_an_unread_closer_is_not_called_a_parked_fix(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             assessment = assess_target(

@@ -788,6 +788,27 @@ def _without_own_attempts(
     return [row for row in kept if row.get("number") != own]
 
 
+def _unrelated_search_numbers(matches: Any) -> set[int]:
+    """Numbers of search rows that matched on no term and cite no issue.
+
+    The search ranks by GitHub's own order, so a closed pull request can
+    appear with no overlap at all. Such a row is not an attempt at this
+    issue. bluesky#2056 was read as the project's parked fix for #1973 that
+    way. Mailman #481.
+    """
+    numbers: set[int] = set()
+    for match in matches if isinstance(matches, list) else []:
+        if not isinstance(match, dict) or not isinstance(match.get("number"), int):
+            continue
+        if (
+            match.get("matched_terms") == []
+            and not match.get("references_issue")
+            and not match.get("compact_match")
+        ):
+            numbers.add(match["number"])
+    return numbers
+
+
 def assess_target(
     run_directory: Path,
     *,
@@ -873,10 +894,16 @@ def assess_target(
             continue
         attempts_by_number[number] = {**match, "outcome": "closed unmerged"}
     opened = issue_opened_at(run_directory)
+    unrelated = _unrelated_search_numbers(duplicate_search.get("matches"))
     attempts = [
         attempt
         for attempt in attempts_by_number.values()
         if not (isinstance(attempt, dict) and predates_issue(attempt, opened))
+        and not (
+            isinstance(attempt, dict)
+            and attempt.get("number") in unrelated
+            and attempt_is_closed_unmerged(attempt)
+        )
     ]
     # A dormant attempt is sorted out before anything else reads these lists,
     # so every stage that asks whether the issue is claimed gets one answer.
