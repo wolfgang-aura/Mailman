@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -238,22 +239,36 @@ def capture_issue_from_github(
     executable: str | None = None,
     timeout_seconds: float = 60,
     maintainers: Collection[str] = (),
+    retry_delay_seconds: float = 3,
 ) -> dict[str, Any]:
-    """Capture one GitHub issue with the `gh` CLI and write `issue.md`."""
+    """Capture one GitHub issue with the `gh` CLI and write `issue.md`.
+
+    A GitHub 5xx says nothing about the issue, so it is retried twice.
+    Mailman #482.
+    """
     reference = parse_issue_url(issue_url)
     command_executable = executable or resolve_tool(run_directory, "gh")
-    result: CommandResult = execute(
-        [
-            command_executable,
-            "issue",
-            "view",
-            reference.url,
-            "--json",
-            ISSUE_FIELDS,
-        ],
-        working_directory=run_directory,
-        timeout_seconds=timeout_seconds,
-    )
+    for attempt in range(3):
+        result: CommandResult = execute(
+            [
+                command_executable,
+                "issue",
+                "view",
+                reference.url,
+                "--json",
+                ISSUE_FIELDS,
+            ],
+            working_directory=run_directory,
+            timeout_seconds=timeout_seconds,
+        )
+        transient = (
+            not result.timed_out
+            and result.exit_code != 0
+            and re.search(r"HTTP 5\d\d", result.stderr) is not None
+        )
+        if not transient or attempt == 2:
+            break
+        time.sleep(retry_delay_seconds * (attempt + 1))
     captured_at = datetime.now(UTC).isoformat()
     record: dict[str, Any] = {
         "schema_version": 1,

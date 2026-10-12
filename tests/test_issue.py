@@ -186,6 +186,54 @@ class IssueCaptureTests(unittest.TestCase):
             self.assertNotIn("Issue content has not been captured", issue_markdown)
             self.assertEqual(load_issue_record(run_directory)["source"], "github-cli")
 
+    def test_a_github_5xx_is_retried_before_the_issue_counts_as_unreadable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            _, run_directory = make_run(directory / "runs")
+            payload = json.dumps(
+                {
+                    "number": 7,
+                    "title": "T",
+                    "body": "b",
+                    "state": "OPEN",
+                    "url": ISSUE_URL,
+                    "labels": [],
+                }
+            )
+            (directory / "flaky.py").write_text(
+                "import pathlib, sys\n"
+                "marker = pathlib.Path(__file__).with_name('seen')\n"
+                "if not marker.exists():\n"
+                "    marker.write_text('1')\n"
+                "    sys.stderr.write('HTTP 502: 502 Bad Gateway')\n"
+                "    sys.exit(1)\n"
+                f"print({payload!r})\n",
+                encoding="utf-8",
+            )
+            if sys.platform == "win32":
+                stub = directory / "gh.cmd"
+                stub.write_text(
+                    f'@echo off\r\n"{sys.executable}" "%~dp0flaky.py"\r\n',
+                    encoding="utf-8",
+                )
+            else:
+                stub = directory / "gh.sh"
+                stub.write_text(
+                    f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/flaky.py"\n',
+                    encoding="utf-8",
+                )
+                stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+            record = capture_issue_from_github(
+                run_directory,
+                issue_url=ISSUE_URL,
+                executable=str(stub),
+                timeout_seconds=30,
+                retry_delay_seconds=0,
+            )
+
+            self.assertTrue(record["success"], record)
+            self.assertEqual(record["title"], "T")
+
     def test_unreadable_payload_fails_without_touching_the_issue_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory) / "runs"
