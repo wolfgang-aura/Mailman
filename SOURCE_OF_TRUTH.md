@@ -1060,3 +1060,8 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   - uproot5#1741 `ok` -> `attention`: ariostas replied that scikit-hep-testdata PR 242 will add `uproot-issue-1529.root`, and that a test written against it fails until the testdata release. Nothing asked of us; no reply drafted.
   - podman-compose#1577 `attention` -> `inherited`.
   - Unchanged, no new work: the other `attention` rows from the 2026-10-11 entries. biopython#5336 reads `closed`.
+- Re-read 2026-10-13 later (`mailman hunt watch`; unattended `pr-followup` run, previous reading 2026-10-13 03:01 UTC): 2 PRs changed, 14 listed as needing work.
+  - software-agent-sdk#5732 now watched (`attention`): the `Validate PR description` check fails with "Add a short human-written note between `HUMAN:` and `AGENT:`" (run 38348749747). Only the operator can write that note.
+  - awkward#4398: ianna merged `main` in again (`043b74b`, touches `reusable-docs.yml`, `.all-contributorsrc`, `README.md`). Her approval of 2026-10-11 stands. `docs / Build Docs` and `Check CI result` still fail on this head, and her fix PR 4421 was closed unmerged. Nothing to push.
+  - bluesky#2084 (head `c5d16e1`): `test (ubuntu-latest, 3.14) / run` was cancelled at the 45-minute limit during "Run tests". `main` also shows a failing CI run. No maintainer activity. Not touched.
+  - Unchanged: the other `attention` rows from earlier entries.
