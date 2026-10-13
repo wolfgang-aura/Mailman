@@ -306,6 +306,29 @@ build-backend = "poetry.core.masonry.api"
             self.assertIn("pandas!=3.0.6", constraints)
             self.assertIn("Pinned 1 package(s)", plan["draft"]["review"])
 
+    def test_a_lock_pin_with_only_source_for_this_host_stays_unpinned(self):
+        """OpenHands locks litellm 1.93.0 as an sdist (Rust build); the host has no compiler (#483)."""
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "pyproject.toml").write_text(
+                '[project]\nname = "fixture"\n[dependency-groups]\ndev = ["litellm", "idna"]\n',
+                encoding="utf-8",
+            )
+            (root / "uv.lock").write_text(
+                'version = 1\n'
+                '[[package]]\nname = "litellm"\nversion = "1.93.0"\nsource = { registry = "https://pypi.org/simple" }\n'
+                'sdist = { url = "https://files.pythonhosted.org/litellm-1.93.0.tar.gz" }\n'
+                '[[package]]\nname = "idna"\nversion = "3.10"\nsource = { registry = "https://pypi.org/simple" }\n'
+                'sdist = { url = "https://files.pythonhosted.org/idna-3.10.tar.gz" }\n'
+                'wheels = [{ url = "https://files.pythonhosted.org/idna-3.10-py3-none-any.whl" }]\n',
+                encoding="utf-8",
+            )
+            with mock.patch("mailman.environment_plan.sys.platform", "win32"):
+                draft_plan(root, root / "run" / "plan.json")
+            constraints = (root / "run" / HOST_CONSTRAINTS_FILENAME).read_text(encoding="utf-8").splitlines()
+            self.assertIn("idna==3.10", constraints)
+            self.assertFalse(any(line.startswith("litellm") for line in constraints))
+
     def test_a_c_extension_target_on_windows_overlays_the_release_wheel(self):
         # biopython: `pip install -e .` compiles C and this host has no
         # compiler. The release wheel's compiled modules go into the workspace

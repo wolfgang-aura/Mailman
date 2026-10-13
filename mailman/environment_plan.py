@@ -111,13 +111,29 @@ def _lock_pins(workspace: Path) -> list[str]:
         return []
     blocked = {_normalized(re.split(r"[<>=!~]", entry, maxsplit=1)[0]) for entry in HOST_BLOCKED_RELEASES}
     versions: dict[str, set[str]] = {}
+    unbuildable: set[str] = set()
     for package in packages:
         name, version, source = package.get("name"), package.get("version"), package.get("source", {})
         if not isinstance(name, str) or not isinstance(version, str) or "registry" not in source:
             continue
         versions.setdefault(_normalized(name), set()).add(version)
+        if package.get("sdist") and not _lock_has_host_wheel(package.get("wheels")):
+            # Locked to a release that ships only source here, and the host has
+            # no compiler. A newer release may still carry a wheel. Mailman #483.
+            unbuildable.add(_normalized(name))
     return [f"{name}=={next(iter(found))}" for name, found in sorted(versions.items())
-            if len(found) == 1 and name not in blocked]
+            if len(found) == 1 and name not in blocked and name not in unbuildable]
+
+
+def _lock_has_host_wheel(wheels: object) -> bool:
+    """Whether a `uv.lock` wheel list holds a wheel this Windows host can install."""
+    from mailman.screen import _wheel_fits_host
+
+    for wheel in wheels if isinstance(wheels, list) else []:
+        url = wheel.get("url") if isinstance(wheel, dict) else None
+        if isinstance(url, str) and _wheel_fits_host(url.rsplit("/", 1)[-1]):
+            return True
+    return False
 
 
 def _admits(requires_python: object, version: str) -> bool:
