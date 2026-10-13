@@ -1065,3 +1065,5 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   - awkward#4398: ianna merged `main` in again (`043b74b`, touches `reusable-docs.yml`, `.all-contributorsrc`, `README.md`). Her approval of 2026-10-11 stands. `docs / Build Docs` and `Check CI result` still fail on this head, and her fix PR 4421 was closed unmerged. Nothing to push.
   - bluesky#2084 (head `c5d16e1`): `test (ubuntu-latest, 3.14) / run` was cancelled at the 45-minute limit during "Run tests". `main` also shows a failing CI run. No maintainer activity. Not touched.
   - Unchanged: the other `attention` rows from earlier entries.
+- Re-read 2026-10-13 latest (`mailman hunt watch`; unattended `pr-followup` run, previous reading 2026-10-13 06:01 UTC): 1 PR changed, 14 listed as needing work.
+  - openalgo#2021 (head `b90403e`, `dirty`): Kalaiviswa asked on 2026-10-13 06:54 UTC to move the Dhan batching out of `services/option_symbol_service.py` into a Dhan adapter or service, keep the `include_quotes` plumbing, and test that other brokers are unchanged. Needs a revision run. Nothing pushed or posted.
