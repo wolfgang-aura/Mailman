@@ -1055,3 +1055,8 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
 - Re-read 2026-10-11 evening (`mailman hunt watch`; unattended `pr-followup` run, previous reading 2026-10-11 06:01 UTC): 1 PR changed, 10 listed as needing work.
   - awkward#4398 `ok` -> `attention`: ianna merged main in (c235d12), added a test (b28f85a) and approved. `docs / Build Docs` and `Check CI result` fail on the docs workflow (Python 3.11.0 with Soup Sieve 3.0.1), which she says is unrelated and fixed by `awkward` PR 4421; she asks for a rebase after it merges. Nothing to push now. She also had all-contributors add us (`awkward` PR 4422).
   - Unchanged, no new work: everything else in the previous entry.
+- Re-read 2026-10-13 (`mailman hunt watch`; unattended `pr-followup` run, previous reading 2026-10-12 15:01 UTC): 3 PRs changed, 13 listed as needing work.
+  - markdown2#732 `ok` -> `merged`: nicholasserra merged it 2026-10-13 00:33 UTC (merge commit `eec056c`) after merging `master` in (`1072f36`). Record 0034.
+  - uproot5#1741 `ok` -> `attention`: ariostas replied that scikit-hep-testdata PR 242 will add `uproot-issue-1529.root`, and that a test written against it fails until the testdata release. Nothing asked of us; no reply drafted.
+  - podman-compose#1577 `attention` -> `inherited`.
+  - Unchanged, no new work: the other `attention` rows from the 2026-10-11 entries. biopython#5336 reads `closed`.
