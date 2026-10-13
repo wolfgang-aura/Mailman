@@ -1071,3 +1071,5 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   - pyinfra#1992 `ok` -> `merged`: wowi42 approved 2026-10-13 11:41 UTC and merged 11:44 UTC as filed (merge commit `e0652b9`). Record 0035. Fork `wolfgang-aura/pyinfra` is safe to delete; the delete waits for approval.
   - cantools#848: andlaus asked 2026-10-13 12:07 UTC whether `Database.buses[0].baudrate` should be set from the `BS_` speed. Reply drafted at `.mailman/drafts/cantools-848-baudrate.md`; awaiting approval. The `linter` failure is in files the PR does not touch (Mailman issue 485).
   - openalgo#2021 `attention` -> `ok` (`mergeable_state` `clean`, Windows check passes again). Kalaiviswa's request of 06:54 UTC is still open.
+- Re-read 2026-10-13 night (`mailman hunt watch`; unattended `pr-followup` run, previous reading 2026-10-13 12:45 UTC): 1 PR changed, 13 listed as needing work.
+  - syrupy#1257 `mergeable_state` `blocked` -> `behind` (head `1428b88`, no reviews, only our own 2026-10-05 comment). The failing checks are inherited, so nothing is ours to fix. No maintainer has engaged, so no merge-main push is proposed. Nothing pushed or posted.
