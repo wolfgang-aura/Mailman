@@ -1073,6 +1073,8 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   - openalgo#2021 `attention` -> `ok` (`mergeable_state` `clean`, Windows check passes again). Kalaiviswa's request of 06:54 UTC is still open.
 - Re-read 2026-10-13 night (`mailman hunt watch`; unattended `pr-followup` run, previous reading 2026-10-13 12:45 UTC): 1 PR changed, 13 listed as needing work.
   - syrupy#1257 `mergeable_state` `blocked` -> `behind` (head `1428b88`, no reviews, only our own 2026-10-05 comment). The failing checks are inherited, so nothing is ours to fix. No maintainer has engaged, so no merge-main push is proposed. Nothing pushed or posted.
+- Re-read 2026-10-16 (`mailman hunt watch`; unattended `pr-followup` run, previous reading 2026-10-15 15:01 UTC): 1 PR changed, 12 listed as needing work. Counts: 22 merged, 8 closed, 12 attention, 14 ok, 4 inherited.
+  - podman-compose#1577 `inherited` -> `attention`: three rootless cells fail (`trixie 3.9/3.10/3.11`, podman 5.7.1). The 3.11 failure is `test_build_ulimits_ulimit3`; our diff only touches `depends_on` normalization. Open PRs 1580, 1581, 1583 and 1584 fail the same rootless family on other Python versions. A flake, so no push and no retrigger. Watch gap filed as Mailman #487.
 - Re-read 2026-10-15 later (`mailman hunt watch`; unattended `pr-followup` run, previous reading 2026-10-15 00:54 UTC): 1 PR changed, 11 listed as needing work.
   - cantools#848 `attention` -> `ok`: the linter check passes on our pushed head `7298e54`, `mergeable_state` `unstable` -> `clean`. Waiting on andlaus. Nothing new from any maintainer elsewhere.
 - Re-read 2026-10-15 (`mailman hunt watch`; unattended `pr-followup` run, previous reading 2026-10-14 15:01 UTC): 2 PRs changed, 12 listed as needing work.
