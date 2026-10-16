@@ -171,7 +171,7 @@ DIRECT_PUSH_SAMPLE_MINIMUM = 10
 #: weeks for a first word: poetry, pdm, rqalpha. Every one of them passed
 #: freshness, because a collaborator's merge counts there and a stranger's
 #: silence does not.
-RESPONSIVENESS_WINDOW_DAYS = 90
+RESPONSIVENESS_WINDOW_DAYS = 180
 
 #: How many outside pull requests the gate reads in full. Each one costs three
 #: API calls (reviews, review comments, issue comments), so the sample is

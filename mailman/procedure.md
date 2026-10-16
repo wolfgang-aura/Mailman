@@ -189,7 +189,7 @@ a time; a screen costs about 200 GitHub core calls.
    the twelve pull requests filed since 2026-09-01, one merged and six were
    closed unmerged, from repositories where an outside pull request waits
    weeks for any maintainer response. The gate reads up to 50 outside pull
-   requests opened in the last 90 days (`--responsiveness-days`), excluding
+   requests opened in the last 180 days (90 until 2026-10-16, when an operator widened it because the pool ran dry) (`--responsiveness-days`), excluding
    bots and the maintainers' own, and for each finds the first review, review
    comment or issue comment from an OWNER, MEMBER or COLLABORATOR. It fails
    when the median wait is over 21 days, when under 35% were answered within

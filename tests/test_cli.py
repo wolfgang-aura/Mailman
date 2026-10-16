@@ -1119,14 +1119,14 @@ class ScreenTargetCliTests(unittest.TestCase):
             data_root = Path(temporary_directory) / "runs"
             from mailman.screen import FRESHNESS_WINDOW_DAYS
             self._cached(data_root, window_days=FRESHNESS_WINDOW_DAYS,
-                         issue_window_days=730, responsiveness_days=90)
+                         issue_window_days=730, responsiveness_days=180)
             with patch("mailman.cli.screen_repository") as screened:
                 with redirect_stdout(StringIO()):
                     code = main(["screen-target", "example/project", "--data-root", str(data_root)])
             self.assertEqual(code, 1)
             screened.assert_not_called()
 
-    def test_the_responsiveness_window_defaults_to_ninety_days(self) -> None:
+    def test_the_responsiveness_window_defaults_to_180_days(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_root = Path(temporary_directory) / "runs"
             data_root.mkdir()
@@ -1138,7 +1138,7 @@ class ScreenTargetCliTests(unittest.TestCase):
                         ["screen-target", "example/project", "--data-root", str(data_root)]
                     )
             self.assertEqual(code, 2)
-            self.assertEqual(screened.call_args.kwargs["responsiveness_days"], 90)
+            self.assertEqual(screened.call_args.kwargs["responsiveness_days"], 180)
 
 
 class StreamFlushTests(unittest.TestCase):

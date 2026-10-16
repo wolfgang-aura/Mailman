@@ -3114,7 +3114,7 @@ class ResponsivenessTests(unittest.TestCase):
         self.assertTrue(gate["blocking"])
         self.assertNotIn("responsiveness", record["failed_gates"])
         self.assertEqual(record["schema_version"], 4)
-        self.assertEqual(record["responsiveness_days"], 90)
+        self.assertEqual(record["responsiveness_days"], 180)
         self.assertEqual(gate["data"]["result"], "pass")
         self.assertEqual(gate["data"]["sampled"], 3)
         self.assertEqual(gate["data"]["responded"], 3)
@@ -3124,7 +3124,7 @@ class ResponsivenessTests(unittest.TestCase):
         self.assertEqual(gate["data"]["merged"], 2)
         self.assertEqual(gate["data"]["closed_unmerged"], 0)
         self.assertEqual(gate["data"]["still_open"], 1)
-        self.assertEqual(gate["data"]["window_days"], 90)
+        self.assertEqual(gate["data"]["window_days"], 180)
         rendered = render_screen(record)
         self.assertIn("median first maintainer response 1.0 day(s)", rendered)
         self.assertIn("3 of 3 answered within 14 days (100%)", rendered)
@@ -3433,9 +3433,9 @@ class ResponsivenessTests(unittest.TestCase):
             _outside_pull(501, opened_days_ago=10, merged=True),
             _outside_pull(502, opened_days_ago=5, merged=True),
             # Outside the window, so not a sample however fast it was read.
-            _outside_pull(503, opened_days_ago=120, merged=True),
+            _outside_pull(503, opened_days_ago=200, merged=True),
         ]
-        reviews = {501: [_response(9)], 502: [_response(4)], 503: [_response(119)]}
+        reviews = {501: [_response(9)], 502: [_response(4)], 503: [_response(199)]}
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(
                 Path(temporary), FakeGitHub(all_pulls=pulls, reviews=reviews)
@@ -3448,7 +3448,7 @@ class ResponsivenessTests(unittest.TestCase):
         self.assertEqual(gate["data"]["sampled"], 2)
         self.assertEqual(gate["data"]["outside_pull_requests_in_window"], 2)
         self.assertEqual(gate["data"]["pull_requests_scanned"], 3)
-        self.assertIn("unknown: 2 outside pull request(s) opened in 90 days", gate["detail"])
+        self.assertIn("unknown: 2 outside pull request(s) opened in 180 days", gate["detail"])
         self.assertIn("Unknown is not responsive", gate["detail"])
 
     def test_bots_and_maintainers_own_pull_requests_are_not_samples(self) -> None:
