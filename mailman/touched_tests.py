@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -1257,6 +1258,21 @@ def _lane_summary(lane: dict[str, Any] | None) -> str:
     return f"; CI marker lane not used ({lane.get('reason')}): {lane.get('detail')}"
 
 
+def _untracked(workspace: Path) -> set[str] | None:
+    """Untracked, non-ignored paths in the workspace; None outside a git tree."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=workspace, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=PROBE_TIMEOUT_SECONDS, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return {path for path in result.stdout.split("\0") if path}
+
+
 def run_touched_tests(
     run_directory: Path,
     *,
@@ -1267,6 +1283,41 @@ def run_touched_tests(
     cap: int = TOUCHED_TESTS_CAP,
     base_commit: str | None = None,
     lane_cap_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Select, run and record, then remove what the tests left in the tree.
+
+    pabot's tests write pabot_manager.log into the working directory; the
+    next export took it into the patch. Mailman #494.
+    """
+    before = _untracked(workspace) if workspace is not None and workspace.is_dir() else None
+    record = _run_touched_tests(
+        run_directory, diff=diff, changed_paths=changed_paths, workspace=workspace,
+        timeout_seconds=timeout_seconds, cap=cap, base_commit=base_commit,
+        lane_cap_seconds=lane_cap_seconds,
+    )
+    after = _untracked(workspace) if before is not None else None
+    strays = sorted(after - before) if after is not None else []
+    for path in strays:
+        try:
+            (workspace / path).unlink()
+        except OSError:
+            pass
+    if strays:
+        record["strays_removed"] = strays
+        return _write(run_directory, record)
+    return record
+
+
+def _run_touched_tests(
+    run_directory: Path,
+    *,
+    diff: str,
+    changed_paths: list[str],
+    workspace: Path | None,
+    timeout_seconds: float,
+    cap: int,
+    base_commit: str | None,
+    lane_cap_seconds: float | None,
 ) -> dict[str, Any]:
     """Select, run and record. Every outcome is written, including not running.
 

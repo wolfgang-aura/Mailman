@@ -419,6 +419,25 @@ class RunTouchedTestsTests(_RunFixture):
         self.assertEqual(stored["command"], record["command"])
         self.assertIsNone(touched_tests_verdict(record)[0])
 
+    def test_files_the_tests_leave_in_the_workspace_are_removed(self) -> None:
+        # pabot's tests write pabot_manager.log into the working directory and
+        # the next export took it into the patch. Mailman #494.
+        import subprocess
+        subprocess.run(["git", "init", "-q"], cwd=self.workspace, check=True)
+        (self.workspace / "kept.txt").write_text("already here\n", encoding="utf-8")
+        executor = FakeExecutor(stdout="3 passed in 0.7s\n")
+
+        def writing(command, **kwargs):
+            if "pytest" in command and "-q" in command:
+                (self.workspace / "pabot_manager.log").write_text("log\n", encoding="utf-8")
+            return executor(command, **kwargs)
+
+        record = self._run(writing)
+        self.assertFalse((self.workspace / "pabot_manager.log").exists())
+        self.assertTrue((self.workspace / "kept.txt").exists())
+        self.assertEqual(record["strays_removed"], ["pabot_manager.log"])
+        self.assertEqual(load_touched_tests(self.run_directory)["strays_removed"], ["pabot_manager.log"])
+
     def test_a_passing_verdict_names_the_package_only_files_left_out(self) -> None:
         record = self._run(FakeExecutor(stdout="3 passed in 0.7s\n"))
         record["indirect"] = ["tests/test_sweep.py"]
