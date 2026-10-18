@@ -97,6 +97,19 @@ cmd = "uv run --all-extras pytest"
             draft_plan(root, path)
             self.assertEqual(load_plan(path)["steps"][2]["command"][-1], ".[test,yaml]")
 
+    def test_a_project_without_a_declared_test_runner_still_gets_pytest(self):
+        # pabot installs pytest only in CI; the plan had no runner. Mailman #492.
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "pyproject.toml").write_text('[project]\nname = "fixture"\n', encoding="utf-8")
+            build = draft_plan(root, root / "plan.json")["steps"][1]["command"]
+            self.assertIn("pytest", build)
+            (root / "plan.json").unlink()
+            (root / "pyproject.toml").write_text(
+                '[project]\nname = "fixture"\n[project.optional-dependencies]\ntest = ["pytest>=8"]\n', encoding="utf-8")
+            build = draft_plan(root, root / "plan.json")["steps"][1]["command"]
+            self.assertNotIn("pytest", build)
+
     def test_group_cycles_refuse_without_writing_a_partial_plan(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)

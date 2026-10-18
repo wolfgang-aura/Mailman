@@ -482,6 +482,12 @@ def draft_plan(
     # Without build isolation a dependency that ships only an sdist builds with
     # whatever the environment holds, and a fresh venv holds no setuptools.
     dependencies = list(dict.fromkeys([*dependencies, "setuptools"]))
+    # pabot installs pytest only in CI and declares no test extra, so a plan
+    # built from its files had no test runner. Mailman #492.
+    named = [*dependencies, *(entry for name in (extra or "").split(",") for entry in extras.get(name, []))]
+    if not any(isinstance(entry, str) and _normalized(re.split(r"[\[<>=!~;\s]", entry, maxsplit=1)[0]) == "pytest"
+               for entry in named):
+        dependencies = [*dependencies, "pytest"]
     if _declares_direct_reference(metadata, groups):
         dependencies = list(dict.fromkeys([*dependencies, *DIRECT_REFERENCE_BACKENDS]))
     if "--no-build-isolation" in install and "-e" in install and _builds_editables_by_import(project):
