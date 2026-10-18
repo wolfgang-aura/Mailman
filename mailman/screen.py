@@ -1656,6 +1656,17 @@ def _runtime_requirements(gh: _Gh, slug: str, root_names: set[str]) -> set[str]:
     return names
 
 
+def _setup_files(gh: _Gh, slug: str, root_names: set[str], pyproject: str) -> str:
+    """setup.py and setup.cfg, read only when the pyproject names no OS. #490."""
+    if _OS_CLASSIFIER.search(pyproject or ""):
+        return ""
+    return "\n".join(
+        _decoded(gh.json(f"repos/{slug}/contents/{name}"))
+        for name in ("setup.py", "setup.cfg")
+        if name in root_names
+    )
+
+
 def _wheel_files(gh: _Gh, name: str) -> list[str] | None:
     """The files PyPI lists for the latest release, or None when unread."""
     name = re.sub(r"[-_.]+", "-", name).lower()
@@ -1714,12 +1725,33 @@ def _wheel_fits_host(filename: str) -> bool:
     return "py3" in python_tags and "none" in abi_tags
 
 
+_OS_CLASSIFIER = re.compile(r"Operating System\s*::\s*([^\"'\n,\]]+)")
+_RUNS_ON_WINDOWS = re.compile(r"Windows|OS Independent", re.IGNORECASE)
+
+
+def _posix_only_classifiers(*texts: str) -> list[str]:
+    """The `Operating System` classifiers, when none of them admits Windows.
+
+    cwltool's setup.py lists only MacOS and POSIX, and it imports `pwd` at
+    module load, so nothing ran here once the environment was built. A
+    project that declares no operating system says nothing either way.
+    Mailman #490.
+    """
+    declared = [
+        match.strip() for text in texts for match in _OS_CLASSIFIER.findall(text or "")
+    ]
+    if not declared or any(_RUNS_ON_WINDOWS.search(name) for name in declared):
+        return []
+    return list(dict.fromkeys(declared))
+
+
 def _host_gate(
     pyproject: str,
     *,
     requirements: set[str] | frozenset[str] = frozenset(),
     wheel_files: Callable[[str], list[str] | None] | None = None,
     ci: dict[str, Any] | None = None,
+    setup_files: str = "",
 ) -> dict[str, Any]:
     """Gate 3b. Can the target's tests run on this host at all?
 
@@ -1736,6 +1768,9 @@ def _host_gate(
     `ci` is the CI gate's data. When every workflow that runs tests starts a
     database or broker service, the suite needs a server this host does not
     run. Mailman #255.
+
+    `setup_files` is the text of setup.py or setup.cfg, read for the
+    `Operating System` classifiers a pyproject does not carry. Mailman #490.
     """
     required, optional, bench = _pyproject_requirements(pyproject)
     required = required | set(requirements)
@@ -1785,6 +1820,14 @@ def _host_gate(
         f"{row['package']} has no wheel for this platform and Python on PyPI"
         for row in no_wheel
     ]
+    posix_only = _posix_only_classifiers(pyproject, setup_files)
+    if posix_only:
+        data["posix_only_classifiers"] = posix_only
+        reasons.append(
+            "the project declares only "
+            + ", ".join(posix_only)
+            + " in its Operating System classifiers, none of them Windows"
+        )
     running = (ci or {}).get("workflows_running_tests") or []
     gated = set((ci or {}).get("label_gated_workflows") or [])
     running = [name for name in running if name not in gated] or running
@@ -3236,18 +3279,19 @@ def screen_repository(
     python = _python_gate(gh, slug)
     ci = _ci_gate(gh, slug)
     workflows = _workflow_bodies(gh, slug)
+    pyproject = python["data"].pop("pyproject", "")
+    root_names = set(python["data"].pop("root_names", []))
     gates = [
         _provenance_gate(meta, freshness),
         freshness,
         ci,
         python,
         _host_gate(
-            python["data"].pop("pyproject", ""),
-            requirements=_runtime_requirements(
-                gh, slug, set(python["data"].pop("root_names", []))
-            ),
+            pyproject,
+            requirements=_runtime_requirements(gh, slug, root_names),
             wheel_files=lambda name: _wheel_files(gh, name),
             ci=ci["data"],
+            setup_files=_setup_files(gh, slug, root_names, pyproject),
         ),
         _policy_gate(gh, slug),
         _assignment_gate(gh, slug, workflows),

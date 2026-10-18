@@ -1424,6 +1424,47 @@ class ScreenTests(unittest.TestCase):
 
         self.assertTrue(_named(record, "host")["passed"])
 
+    def test_a_posix_only_classifier_list_fails_the_host_gate(self) -> None:
+        # cwltool's setup.py lists only MacOS and POSIX, and cwltool imports
+        # pwd at module load. Mailman #490.
+        setup_py = (
+            "setup(\n    classifiers=[\n"
+            '        "Operating System :: MacOS :: MacOS X",\n'
+            '        "Operating System :: POSIX",\n'
+            '        "Operating System :: POSIX :: Linux",\n'
+            "    ],\n)\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(
+                    root=[{"name": "pyproject.toml"}, {"name": "setup.py"}],
+                    policies={"setup.py": setup_py},
+                ),
+            )
+        gate = _named(record, "host")
+
+        self.assertIn("host", record["failed_gates"])
+        self.assertIn("none of them Windows", gate["detail"])
+        self.assertEqual(
+            gate["data"]["posix_only_classifiers"],
+            ["MacOS :: MacOS X", "POSIX", "POSIX :: Linux"],
+        )
+
+    def test_a_classifier_list_that_admits_windows_passes_the_host_gate(self) -> None:
+        for classifiers in (
+            '"Operating System :: POSIX", "Operating System :: Microsoft :: Windows"',
+            '"Operating System :: OS Independent"',
+        ):
+            pyproject = f'[project]\nname = "x"\nclassifiers = [{classifiers}]\n'
+            with self.subTest(classifiers=classifiers):
+                with tempfile.TemporaryDirectory() as temporary:
+                    record = _screen(
+                        Path(temporary),
+                        FakeGitHub(policies={"pyproject.toml": pyproject}),
+                    )
+                self.assertTrue(_named(record, "host")["passed"])
+
     def test_a_plain_pyproject_passes_the_host_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(Path(temporary), FakeGitHub())
