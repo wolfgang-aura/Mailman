@@ -1093,3 +1093,6 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
   - scikit-hep/awkward#4398: ianna pushed `dc2693d` and approved; the failing checks cleared. The 2026-10-11 comment is answered by her own commit.
   - scverse/anndata#2666: ilan-gold pushed `31513bb` and approved. The readthedocs check fails and is inherited (3 of 5 other open PRs fail it too).
   - openalgo#2021 `attention` -> `ok`.
+- Re-read 2026-10-18 later (`mailman hunt watch`; unattended `pr-followup` run, previous reading 2026-10-18 09:01 UTC): 2 PRs changed, both `attention` -> `ok`; 9 listed as needing work. No merges or closes.
+  - pyvista/pyvista#9377 `attention` -> `ok`. The head is now `ace5bdbf5`; its last two commits are authored by `wolfgang-aura` (`311887e85` adds `.xyz` to the class readers snapshot, `ace5bdbf5` uses an equality test for the OpenFOAMReader check). This run pushed nothing, so another session or the operator pushed them. The unpushed workspace fix `5624451c1` is superseded. State is `BLOCKED` (review pending), no new maintainer text.
+  - reagento/dishka#771 `attention` -> `ok`, mergeable state `clean` -> `unstable`, no failing check on head `3407001`.
