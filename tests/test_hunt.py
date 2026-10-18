@@ -644,11 +644,12 @@ class HuntTests(OrchestratorHarness):
         self.assertIn("--refresh", result["action"])
 
     def test_a_refusal_under_current_windows_is_replaced(self):
-        from mailman.screen import FRESHNESS_WINDOW_DAYS
+        from mailman.screen import FRESHNESS_WINDOW_DAYS, RESPONSIVENESS_WINDOW_DAYS
         directory = self.ready_run()
         screen_path(self.data_root, "example/project").write_text(json.dumps({
             "success": True, "verdict": "fail", "failed_gates": ["freshness"],
-            "window_days": FRESHNESS_WINDOW_DAYS, "issue_window_days": 730, "responsiveness_days": 90,
+            "window_days": FRESHNESS_WINDOW_DAYS, "issue_window_days": 730,
+            "responsiveness_days": RESPONSIVENESS_WINDOW_DAYS,
         }), encoding="utf-8")
         result = next_action(directory)
         self.assertEqual(result["disposition"], "REPLACE", result)
@@ -1324,7 +1325,7 @@ class PrescreenRecordTests(OrchestratorHarness):
                 "blocking": list(blocking), "screened_at": "2026-09-28T01:00:00+00:00"}
 
     def _screen(self, slug, numbers, *, verdict="pass", days_old=0, flags=None,
-                window_days=None, policy=None):
+                window_days=None, policy=None, at=None):
         from mailman.screen import (FRESHNESS_WINDOW_DAYS, ISSUE_WINDOW_DAYS,
                                     RESPONSIVENESS_WINDOW_DAYS)
         path = screen_path(self.data_root, slug)
@@ -1334,7 +1335,7 @@ class PrescreenRecordTests(OrchestratorHarness):
                 for n in numbers]
         path.write_text(json.dumps({
             "repository": slug, "success": True, "verdict": verdict,
-            "screened_at": (datetime.now(UTC) - timedelta(days=days_old)).isoformat(),
+            "screened_at": ((at or datetime.now(UTC)) - timedelta(days=days_old)).isoformat(),
             "window_days": FRESHNESS_WINDOW_DAYS if window_days is None else window_days,
             "issue_window_days": ISSUE_WINDOW_DAYS,
             "responsiveness_days": RESPONSIVENESS_WINDOW_DAYS,
@@ -1671,17 +1672,19 @@ class SweepTests(OrchestratorHarness):
 
     def test_one_paced_core_read_per_passing_repository(self):
         from mailman.hunt import sweep_fresh_issues
+        # Screen ages count from the sweep's own clock, not today's.
+        moment = datetime(2026, 9, 30, tzinfo=UTC)
         for slug in ("acme/a", "acme/b", "acme/c"):
-            self._screen(slug, [])
-        self._screen("acme/month", [], days_old=20)
-        self._screen("acme/old", [], days_old=40)
-        self._screen("acme/failed", [], verdict="fail")
-        self._screen("acme/held", [])
+            self._screen(slug, [], at=moment)
+        self._screen("acme/month", [], days_old=20, at=moment)
+        self._screen("acme/old", [], days_old=40, at=moment)
+        self._screen("acme/failed", [], verdict="fail", at=moment)
+        self._screen("acme/held", [], at=moment)
         gh = _SearchGh([])
 
         result = sweep_fresh_issues(
             self.data_root, gh, held_repositories={"acme/held"},
-            since_days=60, now=datetime(2026, 9, 30, tzinfo=UTC))
+            since_days=60, now=moment)
 
         read = sorted(path.split("/issues?")[0] for path in gh.paths)
         self.assertEqual(read, ["repos/acme/a", "repos/acme/b", "repos/acme/c",
