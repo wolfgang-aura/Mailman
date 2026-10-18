@@ -169,6 +169,9 @@ def _is_test_path(path: str) -> bool:
     if any(segment in {"test", "tests", "testing", "@tests", "test_cases"}
            for segment in segments[:-1]):
         return True
+    # music21 keeps each package's tests in `test.py` or `tests.py` (#489).
+    if name in {"test.py", "tests.py"}:
+        return True
     return name.startswith("test_") or name.endswith(("_test.py", "_tests.py"))
 
 

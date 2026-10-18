@@ -49,6 +49,7 @@ def _is_test_path(path: str) -> bool:
     name = parts[-1]
     return (
         any(part in {"test", "tests", "testing"} for part in parts[:-1])
+        or name in {"test.py", "tests.py"}
         or name.startswith("test_")
         or name.endswith(("_test.py", "_tests.py"))
         or name == "conftest.py"

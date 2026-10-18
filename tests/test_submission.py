@@ -160,6 +160,14 @@ class AnalyzeDiffTests(unittest.TestCase):
         self.assertTrue(_is_test_path("stdlib/@tests/test_cases/check_re.py"))
         self.assertFalse(_is_test_path("stubs/grpcio/grpc/aio/__init__.pyi"))
 
+    def test_a_test_module_named_test_py_is_a_test_change(self) -> None:
+        # cuthbertLab/music21 keeps tests in braille/test.py and meter/tests.py (#489).
+        from mailman.submission import _is_test_path
+        self.assertTrue(_is_test_path("music21/braille/test.py"))
+        self.assertTrue(_is_test_path("music21/meter/tests.py"))
+        self.assertFalse(_is_test_path("music21/braille/segment.py"))
+        self.assertFalse(_is_test_path("music21/braille/latest.py"))
+
     def test_a_source_change_with_no_test_blocks(self) -> None:
         source_only = SOURCE_DIFF.split("diff --git a/tests")[0]
         report = analyze_diff(source_only)
