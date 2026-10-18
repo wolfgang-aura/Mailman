@@ -283,6 +283,16 @@ This is the only revision in this run, and the same command decides the run.
 
 """
 
+_REPRODUCTION_REPAIR_CONTRACT = """
+## The bug still reproduces
+
+Your change passed the run's verification command, but the recorded reproducer
+still shows the bug on your candidate. Its command and output are below. Fix
+the cause in the same workspace, then run that command yourself: it must stop
+reproducing. This is the only revision in this run.
+
+"""
+
 # Enough of a failure to act on, without pasting a whole suite into a prompt.
 _REPAIR_OUTPUT_LINES = 120
 
@@ -816,7 +826,7 @@ class _Orchestration:
         )
         return ok, result
 
-    def _candidate_stops_reproducing(self) -> bool:
+    def _candidate_stops_reproducing(self) -> tuple[bool, CommandResult | None]:
         """Run the recorded reproducer on the candidate; it must not reproduce.
 
         The verification command has to pass at base, so it is usually an
@@ -832,7 +842,7 @@ class _Orchestration:
                 ok=True,
                 detail="no recorded reproduction command to re-run",
             )
-            return True
+            return True, None
         expected = record.get("expectation") or {}
         expectation = Expectation(
             exit_code=expected.get("exit_code"),
@@ -872,7 +882,7 @@ class _Orchestration:
                 "checks": [check.to_dict() for check in outcome.checks],
             },
         )
-        return fixed
+        return fixed, result
 
     def _record_workspace_change(self, stage: str) -> bool:
         """Record whether the primary stage actually changed anything.
@@ -1099,7 +1109,7 @@ class _Orchestration:
             f"{source}\n{_REVISION_CONTRACT}{findings.strip()}\n",
         )
 
-    def _repair_prompt(self, result: CommandResult) -> Path:
+    def _repair_prompt(self, result: CommandResult, *, reproduces: bool = False) -> Path:
         """Hand the primary agent the verification output it has to satisfy.
 
         A failing gate is a more objective finding than a reviewer opinion, so
@@ -1118,7 +1128,7 @@ class _Orchestration:
         body = _describe_failure(result)
         return self._write_derived_prompt(
             "repair-input.md",
-            f"{source}\n{_REPAIR_CONTRACT}{body}\n",
+            f"{source}\n{_REPRODUCTION_REPAIR_CONTRACT if reproduces else _REPAIR_CONTRACT}{body}\n",
         )
 
     # Entry point -------------------------------------------------------
@@ -1514,7 +1524,7 @@ class _Orchestration:
         if not final_ok:
             self._block("final independent verification failed")
             return self._outcome()
-        if not self._candidate_stops_reproducing():
+        if not self._candidate_stops_reproducing()[0]:
             self._block(
                 "the recorded reproducer still reproduces the bug on the candidate"
             )
@@ -1624,26 +1634,41 @@ class _Orchestration:
         if not self._check_candidate_scope(stage):
             return False
         verified, result = self._verify(stage)
+        reproduces = False
         if verified:
-            return True
+            # A patch that passes the existing tests can still leave the bug;
+            # catch it before a review cycle is spent on it. Mailman #493.
+            fixed, reproduction = self._candidate_stops_reproducing()
+            if fixed or reproduction is None:
+                return True
+            reproduces, result = True, reproduction
         if self.revisions_used >= self.max_revisions:
-            self._block(f"independent verification failed after the {stage} stage")
+            self._block(
+                f"the recorded reproducer still reproduces the bug after the {stage} stage"
+                if reproduces
+                else f"independent verification failed after the {stage} stage"
+            )
             return False
-        return self._repair(result)
+        return self._repair(result, reproduces=reproduces)
 
-    def _repair(self, failure: CommandResult) -> bool:
+    def _repair(self, failure: CommandResult, *, reproduces: bool = False) -> bool:
         """Spend one revision on a verification the primary stage failed.
 
         The budget is the run's, not the stage's: a revision spent here is one
         the reviewer cannot also ask for, so the loop stays as bounded as it
-        was when only a REVISE verdict could trigger one.
+        was when only a REVISE verdict could trigger one. `reproduces` means
+        the gate passed but the recorded reproducer still shows the bug.
         """
         self._transition(
             RunStatus.REVISION_REQUIRED,
-            "verification failed after the primary stage; one revision granted",
+            "the reproducer still reproduces after the primary stage; one revision granted"
+            if reproduces
+            else "verification failed after the primary stage; one revision granted",
         )
         self.revisions_used += 1
-        primary_ok, _ = self._run_agent("primary", self._repair_prompt(failure))
+        primary_ok, _ = self._run_agent(
+            "primary", self._repair_prompt(failure, reproduces=reproduces)
+        )
         if not primary_ok:
             self._block("primary agent did not complete the repair stage")
             return False
@@ -1651,6 +1676,9 @@ class _Orchestration:
         repaired, _ = self._verify("repair")
         if not repaired:
             self._block("independent verification failed again after one revision")
+            return False
+        if reproduces and not self._candidate_stops_reproducing()[0]:
+            self._block("the recorded reproducer still reproduces the bug after one revision")
             return False
         return True
 

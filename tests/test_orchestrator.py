@@ -2040,7 +2040,7 @@ class CandidateReproductionTests(OrchestratorHarness):
     reached ENGINEERING_COMPLETE on a core test module that passes at base
     while nothing re-ran the hang reproducer. #244."""
 
-    def _orchestrate_with_reproducer(self, source: str):
+    def _orchestrate_with_reproducer(self, source: str, primary_script=None):
         run, directory = self.make_run()
         (directory / "reproduction.json").write_text(
             json.dumps(
@@ -2060,9 +2060,12 @@ class CandidateReproductionTests(OrchestratorHarness):
             ),
             encoding="utf-8",
         )
-        primary = ScriptedAgent("codex", [{"report": "fixed", "touch": ("fix.txt", "x")}])
+        primary = ScriptedAgent(
+            "codex", primary_script or [{"report": "fixed", "touch": ("fix.txt", "x")}]
+        )
         reviewer = ScriptedAgent("claude", [{"report": APPROVED}])
         agents = {"codex": primary, "claude": reviewer}
+        self.agents = agents
         return orchestrate(
             run=run,
             run_directory=directory,
@@ -2075,11 +2078,33 @@ class CandidateReproductionTests(OrchestratorHarness):
 
     def test_a_candidate_that_still_reproduces_is_blocked(self) -> None:
         outcome = self._orchestrate_with_reproducer(
-            "import sys; print('HANG'); sys.exit(1)"
+            "import sys; print('HANG'); sys.exit(1)",
+            primary_script=[{"report": "fixed", "touch": ("fix.txt", "x")}, {"report": "again"}],
         )
         self.assertEqual(outcome.status, RunStatus.BLOCKED)
         step = next(s for s in outcome.steps if s.name == "reproduction:candidate")
         self.assertFalse(step.ok)
+        self.assertEqual(self.agents["claude"].calls, [])
+
+    def test_a_reproducing_candidate_goes_back_to_the_primary_before_review(self) -> None:
+        # pabot#733: the gate passed, the reviewer approved a non-fix, and only
+        # then did the reproducer block the run. Mailman #493.
+        outcome = self._orchestrate_with_reproducer(
+            "import pathlib, sys\n"
+            "if not pathlib.Path('real.txt').exists():\n"
+            "    print('HANG'); sys.exit(1)\n"
+            "print('OK')",
+            primary_script=[
+                {"report": "fixed", "touch": ("fix.txt", "x")},
+                {"report": "fixed for real", "touch": ("real.txt", "x")},
+            ],
+        )
+        self.assertEqual(outcome.status, RunStatus.ENGINEERING_COMPLETE)
+        roles = [role for role, _ in self.agents["codex"].calls]
+        self.assertEqual(roles, ["primary", "primary"])
+        self.assertIn("The bug still reproduces", self.agents["codex"].calls[1][1])
+        self.assertIn("HANG", self.agents["codex"].calls[1][1])
+        self.assertEqual(len(self.agents["claude"].calls), 1)
 
     def test_a_candidate_that_stops_reproducing_completes(self) -> None:
         outcome = self._orchestrate_with_reproducer(
