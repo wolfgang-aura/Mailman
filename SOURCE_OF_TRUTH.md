@@ -1,4 +1,4 @@
-﻿# Source of truth
+# Source of truth
 
 Last verified: 2026-10-01 in `Asia/Singapore`.
 
