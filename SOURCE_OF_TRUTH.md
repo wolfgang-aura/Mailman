@@ -1,4 +1,4 @@
-# Source of truth
+﻿# Source of truth
 
 Last verified: 2026-10-01 in `Asia/Singapore`.
 
@@ -1106,3 +1106,4 @@ implemented, so every retrospective records `skill_version` as `unversioned`.
 - Re-read 2026-10-20 evening (`mailman hunt watch`, unattended `pr-followup` run, previous reading 2026-10-20 12:01 UTC): one row moved. `scverse/anndata#2666` went `inherited` -> `attention`: `docs/readthedocs.com:icb-anndata` fails ("build failed!", Read the Docs build 4587760) on `31513bb`, ilan-gold's approved head, which we did not push. anndata main CI is green on `cd17e43`. No push proposed; the maintainer owns the head. No merges or closes. Other 8 attention rows unchanged and already in the handoff.
 - Re-read 2026-10-21 (`mailman hunt watch`, unattended `pr-followup` run, previous reading 2026-10-20 15:01 UTC): `cantools/cantools#848` closed by andlaus at 15:47 UTC on 2026-10-20 (non-Vector extension, revive if many datasets use it; record 0040). Filed 63: 24 merged, 10 closed. Other attention rows unchanged and already in the handoff.
 - Operator ran writes 2026-10-21 (his terminal output): forks `wolfgang-aura/cantools` and `wolfgang-aura/music21` deleted; `scikit-hep/uproot5#1741` pushed `3d314ef..085dd35` (test now reads `uproot-issue-1529.root` from scikit-hep-testdata; head confirmed in the workspace). Not re-read upstream after the push.
+- Re-read 2026-10-21 later (`mailman hunt watch`, unattended `pr-followup` run, previous reading 2026-10-21 00:01 UTC): `scikit-hep/uproot5#1741` went `attention` -> `ok`; the row still lists `3d314ef` (pre-commit-ci) as the head, so the watch has not yet shown our `085dd35`. No merges or closes. Remaining attention rows (bleachbit#2397, bluesky#2084, podman-compose#1577, OpenHands#5732, poetry#11052, awkward#4398, anndata#2666, strawberry-django#971) are unchanged and already in the handoff; no upstream writes drafted.
