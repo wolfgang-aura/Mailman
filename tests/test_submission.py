@@ -1627,6 +1627,21 @@ class PrepareSubmissionTests(unittest.TestCase):
         self.assertEqual(len(self.touched_tests_calls), 1)
         self.assertNotIn("touched-tests-failed", record["blocking_codes"])
 
+    def test_a_stored_pytest_internal_error_is_rerun(self) -> None:
+        # #502: panel's exit-3 record came from a missing pytest-timeout and
+        # kept blocking the same diff after the plugin was installed.
+        stored = passing_touched_tests(SOURCE_DIFF, exit_code=3, failed=0, baseline=None)
+        (self.run_directory / TOUCHED_TESTS_FILENAME).write_text(
+            json.dumps(stored), encoding="utf-8"
+        )
+        with (
+            patch("mailman.submission.resolve_workspace", return_value=self.run_directory),
+            patch("mailman.submission.select_test_files", return_value=stored),
+        ):
+            record = self._prepare()
+        self.assertEqual(len(self.touched_tests_calls), 1)
+        self.assertNotIn("touched-tests-failed", record["blocking_codes"])
+
     def test_a_stored_pass_from_before_the_marker_lane_is_rerun(self) -> None:
         # #302: edgartools#1386 passed the touched tests and failed CI's
         # `-m 'fast'` lane; a record without `marker_lane` never ran it.

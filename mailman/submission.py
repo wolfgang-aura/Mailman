@@ -1254,6 +1254,13 @@ def prepare_submission(
             touched_tests.get("exit_code") not in (0, None)
             and touched_tests.get("code_version") != TOUCHED_TESTS_CODE_VERSION
         )
+        # pytest's internal and usage errors say nothing about the diff:
+        # panel's exit 3 was a missing pytest-timeout, installed after the
+        # record was written. Mailman #502.
+        or (
+            touched_tests.get("runner") == "pytest"
+            and touched_tests.get("exit_code") in (3, 4)
+        )
         or _touched_selection_changed(touched_tests, touched_workspace, changed_paths)
         or _touched_deselects_changed(touched_tests, run_directory)
         or _missing_module_now_importable(touched_tests)
