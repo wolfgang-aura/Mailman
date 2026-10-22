@@ -489,6 +489,11 @@ _POLICY_PRIOR_DISCUSSION = re.compile(
     r"before\s+(?:opening|submitting|filing|raising|sending)"
     r"|(?:wait|waiting)\s+for\s+(?:a\s+)?maintainer[^.]{0,40}"
     r"(?:repl(?:y|ies)|respon(?:se|ds?)|confirm)"
+    # pgmpy CONTRIBUTING.md: "Comment on the issue before you start working,
+    # so a maintainer can assign it to you". Mailman #503.
+    r"|comment\s+on\s+the\s+issue[^.]{0,80}\bmaintainers?\s+can\s+assign"
+    r"|discuss\s+your\s+(?:approach|plan|design|solution)\s+on\s+the\s+issue"
+    r"[^.]{0,40}before\s+(?:opening|submitting)"
     r")",
     re.IGNORECASE,
 )
@@ -509,6 +514,8 @@ _POLICY_DISCLOSURE = re.compile(
     # holoviz/panel AGENTS.md: "Always identify yourself as an AI agent".
     # Mailman #501.
     r"|identify\s+yourself\s+as\s+an?\s+(?:ai|llm)\b"
+    # kornia CONTRIBUTING.md: "Tell us how AI helped". Mailman #503.
+    r"|tell\s+us\s+how\s+(?:ai|an?\s+llm|the\s+ai)\b[^.]{0,20}\bhelped"
     r")",
     re.IGNORECASE,
 )

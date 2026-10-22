@@ -1703,6 +1703,29 @@ class ScreenTests(unittest.TestCase):
             gh.asked,
         )
 
+    def test_kornia_disclosure_and_pgmpy_assignment_rules_are_recorded(self) -> None:
+        # Both guides passed with no constraint for these rules. #503.
+        cases = {
+            "requires_disclosure": (
+                "You may use AI to do the work — so do we. Tell us how AI "
+                "helped; we do the same.\n"
+            ),
+            "requires_prior_discussion": (
+                "2. **Comment on the issue** before you start working, so a "
+                "maintainer can assign it to you and avoid duplicate effort.\n"
+                "3. **Discuss your approach** on the issue thread before "
+                "opening a PR.\n"
+            ),
+        }
+        for flag, guide in cases.items():
+            with self.subTest(flag=flag):
+                with tempfile.TemporaryDirectory() as temporary:
+                    record = _screen(
+                        Path(temporary),
+                        FakeGitHub(policies={"CONTRIBUTING.md": guide}),
+                    )
+                self.assertTrue(_named(record, "policy")["data"][flag])
+
     def test_docs_contributing_md_is_read_as_the_guide(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(
