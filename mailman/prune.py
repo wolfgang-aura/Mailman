@@ -143,25 +143,56 @@ def _writable_then(function: Callable[[str], None], path: str) -> None:
 
 
 def remove_tree(path: Path) -> None:
-    """Delete `path`. A link or junction inside it is removed, never entered."""
+    """Delete `path`. A link or junction inside it is removed, never entered.
+
+    A path that cannot be removed does not stop the rest. A Codex sandbox
+    account owns some `.pytest_cache` folders, and this user cannot even read
+    their ACL; the clone around them still goes, and the error names them.
+    """
+    blocked: list[str] = []
+    blocked_error: list[OSError] = []
+
+    def attempt(function: Callable[[str], None], target: str) -> None:
+        try:
+            _writable_then(function, target)
+        except OSError as error:
+            # A parent of something already blocked cannot be empty; only
+            # the cause is worth naming.
+            if not any(item.startswith(target + os.sep) for item in blocked):
+                blocked.append(target)
+                blocked_error.append(error)
+
     pending: list[tuple[str, bool]] = [(_long(path), False)]
     while pending:
         current, emptied = pending.pop()
         if emptied:
-            _writable_then(os.rmdir, current)
+            attempt(os.rmdir, current)
+            continue
+        try:
+            entries = list(os.scandir(current))
+        except OSError as error:
+            blocked.append(current)
+            blocked_error.append(error)
             continue
         pending.append((current, True))
-        with os.scandir(current) as entries:
-            for entry in entries:
+        for entry in entries:
+            try:
                 info = entry.stat(follow_symlinks=False)
-                directory = stat.S_ISDIR(info.st_mode) or bool(
-                    getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_DIRECTORY)
-                if _is_link(info):
-                    _writable_then(os.rmdir if directory else os.unlink, entry.path)
-                elif directory:
-                    pending.append((entry.path, False))
-                else:
-                    _writable_then(os.unlink, entry.path)
+            except OSError as error:
+                blocked.append(entry.path)
+                blocked_error.append(error)
+                continue
+            directory = stat.S_ISDIR(info.st_mode) or bool(
+                getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_DIRECTORY)
+            if _is_link(info):
+                attempt(os.rmdir if directory else os.unlink, entry.path)
+            elif directory:
+                pending.append((entry.path, False))
+            else:
+                attempt(os.unlink, entry.path)
+    if blocked:
+        names = ", ".join(item.removeprefix("\\\\?\\") for item in blocked[:3])
+        raise OSError(f"{len(blocked)} path(s) could not be removed ({names}): {blocked_error[0]}")
 
 
 def _git(workspace: Path, *arguments: str) -> subprocess.CompletedProcess:
@@ -183,6 +214,11 @@ def preserve_candidate(directory: Path, base_commit: str | None) -> dict:
     workspace = directory / "workspace"
     if not (workspace / ".git").exists():
         raise RuntimeError("workspace is not a git checkout")
+    if ([entry.name for entry in os.scandir(workspace)] == [".git"]
+            and _git(workspace, "rev-parse", "--verify", "HEAD").returncode):
+        # The clone died before checkout, so the run never had a candidate.
+        return {"bundle": None, "worktree_diff": None, "branches": [],
+                "note": "the clone never checked out a commit"}
     if not base_commit or _git(workspace, "cat-file", "-e", f"{base_commit}^{{commit}}").returncode:
         raise RuntimeError(f"base commit {base_commit or 'unrecorded'} is not in the workspace")
     saved: dict[str, Any] = {"bundle": None, "worktree_diff": None, "branches": []}
@@ -238,6 +274,12 @@ def plan_prune(data_root: Path, *, now: datetime | None = None,
         activity = last_activity(directory, record)
         if not present:
             row["reason"] = "nothing to prune"
+        elif (directory / MARKER).is_file() and not any(
+                tree_bytes(directory / name) for name in present):
+            # Only folders this user cannot read are left, such as a
+            # `.pytest_cache` a Codex sandbox account owns. Retrying fails
+            # the same way every time.
+            row["reason"] = "pruned; only unreadable folders remain"
         elif not record:
             row["reason"] = "no run.json"
         elif directory.name in live_runs:
@@ -292,6 +334,12 @@ def prune_run(directory: Path, present: list[str], *, now: datetime | None = Non
     temporary = directory / (MARKER + ".tmp")
     temporary.write_text(json.dumps(marker, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temporary.replace(directory / MARKER)
+    failures = []
     for name in present:
-        remove_tree(directory / name)
+        try:
+            remove_tree(directory / name)
+        except OSError as error:
+            failures.append(f"{name}: {error}")
+    if failures:
+        raise OSError("; ".join(failures))
     return marker

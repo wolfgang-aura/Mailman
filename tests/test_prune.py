@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
 from mailman.prune import BUNDLE, MARKER, WORKTREE_DIFF, plan_prune, prune_run, remove_tree
 
@@ -57,6 +58,28 @@ class RemoveTreeTests(unittest.TestCase):
             self.assertEqual((outside / "keep.txt").read_text(encoding="utf-8"), "keep")
 
 
+    def test_one_path_that_cannot_be_removed_does_not_keep_the_rest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tree = Path(directory) / "tree"
+            (tree / ".pytest_cache").mkdir(parents=True)
+            (tree / ".pytest_cache" / "owned-by-sandbox").write_text("x", encoding="utf-8")
+            (tree / "src").mkdir()
+            (tree / "src" / "big.py").write_text("x", encoding="utf-8")
+            real = os.unlink
+
+            def unlink(target, *arguments, **options):
+                if "owned-by-sandbox" in str(target):
+                    raise PermissionError(5, "Access is denied", str(target))
+                return real(target, *arguments, **options)
+
+            with mock.patch("os.unlink", unlink), mock.patch("os.chmod"):
+                with self.assertRaisesRegex(OSError, r"1 path\(s\).*owned-by-sandbox"):
+                    remove_tree(tree)
+
+            self.assertFalse((tree / "src").exists())
+            self.assertTrue((tree / ".pytest_cache" / "owned-by-sandbox").exists())
+
+
 class PlanTests(unittest.TestCase):
     def test_only_an_old_run_nothing_still_uses_is_pruned(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -83,10 +106,16 @@ class PlanTests(unittest.TestCase):
                 {"repository": "example/project", "pull_request": 3, "state": "merged"},
             ]}), encoding="utf-8")
 
+            for run_id, leftover in (("husk", ""), ("interrupted", "half a clone")):
+                run = _run(root, run_id)
+                (run / MARKER).write_text("{}", encoding="utf-8")
+                (run / "workspace" / "left.txt").write_text(leftover, encoding="utf-8")
+
             rows = {row["run_id"]: row for row in plan_prune(root, now=NOW, live_runs={"live"})}
 
             self.assertEqual(sorted(name for name, row in rows.items() if row["prune"]),
-                             ["merged-pr", "old"])
+                             ["interrupted", "merged-pr", "old"])
+            self.assertIn("unreadable", rows["husk"]["reason"])
             self.assertIn("is open", rows["open-pr"]["reason"])
             self.assertIn("is unknown", rows["unread-pr"]["reason"])
             self.assertEqual(rows["hunted"]["reason"], "belongs to an unfinished hunt")
@@ -125,6 +154,16 @@ class PruneRunTests(unittest.TestCase):
             verified = subprocess.run(["git", "bundle", "list-heads", str(run / BUNDLE)],
                                       capture_output=True, text=True, check=True).stdout
             self.assertIn("refs/heads/mailman/issue-1", verified)
+
+    def test_a_clone_that_never_checked_out_has_nothing_to_save(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run = _run(Path(directory) / "runs", "old", base="0" * 40)
+            _git(run / "workspace", "init", "-q")
+
+            marker = prune_run(run, ["workspace", "environment"], now=NOW)
+
+            self.assertFalse((run / "workspace").exists())
+            self.assertIn("never checked out", marker["note"])
 
     def test_a_workspace_that_cannot_be_saved_is_kept(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
