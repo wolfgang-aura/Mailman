@@ -1344,6 +1344,21 @@ class PrescreenRecordTests(OrchestratorHarness):
                        {"requires_cla": False, "cla_checks_read": True}}],
         }), encoding="utf-8")
 
+    def test_passing_screens_drop_their_command_transcripts(self):
+        # Every pass kept its gh stdout and the sweep ran out of memory. #499.
+        from mailman.hunt import _passing_screens
+        self._screen("acme/widgets", [7])
+        path = screen_path(self.data_root, "acme/widgets")
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        stored["commands"] = [{"stdout": "x" * 1000}]
+        path.write_text(json.dumps(stored), encoding="utf-8")
+
+        [(_, slug, screen)] = _passing_screens(self.data_root, set(), 30, None)
+
+        self.assertEqual(slug, "acme/widgets")
+        self.assertNotIn("commands", screen)
+        self.assertEqual(screen["gates"][0]["data"]["shortlist"][0]["number"], 7)
+
     def test_a_prescreen_is_appended_to_the_hunt_and_counted_in_status(self):
         record = self.new_hunt()
         record_prescreen(self.data_root, record,

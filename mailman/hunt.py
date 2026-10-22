@@ -896,6 +896,10 @@ def _passing_screens(root: Path, held_repositories: set[str] | None,
         slug = repository_slug(str(screen.get("repository") or ""))
         if slug.lower() in held:
             continue
+        # The command transcripts are nearly all of a screen's bytes (12.6 of
+        # mlflow's 12.6 MB) and no caller reads them; keeping them for every
+        # pass ran the sweep out of memory. Mailman #499.
+        screen.pop("commands", None)
         screens.append((screened, slug, screen))
     return sorted(screens, key=lambda item: item[0], reverse=True)
 
