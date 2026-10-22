@@ -506,6 +506,9 @@ _POLICY_DISCLOSURE = re.compile(
     # disclose the tools". The AI comes first. Mailman #158.
     r"|if\s+you\s+used\s+(?:ai|llms?|an?\s+llm)\b[^.]{0,60}"
     r"\b(?:state|disclose|declare|mention)"
+    # holoviz/panel AGENTS.md: "Always identify yourself as an AI agent".
+    # Mailman #501.
+    r"|identify\s+yourself\s+as\s+an?\s+(?:ai|llm)\b"
     r")",
     re.IGNORECASE,
 )
@@ -522,6 +525,9 @@ _POLICY_OWN_WORDS = re.compile(
     r"|written\s+by\s+you,?\s+not"
     r"|(?:comments|issues|descriptions?)\s+.{0,60}your\s+own\s+words"
     r"|do\s+not\s+.{0,30}(?:llm|ai)[- ]generated\s+(?:text|prose|descriptions?)"
+    # holoviz.org "Using AI README": "Do NOT copy full output of AI summary and
+    # instead curate a description yourself". Mailman #501.
+    r"|curate\s+(?:a|the)\s+description\s+yourself"
     r")",
     re.IGNORECASE,
 )
@@ -639,6 +645,7 @@ _REFERENCE_DEFINITION = re.compile(
     r"^ {0,3}\[(?P<ref>[^\]\n]{1,160})\]:\s*<?(?P<url>\S{1,400}?)>?\s*$",
     re.MULTILINE,
 )
+_BARE_URL = re.compile(r"https?://[^\s<>()\[\]`'\"]{4,400}")
 _RST_LINK = re.compile(r"`(?P<text>[^`<\n]{1,160})<(?P<url>[^>`\s]{1,400})>`_")
 
 #: What makes a link worth one more API call. `ai` and `llm` are matched as
@@ -671,6 +678,14 @@ def _policy_links(body: str) -> list[tuple[str, str]]:
             links.append((match.group("text"), target))
     for match in _RST_LINK.finditer(body):
         links.append((match.group("text"), match.group("url")))
+    # holoviz's template carries its policy as a bare URL inside an HTML
+    # comment: "Using AI? READ FIRST: https://holoviz.org/...". Mailman #501.
+    linked = {url for _, url in links}
+    for match in _BARE_URL.finditer(body):
+        url = match.group(0).rstrip(".,;:")
+        if url not in linked:
+            linked.add(url)
+            links.append((url, url))
     return links
 
 
@@ -1919,8 +1934,17 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     """Gate 4. Does the guide, the policy it links, or the pull request template close an AI-assisted pull request?"""
     template = ""
     template_source = ""
-    for relative in _TEMPLATE_PATHS:
-        body = _decoded(gh.json(f"repos/{slug}/contents/{relative}"))
+    # GitHub applies the organization's template from `OWNER/.github` when the
+    # repository has none; holoviz keeps its AI Disclosure section there.
+    # Mailman #501.
+    owner = slug.partition("/")[0]
+    places = [(f"repos/{slug}/contents/{path}", path) for path in _TEMPLATE_PATHS]
+    places += [
+        (f"repos/{owner}/.github/contents/{path}", f"{owner}/.github/{path}")
+        for path in _TEMPLATE_PATHS
+    ]
+    for locator, relative in places:
+        body = _decoded(gh.json(locator))
         if not body:
             continue
         template = body
@@ -1940,6 +1964,56 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
                 },
             )
         break
+    # The template's own links bind as the guide's do: holoviz's sends every
+    # contributor to a page that asks for a curated description. Mailman #501.
+    template_followed, template_unread = (
+        _followed_policies(gh, slug, template_source, template)
+        if template else ([], [])
+    )
+    template_trail = {
+        "followed_documents": [
+            {key: entry[key] for key in ("source", "url", "link_text")}
+            for entry in template_followed
+        ],
+        "unread_documents": template_unread,
+    }
+    for document in template_followed:
+        flat = " ".join(document["body"].split())
+        ban = _POLICY_BANS.search(flat)
+        refusal = ban.group(0) if ban else _outcome_refusal(flat)
+        if refusal:
+            return _gate(
+                "policy",
+                passed=False,
+                blocking=True,
+                detail=f"{document['source']} refuses AI-assisted work: {refusal!r}",
+                data={
+                    "source": document["source"],
+                    "guide": template_source,
+                    "result": "refused",
+                    "quote": refusal,
+                    **template_trail,
+                },
+            )
+    if template_unread:
+        named = ", ".join(entry["source"] for entry in template_unread)
+        return _gate(
+            "policy",
+            passed=False,
+            blocking=True,
+            detail=(
+                f"{template_source} sends contributors to {named}, which could "
+                "not be read, so whether this project closes AI-assisted work "
+                "is unknown"
+            ),
+            data={
+                "source": template_source,
+                "guide": template_source,
+                "result": "unknown",
+                "quote": None,
+                **template_trail,
+            },
+        )
     guides = {
         relative: _decoded(gh.json(f"repos/{slug}/contents/{relative}"))
         for relative in _POLICY_PATHS
@@ -1976,7 +2050,7 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
             "followed_documents": [
                 {key: entry[key] for key in ("source", "url", "link_text")}
                 for entry in followed
-            ],
+            ] + template_trail["followed_documents"],
             "unread_documents": unread,
         }
         for document in documents:
@@ -2035,6 +2109,8 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
         # "must be in your own words" there behind a one-line guide. #271.
         if template:
             _constraints(template_source, " ".join(template.split()), constraints)
+        for document in template_followed:
+            _constraints(document["source"], " ".join(document["body"].split()), constraints)
         # The other guides bind too: otel-python's CONTRIBUTING.md says
         # nothing about comments, and its AGENTS.md forbids AI-generated ones.
         # Mailman #443.
@@ -2110,6 +2186,8 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
     constraints = []
     if template:
         _constraints(template_source, " ".join(template.split()), constraints)
+    for document in template_followed:
+        _constraints(document["source"], " ".join(document["body"].split()), constraints)
     if not any(entry["kind"] == REQUIRES_CLA for entry in constraints):
         bot = _cla_bot(gh, slug)
         if bot:
@@ -2139,6 +2217,7 @@ def _policy_gate(gh: _Gh, slug: str) -> dict[str, Any]:
             "cla_checks_read": True,
             "constraints": constraints,
             "pull_request_base": _pull_request_base([template]),
+            **template_trail,
         },
     )
 

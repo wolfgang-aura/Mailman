@@ -1660,6 +1660,49 @@ class ScreenTests(unittest.TestCase):
                 self.assertNotIn("policy", record["failed_gates"])
                 self.assertTrue(gate["data"]["requires_own_words"])
 
+    def test_an_organization_template_and_its_bare_policy_url_bind(self) -> None:
+        # holoviz/panel has no template of its own; GitHub applies the one in
+        # holoviz/.github, whose policy link is a bare URL in an HTML comment.
+        # The gate read AGENTS.md alone and recorded no constraints. #501.
+        template = (
+            "<!-- Using AI? READ FIRST: "
+            "https://holoviz.org/contribute/index.html#using-ai-readme -->\n\n"
+            "## AI Disclosure\n<!-- Failure to disclose AI usage may result "
+            "in a ban. -->\n"
+        )
+        page = (
+            "<html><body><h2>Using AI README</h2><ul>"
+            "<li>Do NOT copy full output of AI summary and instead curate a "
+            "description yourself</li></ul><p>Maintainers reserve the right to "
+            "close PRs they deem low-effort or AI-generated without review.</p>"
+            "</body></html>"
+        )
+        gh = FakeGitHub(
+            policies={
+                "AGENTS.md": (
+                    "- Never impersonate or write as a human. Always identify "
+                    "yourself as an AI agent.\n"
+                ),
+                "example/.github:.github/pull_request_template.md": template,
+            }
+        )
+        pages = FakePages({"https://holoviz.org/contribute/index.html": page})
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(Path(temporary), gh, pages)
+        gate = _named(record, "policy")
+
+        self.assertNotIn("policy", record["failed_gates"])
+        self.assertTrue(gate["data"]["requires_disclosure"])
+        self.assertTrue(gate["data"]["requires_own_words"])
+        self.assertEqual(
+            [entry["source"] for entry in gate["data"]["followed_documents"]],
+            ["holoviz.org/contribute/index.html"],
+        )
+        self.assertIn(
+            "repos/example/.github/contents/.github/pull_request_template.md",
+            gh.asked,
+        )
+
     def test_docs_contributing_md_is_read_as_the_guide(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = _screen(
