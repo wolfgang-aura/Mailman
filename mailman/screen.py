@@ -1726,7 +1726,9 @@ def _wheel_fits_host(filename: str) -> bool:
 
 
 _OS_CLASSIFIER = re.compile(r"Operating System\s*::\s*([^\"'\n,\]]+)")
-_RUNS_ON_WINDOWS = re.compile(r"Windows|OS Independent", re.IGNORECASE)
+#: `Operating System :: Microsoft` is the parent of Windows and MS-DOS, and
+#: trafilatura declares it alone. Mailman #500.
+_RUNS_ON_WINDOWS = re.compile(r"Windows|Microsoft|OS Independent", re.IGNORECASE)
 
 
 def _posix_only_classifiers(*texts: str) -> list[str]:

@@ -1455,6 +1455,8 @@ class ScreenTests(unittest.TestCase):
         for classifiers in (
             '"Operating System :: POSIX", "Operating System :: Microsoft :: Windows"',
             '"Operating System :: OS Independent"',
+            # trafilatura lists the bare parent, which covers Windows. #500.
+            '"Operating System :: MacOS", "Operating System :: Microsoft"',
         ):
             pyproject = f'[project]\nname = "x"\nclassifiers = [{classifiers}]\n'
             with self.subTest(classifiers=classifiers):
