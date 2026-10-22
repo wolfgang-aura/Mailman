@@ -677,6 +677,7 @@ maintainer has not assigned.
 
 - The target repository checkout and machine-observed command results outrank agent self-reports.
 - Live runs, agent transcripts, cloned target workspaces, and raw logs stay under `.mailman/` and are not public artifacts.
+- Disk retention (#498, 2026-10-22): `mailman prune-runs` reports, and with `--apply` deletes, the `workspace/` and `environment/` of runs inactive for 14 days. It keeps runs in an unfinished hunt, runs whose filed PR is not merged or closed in `filed-watch.json`, mid-stage and maintainer-changes runs, and runs with a live process. Before removing a clone it saves `pruned.bundle` (the run's branches past the base) and `pruned-worktree.diff` (the full diff, untracked files included), then writes `pruned.json` with restore steps. Deletion never enters a junction. On 2026-10-22 the two directories held 158 of 166 GB under `.mailman/runs`.
 - Tracked examples must contain synthetic or human-reviewed, sanitized data.
 - Upstream pushes, pull requests, comments, issue changes, and branch changes require explicit human approval.
 

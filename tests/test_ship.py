@@ -140,6 +140,19 @@ class ShipReadyRunTests(OrchestratorHarness):
         self.assertFalse(any(call[:3] == ["gh", "pr", "create"] for call in github.calls))
         self.assertNotIn("filed", load_hunt(self.data_root, self.record["hunt_id"])["runs"][0])
 
+    def test_a_pruned_workspace_names_the_marker_instead_of_a_missing_branch(self):
+        # Prune writes the marker beside the workspace it removed.
+        (self.workspace.parent / "pruned.json").write_text(
+            json.dumps({"pruned_at": "2026-10-22T00:00:00+00:00"}), encoding="utf-8")
+        hidden = self.workspace.with_name("pruned-away")
+        self.workspace.rename(hidden)
+        self.addCleanup(hidden.rename, self.workspace)
+        github = FakeGitHub(sha=self.sha)
+        row = self.ship(github)["runs"][0]
+        self.assertEqual(row["outcome"], "skipped")
+        self.assertIn("workspace was pruned", row["reason"])
+        self.assertEqual(github.wrote(), [])
+
     def test_a_branch_someone_else_moved_is_not_overwritten(self):
         github = FakeGitHub(sha=self.sha, fork=True, remote="f" * 40)
         result = self.ship(github)

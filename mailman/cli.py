@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import shlex
+import subprocess
 import sys
 import webbrowser
 from pathlib import Path
@@ -284,6 +285,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     finalize.add_argument("run_id")
     finalize.add_argument("--data-root", type=Path)
+    prune = subparsers.add_parser(
+        "prune-runs",
+        help="delete the clone and build environment of finished runs; report only "
+        "without --apply",
+    )
+    prune.add_argument("--older-than-days", type=int, default=14)
+    prune.add_argument("--apply", action="store_true")
+    prune.add_argument("--data-root", type=Path)
 
     fetch_review = subparsers.add_parser(
         "fetch-review",
@@ -1179,6 +1188,54 @@ def _build_parser() -> argparse.ArgumentParser:
     finding.add_argument("--repository", default="")
     finding.add_argument("--base-commit", default="")
     return parser
+
+
+def _prune_runs(arguments: argparse.Namespace) -> int:
+    """Report, or with --apply delete, what finished runs no longer need. Mailman #498."""
+    from collections import Counter
+
+    from mailman.leftovers import leftover_processes
+    from mailman.prune import plan_prune, prune_run, tree_bytes
+
+    root = (arguments.data_root or default_data_root()).resolve()
+    live, failure = leftover_processes(root)
+    if failure and arguments.apply:
+        print(f"refusing to prune: cannot tell which runs have live processes ({failure})",
+              file=sys.stderr)
+        return 1
+    rows = plan_prune(root, retention_days=arguments.older_than_days,
+                      live_runs={row["run_id"] for row in live})
+    chosen = [row for row in rows if row["prune"]]
+    total, failures = 0, []
+    for index, row in enumerate(chosen, 1):
+        directory = root / row["run_id"]
+        try:
+            if arguments.apply:
+                freed = prune_run(directory, row["present"])["bytes_freed"]
+            else:
+                freed = sum(tree_bytes(directory / name) for name in row["present"])
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            failures.append({"run_id": row["run_id"], "error": str(error)[:300]})
+            print(f"[{index}/{len(chosen)}] {row['run_id']} kept: {error}", file=sys.stderr, flush=True)
+            continue
+        total += freed
+        verb = "freed" if arguments.apply else "would free"
+        print(f"[{index}/{len(chosen)}] {row['run_id']} {verb} {freed / 1e9:.2f} GB "
+              f"({row['reason']})", file=sys.stderr, flush=True)
+    kept = Counter(row["reason"].split(":")[0] if row["reason"].startswith("filed")
+                   else row["reason"] for row in rows if not row["prune"])
+    print(json.dumps({
+        "applied": arguments.apply,
+        "runs": len(rows),
+        "pruned" if arguments.apply else "prunable": len(chosen) - len(failures),
+        "gigabytes": round(total / 1e9, 2),
+        "kept": dict(kept.most_common()),
+        "kept_runs": [{"run_id": row["run_id"], "reason": row["reason"]}
+                      for row in rows if not row["prune"] and row["present"]],
+        "failures": failures,
+        "process_check": failure,
+    }, indent=2))
+    return 1 if failures else 0
 
 
 def _hunt(arguments: argparse.Namespace) -> int:
@@ -3792,6 +3849,8 @@ def main(arguments: list[str] | None = None) -> int:
             )
             print(json.dumps({"plan": str(destination), "executed": False}, indent=2))
             return 0
+        if parsed.subcommand == "prune-runs":
+            return _prune_runs(parsed)
         if parsed.subcommand == "finalize-review":
             from mailman.completion import finalize_review
 

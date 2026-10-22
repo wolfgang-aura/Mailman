@@ -40,6 +40,11 @@ def git_bytes(workspace: Path, *args: str) -> bytes:
 
 def candidate_digest(workspace: Path, base: str) -> str:
     """Cover tracked and untracked bytes, unchanged by staging or committing."""
+    pruned = read_object(Path(workspace).parent / "pruned.json")
+    if pruned and not Path(workspace).is_dir():
+        # Mailman #498: say where the candidate went, not that Git cannot cd.
+        raise ValueError(f"the workspace was pruned at {pruned.get('pruned_at')}; restore it "
+                         f"as {Path(workspace).parent / 'pruned.json'} says")
     digest = hashlib.sha256()
     # A temporary index lets Git hash the candidate without changing its real index.
     import os
