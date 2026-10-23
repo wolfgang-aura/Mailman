@@ -62,6 +62,38 @@ OWN_WORDS_INSTRUCTION = (
     "prepare-submission, then run handoff again on the rewritten text"
 )
 
+#: Digests of every body handed over while the rewrite was still pending.
+#: The flag alone proved nothing: panel#8902 was filed with the agent's draft
+#: because a one-line command set own_words_confirmed before any edit.
+OWN_WORDS_DRAFTS_FILENAME = "own-words-drafts.json"
+
+
+def _record_draft(run_directory: Path, digest: str) -> None:
+    path = run_directory / OWN_WORDS_DRAFTS_FILENAME
+    try:
+        digests = json.loads(path.read_text(encoding="utf-8")).get("digests") or []
+    except (OSError, ValueError, AttributeError):
+        digests = []
+    if digest not in digests:
+        digests.append(digest)
+        path.write_text(
+            json.dumps({"digests": digests}, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+
+def _still_the_draft(run_directory: Path, digest: str | None) -> bool:
+    """The body is byte-identical to one handed over before the rewrite."""
+    try:
+        record = json.loads(
+            (run_directory / OWN_WORDS_DRAFTS_FILENAME).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return False
+    return bool(digest) and digest in (record.get("digests") or [])
+
+
 #: How old prior-art evidence may be when it is handed over for publishing.
 #:
 #: `duplicate-search` runs once, at run time; publishing happens whenever a
@@ -790,6 +822,10 @@ def build_handoff(
     # the maintainers read (#454).
     own_words = own_words_pending(run_directory)
     if own_words:
+        _record_draft(run_directory, body_digest(body))
+    elif _still_the_draft(run_directory, body_digest(body)):
+        own_words = True
+    if own_words:
         command = None
     owner = head_owner(head) if kind == "pull-request" else None
     owner_type = owner_type_lookup(owner) if owner else None
@@ -1327,7 +1363,11 @@ def check_handoff(
                 "detail": " ".join(problems),
                 "digest": current,
             }
-        if own_words_pending(run_directory) or record.get("own_words_pending"):
+        if (
+            own_words_pending(run_directory)
+            or record.get("own_words_pending")
+            or _still_the_draft(run_directory, current)
+        ):
             return {
                 "ok": False,
                 "reason": OWN_WORDS_PENDING,
@@ -1379,7 +1419,11 @@ def check_handoff(
         # Last, so this refusal means every other check passed and only the
         # human's rewrite is left. Read live as well as from the record: a
         # handoff printed before the rewrite carries no command. Mailman #181.
-        if own_words_pending(run_directory) or record.get("own_words_pending"):
+        if (
+            own_words_pending(run_directory)
+            or record.get("own_words_pending")
+            or _still_the_draft(run_directory, current)
+        ):
             return {
                 "ok": False,
                 "reason": OWN_WORDS_PENDING,

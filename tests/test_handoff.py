@@ -592,6 +592,20 @@ class OwnWordsHandoffTests(unittest.TestCase):
         self.assertNotIn("OWN WORDS", block)
         self.assertTrue(result["ok"], result)
 
+    def test_a_confirmed_flag_over_the_unedited_draft_still_refuses(self) -> None:
+        # panel#8902 was filed with the agent's draft: the operator's command
+        # set own_words_confirmed without the body ever changing.
+        with TemporaryDirectory() as name:
+            directory, body_path, _, _ = self._prepared(Path(name))
+            self._hold(directory, [])
+            record, block = self._handoff(directory, body_path)
+            result = check_handoff(directory)
+
+        self.assertIsNone(record["command"])
+        self.assertTrue(record["own_words_pending"])
+        self.assertNotIn("gh pr create", block)
+        self.assertEqual(result["reason"], "own-words-pending")
+
     def test_own_words_beside_another_code_still_withholds_the_command(self) -> None:
         with TemporaryDirectory() as name:
             _, directory = _run_directory(Path(name))
