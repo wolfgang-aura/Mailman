@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import subprocess
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -2415,6 +2416,7 @@ def record_duplicate_search(
     symbols: Sequence[str] = (),
     issue_symbols: Sequence[str] = (),
     title: str | None = None,
+    retry_delay_seconds: float = 3,
 ) -> dict[str, Any]:
     """Search a target's pull requests and issues, and record what came back.
 
@@ -2563,11 +2565,22 @@ def record_duplicate_search(
         # happened. See issue #30.
         succeeded: list[str] = []
         for method, command, terms in attempts:
-            result: CommandResult = execute(
-                command,
-                working_directory=run_directory,
-                timeout_seconds=timeout_seconds,
-            )
+            # A GitHub 5xx says nothing about duplicates, so it is retried
+            # twice. Mailman #508.
+            for attempt in range(3):
+                result: CommandResult = execute(
+                    command,
+                    working_directory=run_directory,
+                    timeout_seconds=timeout_seconds,
+                )
+                transient = (
+                    not result.timed_out
+                    and result.exit_code != 0
+                    and re.search(r"HTTP 5\d\d", result.stderr or "") is not None
+                )
+                if not transient or attempt == 2:
+                    break
+                time.sleep(retry_delay_seconds * (attempt + 1))
             record["commands"].append({"method": method, **result.to_dict()})
             if result.timed_out or result.exit_code != 0:
                 record["failed_methods"].append(

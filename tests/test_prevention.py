@@ -326,6 +326,41 @@ class NarrowFirstDuplicateSearchTests(unittest.TestCase):
         self.assertEqual(record["decided_by"], "broad")
         self.assertNotIn("narrow", record["methods"]["pr"])
 
+    def test_a_github_5xx_is_retried_before_the_search_counts_incomplete(self):
+        """One 502 on the pull request listing blocked `hunt ship`. Mailman #508."""
+        from mailman import submission
+        from mailman.executor import CommandResult
+
+        failures = {"left": 1}
+
+        def fake_execute(command, *, working_directory, timeout_seconds):
+            self.calls.append(list(command))
+            listing = "pr" in command and "open" in command and "--search" not in command
+            failed = listing and failures["left"] > 0
+            if failed:
+                failures["left"] -= 1
+            return CommandResult(
+                command=tuple(command), working_directory=str(working_directory),
+                started_at="now", duration_seconds=0.0, exit_code=1 if failed else 0,
+                stdout="" if failed else "[]",
+                stderr="HTTP 502: 502 Bad Gateway (https://api.github.com/graphql)"
+                if failed else "",
+                timed_out=False, timeout_seconds=timeout_seconds, environment={},
+            )
+
+        original = submission.execute
+        submission.execute = fake_execute
+        self.addCleanup(lambda: setattr(submission, "execute", original))
+
+        record = submission.record_duplicate_search(
+            self.directory, repository="https://github.com/example/project.git",
+            query="show dependency sources", executable="gh",
+            retry_delay_seconds=0,
+        )
+        self.assertTrue(record["complete"])
+        self.assertEqual(record["failed_methods"], [])
+        self.assertIn("listing", record["methods"]["pr"])
+
 
 class VerificationPassthroughTests(unittest.TestCase):
     """https://github.com/wolfgang-aura/Mailman/issues/70"""
