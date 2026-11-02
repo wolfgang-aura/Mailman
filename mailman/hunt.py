@@ -670,6 +670,17 @@ def closed_repositories(root: Path) -> set[str]:
                 continue
             if row.get("closes_repository") or _CLOSING_REASON.match(str(row.get("reason") or "")):
                 closed.add(str(row["target"]).split("#", 1)[0])
+    # A coordinator can close a repository from a thread read, with no run.
+    # Mailman #510.
+    from mailman.prescreen import ISSUE_SCREENS
+
+    for path in (root / ISSUE_SCREENS).glob("*.json"):
+        if "closes_repository" not in path.read_text(encoding="utf-8", errors="replace"):
+            continue
+        record = read_object(path) or {}
+        rejection = record.get("coordinator_rejection") or {}
+        if rejection.get("closes_repository") and record.get("repository"):
+            closed.add(str(record["repository"]))
     return closed
 
 
@@ -882,8 +893,9 @@ def _passing_screens(root: Path, held_repositories: set[str] | None,
         if not screen or not screen.get("success") or screen.get("verdict") != "pass":
             continue
         if not _pass_stands(screen):
-            if stale is not None:
-                stale.append(repository_slug(str(screen.get("repository") or "")))
+            slug = repository_slug(str(screen.get("repository") or ""))
+            if stale is not None and slug.lower() not in held:
+                stale.append(slug)
             continue
         try:
             screened = datetime.fromisoformat(str(screen.get("screened_at")))
@@ -1034,8 +1046,14 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
                        since_days: int = SWEEP_SINCE_DAYS,
                        pause_seconds: float = SWEEP_PAUSE_SECONDS,
                        now: datetime | None = None,
-                       progress: Callable[[str], None] | None = None) -> dict:
+                       progress: Callable[[str], None] | None = None,
+                       include_stale: bool = False) -> dict:
     """Open bug issues opened lately in passing repositories, not yet screened.
+
+    `include_stale` also reads repositories whose pass was read under older
+    windows, and marks their rows `stale_screen`: one issues read each,
+    where a refresh costs about 200, so only a repository with a row worth
+    pre-screening needs `screen-target --refresh`.
 
     One core `issues` read per repository; labels are judged here by
     `sweep_labels_admit`. Rows with comments come first, newest first within
@@ -1050,7 +1068,10 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
     stale: list[str] = []
     slugs = [slug for _, slug, _ in _passing_screens(
         root, held_repositories, SWEEP_SCREEN_MAX_AGE_DAYS, moment, stale)]
-    since = (moment - timedelta(days=since_days)).date().isoformat()
+    if include_stale:
+        slugs += [slug for slug in dict.fromkeys(stale) if slug not in slugs]
+    stale_set = set(stale) if include_stale else set()
+    since =(moment - timedelta(days=since_days)).date().isoformat()
     claimed = {claim["target"] for claim in target_claims(root) if claim["live"]}
     rows: dict[str, dict] = {}
     failed: list[str] = []
@@ -1111,6 +1132,7 @@ def sweep_fresh_issues(root: Path, gh, *, held_repositories: set[str] | None = N
                 "author_association": item.get("author_association"),
                 "url": item.get("html_url"),
                 "_author": (item.get("user") or {}).get("login"),
+                **({"stale_screen": True} if slug in stale_set else {}),
             }
     # `-linked:pr` misses a pull request that only names the issue: moto#10176
     # and feast#6787 both had one open. One timeline read per row finds it and

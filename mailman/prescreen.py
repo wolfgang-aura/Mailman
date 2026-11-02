@@ -1403,12 +1403,15 @@ def prescreen_issue(
 
 
 def reject_by_hand(
-    data_root: Path, issue: str, *, reason: str, evidence: str | None = None
+    data_root: Path, issue: str, *, reason: str, evidence: str | None = None,
+    closes_repository: bool = False,
 ) -> dict[str, Any]:
     """Record the coordinator's own rejection of an issue, with its reason.
 
     A machine screen already on disk is kept and extended, so its evidence is
     not lost; with none, the record carries only what the coordinator wrote.
+    `closes_repository` says the reason holds for every issue in the
+    repository, so `hunt targets` stops offering any of them. Mailman #510.
     """
     reason = reason.strip()
     if len(reason) < 10:
@@ -1433,6 +1436,7 @@ def reject_by_hand(
             "coordinator_rejection": {
                 "reason": reason,
                 "evidence": (evidence or "").strip() or None,
+                **({"closes_repository": True} if closes_repository else {}),
             },
             "next": f"Do not open a run on {slug}#{number}: {reason}",
         }

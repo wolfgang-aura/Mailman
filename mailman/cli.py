@@ -259,6 +259,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "hunt targets and sweep leave it out from now on (#300)",
     )
     hunt.add_argument(
+        "--include-stale",
+        action="store_true",
+        help="for hunt sweep: also read repositories whose pass was read under "
+        "older windows, one call each; their rows carry stale_screen (#511)",
+    )
+    hunt.add_argument(
         "--owner",
         help="this coordinator's lease token, printed by hunt init. One hunt "
         "has one owner; a second coordinator must take it over explicitly",
@@ -351,6 +357,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     prescreen.add_argument(
         "--evidence", help="with --reject: the link or quote the reason rests on"
+    )
+    prescreen.add_argument(
+        "--closes-repository",
+        action="store_true",
+        help="with --reject: the reason holds for the whole repository, so "
+        "`hunt targets`, `hunt sweep` and `discover` skip it (Mailman #510)",
     )
 
     init_run = subparsers.add_parser(
@@ -1311,9 +1323,15 @@ def _hunt(arguments: argparse.Namespace) -> int:
         gh = _Gh(resolve_tool(home, "gh"), home, 60.0)
         result = hunt.sweep_fresh_issues(
             root, gh, since_days=arguments.since_days,
-            progress=lambda line: print(line, file=sys.stderr, flush=True))
+            progress=lambda line: print(line, file=sys.stderr, flush=True),
+            include_stale=arguments.include_stale)
         print(json.dumps(result, indent=2))
-        if result.get("stale_screens"):
+        if result.get("stale_screens") and arguments.include_stale:
+            print(f"{len(result['stale_screens'])} passing screen(s) read under other "
+                  "windows were swept too; refresh one with `mailman screen-target SLUG "
+                  "--refresh` before pre-screening a `stale_screen` row (#511)",
+                  file=sys.stderr)
+        elif result.get("stale_screens"):
             # Passes skipped as stale shrink the sweep without a word. #286.
             print(f"{len(result['stale_screens'])} passing screen(s) read under other "
                   "windows were skipped; `mailman screen-target SLUG --refresh` re-reads them",
@@ -1634,9 +1652,12 @@ def _prescreen(arguments: argparse.Namespace) -> int:
     root = (arguments.data_root or default_data_root()).resolve()
     if arguments.evidence and not arguments.reject:
         raise ValueError("--evidence goes with --reject")
+    if arguments.closes_repository and not arguments.reject:
+        raise ValueError("--closes-repository goes with --reject")
     if arguments.reject:
         record = prescreen.reject_by_hand(
-            root, arguments.issue, reason=arguments.reject, evidence=arguments.evidence
+            root, arguments.issue, reason=arguments.reject, evidence=arguments.evidence,
+            closes_repository=arguments.closes_repository,
         )
     else:
         record = prescreen.prescreen_issue(

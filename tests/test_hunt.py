@@ -1759,6 +1759,26 @@ class SweepTests(OrchestratorHarness):
         self.assertTrue(any("acme/narrow" in path for path in gh.paths))
         self.assertEqual(result["stale_screens"], ["acme/wide"])
 
+    def test_include_stale_sweeps_old_passes_and_marks_their_rows(self):
+        # 143 passes read under the 90-day responsiveness window were skipped,
+        # and refreshing them all costs ~28,000 core calls. Mailman #511.
+        from mailman.hunt import sweep_fresh_issues
+        from mailman.screen import FRESHNESS_WINDOW_DAYS
+        self._screen("acme/now", [])
+        self._screen("acme/wide", [], window_days=FRESHNESS_WINDOW_DAYS + 30)
+        moment = datetime.now(UTC)
+        created = (moment - timedelta(days=1)).isoformat()
+        gh = _SearchGh([[_item("acme/now", 1, created=created)],
+                        [_item("acme/wide", 2, created=created)]])
+
+        result = sweep_fresh_issues(self.data_root, gh, held_repositories=set(),
+                                    now=moment, include_stale=True)
+
+        self.assertEqual(result["repositories"], 2)
+        rows = {row["target"]: row for row in result["rows"]}
+        self.assertNotIn("stale_screen", rows["acme/now#1"])
+        self.assertTrue(rows["acme/wide#2"]["stale_screen"])
+
     def test_a_repository_a_hunt_dropped_as_closed_is_not_swept(self):
         # streamlit#17030 was dropped as target-closed-to-outside-prs, and the
         # next hunt was offered streamlit again. Mailman #300.
@@ -1783,6 +1803,19 @@ class SweepTests(OrchestratorHarness):
                            now=datetime.now(UTC))
         read = sorted(path.split("/issues?")[0] for path in gh.paths)
         self.assertEqual(read, ["repos/acme/cheap", "repos/acme/open"])
+
+    def test_a_hand_rejection_can_close_its_repository(self):
+        # datamodel-code-generator's maintainer files and fixes their own
+        # issues; 102 rows came back to every session. Mailman #510.
+        from mailman.hunt import closed_repositories
+        from mailman.prescreen import reject_by_hand
+
+        reject_by_hand(self.data_root, "acme/selfish#1", reason="issue-only rejection here",
+                       evidence="x")
+        self.assertEqual(closed_repositories(self.data_root), set())
+        reject_by_hand(self.data_root, "acme/selfish#2", reason="maintainer fixes own issues",
+                       evidence="x", closes_repository=True)
+        self.assertEqual(closed_repositories(self.data_root), {"acme/selfish"})
 
     def test_other_invitation_labels_are_admitted(self):
         # bleachbit's maintainer filed #2307 as `status:ready-for-dev`; only a

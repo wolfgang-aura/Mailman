@@ -1069,7 +1069,9 @@ class PrescreenTests(unittest.TestCase):
                 "title": "Fix crash on empty input",
                 "state": "open",
                 "url": "https://github.com/example/project/pull/99",
-                "createdAt": "2026-09-02T00:00:00Z",
+                # Relative: a fixed date aged past the 60-day stale rule on
+                # 2026-11-02 and the rival stopped blocking.
+                "createdAt": (datetime.now(UTC) - timedelta(days=5)).isoformat(),
                 "body": "Handle the empty-input crash.",
                 "headRefName": "fix-empty-input",
             }
