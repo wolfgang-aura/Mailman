@@ -1262,6 +1262,9 @@ def prepare_submission(
             touched_tests.get("runner") == "pytest"
             and touched_tests.get("exit_code") in (3, 4)
         )
+        # A timeout never finished, so it says nothing about the diff either:
+        # ministack's tests waited on a server CI starts first (#512).
+        or touched_tests.get("timed_out")
         or _touched_selection_changed(touched_tests, touched_workspace, changed_paths)
         or _touched_deselects_changed(touched_tests, run_directory)
         or _missing_module_now_importable(touched_tests)
