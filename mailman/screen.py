@@ -516,6 +516,10 @@ _POLICY_DISCLOSURE = re.compile(
     r"|identify\s+yourself\s+as\s+an?\s+(?:ai|llm)\b"
     # kornia CONTRIBUTING.md: "Tell us how AI helped". Mailman #503.
     r"|tell\s+us\s+how\s+(?:ai|an?\s+llm|the\s+ai)\b[^.]{0,20}\bhelped"
+    # linopy AGENTS.md: "AI-generated content must be marked"; its template:
+    # "mark AI-generated content". Mailman #517.
+    r"|(?:ai|llm)[- ]generated\s+(?:content|text|prose)\W{0,4}\s*must\s+be\s+marked"
+    r"|\bmark\s+(?:ai|llm)[- ]generated\s+(?:content|text|prose)"
     r")",
     re.IGNORECASE,
 )
@@ -541,6 +545,10 @@ _POLICY_OWN_WORDS = re.compile(
     r"|(?:ai|llm)(?:/llm)?\s+agents?:?\s+(?:you\s+)?(?:must\s+not|do\s+not|don't|never)"
     r"\s+edit\s+(?:the\s+human|this)\s+section"
     r"|human\s+author:?\s+please\s+(?:replace|write|fill)"
+    # linopy pull_request_template.md: "Keep this description human: write
+    # your own intent by hand". Mailman #517.
+    r"|write\s+your\s+own\s+\w+\s+by\s+hand"
+    r"|keep\s+(?:this|the)\s+description\s+human"
     r")",
     re.IGNORECASE,
 )
@@ -609,6 +617,11 @@ _POLICY_NO_AI_COMMENTS = re.compile(
     r"|(?:do\s+not|don't|never)\s+post\s+(?:ai|llm|machine)[- ]generated\s+comments?"
     r"|discussions?\b[^.]{0,60}\bare\s+for\s+(?:users\s*/\s*)?humans\s+only"
     r"|(?:cannot|can't|may\s+not|must\s+not)\s+comment\s+for\s+(?:the\s+)?users?\b"
+    # linopy AGENTS.md: "Conversations are not held through an agent" and
+    # "replies, answers to questions, review back-and-forth — must be written
+    # by the human". Mailman #517.
+    r"|conversations?\s+(?:are|is)\s+not\s+held\s+through\s+an?\s+(?:agent|ai|llm)"
+    r"|(?:replies|answers|review)\b[^.]{0,80}\bmust\s+be\s+written\s+by\s+(?:the\s+|a\s+)?human"
     r")",
     re.IGNORECASE,
 )

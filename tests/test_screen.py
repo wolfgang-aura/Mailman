@@ -1680,6 +1680,36 @@ class ScreenTests(unittest.TestCase):
 
         self.assertTrue(_named(record, "policy")["data"]["requires_own_words"])
 
+    def test_marked_ai_content_and_human_conversations_bind(self) -> None:
+        # PyPSA/linopy AGENTS.md and pull_request_template.md. The screen
+        # recorded no constraint and a run reached packaging before the
+        # coordinator read them. Mailman #517.
+        agents = (
+            "## AI-assisted contributions\n\n1. **AI-generated content must be "
+            "marked**, preferably with a GitHub note alert.\n\n2. "
+            "**Conversations are not held through an agent.** But discussion "
+            "itself — replies, answers to questions, review back-and-forth — "
+            "must be written by the human.\n"
+        )
+        template = (
+            "<!-- Using AI? Keep this description human: write your own intent "
+            "by hand and\nmark AI-generated content. See AGENTS.md for the "
+            "rules. -->\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(policies={
+                    "AGENTS.md": agents,
+                    ".github/pull_request_template.md": template,
+                }),
+            )
+        data = _named(record, "policy")["data"]
+
+        self.assertTrue(data["requires_disclosure"])
+        self.assertTrue(data["requires_own_words"])
+        self.assertTrue(data["forbids_ai_comments"])
+
     def test_an_organization_template_and_its_bare_policy_url_bind(self) -> None:
         # holoviz/panel has no template of its own; GitHub applies the one in
         # holoviz/.github, whose policy link is a bare URL in an HTML comment.
