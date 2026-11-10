@@ -53,7 +53,8 @@ BINARY_POLICY = "--prefer-binary"
 #: blocked `pvzstd.dll` while 0.4.1 loads. Mailman #430. pandas 3.1.0 and 3.1.1
 #: cp312 blocked `pandas_parser` on linopy issue 1134 while 3.0.5 imported, and
 #: gurobipy 13.0.1 to 13.0.3 cp312 blocked `_util` or `_matrixapi` while 13.0.0
-#: imported. Mailman #516.
+#: imported. polars-runtime-32 2.1.0 blocked `_polars_runtime` on the same run
+#: while 2.0.0 imported. Mailman #516.
 HOST_BLOCKED_RELEASES = (
     "scikit-learn!=1.9.1",
     "pandas!=3.0.6,!=3.1.0,!=3.1.1",
@@ -64,6 +65,7 @@ HOST_BLOCKED_RELEASES = (
     "vtk!=9.7.1",
     "pyvista-zstd!=0.4.2,!=0.5.0",
     "gurobipy!=13.0.1,!=13.0.2,!=13.0.3",
+    "polars-runtime-32!=2.1.0",
 )
 HOST_CONSTRAINTS_FILENAME = "host-constraints.txt"
 
