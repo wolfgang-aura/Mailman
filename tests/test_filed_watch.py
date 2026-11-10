@@ -253,6 +253,28 @@ class WatchTests(unittest.TestCase):
         self.assertIn("tqdm/tqdm#1837", render_watch(result))
         self.assertIn("pass 2", render_watch(result))
 
+    def test_a_merged_competing_pull_request_needs_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_provenance(
+                "run-1", "OpenHands/software-agent-sdk", 5732,
+                competition={"issue": 5723, "pull_requests": [
+                    {"number": 6200, "state": "closed", "author": "someone"},
+                    {"number": 6213, "state": "merged", "author": "hieptl"},
+                ]},
+            )
+            gh = FakeGitHub({"OpenHands/software-agent-sdk#5732": {
+                "checks": [_check("test")]}})
+
+            result = self._watch(root, gh)
+
+        (row,) = result["rows"]
+        self.assertEqual(row["status"], "attention")
+        self.assertEqual(
+            row["reasons"],
+            ["competing pull request #6213 by hieptl merged on issue #5723"],
+        )
+
     def test_a_failing_check_needs_work(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _Root(temporary)

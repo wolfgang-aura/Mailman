@@ -110,6 +110,7 @@ def filed_rows(data_root: Path) -> list[dict[str, Any]]:
                 "filed_at": None,
                 "filed_commit": None,
                 "superseded_by": None,
+                "competition": None,
                 "sources": [],
             }
         return rows[key]
@@ -141,6 +142,8 @@ def filed_rows(data_root: Path) -> list[dict[str, Any]]:
             commits = record.get("commits") or []
             row["filed_commit"] = row["filed_commit"] or (commits[-1] if commits else None)
             row["superseded_by"] = row["superseded_by"] or record.get("superseded_by")
+            if isinstance(record.get("competition"), dict):
+                row["competition"] = record["competition"]
             row["sources"].append("provenance")
 
     return sorted(rows.values(), key=lambda row: (row["repository"].lower(), row["pull_request"]))
@@ -184,6 +187,26 @@ def _reasons_for(pull: dict[str, Any], checks: dict[str, Any],
                 f"{last_outside['at']}"
             )
     return reasons
+
+
+def _merged_competitors(competition: Any) -> list[str]:
+    """A merged pull request on our issue, as `contributions --refresh` read it.
+
+    The watch reads only our own pull request, so without this a competitor
+    that fixed the issue leaves ours reading `ok` for as long as nobody closes
+    it (`OpenHands/software-agent-sdk#5732` sat two weeks after `#6213` merged).
+    """
+    if not isinstance(competition, dict):
+        return []
+    found = competition.get("pull_requests")
+    if not isinstance(found, list):
+        return []
+    return [
+        f"competing pull request #{item.get('number')} by {item.get('author')} "
+        f"merged on issue #{competition.get('issue')}"
+        for item in found
+        if isinstance(item, dict) and str(item.get("state", "")).lower() == "merged"
+    ]
 
 
 def inspect_pull_request(gh: _Gh, row: dict[str, Any], *,
@@ -328,6 +351,7 @@ def inspect_pull_request(gh: _Gh, row: dict[str, Any], *,
             base_ref=(pull.get("base") or {}).get("ref"),
         )
     reasons = _reasons_for(pull, checks, last_outside, last_ours, result["inherited"])
+    reasons.extend(_merged_competitors(row.get("competition")))
     result["reasons"] = reasons
     if reasons:
         result["status"] = STATUS_ATTENTION

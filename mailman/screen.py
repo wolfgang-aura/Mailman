@@ -535,6 +535,12 @@ _POLICY_OWN_WORDS = re.compile(
     # holoviz.org "Using AI README": "Do NOT copy full output of AI summary and
     # instead curate a description yourself". Mailman #501.
     r"|curate\s+(?:a|the)\s+description\s+yourself"
+    # OpenHands PULL_REQUEST_TEMPLATE.md: "AI/LLM agents: Do not edit the
+    # HUMAN section." / "AI agents: you must not edit this section." A CI
+    # check fails until a person writes it. Mailman #515.
+    r"|(?:ai|llm)(?:/llm)?\s+agents?:?\s+(?:you\s+)?(?:must\s+not|do\s+not|don't|never)"
+    r"\s+edit\s+(?:the\s+human|this)\s+section"
+    r"|human\s+author:?\s+please\s+(?:replace|write|fill)"
     r")",
     re.IGNORECASE,
 )

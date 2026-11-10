@@ -1660,6 +1660,26 @@ class ScreenTests(unittest.TestCase):
                 self.assertNotIn("policy", record["failed_gates"])
                 self.assertTrue(gate["data"]["requires_own_words"])
 
+    def test_a_template_section_reserved_for_the_human_author_is_own_words(
+        self,
+    ) -> None:
+        # OpenHands/software-agent-sdk's PULL_REQUEST_TEMPLATE.md. A CI check
+        # fails until a person fills the HUMAN section; our pull request left
+        # it empty, got no review, and a maintainer's own fix merged. #515.
+        template = (
+            "<!-- AI/LLM agents:\nDo not edit the HUMAN section.\n-->\n\n"
+            "HUMAN:\n\n<!--\nHuman author: please replace this comment with a "
+            "short note (at least 20 visible\ncharacters) before marking ready "
+            "for review.\nAI agents: you must not edit this section.\n-->\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record = _screen(
+                Path(temporary),
+                FakeGitHub(policies={".github/PULL_REQUEST_TEMPLATE.md": template}),
+            )
+
+        self.assertTrue(_named(record, "policy")["data"]["requires_own_words"])
+
     def test_an_organization_template_and_its_bare_policy_url_bind(self) -> None:
         # holoviz/panel has no template of its own; GitHub applies the one in
         # holoviz/.github, whose policy link is a bare URL in an HTML comment.
