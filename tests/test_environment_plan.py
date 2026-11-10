@@ -316,7 +316,7 @@ build-backend = "poetry.core.masonry.api"
             self.assertIn("strands-agents==1.56.0", constraints)
             # The project itself, a platform fork and a host-blocked release stay unpinned.
             self.assertFalse(any(line.startswith(("fixture", "numpy", "pandas==")) for line in constraints))
-            self.assertIn("pandas!=3.0.6", constraints)
+            self.assertIn("pandas!=3.0.6,!=3.1.0,!=3.1.1", constraints)
             self.assertIn("Pinned 1 package(s)", plan["draft"]["review"])
 
     def test_a_lock_pin_with_only_source_for_this_host_stays_unpinned(self):
