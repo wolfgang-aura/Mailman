@@ -352,6 +352,10 @@ def inspect_pull_request(gh: _Gh, row: dict[str, Any], *,
         )
     reasons = _reasons_for(pull, checks, last_outside, last_ours, result["inherited"])
     reasons.extend(_merged_competitors(row.get("competition")))
+    if row.get("superseded_by"):
+        reasons.append(
+            f"recorded as superseded by #{row['superseded_by']} but still open; close ours"
+        )
     result["reasons"] = reasons
     if reasons:
         result["status"] = STATUS_ATTENTION

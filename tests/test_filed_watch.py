@@ -275,6 +275,26 @@ class WatchTests(unittest.TestCase):
             ["competing pull request #6213 by hieptl merged on issue #5723"],
         )
 
+    def test_an_open_pull_request_recorded_as_superseded_needs_work(self) -> None:
+        # `provenance --superseded-by` rewrites the record without the
+        # competition block, so the recorded supersede must flag on its own.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _Root(temporary)
+            root.file_in_provenance(
+                "run-1", "OpenHands/software-agent-sdk", 5732, superseded_by=6213,
+            )
+            gh = FakeGitHub({"OpenHands/software-agent-sdk#5732": {
+                "checks": [_check("test")]}})
+
+            result = self._watch(root, gh)
+
+        (row,) = result["rows"]
+        self.assertEqual(row["status"], "attention")
+        self.assertEqual(
+            row["reasons"],
+            ["recorded as superseded by #6213 but still open; close ours"],
+        )
+
     def test_a_failing_check_needs_work(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _Root(temporary)
