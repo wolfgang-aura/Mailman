@@ -347,6 +347,10 @@ _POLICY_BANS = re.compile(
     # Mailman #158.
     r"|(?:may|must|should)\s+not\s+submit\b[^.]{0,80}"
     r"generated\s+by\s+(?:fully[- ])?automated\s+tools?"
+    # napari.org AI use policy: "Do not allow AI agents to submit PRs for
+    # you". This project is the agent that submits. Mailman #518.
+    r"|(?:do\s+not|don['’]t)\s+(?:allow|let)\s+(?:ai|llm)\s+agents?\s+"
+    r"(?:to\s+)?(?:submit|open|file|create)\b"
     r"|not\s+suitable\s+for\s+automat(?:ic|ed)\s+processing\s+by\s+"
     r"(?:ai|llms?|agents?|bots?)"
     # mpmath's .github/CONTRIBUTING.rst: "Do not waste developers time by
@@ -549,6 +553,10 @@ _POLICY_OWN_WORDS = re.compile(
     # your own intent by hand". Mailman #517.
     r"|write\s+your\s+own\s+\w+\s+by\s+hand"
     r"|keep\s+(?:this|the)\s+description\s+human"
+    # napari.org AI use policy: "Don’t ask an LLM to generate a PR
+    # description on your behalf". Mailman #518.
+    r"|(?:do\s+not|don['’]t)\s+ask\s+an?\s+(?:llm|ai)\s+to\s+(?:generate|write)\s+"
+    r"(?:a|the|your)\s+(?:pr|pull\s+request)\s+description"
     r")",
     re.IGNORECASE,
 )
